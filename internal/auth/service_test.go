@@ -210,6 +210,57 @@ func TestCreateKey_MissingName(t *testing.T) {
 	}
 }
 
+// TestCreateKey_PastExpiresAt locks in the 2026-05-24 fix: an API key
+// with expires_at in the past or exactly at now is DOA. Industry parity
+// (Stripe rejects past expiry on credentials).
+func TestCreateKey_PastExpiresAt(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	t.Run("past expires_at rejected", func(t *testing.T) {
+		past := time.Now().Add(-24 * time.Hour)
+		_, err := svc.CreateKey(ctx, "t1", CreateKeyInput{
+			Name:      "DOA key",
+			ExpiresAt: &past,
+		})
+		if err == nil {
+			t.Fatal("expected error on past expires_at")
+		}
+	})
+
+	t.Run("expires_at == now rejected", func(t *testing.T) {
+		nowT := time.Now()
+		_, err := svc.CreateKey(ctx, "t1", CreateKeyInput{
+			Name:      "expires now",
+			ExpiresAt: &nowT,
+		})
+		if err == nil {
+			t.Fatal("expected error on expires_at == now")
+		}
+	})
+
+	t.Run("future expires_at accepted", func(t *testing.T) {
+		future := time.Now().Add(30 * 24 * time.Hour)
+		_, err := svc.CreateKey(ctx, "t1", CreateKeyInput{
+			Name:      "future key",
+			ExpiresAt: &future,
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("nil expires_at accepted (no expiry)", func(t *testing.T) {
+		_, err := svc.CreateKey(ctx, "t1", CreateKeyInput{
+			Name:      "perma key",
+			ExpiresAt: nil,
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestValidateKey_AllTypes(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()

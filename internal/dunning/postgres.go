@@ -409,9 +409,12 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		LEFT JOIN invoices i ON i.id = r.invoice_id
 		LEFT JOIN subscriptions s ON s.id = i.subscription_id
 		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id` + whereClause + ` ORDER BY r.created_at DESC`
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", idx, idx+1)
 	args = append(args, limit, filter.Offset)

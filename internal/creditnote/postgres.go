@@ -41,22 +41,23 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO credit_notes (id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, currency, refund_status,
-			metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+			currency, refund_status, metadata, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
 		RETURNING id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, currency,
-			issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
 			COALESCE(tax_transaction_id,''),
 			metadata, created_at, updated_at
 	`, id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
 		cn.Status, cn.Reason, cn.SubtotalCents, cn.TaxAmountCents, cn.TotalCents,
-		cn.RefundAmountCents, cn.CreditAmountCents, cn.Currency, cn.RefundStatus,
-		metaJSON, now,
+		cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents,
+		cn.Currency, cn.RefundStatus, metaJSON, now,
 	).Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
 		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
+		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
+		&cn.Currency,
 		&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
 		&cn.TaxTransactionID,
 		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
@@ -82,15 +83,15 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cr
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, currency,
-			issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
 			COALESCE(tax_transaction_id,''),
 			metadata, created_at, updated_at
 		FROM credit_notes WHERE id = $1
 	`, id).Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
 		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
-		&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
+		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
 		&cn.TaxTransactionID,
 		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -110,15 +111,18 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	query := `SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
 		status, reason, subtotal_cents, tax_amount_cents, total_cents,
-		refund_amount_cents, credit_amount_cents, currency,
-		issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+		refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+		currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
 		COALESCE(tax_transaction_id,''),
 		metadata, created_at, updated_at
 		FROM credit_notes`
@@ -160,8 +164,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		var metaJSON []byte
 		if err := rows.Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
 			&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.Currency,
-			&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
+			&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
 			&cn.TaxTransactionID,
 			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
 			return nil, err

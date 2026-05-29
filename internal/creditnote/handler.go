@@ -74,6 +74,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/{id}/pdf", h.downloadPDF)
 	r.Post("/{id}/issue", h.issue)
 	r.Post("/{id}/void", h.void)
+	r.Post("/{id}/retry-refund", h.retryRefund)
 	return r
 }
 
@@ -170,6 +171,28 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, cn)
 }
 
+// retryRefund re-attempts the Stripe refund leg of an issued CN whose
+// refund_status is failed or pending. Operator-triggered via dashboard
+// when the CN was issued during a Stripe outage / before Stripe was
+// connected. Uses the same idempotency key as Issue() so retries
+// converge cleanly.
+func (h *Handler) retryRefund(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	cn, err := h.svc.RetryRefund(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "credit note")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "credit_note")
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, cn)
+}
+
 func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
@@ -213,9 +236,8 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 			if bp.LegalName != "" {
 				bt.Name = bp.LegalName
 			}
-			if bp.Email != "" {
-				bt.Email = bp.Email
-			}
+			// bp.Email removed in migration 0100 — bill-to email tracks
+			// customers.email (set above).
 			bt.AddressLine1 = bp.AddressLine1
 			bt.AddressLine2 = bp.AddressLine2
 			bt.City = bp.City
@@ -287,13 +309,14 @@ func (h *Handler) auditLogCreditNote(r *http.Request, tenantID string, cn domain
 		return
 	}
 	_ = h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, cn.CreditNoteNumber, map[string]any{
-		"credit_note_number":  cn.CreditNoteNumber,
-		"invoice_id":          cn.InvoiceID,
-		"customer_id":         cn.CustomerID,
-		"total_cents":         cn.TotalCents,
-		"refund_amount_cents": cn.RefundAmountCents,
-		"credit_amount_cents": cn.CreditAmountCents,
-		"reason":              cn.Reason,
-		"currency":            cn.Currency,
+		"credit_note_number":       cn.CreditNoteNumber,
+		"invoice_id":               cn.InvoiceID,
+		"customer_id":              cn.CustomerID,
+		"total_cents":              cn.TotalCents,
+		"refund_amount_cents":      cn.RefundAmountCents,
+		"credit_amount_cents":      cn.CreditAmountCents,
+		"out_of_band_amount_cents": cn.OutOfBandAmountCents,
+		"reason":                   cn.Reason,
+		"currency":                 cn.Currency,
 	})
 }

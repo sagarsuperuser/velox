@@ -467,8 +467,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		}
 	}
 
-	// If credits covered 100%, mark as paid immediately.
-	if totalWithTax > 0 {
+	// If credits covered 100%, mark as paid immediately — BUT only on
+	// invoices that landed as finalized at create time. Draft invoices
+	// (tax pending / pause-collection) stay draft with credits applied;
+	// tax-retry / pause-resume's auto-finalize chains land the
+	// transition later. Mirrors the same gate added to billOnePeriod's
+	// equivalent block (2026-05-22 fix — invoice DEMO-000906).
+	if totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
@@ -480,13 +485,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	// Auto-charge: synchronous with timeout, same behaviour as the cycle scan.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		if ps, err := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID); err == nil &&
-			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
+		if stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID); err == nil &&
+			hasDefaultPM && stripeCusID != "" {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 				}
 			}

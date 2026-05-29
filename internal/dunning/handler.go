@@ -41,7 +41,32 @@ type Handler struct {
 	invoices       InvoiceUpdater
 	creditReverser CreditReverser
 	paymentCancel  PaymentCanceler
+	auditLogger    AuditWriter
+	resolver       clock.Resolver
 }
+
+// AuditWriter is the narrow audit surface dunning handler uses.
+// Decoupled from internal/audit so the handler can be tested with
+// a fake; wired in router.go via SetAuditLogger.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// SetAuditLogger wires the audit logger so dunning policy CRUD and
+// run resolution mutations land in audit_log. Without this, operator-
+// triggered resolution of a dunning run (a money decision: customer
+// no longer pays vs grace extension vs write-off) was invisible.
+func (h *Handler) SetAuditLogger(a AuditWriter) {
+	h.auditLogger = a
+}
+
+// SetResolver wires the clock resolver so resolveRun can bind ctx
+// from the invoice's pin before invoices.MarkPaid. Without this,
+// `invoice.paid_at` stamps wall-clock on clock-pinned invoices —
+// inconsistent with every other invoice timestamp on the same row
+// and breaks ADR-030's "no wall-clock leakage on pinned entities"
+// guarantee at the dunning-resolution seam.
+func (h *Handler) SetResolver(r clock.Resolver) { h.resolver = r }
 
 type HandlerDeps struct {
 	Invoices       InvoiceUpdater
@@ -154,6 +179,9 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "dunning_policy")
 		return
 	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "dunning_policy", result.ID, result.Name, nil)
+	}
 	respond.JSON(w, r, http.StatusCreated, result)
 }
 
@@ -171,6 +199,9 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "dunning_policy")
 		return
 	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "dunning_policy", result.ID, result.Name, nil)
+	}
 	respond.JSON(w, r, http.StatusOK, result)
 }
 
@@ -186,6 +217,9 @@ func (h *Handler) deletePolicy(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "dunning_policy")
 		return
 	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionDelete, "dunning_policy", id, "", nil)
+	}
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -199,6 +233,11 @@ func (h *Handler) setDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		respond.FromError(w, r, err, "dunning_policy")
 		return
+	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "dunning_policy", id, "", map[string]any{
+			"action": "set_default",
+		})
 	}
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "default_updated"})
 }
@@ -280,16 +319,35 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Money-decision audit: operator chose how to close out a failing
+	// invoice's collection cycle (payment recovered / manual resolve /
+	// write-off). Critical for finance reconciliation — "why was this
+	// invoice marked recovered when no payment came in?".
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "dunning_run", run.ID, "", map[string]any{
+			"action":     "resolved",
+			"resolution": input.Resolution,
+			"invoice_id": run.InvoiceID,
+		})
+	}
+
 	// Propagate resolution to invoice
 	if h.invoices != nil && run.InvoiceID != "" {
 		switch domain.DunningResolution(input.Resolution) {
 		case domain.ResolutionPaymentRecovered:
-			// MarkPaid stamps invoice.paid_at — for invoices on
-			// clock-pinned subs that ought to land in sim-time
-			// (ADR-030). clock.Now(ctx) falls back to wall-clock
-			// for unbound ctx (production dunning resolutions).
-			now := clock.Now(r.Context())
-			if _, err := h.invoices.MarkPaid(r.Context(), tenantID, run.InvoiceID, "", now); err != nil {
+			// MarkPaid stamps invoice.paid_at — bind ctx from the
+			// invoice's pin so clock-pinned invoices land in sim-time
+			// (ADR-030). Wall-clock invoices fall through unchanged via
+			// resolver returning wall-clock. Without this bind, paid_at
+			// was always wall-clock regardless of pin — the dunning
+			// resolution was the last unbound seam in the operator
+			// invoice path.
+			markCtx := r.Context()
+			if h.resolver != nil {
+				markCtx, _ = clock.BindEffectiveNow(markCtx, h.resolver, clock.Pin{TenantID: tenantID, InvoiceID: run.InvoiceID})
+			}
+			now := clock.Now(markCtx)
+			if _, err := h.invoices.MarkPaid(markCtx, tenantID, run.InvoiceID, "", now); err != nil {
 				slog.WarnContext(r.Context(), "failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
 			}
 		case domain.ResolutionManuallyResolved:

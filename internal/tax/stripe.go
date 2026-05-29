@@ -199,8 +199,12 @@ func (p *StripeTaxProvider) Reverse(ctx context.Context, req ReversalRequest) (*
 	if req.OriginalTransactionID == "" {
 		return nil, fmt.Errorf("stripe tax: reverse: original transaction id required")
 	}
-	if req.CreditNoteID == "" {
-		return nil, fmt.Errorf("stripe tax: reverse: credit note id required")
+	ref := req.Reference
+	if ref == "" {
+		ref = req.CreditNoteID
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("stripe tax: reverse: reference required")
 	}
 	client := p.clientForCtx(ctx)
 	if client == nil {
@@ -213,7 +217,7 @@ func (p *StripeTaxProvider) Reverse(ctx context.Context, req ReversalRequest) (*
 	}
 	params := &stripe.TaxTransactionCreateReversalParams{
 		OriginalTransaction: stripe.String(req.OriginalTransactionID),
-		Reference:           stripe.String(req.CreditNoteID),
+		Reference:           stripe.String(ref),
 		Mode:                stripe.String(string(mode)),
 	}
 	if mode == ReversalModePartial {
@@ -223,6 +227,14 @@ func (p *StripeTaxProvider) Reverse(ctx context.Context, req ReversalRequest) (*
 		// Stripe requires the amount in negative smallest-currency units.
 		params.FlatAmount = stripe.Int64(-req.GrossAmountCents)
 	}
+	// Defense-in-depth idempotency: Reference uniqueness gives Stripe-
+	// side semantic dedup, but a transient network failure between
+	// Stripe accepting and the SDK returning could otherwise leave the
+	// caller in retry-with-unknown-state. Idempotency-Key on the
+	// request makes Stripe return the cached response on retry. Same
+	// pattern as payment.StripeRefunder. Key shape derived from the
+	// reference so retries of the same logical reversal converge.
+	params.IdempotencyKey = stripe.String("velox_tax_rev_" + ref)
 	txn, err := client.V1TaxTransactions.CreateReversal(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("stripe tax: reverse transaction %s for credit note %s: %w",

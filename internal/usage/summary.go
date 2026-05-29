@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/api/timefilter"
 	"github.com/sagarsuperuser/velox/internal/auth"
 )
 
@@ -64,16 +66,21 @@ func (h *Handler) getSummary(w http.ResponseWriter, r *http.Request) {
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	to := from.AddDate(0, 1, 0)
 
-	// Allow custom period via query params
-	if f := r.URL.Query().Get("from"); f != "" {
-		if t, err := time.Parse(time.RFC3339, f); err == nil {
-			from = t
-		}
+	// Allow custom period via query params. Pre-2026-05-28 this path
+	// silently swallowed parse errors and fell back to current-month —
+	// so a typo in ?from= gave you the wrong window with no signal.
+	// Now consistent with every other operator endpoint: bad input →
+	// 400, valid date-only or RFC3339 input is honored.
+	parsedFrom, parsedTo, err := timefilter.ParseRange(r, "from", "to")
+	if err != nil {
+		respond.FromError(w, r, err, "usage_summary")
+		return
 	}
-	if t := r.URL.Query().Get("to"); t != "" {
-		if parsed, err := time.Parse(time.RFC3339, t); err == nil {
-			to = parsed
-		}
+	if !parsedFrom.IsZero() {
+		from = parsedFrom
+	}
+	if !parsedTo.IsZero() {
+		to = parsedTo
 	}
 
 	summary, err := h.svc.GetSummary(r.Context(), tenantID, customerID, from, to)

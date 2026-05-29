@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatDateTime, getTenantTimezone } from '@/lib/api'
@@ -36,7 +37,13 @@ function describeAction(entry: AuditEntry): string {
   // surface it cleanly instead of dumping the raw dotted action.
   const metaAction = (entry.metadata?.action as string) || ''
   switch (entry.action) {
-    case 'create': return `Created ${label || entry.resource_type}`
+    case 'create':
+      if (entry.resource_type === 'payment_method') return `Added ${label || 'card'}`
+      if (entry.resource_type === 'api_key') return `Created API key${label ? ` "${label}"` : ''}`
+      if (entry.resource_type === 'webhook_endpoint') return `Created webhook endpoint${label ? ` ${label}` : ''}`
+      if (entry.resource_type === 'test_clock') return `Created test clock${label ? ` "${label}"` : ''}`
+      if (entry.resource_type === 'stripe_credentials') return `Connected Stripe (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
+      return `Created ${label || entry.resource_type}`
     case 'update':
       // Sub-action discriminator for the update bucket: surface a
       // descriptive label per metadata.action when the bucket carries
@@ -44,8 +51,25 @@ function describeAction(entry: AuditEntry): string {
       // anything not enumerated.
       if (entry.resource_type === 'invoice' && metaAction === 'marked_uncollectible') return `Marked ${label || 'invoice'} uncollectible`
       if (entry.resource_type === 'invoice' && metaAction === 'payment_recorded') return `Recorded offline payment on ${label || 'invoice'}`
+      if (entry.resource_type === 'invoice' && metaAction === 'portal_pay_attempted') return `Customer paid ${label || 'invoice'} via portal`
+      if (entry.resource_type === 'customer' && metaAction === 'profile_updated') return `Updated profile${label ? ` for ${label}` : ''}`
+      if (entry.resource_type === 'customer' && metaAction === 'billing_profile_upserted') return `Updated billing profile${label ? ` for ${label}` : ''}`
+      if (entry.resource_type === 'payment_method' && metaAction === 'default_changed') return `Set ${label || 'card'} as default`
+      if (entry.resource_type === 'subscription' && metaAction === 'cancel_cleared') return `Cleared scheduled cancellation${label ? ` on ${label}` : ''}`
+      if (entry.resource_type === 'dunning_run' && metaAction === 'resolved') return `Resolved dunning run (${entry.metadata?.resolution})`
+      if (entry.resource_type === 'dunning_policy' && metaAction === 'set_default') return `Set dunning policy as default${label ? ` (${label})` : ''}`
+      if (entry.resource_type === 'test_clock' && metaAction === 'advanced') return `Advanced test clock${label ? ` "${label}"` : ''}`
+      if (entry.resource_type === 'test_clock' && metaAction === 'retry_advance') return `Retried clock advance${label ? ` on "${label}"` : ''}`
+      if (entry.resource_type === 'webhook_event' && metaAction === 'replayed') return `Replayed webhook event`
+      if (entry.resource_type === 'stripe_credentials' && metaAction === 'webhook_secret_set') return `Set Stripe webhook secret (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
       return `Updated ${label || entry.resource_type}`
-    case 'delete': return `Deleted ${label || entry.resource_type}`
+    case 'delete':
+      if (entry.resource_type === 'payment_method') return `Removed ${label || 'card'}`
+      if (entry.resource_type === 'webhook_endpoint') return `Deleted webhook endpoint`
+      if (entry.resource_type === 'test_clock') return `Deleted test clock`
+      if (entry.resource_type === 'dunning_policy') return `Deleted dunning policy`
+      if (entry.resource_type === 'stripe_credentials') return `Disconnected Stripe (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
+      return `Deleted ${label || entry.resource_type}`
     case 'activate': return `Activated ${label || 'subscription'}`
     case 'cancel': return `Canceled ${label || 'subscription'}`
     case 'pause': return `Paused ${label || 'subscription'}`
@@ -65,7 +89,12 @@ function describeAction(entry: AuditEntry): string {
       if (metaAction === 'item_quantity_changed') return `Changed quantity${label ? ` for ${label}` : ''}`
       return `Updated item${label ? ` on ${label}` : ''}`
     case 'subscription.proration_failed': return `Proration failed${label ? ` on ${label}` : ''}`
-    case 'revoke': return `Revoked API key ${label}`
+    case 'revoke': return `Revoked API key${label ? ` "${label}"` : ''}`
+    case 'rotate':
+      if (entry.resource_type === 'api_key') return `Rotated API key${label ? ` "${label}"` : ''}`
+      if (entry.resource_type === 'webhook_endpoint') return `Rotated webhook secret`
+      if (entry.resource_type === 'stripe_credentials') return `Rotated Stripe webhook secret`
+      return `Rotated ${label || entry.resource_type}`
     case 'run': return 'Billing cycle executed'
     case 'change_plan': return `Changed plan${label ? ` for ${label}` : ''}`
     default: return `${entry.action.replace(/_/g, ' ')} ${label || entry.resource_type}`
@@ -100,6 +129,14 @@ function formatActorName(entry: AuditEntry): string {
     if (entry.actor_name) return entry.actor_name
     return entry.actor_id.startsWith('vlx_') ? `Key ${entry.actor_id.slice(0, 16)}...` : 'API Key'
   }
+  if (entry.actor_type === 'customer') {
+    // Customer-portal-driven mutations (subscription cancel, profile edit,
+    // payment-method changes) ship actor_id = customer.id. Prefer the
+    // join-resolved actor_name; otherwise show "Customer" so operators
+    // can see at-a-glance that the action came from the customer side.
+    if (entry.actor_name) return entry.actor_name
+    return 'Customer'
+  }
   return entry.actor_type
 }
 
@@ -117,17 +154,36 @@ function prettyLabel(value: string): string {
 const DEFAULT_RESOURCE_TYPES = [
   'customer', 'subscription', 'invoice', 'plan', 'meter',
   'credit', 'credit_note', 'api_key', 'billing', 'billing_profile',
+  'payment_method', 'dunning_policy', 'dunning_run', 'test_clock',
+  'webhook_endpoint', 'webhook_event', 'stripe_credentials',
+  'price_override', 'rating_rule', 'meter_pricing_rule',
 ]
 const DEFAULT_ACTIONS = [
   'create', 'update', 'delete', 'activate', 'cancel', 'pause', 'resume',
   'finalize', 'void', 'run', 'grant', 'revoke',
 ]
 
+// Test-clock sim-context keys auto-added to metadata by audit-callers
+// when the affected entity is clock-pinned (ADR-030 amendment
+// 2026-05-28). Excluded from generic metadata rendering — surfaced as
+// a dedicated subline + chip via simContext() below so the operator
+// reads "wall-clock click + simulated effect-time" coherently instead
+// of seeing the keys mixed in with business metadata.
+const SIM_CONTEXT_KEYS = new Set(['sim_effective_at', 'test_clock_id'])
+
+function simContext(meta: Record<string, unknown> | undefined): { simEffectiveAt?: string; testClockID?: string } {
+  if (!meta) return {}
+  const simEffectiveAt = typeof meta.sim_effective_at === 'string' ? meta.sim_effective_at : undefined
+  const testClockID = typeof meta.test_clock_id === 'string' ? meta.test_clock_id : undefined
+  return { simEffectiveAt, testClockID }
+}
+
 function formatMetadata(meta: Record<string, unknown> | undefined): { label: string; value: string }[] {
   if (!meta) return []
   const items: { label: string; value: string }[] = []
   for (const [key, val] of Object.entries(meta)) {
     if (key === 'resource_label') continue
+    if (SIM_CONTEXT_KEYS.has(key)) continue
     const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
     if (typeof val === 'number' && key.includes('cents')) {
       items.push({ label: label.replace(' Cents', ''), value: `$${(val / 100).toFixed(2)}` })
@@ -173,15 +229,7 @@ function actionVariant(action: string): 'default' | 'secondary' | 'destructive' 
 }
 
 export default function AuditLogPage() {
-  const [entries, setEntries] = useState<AuditEntry[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [filterOptions, setFilterOptions] = useState<{ actions: string[]; resourceTypes: string[] }>({
-    actions: DEFAULT_ACTIONS,
-    resourceTypes: DEFAULT_RESOURCE_TYPES,
-  })
   const [exporting, setExporting] = useState(false)
   const [urlState, setUrlState] = useUrlState({
     resource_type: '',
@@ -202,9 +250,12 @@ export default function AuditLogPage() {
   } = urlState
   const page = Math.max(1, parseInt(urlState.page) || 1)
 
-  const loadEntries = useCallback(() => {
-    setLoading(true)
-    setError(null)
+  // Audit log entries query — keyed by every filter dimension so the
+  // cache is sharded per-filter-set. Changing any filter triggers a
+  // refetch automatically (RQ recognizes a new key). Tenant-TZ
+  // grounded date instants (ADR-010) so the same calendar day
+  // resolves identically across operator time zones.
+  const qs = (() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
@@ -212,37 +263,31 @@ export default function AuditLogPage() {
     if (action) params.set('action', action)
     if (resourceIdFilter) params.set('resource_id', resourceIdFilter)
     if (actorFilter) params.set('actor_id', actorFilter)
-    // Send tenant-TZ-grounded UTC instants (start-of-day for from,
-    // end-of-day for to) instead of bare yyyy-mm-dd strings — so an
-    // operator picking "May 5" in IST gets the same window as one
-    // picking it in PST for the same tenant. Backend's
-    // normalizeDateFilter accepts both formats. ADR-010.
     if (dateFrom) params.set('date_from', startOfDayInTZ(dateFrom))
     if (dateTo) params.set('date_to', endOfDayInTZ(dateTo))
-    const qs = params.toString()
-    api.listAuditLog(qs)
-      .then(res => { setEntries(res.data || []); setTotal(res.total || 0); setLoading(false) })
-      .catch(err => { setError(err instanceof Error ? err.message : 'Failed to load audit log'); setEntries([]); setTotal(0); setLoading(false) })
-  }, [page, resourceType, action, resourceIdFilter, actorFilter, dateFrom, dateTo])
-
-  useEffect(() => { loadEntries() }, [loadEntries])
+    return params.toString()
+  })()
+  const entriesQuery = useQuery({
+    queryKey: ['audit-log', qs],
+    queryFn: () => api.listAuditLog(qs),
+  })
+  const entries = entriesQuery.data?.data ?? []
+  const total = entriesQuery.data?.total ?? 0
+  const loading = entriesQuery.isLoading
+  const error = entriesQuery.error instanceof Error ? entriesQuery.error.message : (entriesQuery.error ? 'Failed to load audit log' : null)
+  const loadEntries = () => { void entriesQuery.refetch() }
 
   // Populate filter dropdowns from what's actually recorded for this tenant.
   // Fall back to defaults on error or empty — keeps the UI usable for new
   // tenants whose audit log hasn't been populated yet.
-  useEffect(() => {
-    let cancelled = false
-    api.getAuditFilters()
-      .then(res => {
-        if (cancelled) return
-        setFilterOptions({
-          actions: res.actions.length ? res.actions : DEFAULT_ACTIONS,
-          resourceTypes: res.resource_types.length ? res.resource_types : DEFAULT_RESOURCE_TYPES,
-        })
-      })
-      .catch(() => { /* keep defaults */ })
-    return () => { cancelled = true }
-  }, [])
+  const filterOptionsQuery = useQuery({
+    queryKey: ['audit-log', 'filters'],
+    queryFn: () => api.getAuditFilters(),
+  })
+  const filterOptions = {
+    actions: filterOptionsQuery.data?.actions?.length ? filterOptionsQuery.data.actions : DEFAULT_ACTIONS,
+    resourceTypes: filterOptionsQuery.data?.resource_types?.length ? filterOptionsQuery.data.resource_types : DEFAULT_RESOURCE_TYPES,
+  }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const groups = groupByDate(entries)
@@ -418,6 +463,7 @@ export default function AuditLogPage() {
                         const isExpanded = expandedId === entry.id
                         const link = resourceLink(entry)
                         const meta = formatMetadata(entry.metadata)
+                        const sim = simContext(entry.metadata)
 
                         return (
                           <div key={entry.id}>
@@ -434,6 +480,14 @@ export default function AuditLogPage() {
                               <span className="text-sm text-foreground ml-2.5 flex-1 truncate" title={describeAction(entry)}>
                                 {describeAction(entry)}
                               </span>
+                              {sim.simEffectiveAt && (
+                                <span
+                                  title={`Operator clicked at wall-clock ${formatDateTime(entry.created_at)}; effect landed on test clock ${sim.testClockID || ''} at simulated ${formatDateTime(sim.simEffectiveAt)}`}
+                                  className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300 ml-2"
+                                >
+                                  test clock
+                                </span>
+                              )}
                               {link && (
                                 <Link
                                   to={link}
@@ -468,6 +522,11 @@ export default function AuditLogPage() {
                                   <div>
                                     <p className="text-xs text-muted-foreground">Timestamp</p>
                                     <p className="text-foreground mt-0.5">{formatDateTime(entry.created_at)}</p>
+                                    {sim.simEffectiveAt && (
+                                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                                        Effect on test clock {sim.testClockID ? <span className="font-mono">{sim.testClockID}</span> : ''} at {formatDateTime(sim.simEffectiveAt)}
+                                      </p>
+                                    )}
                                   </div>
                                 </div>
                                 {meta.length > 0 && (

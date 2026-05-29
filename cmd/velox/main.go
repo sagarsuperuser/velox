@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,7 +66,22 @@ func main() {
 }
 
 func serve() {
-	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	// LOG_LEVEL controls the slog filter. Standard env name + values
+	// (debug / info / warn / error) — production tunes verbosity via
+	// the env var without a redeploy of a binary built for one level.
+	// Default 'info' matches the prior hardcoded behavior. Unrecognized
+	// values fall through to 'info' rather than failing boot — a typo
+	// in an ops setting should never take the API offline.
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(telemetry.NewContextHandler(jsonHandler)))
 
 	cfg, err := config.Load()

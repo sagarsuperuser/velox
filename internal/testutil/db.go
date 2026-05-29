@@ -85,7 +85,7 @@ func cleanDB(t *testing.T, pool *sql.DB) {
 				invoice_dunning_events, invoice_dunning_runs, dunning_policies,
 				invoice_line_items, invoices, billed_entries, usage_events,
 				subscriptions, plans, meters, rating_rule_versions,
-				customer_payment_setups, customer_billing_profiles, customers,
+				customer_billing_profiles, customers,
 				stripe_webhook_events, api_keys, billing_provider_connections,
 				credit_note_line_items, credit_notes, customer_credit_ledger,
 				coupon_redemptions, coupons,

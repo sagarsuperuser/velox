@@ -399,6 +399,12 @@ func (f *fakeDeliverer) SendPaymentSetupRequest(_ context.Context, tenantID, to,
 	f.lastAmount, f.lastCurrency, f.lastUpdateURL = amount, cur, url
 	return nil
 }
+func (f *fakeDeliverer) SendPaymentSetupLink(_ context.Context, tenantID, to, name, _ /*operatorNote*/, setupURL string) error {
+	f.calls++
+	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePaymentSetupLink, tenantID, to, name
+	f.lastUpdateURL = setupURL
+	return nil
+}
 func (f *fakeDeliverer) SendPortalMagicLink(_ context.Context, tenantID, to, name, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePortalMagicLink, tenantID, to, name

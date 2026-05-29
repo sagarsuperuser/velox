@@ -2,6 +2,7 @@ package credit
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -9,6 +10,12 @@ import (
 
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
+	// AppendEntryTx is the in-transaction variant used by callers that
+	// need to compose a credit-ledger insert atomically with other
+	// writes (e.g. the subscription handler's AddItem-with-proration
+	// flow inserts the sub item + the credit entry in one tx). The
+	// caller owns the tx; the store just executes inside it.
+	AppendEntryTx(ctx context.Context, tx *sql.Tx, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
 	// ApplyToInvoiceAtomic debits credits and reduces invoice.amount_due
 	// atomically. `at` stamps both the new ledger usage entry and the
 	// invoice's updated_at, keeping the application on simulated time
@@ -25,6 +32,11 @@ type Store interface {
 	AdjustAtomic(ctx context.Context, tenantID, customerID, description string, amountCents int64) (domain.CreditLedgerEntry, error)
 	GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error)
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error)
+	// GetByCreditNoteSource fetches the grant row created by a specific
+	// credit-note Issue(). Used by GrantForCreditNote to recover from
+	// ErrAlreadyExists on retry (the partial unique index from migration
+	// 0093 enforces one grant per (tenant, CN)).
+	GetByCreditNoteSource(ctx context.Context, tenantID, creditNoteID string) (domain.CreditLedgerEntry, error)
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
 	ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error)

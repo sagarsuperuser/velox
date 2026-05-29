@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -14,12 +15,26 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// AuditWriter is the narrow audit surface the pricing handler uses.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger AuditWriter
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetAuditLogger wires audit on pricing mutations. Plan + meter +
+// rating-rule + price-override changes flow into every future invoice
+// computed under this tenant — high-value forensics for "why did this
+// customer's bill change?".
+func (h *Handler) SetAuditLogger(a AuditWriter) {
+	h.auditLogger = a
 }
 
 func (h *Handler) MeterRoutes() chi.Router {
@@ -82,6 +97,13 @@ func (h *Handler) createOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "price_override", override.ID, "", map[string]any{
+			"customer_id":            override.CustomerID,
+			"rating_rule_version_id": override.RatingRuleVersionID,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusCreated, override)
 }
 
@@ -119,6 +141,10 @@ func (h *Handler) createRatingRule(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "rating_rule")
 		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "rating_rule", rule.ID, rule.RuleKey, nil)
 	}
 
 	respond.JSON(w, r, http.StatusCreated, rule)
@@ -184,6 +210,10 @@ func (h *Handler) createMeter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "meter", meter.ID, meter.Name, nil)
+	}
+
 	respond.JSON(w, r, http.StatusCreated, meter)
 }
 
@@ -240,6 +270,10 @@ func (h *Handler) createPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "plan", plan.ID, plan.Name, nil)
+	}
+
 	respond.JSON(w, r, http.StatusCreated, plan)
 }
 
@@ -293,6 +327,12 @@ func (h *Handler) updatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Plan edits change pricing for every future invoice on subs that
+	// reference this plan. Audit it so finance can trace back-changes.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "plan", plan.ID, plan.Name, nil)
+	}
+
 	respond.JSON(w, r, http.StatusOK, plan)
 }
 
@@ -335,6 +375,12 @@ func (h *Handler) upsertMeterPricingRule(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		respond.FromError(w, r, err, "meter_pricing_rule")
 		return
+	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "meter_pricing_rule", rule.ID, "", map[string]any{
+			"meter_id":               rule.MeterID,
+			"rating_rule_version_id": rule.RatingRuleVersionID,
+		})
 	}
 	respond.JSON(w, r, http.StatusCreated, rule)
 }

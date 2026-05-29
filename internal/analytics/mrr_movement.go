@@ -61,7 +61,13 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		           END
 		       ), 0)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		-- AND si.deleted_at IS NULL: counts items live AS OF NOW for
+		-- the activation bucket. Items soft-deleted between activation
+		-- and now are excluded — slight under-count for historical
+		-- "New MRR" buckets if items were removed later. Pre-launch
+		-- analytics tolerate this; revisit when historical accuracy
+		-- becomes a customer ask (migration 0102 / 2026-05-29).
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $3 AND s.activated_at < $4
 		GROUP BY 1
@@ -93,7 +99,7 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		           END
 		       ), 0)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $3 AND s.canceled_at < $4
 		GROUP BY 1

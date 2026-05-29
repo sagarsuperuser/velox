@@ -215,6 +215,12 @@ const (
 	GateExpired        GateReason = "expired"
 	GateMaxRedemptions GateReason = "max_redemptions"
 	GateNotFound       GateReason = "not_found"
+	// GatePerCustomerMaxed fires when the per-customer redemption cap
+	// (Restrictions.MaxRedemptionsPerCustomer) is hit. The check happens
+	// INSIDE the redeem tx under the coupon's FOR UPDATE lock so two
+	// concurrent redeems by the same customer can't both pass when
+	// current == cap-1 (2026-05-24 fix — Bug A in coupon flow audit).
+	GatePerCustomerMaxed GateReason = "per_customer_maxed"
 )
 
 // ErrCouponGate is returned by RedeemAtomic when the coupon exists but

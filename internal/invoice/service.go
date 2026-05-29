@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,12 +12,17 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // InvoiceNumberer allocates the next invoice number for a tenant.
 // Atomicity and uniqueness are the numberer's responsibility.
 type InvoiceNumberer interface {
 	NextInvoiceNumber(ctx context.Context, tenantID string) (string, error)
+	// NextInvoiceNumberTx is the in-transaction variant used by the
+	// atomic AddItem-with-proration flow — allocate the number and
+	// insert the invoice in one tx so a rollback frees the number.
+	NextInvoiceNumberTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error)
 }
 
 // TaxCommitter finalizes an upstream tax calculation into a tax_transaction
@@ -27,6 +33,17 @@ type InvoiceNumberer interface {
 // Stripe error shouldn't leave the invoice stuck in draft.
 type TaxCommitter interface {
 	CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error
+}
+
+// TaxReverser issues a reversal of the invoice's committed tax transaction
+// when the invoice is voided. Without this call, finalized-but-unpaid
+// invoices that get voided would leave the tax transaction committed
+// upstream — over-reporting tax collected to the authority. Optional —
+// when unset, Void proceeds without the upstream reversal (suitable for
+// none/manual providers and for narrow tests). Failures here log but
+// do not block the void.
+type TaxReverser interface {
+	ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error)
 }
 
 // CouponApplier is the narrow view into coupon+tax+invoice orchestration
@@ -76,6 +93,7 @@ type Service struct {
 	resolver       clock.Resolver
 	numberer       InvoiceNumberer
 	taxCommitter   TaxCommitter
+	taxReverser    TaxReverser
 	couponApplier  CouponApplier
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
@@ -113,6 +131,15 @@ func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service
 // router.go with the billing engine so finalize can commit Stripe tax calcs.
 func (s *Service) SetTaxCommitter(tc TaxCommitter) {
 	s.taxCommitter = tc
+}
+
+// SetTaxReverser wires the upstream tax-transaction reverser. Called from
+// router.go with the billing engine so Void on a finalized-but-unpaid
+// invoice can reverse the tax_transaction committed at finalize time.
+// Without this, voided invoices leave their tax recorded as collected
+// with the authority — over-reporting tax revenue.
+func (s *Service) SetTaxReverser(tr TaxReverser) {
+	s.taxReverser = tr
 }
 
 // SetResolver wires the unified clock.Resolver used to bind
@@ -380,6 +407,34 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	if inv.Status == domain.InvoiceVoided {
 		return domain.Invoice{}, errs.InvalidState("invoice is already voided")
 	}
+
+	// Reverse the upstream tax transaction so the authority's records
+	// stop reporting the tax as collected. Industry standard: EU VAT
+	// Directive Art. 90, Stripe Tax docs ("When an invoice is voided or
+	// marked uncollectible, you must reverse the corresponding tax
+	// transaction"). Best-effort: a transient failure logs but does NOT
+	// block the void — the invoice is the operator's primary record and
+	// must stay flippable to voided even if upstream is unreachable.
+	// Operator reconciles stuck reversals manually in the provider
+	// dashboard. Preconditions:
+	//   - taxReverser wired (skipped for narrow tests + tenants with no
+	//     provider)
+	//   - invoice has a committed upstream transaction (TaxTransactionID
+	//     non-empty — none/manual providers and legacy invoices skip)
+	if s.taxReverser != nil && inv.TaxTransactionID != "" {
+		if _, err := s.taxReverser.ReverseTax(ctx, tenantID, tax.ReversalRequest{
+			OriginalTransactionID: inv.TaxTransactionID,
+			Reference:             "inv_void_" + inv.ID,
+			InvoiceID:             inv.ID,
+			Mode:                  tax.ReversalModeFull,
+		}); err != nil {
+			slog.WarnContext(ctx, "tax reversal failed on invoice void — invoice still voided locally",
+				"invoice_id", inv.ID,
+				"tax_transaction_id", inv.TaxTransactionID,
+				"error", err)
+		}
+	}
+
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 }
 
@@ -407,6 +462,32 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	case domain.InvoiceUncollectible:
 		return domain.Invoice{}, errs.InvalidState("invoice is already uncollectible")
 	}
+
+	// Reverse the upstream tax transaction. Stripe Tax docs: "When an
+	// invoice is voided or marked uncollectible, you must reverse the
+	// corresponding tax transaction." Jurisdictional caveat — bad-debt
+	// VAT relief rules vary (EU permits reclaim under specific
+	// conditions; US sales tax varies by state). We follow Stripe's
+	// default behaviour and let tenants whose jurisdiction requires
+	// the tax to stay re-commit manually. Best-effort — failure logs
+	// but does not block the status transition. Reference is
+	// inv_uncoll_<id> so retries converge; distinct from the void
+	// Reference so an invoice that was marked uncollectible and then
+	// (somehow) voided wouldn't collide.
+	if s.taxReverser != nil && inv.TaxTransactionID != "" {
+		if _, err := s.taxReverser.ReverseTax(ctx, tenantID, tax.ReversalRequest{
+			OriginalTransactionID: inv.TaxTransactionID,
+			Reference:             "inv_uncoll_" + inv.ID,
+			InvoiceID:             inv.ID,
+			Mode:                  tax.ReversalModeFull,
+		}); err != nil {
+			slog.WarnContext(ctx, "tax reversal failed on mark-uncollectible — invoice still marked locally",
+				"invoice_id", inv.ID,
+				"tax_transaction_id", inv.TaxTransactionID,
+				"error", err)
+		}
+	}
+
 	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -666,6 +747,26 @@ func (s *Service) RetryTax(ctx context.Context, tenantID, invoiceID string) (dom
 				"error", ferr, "tenant_id", tenantID, "invoice_id", invoiceID,
 				"billing_reason", inv.BillingReason)
 			return s.attachAttention(ctx, inv), nil
+		}
+		// Auto-pay when amount_due_cents <= 0 after finalize. This
+		// closes the loop on the "credits applied at draft time,
+		// tax pending" path: billOnePeriod applied credits to a
+		// draft invoice and left it draft because tax was pending.
+		// Tax retry now resolves — finalize lands the authoritative
+		// total. If credits covered the new total too (amount_due=0),
+		// transition straight to paid. If new tax made the total
+		// larger than the credits could cover, leave finalized for
+		// the normal charge / dunning flow.
+		if final.AmountDueCents <= 0 {
+			now := s.clock.Now(ctx)
+			paid, perr := s.store.MarkPaid(ctx, tenantID, invoiceID, "", now)
+			if perr != nil {
+				slog.Warn("invoice: auto-pay after tax-retry finalize failed; invoice stays finalized with $0 due",
+					"error", perr, "tenant_id", tenantID, "invoice_id", invoiceID,
+					"amount_due_cents", final.AmountDueCents)
+				return s.attachAttention(ctx, final), nil
+			}
+			return s.attachAttention(ctx, paid), nil
 		}
 		return s.attachAttention(ctx, final), nil
 	}

@@ -153,16 +153,19 @@ func orDefault(s, d string) string {
 // fakeStripe — only what Service touches.
 // ---------------------------------------------------------------------------
 type fakeStripe struct {
-	setupCalls  int
-	detachCalls int
-	detachErr   error
+	setupCalls      int
+	detachCalls     int
+	detachErr       error
+	setDefaultCalls int
+	setDefaultErr   error
+	setDefaultPMID  string
 }
 
 func (f *fakeStripe) CreateSetupIntent(_ context.Context, _ string, _ map[string]string) (string, string, error) {
 	f.setupCalls++
 	return "seti_secret_fake", "seti_fake", nil
 }
-func (f *fakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _ string, _ map[string]string) (string, string, error) {
+func (f *fakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _, _ string, _ map[string]string) (string, string, error) {
 	return "https://checkout.stripe.com/fake", "cs_fake", nil
 }
 func (f *fakeStripe) EnsureStripeCustomer(_ context.Context, _, _ string) (string, error) {
@@ -172,8 +175,13 @@ func (f *fakeStripe) DetachPaymentMethod(_ context.Context, _ string) error {
 	f.detachCalls++
 	return f.detachErr
 }
-func (f *fakeStripe) FetchPaymentMethodCard(_ context.Context, _ string) (string, string, int, int, error) {
-	return "visa", "4242", 12, 2030, nil
+func (f *fakeStripe) FetchPaymentMethodCard(_ context.Context, _ string) (CardMetadata, error) {
+	return CardMetadata{Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030, Fingerprint: "fp_fake_4242"}, nil
+}
+func (f *fakeStripe) SetDefaultPaymentMethod(_ context.Context, _, _, stripePMID string) error {
+	f.setDefaultCalls++
+	f.setDefaultPMID = stripePMID
+	return f.setDefaultErr
 }
 
 // ---------------------------------------------------------------------------
@@ -197,17 +205,36 @@ func (f *fakeSummary) GetPaymentSetup(_ context.Context, _, _ string) (domain.Cu
 	return f.setup, nil
 }
 
+// fakeAudit — captures audit rows so tests can assert that
+// SetDefault records stripe_sync_error on Stripe-side failures.
+type fakeAudit struct {
+	logs []fakeAuditRow
+}
+
+type fakeAuditRow struct {
+	action       string
+	resourceType string
+	resourceID   string
+	label        string
+	meta         map[string]any
+}
+
+func (f *fakeAudit) Log(_ context.Context, _, action, resourceType, resourceID, label string, meta map[string]any) error {
+	f.logs = append(f.logs, fakeAuditRow{action: action, resourceType: resourceType, resourceID: resourceID, label: label, meta: meta})
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 // TestAttach_FirstBecomesDefault — the first PM attached to a customer
-// is auto-promoted to default, and the summary row reflects that.
+// is auto-promoted to default. Post-migration-0097 the summary table
+// is gone; canonical state lives on payment_methods rows.
 func TestAttach_FirstBecomesDefault(t *testing.T) {
 	store := newMemStore()
 	stripe := &fakeStripe{}
-	summary := &fakeSummary{}
-	svc := NewService(store, stripe, summary)
+	svc := NewService(store, stripe, &fakeSummary{})
 
 	pm, err := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_stripe_1")
 	if err != nil {
@@ -216,8 +243,8 @@ func TestAttach_FirstBecomesDefault(t *testing.T) {
 	if !pm.IsDefault {
 		t.Fatalf("first PM should be default")
 	}
-	if summary.setup.StripePaymentMethodID != "pm_stripe_1" || summary.setup.CardLast4 != "4242" {
-		t.Fatalf("summary not synced: %+v", summary.setup)
+	if pm.CardLast4 != "4242" {
+		t.Fatalf("card details not set: %+v", pm)
 	}
 }
 
@@ -238,12 +265,12 @@ func TestAttach_SecondDoesNotStealDefault(t *testing.T) {
 	}
 }
 
-// TestSetDefault_AtomicSwap — flipping default clears the old one and
-// the summary row points at the new PM.
+// TestSetDefault_AtomicSwap — flipping default clears the old one.
+// Canonical state lives entirely on payment_methods rows since
+// migration 0097 retired customer_payment_setups.
 func TestSetDefault_AtomicSwap(t *testing.T) {
 	store := newMemStore()
-	summary := &fakeSummary{}
-	svc := NewService(store, &fakeStripe{}, summary)
+	svc := NewService(store, &fakeStripe{}, &fakeSummary{})
 
 	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_1")
 	pm2, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_2")
@@ -267,17 +294,75 @@ func TestSetDefault_AtomicSwap(t *testing.T) {
 	if defaults != 1 {
 		t.Fatalf("expected exactly one default, got %d", defaults)
 	}
-	if summary.setup.StripePaymentMethodID != "pm_2" {
-		t.Fatalf("summary not updated on SetDefault: %+v", summary.setup)
+}
+
+// TestSetDefault_PushesToStripe — promoting a PM pushes the change to
+// Stripe's invoice_settings.default_payment_method so off-session
+// auto-charges use the operator's chosen card. Pre-2026-05-29 this
+// stayed local-only; Stripe quietly used whatever PM Stripe had as
+// default. Stripe sync failure is best-effort: SetDefault still
+// returns the promoted PM but the audit row records stripe_sync_error.
+func TestSetDefault_PushesToStripe(t *testing.T) {
+	store := newMemStore()
+	stripe := &fakeStripe{}
+	audit := &fakeAudit{}
+	svc := NewService(store, stripe, &fakeSummary{})
+	svc.SetAuditLogger(audit)
+
+	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_first")
+	pm2, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_second")
+
+	if _, err := svc.SetDefault(context.Background(), "tnt_x", "cus_y", pm2.ID); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+
+	if stripe.setDefaultCalls != 1 {
+		t.Fatalf("expected 1 Stripe SetDefaultPaymentMethod call, got %d", stripe.setDefaultCalls)
+	}
+	if stripe.setDefaultPMID != pm2.StripePaymentMethodID {
+		t.Fatalf("expected Stripe call with PM %q, got %q", pm2.StripePaymentMethodID, stripe.setDefaultPMID)
+	}
+	row := audit.logs[len(audit.logs)-1]
+	if row.meta["action"] != "default_changed" {
+		t.Fatalf("expected last audit row action=default_changed, got %v", row.meta["action"])
+	}
+	if _, ok := row.meta["stripe_sync_error"]; ok {
+		t.Fatalf("audit row must not carry stripe_sync_error on happy path")
+	}
+}
+
+// TestSetDefault_StripeFailureIsBestEffort — Stripe failure must NOT
+// fail the operator action; the local default change still wins.
+// Audit row carries stripe_sync_error so ops can reconcile.
+func TestSetDefault_StripeFailureIsBestEffort(t *testing.T) {
+	store := newMemStore()
+	stripe := &fakeStripe{setDefaultErr: errors.New("stripe 503")}
+	audit := &fakeAudit{}
+	svc := NewService(store, stripe, &fakeSummary{})
+	svc.SetAuditLogger(audit)
+
+	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_first")
+	pm2, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_second")
+
+	promoted, err := svc.SetDefault(context.Background(), "tnt_x", "cus_y", pm2.ID)
+	if err != nil {
+		t.Fatalf("SetDefault must not fail on Stripe error: %v", err)
+	}
+	if !promoted.IsDefault {
+		t.Fatalf("promoted PM must still be default locally")
+	}
+	row := audit.logs[len(audit.logs)-1]
+	got, _ := row.meta["stripe_sync_error"].(string)
+	if got != "stripe 503" {
+		t.Fatalf("audit row must carry stripe_sync_error=%q, got %q", "stripe 503", got)
 	}
 }
 
 // TestDetach_PromotesReplacement — detaching the default promotes the
-// next-most-recent PM and updates the summary accordingly.
+// next-most-recent PM. List filters out detached rows.
 func TestDetach_PromotesReplacement(t *testing.T) {
 	store := newMemStore()
-	summary := &fakeSummary{}
-	svc := NewService(store, &fakeStripe{}, summary)
+	svc := NewService(store, &fakeStripe{}, &fakeSummary{})
 
 	pm1, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_1")
 	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_2")
@@ -289,28 +374,23 @@ func TestDetach_PromotesReplacement(t *testing.T) {
 	if len(list) != 1 || !list[0].IsDefault {
 		t.Fatalf("expected 1 active PM flagged default, got %+v", list)
 	}
-	if summary.setup.StripePaymentMethodID != "pm_2" {
-		t.Fatalf("summary should point at pm_2 after promotion: %+v", summary.setup)
-	}
 }
 
-// TestDetach_LastPMClearsSummary — if the detached PM was the only one,
-// the summary row goes back to "missing" so billing won't try to charge
-// a ghost card.
-func TestDetach_LastPMClearsSummary(t *testing.T) {
+// TestDetach_LastPM — detaching the only PM leaves the customer with
+// zero active rows. billing.PaymentReadiness.ResolveForCharge will
+// return hasDefaultPM=false on the next read; no ghost-card auto-
+// charge is possible.
+func TestDetach_LastPM(t *testing.T) {
 	store := newMemStore()
-	summary := &fakeSummary{}
-	svc := NewService(store, &fakeStripe{}, summary)
+	svc := NewService(store, &fakeStripe{}, &fakeSummary{})
 
 	pm, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_1")
 	if _, err := svc.Detach(context.Background(), "tnt_x", "cus_y", pm.ID); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
-	if summary.setup.SetupStatus != domain.PaymentSetupMissing {
-		t.Fatalf("expected Missing status, got %q", summary.setup.SetupStatus)
-	}
-	if summary.setup.StripePaymentMethodID != "" {
-		t.Fatalf("expected cleared stripe_pm on last detach: %+v", summary.setup)
+	list, _ := svc.List(context.Background(), "tnt_x", "cus_y")
+	if len(list) != 0 {
+		t.Fatalf("expected zero active PMs, got %d", len(list))
 	}
 }
 

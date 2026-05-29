@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, Settings,
@@ -50,28 +51,36 @@ const NAV_ITEMS: NavItem[] = [
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate()
 
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [plans, setPlans] = useState<Plan[]>([])
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
-  const [fetched, setFetched] = useState(false)
-
-  // Fetch entity data when palette opens
-  useEffect(() => {
-    if (!open || fetched) return
-    Promise.allSettled([
-      api.listCustomers('limit=50'),
-      api.listInvoices('limit=50'),
-      api.listPlans(),
-      api.listSubscriptions('limit=50'),
-    ]).then(([cRes, iRes, pRes, sRes]) => {
-      if (cRes.status === 'fulfilled') setCustomers(cRes.value.data || [])
-      if (iRes.status === 'fulfilled') setInvoices(iRes.value.data || [])
-      if (pRes.status === 'fulfilled') setPlans(pRes.value.data || [])
-      if (sRes.status === 'fulfilled') setSubscriptions(sRes.value.data || [])
-      setFetched(true)
-    })
-  }, [open, fetched])
+  // Fetch entity data when palette opens. Four parallel queries
+  // gated on `enabled: open` so the lists are fetched lazily on first
+  // ⌘K open. RQ caches keyed `['command-palette', <kind>]` so each
+  // re-open is instant — and the lists are deduped if other pages
+  // already fetched the same data (Customers / Invoices pages use
+  // the same backend endpoints).
+  const customersQuery = useQuery({
+    queryKey: ['command-palette', 'customers'],
+    queryFn: () => api.listCustomers('limit=50'),
+    enabled: open,
+  })
+  const invoicesQuery = useQuery({
+    queryKey: ['command-palette', 'invoices'],
+    queryFn: () => api.listInvoices('limit=50'),
+    enabled: open,
+  })
+  const plansQuery = useQuery({
+    queryKey: ['command-palette', 'plans'],
+    queryFn: () => api.listPlans(),
+    enabled: open,
+  })
+  const subscriptionsQuery = useQuery({
+    queryKey: ['command-palette', 'subscriptions'],
+    queryFn: () => api.listSubscriptions('limit=50'),
+    enabled: open,
+  })
+  const customers: Customer[] = customersQuery.data?.data ?? []
+  const invoices: Invoice[] = invoicesQuery.data?.data ?? []
+  const plans: Plan[] = plansQuery.data?.data ?? []
+  const subscriptions: Subscription[] = subscriptionsQuery.data?.data ?? []
 
   const go = useCallback((href: string) => {
     navigate(href)

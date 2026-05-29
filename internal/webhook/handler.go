@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -15,12 +16,26 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// AuditWriter is the narrow audit surface webhook handler uses.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger AuditWriter
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetAuditLogger wires audit on webhook endpoint lifecycle + manual
+// event replays. Endpoint URL changes + secret rotations are
+// integration-security events; manual replays change downstream
+// state and need forensic trail.
+func (h *Handler) SetAuditLogger(a AuditWriter) {
+	h.auditLogger = a
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -98,6 +113,13 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "webhook_endpoint", result.Endpoint.ID, result.Endpoint.URL, map[string]any{
+			"url":    result.Endpoint.URL,
+			"events": result.Endpoint.Events,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusCreated, result)
 }
 
@@ -131,6 +153,10 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionDelete, "webhook_endpoint", id, "", nil)
+	}
+
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -147,6 +173,11 @@ func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "rotate webhook secret", "error", err)
 		return
+	}
+
+	// Record rotation without the secret value (security-critical).
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "webhook_endpoint", id, "", nil)
 	}
 
 	respond.JSON(w, r, http.StatusOK, result)
@@ -200,6 +231,13 @@ func (h *Handler) replayEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "webhook_event", res.EventID, "", map[string]any{
+			"action":    "replayed",
+			"replay_of": res.ReplayOf,
+		})
+	}
+
 	// Legacy path (under /v1/webhook-endpoints/events/{id}/replay): the
 	// existing dashboard expects a flat {status: "replayed"} envelope
 	// for backwards compatibility. The new Week 6 path returns the
@@ -228,6 +266,12 @@ func (h *Handler) replayEventV2(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "replay webhook event v2", "error", err)
 		return
+	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "webhook_event", res.EventID, "", map[string]any{
+			"action":    "replayed",
+			"replay_of": res.ReplayOf,
+		})
 	}
 	respond.JSON(w, r, http.StatusOK, res)
 }

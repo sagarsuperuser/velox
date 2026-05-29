@@ -48,9 +48,12 @@ function humanizeError(msg: string): string {
 // reach the same endpoints with a Bearer header instead, which the
 // server's MiddlewareOrAPIKey accepts as a fallback when the cookie is
 // missing.
-export async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function apiRequest<T>(method: string, path: string, body?: unknown, opts?: { idempotencyKey?: string }): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+  }
+  if (opts?.idempotencyKey) {
+    headers['Idempotency-Key'] = opts.idempotencyKey
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -209,21 +212,39 @@ export const api = {
   getSubscriptionTimeline: (subscriptionId: string) =>
     apiRequest<{ events: TimelineEvent[] }>('GET', `/subscriptions/${subscriptionId}/timeline`),
 
-  // Payment setup
-  setupPayment: (data: { customer_id: string; customer_name: string; email: string; address_line1?: string; address_city?: string; address_state?: string; address_postal_code?: string; address_country?: string; return_url?: string }) =>
-    apiRequest<{ session_id: string; url: string; stripe_customer_id: string }>('POST', '/checkout/setup', data),
-  getPaymentStatus: (customerId: string) =>
-    apiRequest<PaymentSetup>('GET', `/checkout/status/${customerId}`),
+  // Legacy `setupPayment` (/checkout/setup) and `getPaymentStatus`
+  // (/checkout/status) were removed in the unified-PM-paths cleanup.
+  // All "add a payment method" flows now go through
+  // `createCustomerSetupSession` / `sendCustomerSetupEmail` below.
+
+  // Operator-side payment-method management (PCI SAQ-A; card capture
+  // stays in Stripe-hosted iframe via setup-session, never on operator's
+  // dashboard). Industry parity: Chargebee, Lago, Orb.
+  listCustomerPaymentMethods: (customerId: string) =>
+    apiRequest<{ data: CustomerPaymentMethod[]; total: number }>('GET', `/customers/${customerId}/payment-methods`),
+  setDefaultCustomerPaymentMethod: (customerId: string, pmId: string) =>
+    apiRequest<CustomerPaymentMethod>('POST', `/customers/${customerId}/payment-methods/${pmId}/default`),
+  detachCustomerPaymentMethod: (customerId: string, pmId: string) =>
+    apiRequest<CustomerPaymentMethod>('DELETE', `/customers/${customerId}/payment-methods/${pmId}`),
+  createCustomerSetupSession: (customerId: string, returnUrl?: string) =>
+    apiRequest<{ url: string; session_id: string }>('POST', `/customers/${customerId}/payment-methods/setup-session`, returnUrl ? { return_url: returnUrl } : {}),
+  // Operator-initiated "send setup link via email" — primary path
+  // (matches Stripe Send Payment Method + Chargebee Request Payment
+  // Method). Mints the session and dispatches the email atomically;
+  // the dashboard never sees the URL. Optional `note` is a free-form
+  // operator message that prefaces the email body.
+  sendCustomerSetupEmail: (customerId: string, note?: string) =>
+    apiRequest<{ to: string; subject: string }>('POST', `/customers/${customerId}/payment-methods/send-setup-email`, note ? { note } : {}),
 
   // Credits
   listBalances: () =>
     apiRequest<{ data: CreditBalance[] }>('GET', '/credits/balances'),
   getBalance: (customerId: string) =>
     apiRequest<CreditBalance>('GET', `/credits/balance/${customerId}`),
-  grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string }) =>
-    apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data),
-  adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }) =>
-    apiRequest<CreditLedgerEntry>('POST', '/credits/adjust', data),
+  grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string }, idempotencyKey?: string) =>
+    apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data, { idempotencyKey }),
+  adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }, idempotencyKey?: string) =>
+    apiRequest<CreditLedgerEntry>('POST', '/credits/adjust', data, { idempotencyKey }),
   listLedger: (customerId: string, params?: { entry_type?: string; limit?: number; offset?: number; sort?: string; dir?: string }) => {
     const qs = new URLSearchParams()
     if (params?.entry_type) qs.set('entry_type', params.entry_type)
@@ -238,8 +259,6 @@ export const api = {
   // Customer portal
   customerOverview: (customerId: string) =>
     apiRequest<CustomerOverview>('GET', `/customer-portal/${customerId}/overview`),
-  updatePaymentMethod: (customerId: string, returnUrl?: string) =>
-    apiRequest<{ url: string }>('POST', `/payment-portal/${customerId}/update-payment-method`, returnUrl ? { return_url: returnUrl } : {}),
 
   // Usage
   usageSummary: (customerId: string, from?: string, to?: string) => {
@@ -356,9 +375,19 @@ export const api = {
 
   // Credit Notes
   listCreditNotes: (params?: string) => apiRequest<{ data: CreditNote[] }>('GET', `/credit-notes${params ? '?' + params : ''}`),
-  createCreditNote: (data: { invoice_id: string; reason: string; refund_type?: string; auto_issue?: boolean; lines: { description: string; quantity: number; unit_amount_cents: number }[] }) => apiRequest<CreditNote>('POST', '/credit-notes', data),
+  createCreditNote: (data: {
+    invoice_id: string
+    reason: string
+    refund_amount_cents?: number
+    credit_amount_cents?: number
+    out_of_band_amount_cents?: number
+    refund_type?: string
+    auto_issue?: boolean
+    lines: { description: string; quantity: number; unit_amount_cents: number }[]
+  }) => apiRequest<CreditNote>('POST', '/credit-notes', data),
   issueCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/issue`),
   voidCreditNote: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/void`),
+  retryCreditNoteRefund: (id: string) => apiRequest<CreditNote>('POST', `/credit-notes/${id}/retry-refund`),
 
   // Coupons
   listCoupons: (includeArchived?: boolean) =>
@@ -805,18 +834,6 @@ export function pollIntervalForInvoice(invoice?: Invoice): number | false {
   return false
 }
 
-// pollIntervalForPaymentSetup picks a refetch cadence for the customer's
-// payment-setup row. Only polls during an active update flow — when the
-// operator opens Stripe Checkout in a new tab, they return to the
-// customer page expecting to see the new card swap in once the webhook
-// lands. setup_status='pending' is the only state where that's
-// imminent; ready/missing are terminal until the next operator action.
-export function pollIntervalForPaymentSetup(setup?: PaymentSetup): number | false {
-  if (!setup) return false
-  if (setup.setup_status === 'pending') return 2000
-  return false
-}
-
 export interface LineItem {
   id: string
   line_type: string
@@ -877,12 +894,23 @@ export interface TimelineEvent {
   actor_type?: string
   actor_name?: string
   actor_id?: string
-  // Backend-set authoritative flag: true when this event's timestamp
-  // is in simulated time (engine-driven on a clock-pinned sub).
-  // Wall-clock-sourced events (stripe webhooks, email dispatcher,
-  // operator audit actions) ship false. SPA renders the "simulated"
-  // chip purely off this flag — no client-side timestamp heuristic.
+  // Backend-set authoritative flag. Semantics differ slightly by
+  // surface, but always per-row (no client-side heuristic):
+  // - Subscription activity timeline: true when the event's effect
+  //   landed on a clock-pinned timeline. The row's `timestamp` is
+  //   wall-clock (audit_log.created_at, per ADR-030 2026-05-28
+  //   amendment); when this flag is true the simulated effect time
+  //   is in sim_effective_at + test_clock_id below.
+  // - Invoice payment timeline: true when the event's timestamp
+  //   IS in simulated time (engine-driven on a clock-pinned sub).
   is_simulated?: boolean
+  // RFC3339 simulated effect time. Populated alongside is_simulated
+  // on operator-action audit rows for clock-pinned entities. Used
+  // by the subscription activity timeline to render a subline
+  // "Effect on test clock <id> at <sim time>" under the wall-clock
+  // primary timestamp — mirrors the AuditLog page chip pattern.
+  sim_effective_at?: string
+  test_clock_id?: string
 }
 
 export interface CreditBalance {
@@ -893,15 +921,18 @@ export interface CreditBalance {
   total_expired: number
 }
 
-export interface PaymentSetup {
-  customer_id: string
-  setup_status: string
-  stripe_customer_id?: string
-  payment_method_type?: string
+// CustomerPaymentMethod mirrors the operator-facing JSON shape from
+// GET /v1/customers/{id}/payment-methods. Card metadata is the
+// PCI-safe subset (brand + last4 + exp); we never receive raw PAN.
+export interface CustomerPaymentMethod {
+  id: string
+  type: string
   card_brand?: string
   card_last4?: string
   card_exp_month?: number
   card_exp_year?: number
+  is_default: boolean
+  created_at: string
 }
 
 export interface CreditLedgerEntry {
@@ -1159,7 +1190,8 @@ export type CustomerTaxStatus = 'standard' | 'exempt' | 'reverse_charge'
 export interface BillingProfile {
   customer_id: string
   legal_name: string
-  email: string
+  // email removed in migration 0100 — customers.email is the single
+  // canonical recipient. Dual-email override caused bounce-key skew.
   phone: string
   address_line1: string
   address_line2: string
@@ -1345,6 +1377,9 @@ export interface CreditNote {
   total_cents: number
   refund_amount_cents: number
   credit_amount_cents: number
+  out_of_band_amount_cents: number
+  tax_amount_cents?: number
+  tax_transaction_id?: string
   refund_status: string
   currency: string
   issued_at?: string

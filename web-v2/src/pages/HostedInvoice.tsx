@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { formatCents, formatDate } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -95,38 +96,34 @@ export default function HostedInvoicePage() {
   const [searchParams] = useSearchParams()
   const paidSignal = searchParams.get('paid') === '1'
 
-  const [data, setData] = useState<HostedInvoicePayload | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [payingStatus, setPayingStatus] = useState<'idle' | 'creating' | 'redirecting'>('idle')
 
-  // Fetch the invoice. Re-runs when paidSignal flips — that happens when
-  // the Stripe Checkout success URL redirects back here with ?paid=1, and
-  // the refetch surfaces the status update from the webhook.
-  useEffect(() => {
-    if (!token) {
-      setError('Invoice link is missing.')
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    fetch(`${apiBase}/v1/public/invoices/${encodeURIComponent(token)}`)
-      .then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          throw new Error(body?.error?.message || 'This invoice link has expired or is invalid.')
-        }
-        return (await res.json()) as HostedInvoicePayload
-      })
-      .then(payload => {
-        setData(payload)
-        setLoading(false)
-      })
-      .catch(err => {
-        setError(err.message || 'This invoice link has expired or is invalid.')
-        setLoading(false)
-      })
-  }, [token, paidSignal])
+  // Invoice fetch keyed by (token, paidSignal). When Stripe Checkout
+  // redirects back with ?paid=1, the new key forces a refetch so the
+  // status flip from the webhook becomes visible. retry=false so a
+  // genuinely invalid token doesn't pound the public endpoint.
+  const invoiceQuery = useQuery({
+    queryKey: ['public-invoice', token, paidSignal],
+    queryFn: async (): Promise<HostedInvoicePayload> => {
+      const res = await fetch(`${apiBase}/v1/public/invoices/${encodeURIComponent(token)}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error?.message || 'This invoice link has expired or is invalid.')
+      }
+      return (await res.json()) as HostedInvoicePayload
+    },
+    enabled: !!token,
+    retry: false,
+  })
+  const data = invoiceQuery.data ?? null
+  const loading = !!token && invoiceQuery.isLoading
+  const error = !token
+    ? 'Invoice link is missing.'
+    : invoiceQuery.error instanceof Error
+      ? invoiceQuery.error.message
+      : invoiceQuery.error
+        ? 'This invoice link has expired or is invalid.'
+        : ''
 
   const brandColor = useMemo(() => {
     const c = data?.branding.brand_color

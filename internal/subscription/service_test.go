@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"testing"
@@ -426,6 +427,12 @@ func (m *memStore) AddItem(ctx context.Context, tenantID string, item domain.Sub
 	return item, nil
 }
 
+// AddItemTx mirrors AddItem for tx-aware callers. Fake ignores the tx
+// since it's in-memory.
+func (m *memStore) AddItemTx(ctx context.Context, _ *sql.Tx, tenantID string, item domain.SubscriptionItem) (domain.SubscriptionItem, error) {
+	return m.AddItem(ctx, tenantID, item)
+}
+
 func (m *memStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID string, quantity int64) (domain.SubscriptionItem, error) {
 	it, ok := m.items[itemID]
 	if !ok || it.TenantID != tenantID {
@@ -437,6 +444,21 @@ func (m *memStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID stri
 	m.items[itemID] = it
 	m.recordChange(it, "quantity", it.PlanID, it.PlanID, prevQty, quantity, it.UpdatedAt)
 	return it, nil
+}
+
+// Tx-variant stubs — forward to the non-Tx implementations. The fake
+// is in-memory; tx parameter is ignored. Atomic behavior is tested via
+// integration tests against a real DB.
+func (m *memStore) UpdateItemQuantityTx(ctx context.Context, _ *sql.Tx, tenantID, itemID string, quantity int64) (domain.SubscriptionItem, error) {
+	return m.UpdateItemQuantity(ctx, tenantID, itemID, quantity)
+}
+
+func (m *memStore) ApplyItemPlanImmediatelyTx(ctx context.Context, _ *sql.Tx, tenantID, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error) {
+	return m.ApplyItemPlanImmediately(ctx, tenantID, itemID, newPlanID, changedAt)
+}
+
+func (m *memStore) RemoveItemTx(ctx context.Context, _ *sql.Tx, tenantID, itemID string) error {
+	return m.RemoveItem(ctx, tenantID, itemID)
 }
 
 func (m *memStore) ApplyItemPlanImmediately(ctx context.Context, tenantID, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error) {
@@ -919,13 +941,17 @@ func TestCreate(t *testing.T) {
 // fakeBiller captures BillOnCreate / BillOnCancel invocations for
 // ADR-031 tests.
 type fakeBiller struct {
-	calls             int
-	finalCalls        int
-	cancelCalls       int
-	err               error
-	finalCancelErr    error
-	cancelErr         error
-	cancelCreditCents int64
+	calls               int
+	finalCalls          int
+	cancelCalls         int
+	planSwapCalls       int
+	planSwapAt          time.Time
+	err                 error
+	finalCancelErr      error
+	cancelErr           error
+	planSwapErr         error
+	cancelCreditCents   int64
+	planSwapCreditCents int64
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -941,6 +967,12 @@ func (f *fakeBiller) BillFinalOnImmediateCancel(_ context.Context, _ domain.Subs
 func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) (int64, error) {
 	f.cancelCalls++
 	return f.cancelCreditCents, f.cancelErr
+}
+
+func (f *fakeBiller) BillOnPlanSwapImmediate(_ context.Context, _ domain.Subscription, at time.Time) (int64, error) {
+	f.planSwapCalls++
+	f.planSwapAt = at
+	return f.planSwapCreditCents, f.planSwapErr
 }
 
 // fakeDispatcher captures outbound-webhook Dispatch calls so tests
@@ -2422,8 +2454,13 @@ func TestPeriodAnchoring(t *testing.T) {
 	})
 
 	t.Run("UpdateItem rejects plan-swap that changes bill_timing on single-item sub (immediate=true)", func(t *testing.T) {
-		// Immediate swaps additionally require cross-bill-timing
-		// proration math that isn't exercised — same reject stance.
+		// Cross-cadence (in_advance ↔ in_arrears) plan-swaps are
+		// rejected — 2026-05-21 industry verification across Stripe /
+		// Lago / Orb / Chargebee / Recurly / Metronome found no
+		// documented support for swapping a customer between a prepaid
+		// plan and a postpaid plan as an in-place operation. Lago — the
+		// closest model to Velox — documents same-cadence transitions
+		// only. Operator path: cancel + recreate.
 		svc := NewService(newMemStore(), clock.NewFake(now))
 		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
 			"p_arrears": {ID: "p_arrears", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
@@ -2446,42 +2483,122 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 	})
 
-	t.Run("UpdateItem rejects immediate cross-interval plan-swap", func(t *testing.T) {
-		// `(newAmount-oldAmount) * factor` proration math only works
-		// within an interval — comparing a monthly $29 to a yearly
-		// $588 inside "remaining-month proportion" charges the
-		// customer 2/3 of the YEARLY delta for the rest of a month.
-		// Stripe / Lago / Orb don't allow immediate cross-interval.
-		// Scheduled is fine (closing invoice bills outgoing plan;
-		// new interval cycle starts clean at the boundary).
+	t.Run("UpdateItem immediate cross-interval in_arrears truncates period to now", func(t *testing.T) {
+		// Same-cadence cross-interval (monthly→yearly, both in_arrears)
+		// truncates the current period to `now`. Scheduler picks up
+		// next_billing_at=now, closes (oldPS, now) under OLD plan via
+		// segment-aware billing, then opens a new period under NEW
+		// plan's yearly interval. No synchronous bill.
 		svc := NewService(newMemStore(), clock.NewFake(now))
 		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
-			"p_monthly": {ID: "p_monthly", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears},
-			"p_yearly":  {ID: "p_yearly", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInArrears},
+			"p_monthly": {ID: "p_monthly", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears, BaseAmountCents: 2900},
+			"p_yearly":  {ID: "p_yearly", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInArrears, BaseAmountCents: 28800},
 		}})
+		fb := &fakeBiller{}
+		svc.SetBiller(fb)
 		sub, err := svc.Create(ctx, "t1", CreateInput{
 			Code: "s", DisplayName: "n", CustomerID: "c",
-			Items:    []CreateItemInput{{PlanID: "p_monthly"}},
-			StartNow: true,
+			Items:       []CreateItemInput{{PlanID: "p_monthly"}},
+			BillingTime: domain.BillingTimeAnniversary,
+			StartNow:    true,
 		})
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+		// Reset the BillOnCreate counter — Create unconditionally calls
+		// the biller even for in_arrears (the engine no-ops internally),
+		// so fb.calls increments here. The assertion below is about the
+		// swap path, not Create's call.
+		fb.calls = 0
+		oldPS := *sub.CurrentBillingPeriodStart
+		res, err := svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
 			NewPlanID: "p_yearly",
 			Immediate: true,
 		})
-		if err == nil {
-			t.Error("expected error on immediate cross-interval plan-swap")
+		if err != nil {
+			t.Fatalf("immediate cross-interval in_arrears swap: %v", err)
 		}
-		// Scheduled is still allowed — engine handles outgoing-plan billing
-		// at the boundary.
-		_, err = svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
-			NewPlanID: "p_yearly",
-			Immediate: false,
+		if res.Item.PlanID != "p_yearly" {
+			t.Errorf("item plan after swap: got %q want p_yearly", res.Item.PlanID)
+		}
+		// in_arrears path: refund orchestrator is called but is a no-op.
+		// For in_arrears subs nothing was prebilled, so the engine
+		// returns 0/nil. Service still invokes it (uniform shape).
+		if fb.planSwapCalls != 1 {
+			t.Errorf("expected 1 BillOnPlanSwapImmediate call, got %d", fb.planSwapCalls)
+		}
+		// in_arrears NEW plan: no synchronous BillOnCreate.
+		if fb.calls != 0 {
+			t.Errorf("expected 0 BillOnCreate calls (in_arrears NEW), got %d", fb.calls)
+		}
+		updated, err := svc.store.Get(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("get updated sub: %v", err)
+		}
+		if updated.CurrentBillingPeriodStart == nil || !updated.CurrentBillingPeriodStart.Equal(oldPS) {
+			t.Errorf("period_start should be preserved: got %v want %v", updated.CurrentBillingPeriodStart, oldPS)
+		}
+		if updated.CurrentBillingPeriodEnd == nil || !updated.CurrentBillingPeriodEnd.Equal(now) {
+			t.Errorf("period_end should be truncated to now: got %v want %v", updated.CurrentBillingPeriodEnd, now)
+		}
+		if updated.NextBillingAt == nil || !updated.NextBillingAt.Equal(now) {
+			t.Errorf("next_billing_at should be now: got %v want %v", updated.NextBillingAt, now)
+		}
+	})
+
+	t.Run("UpdateItem immediate cross-interval in_advance jumps period and bills synchronously", func(t *testing.T) {
+		// Same-cadence cross-interval (yearly→monthly, both in_advance):
+		// orchestrator refunds OLD unused, plan swaps, period jumps to
+		// (now, NextBillingPeriodEnd for NEW monthly interval), and
+		// BillOnCreate fires synchronously for the new in_advance bill.
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_yearly_adv":  {ID: "p_yearly_adv", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 120000},
+			"p_monthly_adv": {ID: "p_monthly_adv", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 12000},
+		}})
+		fb := &fakeBiller{}
+		svc.SetBiller(fb)
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:       []CreateItemInput{{PlanID: "p_yearly_adv"}},
+			BillingTime: domain.BillingTimeAnniversary,
+			StartNow:    true,
 		})
 		if err != nil {
-			t.Errorf("scheduled cross-interval should be allowed, got: %v", err)
+			t.Fatalf("Create: %v", err)
+		}
+		// Reset BillOnCreate counter — Create's day-1 invoice fires it once.
+		fb.calls = 0
+		res, err := svc.UpdateItem(ctx, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_monthly_adv",
+			Immediate: true,
+		})
+		if err != nil {
+			t.Fatalf("immediate cross-interval in_advance swap: %v", err)
+		}
+		if res.Item.PlanID != "p_monthly_adv" {
+			t.Errorf("item plan after swap: got %q want p_monthly_adv", res.Item.PlanID)
+		}
+		if fb.planSwapCalls != 1 {
+			t.Errorf("expected 1 BillOnPlanSwapImmediate call, got %d", fb.planSwapCalls)
+		}
+		if !fb.planSwapAt.Equal(now) {
+			t.Errorf("BillOnPlanSwapImmediate at: got %v want %v", fb.planSwapAt, now)
+		}
+		if fb.calls != 1 {
+			t.Errorf("expected 1 synchronous BillOnCreate call for new in_advance period, got %d", fb.calls)
+		}
+		updated, err := svc.store.Get(ctx, "t1", sub.ID)
+		if err != nil {
+			t.Fatalf("get updated sub: %v", err)
+		}
+		if updated.CurrentBillingPeriodStart == nil || !updated.CurrentBillingPeriodStart.Equal(now) {
+			t.Errorf("period_start should jump to now: got %v want %v", updated.CurrentBillingPeriodStart, now)
+		}
+		// NextBillingPeriodEnd for monthly anniversary is now+1 month.
+		expectedEnd := now.AddDate(0, 1, 0)
+		if updated.CurrentBillingPeriodEnd == nil || !updated.CurrentBillingPeriodEnd.Equal(expectedEnd) {
+			t.Errorf("period_end should be 1 month from now: got %v want %v", updated.CurrentBillingPeriodEnd, expectedEnd)
 		}
 	})
 

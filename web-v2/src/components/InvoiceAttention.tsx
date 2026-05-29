@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { AlertTriangle, AlertCircle, Info, ExternalLink, Calendar } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, formatCents, getCurrencySymbol, type Invoice } from '@/lib/api'
+import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import type {
-  Invoice,
   InvoiceAttention as Attention,
   AttentionAction,
   AttentionSeverity,
@@ -299,7 +300,13 @@ function ActionButton({
         </Button>
       )
     case 'update_payment_method':
-      return <UpdatePaymentMethodButton variant={variant} display={display} customerId={invoice.customer_id} />
+      return (
+        <UpdatePaymentMethodButton
+          variant={variant}
+          display={display}
+          invoice={invoice}
+        />
+      )
     case 'reconcile_payment':
     default:
       return (
@@ -310,34 +317,37 @@ function ActionButton({
   }
 }
 
-// UpdatePaymentMethodButton calls the customer-portal update endpoint
-// to mint a Stripe Checkout (setup mode) URL, then opens it in a new
-// tab. Same flow the customer-facing email link uses; here the
-// operator can drive it (e.g., during a support call). Local loading
-// state because no parent prop owns this — encapsulated since the
-// action only needs `customer_id` from the invoice.
-function UpdatePaymentMethodButton({ variant, display, customerId }: { variant: 'default' | 'outline'; display: string; customerId: string }) {
-  const [loading, setLoading] = useState(false)
-  const onClick = async () => {
-    setLoading(true)
-    try {
-      // Pass the operator's current page so cancel/success returns
-      // here (ADR-022). Strip any query string so we don't stack
-      // `?payment=` repeatedly.
-      const returnURL = window.location.origin + window.location.pathname
-      const res = await api.updatePaymentMethod(customerId, returnURL)
-      window.open(res.url, '_blank')
-      toast.success('Stripe payment update page opened in new tab')
-    } catch (err) {
-      showApiError(err, 'Failed to open payment update page')
-    } finally {
-      setLoading(false)
-    }
-  }
+// UpdatePaymentMethodButton opens the shared SendSetupLinkDialog
+// pre-loaded with invoice context — the customer hits an invoice
+// they couldn't pay, operator nudges them with an email that
+// references the specific invoice + amount due. Migrated from the
+// legacy "open Stripe URL in operator's tab" flow (Path B in the
+// old triple-flow audit) to the unified Path A backend so all PM
+// link sends go through one service + one template + one audit row
+// shape.
+function UpdatePaymentMethodButton({ variant, display, invoice }: { variant: 'default' | 'outline'; display: string; invoice: Invoice }) {
+  const [open, setOpen] = useState(false)
+  // Lazy customer fetch: only triggers when the dialog opens, so we
+  // don't pay the round-trip for every InvoiceAttention render.
+  const { data: customer } = useQuery({
+    queryKey: ['customer-for-setup-link', invoice.customer_id],
+    queryFn: () => api.getCustomer(invoice.customer_id),
+    enabled: open,
+  })
+  const amountDueLabel = `${getCurrencySymbol(invoice.currency)}${formatCents(invoice.amount_due_cents, false)}`
   return (
-    <Button variant={variant} size="sm" onClick={onClick} disabled={loading}>
-      {loading ? 'Opening…' : display}
-    </Button>
+    <>
+      <Button variant={variant} size="sm" onClick={() => setOpen(true)}>
+        {display}
+      </Button>
+      <SendSetupLinkDialog
+        open={open}
+        onOpenChange={setOpen}
+        customerId={invoice.customer_id}
+        customerEmail={customer?.email}
+        invoiceContext={{ invoiceNumber: invoice.invoice_number, amountDueLabel }}
+      />
+    </>
   )
 }
 

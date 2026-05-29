@@ -13,16 +13,32 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
+// CustomerStripeLink is the narrow surface the adapter uses to
+// read/write the Stripe Customer ID mapping. customers.stripe_customer_id
+// has been the canonical home since migration 0096; this interface
+// abstracts the customer store so the adapter doesn't gain a hard
+// dependency on internal/customer (which would create a cycle).
+type CustomerStripeLink interface {
+	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
+	SetStripeCustomerID(ctx context.Context, tenantID, customerID, stripeCustomerID string) error
+	// GetBillingProfile returns the billing profile (legal_name, phone,
+	// address, tax_status) so EnsureStripeCustomer can pre-populate
+	// the Stripe Customer object at create time instead of leaving
+	// email/name/address null. ErrNotFound = customer doesn't have a
+	// profile yet — adapter passes only the Customer-level fields.
+	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
+}
+
 // StripeAdapter wires the payment-methods Service to the existing
 // payment.StripeClients pool. Mode-aware — ForCtx(ctx) returns the right
 // client for the caller's livemode, set by customerportal.Middleware.
 type StripeAdapter struct {
-	clients *payment.StripeClients
-	summary PaymentSetupSummaryWriter
+	clients      *payment.StripeClients
+	customerLink CustomerStripeLink
 }
 
-func NewStripeAdapter(clients *payment.StripeClients, summary PaymentSetupSummaryWriter) *StripeAdapter {
-	return &StripeAdapter{clients: clients, summary: summary}
+func NewStripeAdapter(clients *payment.StripeClients, customerLink CustomerStripeLink) *StripeAdapter {
+	return &StripeAdapter{clients: clients, customerLink: customerLink}
 }
 
 var _ StripeAPI = (*StripeAdapter)(nil)
@@ -36,10 +52,10 @@ func (a *StripeAdapter) client(ctx context.Context) (*stripe.Client, error) {
 }
 
 // EnsureStripeCustomer resolves (or lazily creates) the Stripe customer
-// for this Velox customer. We store the Stripe customer ID on the 1:1
-// customer_payment_setups summary — which we already use for checkout —
-// so a portal-created customer and a checkout-created customer share
-// the same upstream record.
+// for this Velox customer. Single source of truth: customers.stripe_customer_id
+// (migration 0096). A Velox customer without a Stripe Customer record
+// gets one created here on first PM action; subsequent calls
+// short-circuit on the persisted ID.
 //
 // Stripe client lookup uses explicit (tenantID, livemode) rather than
 // `ForCtx` so this method works on BOTH authenticated portal requests
@@ -47,9 +63,9 @@ func (a *StripeAdapter) client(ctx context.Context) (*stripe.Client, error) {
 // (hosted-invoice Pay flow — no auth ctx, tenantID comes from the
 // public_token row, livemode pinned by hostedinvoice.resolveInvoice).
 func (a *StripeAdapter) EnsureStripeCustomer(ctx context.Context, tenantID, customerID string) (string, error) {
-	ps, err := a.summary.GetPaymentSetup(ctx, tenantID, customerID)
-	if err == nil && ps.StripeCustomerID != "" {
-		return ps.StripeCustomerID, nil
+	cust, err := a.customerLink.Get(ctx, tenantID, customerID)
+	if err == nil && cust.StripeCustomerID != "" {
+		return cust.StripeCustomerID, nil
 	}
 
 	livemode := postgres.Livemode(ctx)
@@ -58,26 +74,87 @@ func (a *StripeAdapter) EnsureStripeCustomer(ctx context.Context, tenantID, cust
 		return "", fmt.Errorf("stripe not configured for tenant=%s livemode=%v", tenantID, livemode)
 	}
 
-	cust, err := sc.V1Customers.Create(ctx, &stripe.CustomerCreateParams{
+	// Pre-populate the Stripe Customer with the Velox-side fields
+	// (email + display name + billing profile if present) at create
+	// time. Pre-2026-05-29 this created the row with metadata only,
+	// leaving email/name/address null on Stripe — Checkout couldn't
+	// pre-fill the email field, Stripe Dashboard showed a blank
+	// customer row for support, and downstream UpsertBillingProfile
+	// was the only path that ever populated those fields. Reading
+	// + pushing here matches Lago / Recurly / Chargebee: every
+	// platform's create-customer-on-Stripe call carries the
+	// upstream's known fields, not just an ID.
+	params := &stripe.CustomerCreateParams{
 		Params: stripe.Params{
 			Metadata: map[string]string{
 				"velox_tenant_id":   tenantID,
 				"velox_customer_id": customerID,
 			},
 		},
-	})
+	}
+	if cust.Email != "" {
+		params.Email = stripe.String(cust.Email)
+	}
+	if cust.DisplayName != "" {
+		params.Name = stripe.String(cust.DisplayName)
+	}
+	// Billing profile is best-effort: a customer can be created via
+	// API without a profile (set up later via UpsertBillingProfile).
+	// ErrNotFound is the normal case for brand-new customers.
+	bp, bpErr := a.customerLink.GetBillingProfile(ctx, tenantID, customerID)
+	if bpErr == nil {
+		if bp.LegalName != "" {
+			// Legal name on the billing profile overrides display
+			// name on Stripe — matches SyncBillingProfile's choice.
+			params.Name = stripe.String(bp.LegalName)
+		}
+		if bp.Phone != "" {
+			params.Phone = stripe.String(bp.Phone)
+		}
+		if bp.AddressLine1 != "" || bp.Country != "" {
+			params.Address = &stripe.AddressParams{
+				Line1:      stripe.String(bp.AddressLine1),
+				Line2:      stripe.String(bp.AddressLine2),
+				City:       stripe.String(bp.City),
+				State:      stripe.String(bp.State),
+				PostalCode: stripe.String(bp.PostalCode),
+				Country:    stripe.String(bp.Country),
+			}
+		}
+		switch bp.TaxStatus {
+		case domain.TaxStatusExempt:
+			params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptExempt))
+		case domain.TaxStatusReverseCharge:
+			params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptReverse))
+		case domain.TaxStatusStandard, "":
+			params.TaxExempt = stripe.String(string(stripe.CustomerTaxExemptNone))
+		}
+		// Pre-populate tax_ids[] on the new Stripe Customer when the
+		// billing profile has one. Stripe accepts tax_id_data on
+		// create; later updates flow through the dedicated tax_ids
+		// reconcile in payment.StripeBillingSync. Without this, a
+		// new Stripe Customer would briefly show an empty Tax IDs
+		// tab even though the operator already filled in VAT/GST.
+		if bp.TaxID != "" && bp.TaxIDType != "" {
+			params.TaxIDData = []*stripe.CustomerCreateTaxIDDataParams{{
+				Type:  stripe.String(bp.TaxIDType),
+				Value: stripe.String(bp.TaxID),
+			}}
+		}
+	}
+
+	stripeCust, err := sc.V1Customers.Create(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("stripe create customer: %w", err)
 	}
 
-	// Persist back to the summary so future calls short-circuit.
-	_, _ = a.summary.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
-		CustomerID:       customerID,
-		TenantID:         tenantID,
-		SetupStatus:      domain.PaymentSetupPending,
-		StripeCustomerID: cust.ID,
-	})
-	return cust.ID, nil
+	// Persist on the customer row so future calls short-circuit.
+	// Best-effort — if the write races (concurrent first-PM action),
+	// the partial unique index on (tenant_id, livemode, stripe_customer_id)
+	// rejects the duplicate write and the caller re-reads the winning
+	// value on next call.
+	_ = a.customerLink.SetStripeCustomerID(ctx, tenantID, customerID, stripeCust.ID)
+	return stripeCust.ID, nil
 }
 
 func (a *StripeAdapter) CreateSetupIntent(ctx context.Context, stripeCustomerID string, metadata map[string]string) (string, string, error) {
@@ -102,7 +179,7 @@ func (a *StripeAdapter) CreateSetupIntent(ctx context.Context, stripeCustomerID 
 // details without being charged. Mirrors payment.PortalHandler but for
 // the self-serve /me path — the metadata we attach here is what the
 // setup_intent.succeeded webhook routes back to the right customer.
-func (a *StripeAdapter) CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, returnURL string, metadata map[string]string) (string, string, error) {
+func (a *StripeAdapter) CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, successURL, cancelURL string, metadata map[string]string) (string, string, error) {
 	sc, err := a.client(ctx)
 	if err != nil {
 		return "", "", err
@@ -111,9 +188,19 @@ func (a *StripeAdapter) CreateSetupCheckoutSession(ctx context.Context, stripeCu
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		SuccessURL:         stripe.String(returnURL),
-		CancelURL:          stripe.String(returnURL),
-		Params:             stripe.Params{Metadata: metadata},
+		SuccessURL:         stripe.String(successURL),
+		CancelURL:          stripe.String(cancelURL),
+		// Propagate metadata to BOTH the Checkout Session AND the
+		// underlying SetupIntent. The setup_intent.succeeded webhook
+		// reads velox_customer_id off the SetupIntent's metadata —
+		// without SetupIntentData here, that field is empty and the
+		// PM attach silently skips (handler logs "missing
+		// velox_customer_id" and returns nil, leaving the customer
+		// with a card on Stripe's side but no payment_methods row
+		// locally — the exact symptom that surfaced 2026-05-26).
+		// Stripe does not auto-copy Session metadata to SetupIntent.
+		SetupIntentData: &stripe.CheckoutSessionCreateSetupIntentDataParams{Metadata: metadata},
+		Params:          stripe.Params{Metadata: metadata},
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("stripe create setup checkout session: %w", err)
@@ -139,17 +226,54 @@ func (a *StripeAdapter) DetachPaymentMethod(ctx context.Context, stripePaymentMe
 	return nil
 }
 
-func (a *StripeAdapter) FetchPaymentMethodCard(ctx context.Context, stripePaymentMethodID string) (string, string, int, int, error) {
+// SetDefaultPaymentMethod points the Stripe Customer's
+// `invoice_settings.default_payment_method` at the given PM. Resolves
+// the Stripe Customer ID via the customerLink — the local PM row was
+// already updated, the Stripe Customer must already exist (the PM
+// couldn't have been attached otherwise). Returns errs.ErrNotFound if
+// the Velox customer has no linked Stripe customer (out-of-band data
+// drift); the Service treats that as a soft skip + audit row entry,
+// not a fail, because the local default is still authoritative.
+func (a *StripeAdapter) SetDefaultPaymentMethod(ctx context.Context, tenantID, customerID, stripePaymentMethodID string) error {
+	cust, err := a.customerLink.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return fmt.Errorf("lookup velox customer: %w", err)
+	}
+	if cust.StripeCustomerID == "" {
+		return errs.ErrNotFound
+	}
 	sc, err := a.client(ctx)
 	if err != nil {
-		return "", "", 0, 0, err
+		return err
+	}
+	_, err = sc.V1Customers.Update(ctx, cust.StripeCustomerID, &stripe.CustomerUpdateParams{
+		InvoiceSettings: &stripe.CustomerUpdateInvoiceSettingsParams{
+			DefaultPaymentMethod: stripe.String(stripePaymentMethodID),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("stripe set default pm: %w", err)
+	}
+	return nil
+}
+
+func (a *StripeAdapter) FetchPaymentMethodCard(ctx context.Context, stripePaymentMethodID string) (CardMetadata, error) {
+	sc, err := a.client(ctx)
+	if err != nil {
+		return CardMetadata{}, err
 	}
 	pm, err := sc.V1PaymentMethods.Retrieve(ctx, stripePaymentMethodID, nil)
 	if err != nil {
-		return "", "", 0, 0, fmt.Errorf("stripe retrieve pm: %w", err)
+		return CardMetadata{}, fmt.Errorf("stripe retrieve pm: %w", err)
 	}
 	if pm.Card == nil {
-		return "", "", 0, 0, nil
+		return CardMetadata{}, nil
 	}
-	return string(pm.Card.Brand), pm.Card.Last4, int(pm.Card.ExpMonth), int(pm.Card.ExpYear), nil
+	return CardMetadata{
+		Brand:       string(pm.Card.Brand),
+		Last4:       pm.Card.Last4,
+		ExpMonth:    int(pm.Card.ExpMonth),
+		ExpYear:     int(pm.Card.ExpYear),
+		Fingerprint: pm.Card.Fingerprint,
+	}, nil
 }

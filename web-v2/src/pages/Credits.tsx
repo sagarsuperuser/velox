@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -112,14 +113,7 @@ function entryTypeVariant(type: string): 'default' | 'secondary' | 'destructive'
 }
 
 export default function CreditsPage() {
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [balances, setBalances] = useState<CreditBalance[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  // Detail view state
-  const [ledger, setLedger] = useState<CreditLedgerEntry[]>([])
-  const [ledgerLoading, setLedgerLoading] = useState(false)
+  const queryClient = useQueryClient()
   const ledgerPageSize = 25
 
   // Modals
@@ -138,63 +132,53 @@ export default function CreditsPage() {
   const entryTypeFilter = urlState.entryType
   const ledgerPage = Math.max(1, parseInt(urlState.page) || 1)
 
+  // Page-level data: balances + customers. Two parallel queries
+  // instead of one Promise.all so each section paints independently
+  // when ready. RQ dedupes + caches across remounts and provides the
+  // loading/error states the JSX consumes below.
+  const balancesQuery = useQuery({
+    queryKey: ['credits', 'balances'],
+    queryFn: () => api.listBalances(),
+  })
+  const customersQuery = useQuery({
+    queryKey: ['credits', 'customers'],
+    queryFn: () => api.listCustomers(),
+  })
+  const balances = balancesQuery.data?.data ?? []
+  const customers = customersQuery.data?.data ?? []
+  const loading = balancesQuery.isLoading || customersQuery.isLoading
+  const firstErr = balancesQuery.error ?? customersQuery.error
+  const error = firstErr instanceof Error ? firstErr.message : (firstErr ? 'Failed to load credits' : null)
+  const loadData = () => {
+    void queryClient.invalidateQueries({ queryKey: ['credits'] })
+  }
+
+  // Per-customer ledger query — keyed by (customer, sort, dir) so
+  // changing the sort triggers a refetch and the URL state survives
+  // back-button navigation. Disabled when no customer is selected.
+  const ledgerQuery = useQuery({
+    queryKey: ['credits', 'ledger', urlState.customer, urlState.sort, urlState.dir],
+    queryFn: () => api.listLedger(urlState.customer, { sort: urlState.sort, dir: urlState.dir }),
+    enabled: !!urlState.customer,
+  })
+  const ledger = ledgerQuery.data?.data ?? []
+  const ledgerLoading = ledgerQuery.isLoading && !!urlState.customer
+  const loadLedger = (customerId: string) => {
+    void queryClient.invalidateQueries({ queryKey: ['credits', 'ledger', customerId] })
+  }
+
   const customerMap = useMemo(() => {
     const m: Record<string, Customer> = {}
     customers.forEach(c => { m[c.id] = c })
     return m
   }, [customers])
 
-  const loadData = useCallback(() => {
-    setLoading(true)
-    setError(null)
-    Promise.all([
-      api.listBalances(),
-      api.listCustomers(),
-    ]).then(([balRes, custRes]) => {
-      setBalances(balRes.data || [])
-      setCustomers(custRes.data || [])
-      setLoading(false)
-    }).catch(err => {
-      setError(err instanceof Error ? err.message : 'Failed to load credits')
-      setLoading(false)
-    })
-  }, [])
-
-  useEffect(() => {
-    loadData()
-    if (urlState.customer) {
-      loadLedger(urlState.customer)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlState.customer, urlState.sort, urlState.dir])
-
-  const loadLedger = (customerId: string) => {
-    setLedgerLoading(true)
-    // Server-side sort: pass sort/dir per current URL state. Backend
-    // validates against a closed allow-list and tie-breaks on id, so
-    // ledger entries with rapid-fire created_at (catchup-driven
-    // grants) render in a deterministic order.
-    api.listLedger(customerId, {
-      sort: urlState.sort,
-      dir: urlState.dir,
-    }).then(res => {
-      setLedger(res.data || [])
-      setLedgerLoading(false)
-    }).catch(() => {
-      setLedger([])
-      setLedgerLoading(false)
-    })
-  }
-
   const openCustomerDetail = (customerId: string) => {
     setUrlState({ customer: customerId, entryType: 'All', page: '1' })
-    loadLedger(customerId)
   }
 
   const closeDetail = () => {
     setUrlState({ customer: '' })
-    setLedger([])
-    loadData()
   }
 
   const totalOutstanding = balances.reduce((sum, b) => sum + b.balance_cents, 0)
@@ -534,6 +518,13 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
     defaultValues: { amount: '', description: '', expiresAt: '' },
   })
 
+  // One idempotency key per dialog OPEN. Retries on transient failure
+  // (network, 5xx) replay through the API's Idempotency middleware and
+  // converge on the same ledger entry — no double-grant / double-deduct.
+  // The key resets on dialog close (component unmounts) so a fresh open
+  // can submit a new entry against the same customer.
+  const [idemKey] = useState(() => crypto.randomUUID())
+
   const effectiveCustomerId = selectedCustomer || customerId
   const effectiveCustomerName = customers?.find(c => c.id === effectiveCustomerId)?.display_name || customerName
 
@@ -547,14 +538,14 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
           customer_id: effectiveCustomerId,
           amount_cents: -amountCents,
           description,
-        })
+        }, idemKey)
       } else {
         return api.grantCredits({
           customer_id: effectiveCustomerId,
           amount_cents: amountCents,
           description,
           ...(expiresAt ? { expires_at: endOfDayInTZ(expiresAt) } : {}),
-        })
+        }, idemKey)
       }
     },
     onSuccess: () => {

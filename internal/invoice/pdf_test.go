@@ -87,6 +87,122 @@ func TestRenderPDF(t *testing.T) {
 	t.Logf("PDF generated: %d bytes", len(pdfBytes))
 }
 
+// TestRenderPDF_ThreeChannelCN_WithTaxReversal renders a paid invoice with
+// a CN that splits across all three channels (PM refund, credit balance,
+// out of band) and reverses tax via Stripe Tax. Asserts the render path
+// doesn't panic on the new fields and produces a reasonable-size PDF.
+// Catches regressions where future changes to CreditNoteInfo break the
+// render loop (e.g., dropping OutOfBandAmountCents from the post-payment
+// filter would make this CN render as pre-payment and reduce the
+// invoice's apparent total).
+func TestRenderPDF_ThreeChannelCN_WithTaxReversal(t *testing.T) {
+	now := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	dueAt := now.AddDate(0, 0, 30)
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	inv := domain.Invoice{
+		ID:                 "vlx_inv_3ch",
+		InvoiceNumber:      "VLX-202604-0042",
+		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentSucceeded,
+		Currency:           "INR",
+		SubtotalCents:      7000,
+		TaxAmountCents:     1260,
+		TaxRateBP:          1800,
+		TaxName:            "IGST",
+		TaxCountry:         "IN",
+		TotalAmountCents:   8260,
+		AmountPaidCents:    8260,
+		AmountDueCents:     0,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   periodEnd,
+		IssuedAt:           &now,
+		DueAt:              &dueAt,
+		TaxTransactionID:   "tx_committed_at_finalize",
+	}
+
+	lineItems := []domain.InvoiceLineItem{
+		{
+			LineType:         domain.LineTypeBaseFee,
+			Description:      "Advance test plan 2 - base fee",
+			Quantity:         1,
+			UnitAmountCents:  7000,
+			AmountCents:      7000,
+			TotalAmountCents: 7000,
+			Currency:         "INR",
+		},
+	}
+
+	cn := CreditNoteInfo{
+		Number:               "CN-000008",
+		Reason:               "billing error",
+		Amount:               8260,
+		RefundAmountCents:    4000,
+		CreditAmountCents:    3000,
+		OutOfBandAmountCents: 1260,
+		TaxAmountCents:       1260,
+		TaxTransactionID:     "tx_reversal_from_stripe_tax",
+		RefundStatus:         string(domain.RefundSucceeded),
+	}
+
+	pdfBytes, err := RenderPDF(context.Background(), inv, lineItems, BillToInfo{Name: "Acme Corp"}, []CreditNoteInfo{cn})
+	if err != nil {
+		t.Fatalf("render pdf: %v", err)
+	}
+	if len(pdfBytes) < 4 || string(pdfBytes[:4]) != "%PDF" {
+		t.Fatal("output is not a valid PDF")
+	}
+	if len(pdfBytes) < 1024 {
+		t.Errorf("PDF too small: %d bytes", len(pdfBytes))
+	}
+}
+
+// TestRenderPDF_OutOfBandOnlyCN_IsPostPayment is a regression guard: an
+// OOB-only CN (no refund-to-PM, no credit-to-balance) used to fall into
+// the pre-payment branch because the filter only checked refund + credit,
+// which would have reduced the invoice's apparent total in the PDF. Fix
+// includes OutOfBandAmountCents in the post-payment classification.
+func TestRenderPDF_OutOfBandOnlyCN_IsPostPayment(t *testing.T) {
+	now := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	dueAt := now.AddDate(0, 0, 30)
+	inv := domain.Invoice{
+		ID:                 "vlx_inv_oob",
+		InvoiceNumber:      "VLX-OOB-001",
+		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentSucceeded,
+		Currency:           "USD",
+		SubtotalCents:      5000,
+		TotalAmountCents:   5000,
+		AmountPaidCents:    5000,
+		AmountDueCents:     0,
+		BillingPeriodStart: now.AddDate(0, -1, 0),
+		BillingPeriodEnd:   now,
+		IssuedAt:           &now,
+		DueAt:              &dueAt,
+	}
+	lineItems := []domain.InvoiceLineItem{{
+		LineType: domain.LineTypeBaseFee, Description: "Service",
+		Quantity: 1, UnitAmountCents: 5000, AmountCents: 5000,
+		TotalAmountCents: 5000, Currency: "USD",
+	}}
+	cn := CreditNoteInfo{
+		Number:               "CN-OOB-001",
+		Reason:               "wired manually",
+		Amount:               5000,
+		OutOfBandAmountCents: 5000,
+		// RefundAmountCents + CreditAmountCents both 0 — the case
+		// the old filter mishandled.
+	}
+	pdfBytes, err := RenderPDF(context.Background(), inv, lineItems, BillToInfo{Name: "Acme"}, []CreditNoteInfo{cn})
+	if err != nil {
+		t.Fatalf("render pdf: %v", err)
+	}
+	if len(pdfBytes) < 1024 || string(pdfBytes[:4]) != "%PDF" {
+		t.Fatal("expected a valid PDF; OOB-only CN must render as post-payment adjustment")
+	}
+}
+
 // minimalReverseChargeInvoice returns a finalized reverse-charge invoice
 // suitable for legend / PDF tests. No tax amount, no positive subtotal —
 // the legend branches don't depend on those.

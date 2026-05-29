@@ -74,9 +74,16 @@ type Customer struct {
 	// default policy. Updatable any time via PATCH; affects only the
 	// NEXT dunning run started for this customer's invoices — runs
 	// already in flight stay on their original policy.
-	DunningPolicyID string    `json:"dunning_policy_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	DunningPolicyID string `json:"dunning_policy_id,omitempty"`
+	// StripeCustomerID is the Stripe Customer object mapped 1:1 to
+	// this Velox customer. Created lazily on first PM-related action
+	// (paymentmethods.StripeAdapter.EnsureStripeCustomer) — empty
+	// for customers who never went through any PM flow. Single source
+	// of truth for the mapping since migration 0096; previously lived
+	// on customer_payment_setups (now deprecated).
+	StripeCustomerID string    `json:"stripe_customer_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type BillingProfileStatus string
@@ -88,11 +95,16 @@ const (
 )
 
 type CustomerBillingProfile struct {
-	CustomerID   string `json:"customer_id"`
-	TenantID     string `json:"tenant_id,omitempty"`
-	LegalName    string `json:"legal_name,omitempty"`
-	Email        string `json:"email,omitempty"`
-	Phone        string `json:"phone,omitempty"`
+	CustomerID string `json:"customer_id"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	LegalName  string `json:"legal_name,omitempty"`
+	// Email removed in migration 0100 — the billing-profile email
+	// duplicated customers.email and broke the bounce-tracking key
+	// once they diverged. Phase 1 of the dual-email collapse:
+	// customers.email is the single canonical recipient. Phase 2
+	// (when a DP asks for multi-recipient) adds a
+	// customer_email_contacts table as an additive layer.
+	Phone string `json:"phone,omitempty"`
 	AddressLine1 string `json:"address_line1,omitempty"`
 	AddressLine2 string `json:"address_line2,omitempty"`
 	City         string `json:"city,omitempty"`

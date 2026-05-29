@@ -177,10 +177,13 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	}
 	defer postgres.Rollback(tx)
 
+	// Single source of truth (migration 0096): customers.stripe_customer_id.
+	// Replaced the old customer_payment_setups.stripe_customer_id read
+	// when the summary table was retired.
 	var stripeCustomerID string
 	err = tx.QueryRowContext(scopedCtx, `
-		SELECT stripe_customer_id FROM customer_payment_setups
-		WHERE customer_id = $1 AND tenant_id = $2
+		SELECT COALESCE(stripe_customer_id, '') FROM customers
+		WHERE id = $1 AND tenant_id = $2
 	`, token.CustomerID, token.TenantID).Scan(&stripeCustomerID)
 	if err != nil || stripeCustomerID == "" {
 		respond.Error(w, r, http.StatusBadRequest, "validation_error", "missing_payment_setup",

@@ -159,6 +159,29 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	tenantStripeH := tenantstripe.NewHandler(tenantStripeSvc)
 	stripeClients := payment.NewStripeClients(tenantStripeSvc)
 
+	// Payment methods service constructed early — the dunning
+	// retrier, invoice handler, and billing engine all want a
+	// payment-method-status read path that goes through canonical
+	// sources (customers.stripe_customer_id + payment_methods)
+	// rather than the deprecated customer_payment_setups summary.
+	paymentMethodsStripe := paymentmethods.NewStripeAdapter(stripeClients, customerStore)
+	paymentMethodsStore := paymentmethods.NewPostgresStore(db)
+	paymentMethodsSvc := paymentmethods.NewService(paymentMethodsStore, paymentMethodsStripe, customerStore)
+	// auditLogger is wired into paymentMethodsSvc later (after
+	// auditLogger is constructed) — see the SetAuditLogger call below.
+	// Setup-session return URL base: the SPA host where the customer
+	// lands after Stripe Checkout. Production reads CUSTOMER_PORTAL_URL;
+	// local dev falls through to http://localhost:5173 (the Vite dev
+	// server). Without this set, a deployment behind a different host
+	// would redirect customers back to localhost — broken UX in prod.
+	paymentMethodsSvc.SetPortalBaseURL(strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL")))
+	// compositePaymentSetupStore presents the customer_payment_setups
+	// wire shape (domain.CustomerPaymentSetup) on top of canonical
+	// sources. Lets payment/checkout.go + payment/stripe.go +
+	// dunning retrier keep their existing PaymentSetupStore-shaped
+	// wiring while structurally not reading the deprecated table.
+	paymentSetupStore := &compositePaymentSetupStore{customers: customerStore, pms: paymentMethodsSvc}
+
 	pricingSvc := pricing.NewService(pricingStore)
 	// ADR-034: plan billing-fields freeze once any live sub references
 	// the plan. UpdatePlan needs to count live subs; subStore implements
@@ -295,7 +318,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		},
 	})
 
-	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, customerStore, dunningSvc)
+	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, paymentSetupStore, dunningSvc)
 	stripeAdapter.SetCardFetcher(stripeClient)
 	stripeAdapter.SetEventDispatcher(eventDispatcher)
 	stripeAdapter.SetBreaker(stripeBreaker)
@@ -304,7 +327,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	dunningSvc.SetRetrier(&paymentRetrierAdapter{
 		charger:       stripeAdapter,
 		invoiceStore:  invoiceStore,
-		paymentSetups: customerStore,
+		paymentSetups: paymentSetupStore,
 	})
 	// Pre-invoiceSvc dunning wires (pauser + canceler only depend on
 	// subscription.Service + invoice store, both defined above).
@@ -335,7 +358,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	invoiceH := invoice.NewHandler(invoiceSvc, customerStore, settingsStore, invoice.HandlerDeps{
 		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:         stripeAdapter,
-		PaymentSetups:   customerStore,
+		PaymentSetups:   paymentSetupStore,
 		CreditReverser:  creditSvc,
 		PaymentCancel:   stripeClient,
 		Dunning:         dunningSvc,
@@ -348,8 +371,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// instead of read from env — every Checkout flow in the codebase
 	// is contextual, not global. STRIPE_CHECKOUT_{SUCCESS,CANCEL}_URL
 	// were a pre-portal anti-pattern.
-	checkoutH := payment.NewCheckoutHandler(stripeClients, customerStore)
-	portalH := payment.NewPortalHandler(stripeClients, customerStore)
+	checkoutH := payment.NewCheckoutHandler(stripeClients, paymentSetupStore)
 
 	// Token service for public payment update links. Used by the
 	// no-PM-at-finalize email (noPaymentMethodNotifierAdapter) and
@@ -365,6 +387,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// spend an extra API call.
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	paymentReconciler.SetBreaker(stripeBreaker)
+	// Engine isn't constructed yet at this point — paymentReconciler's
+	// resolver is wired below at line ~640 alongside dunningSvc and
+	// stripeAdapter. Keep this declaration near the constructor; the
+	// resolver-wiring block is the canonical place to find clock.Resolver
+	// hookups across the router.
 	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients, customerSvc,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
@@ -375,7 +402,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// PM to the customer's Stripe record (otherwise it's a guest checkout
 	// and "save card" is a no-op). The store + service are constructed
 	// later (line ~657) where the rest of the customer-portal stack lives.
-	paymentMethodsStripe := paymentmethods.NewStripeAdapter(stripeClients, customerStore)
+	// paymentMethodsStripe + Store + Svc constructed earlier (right
+	// after stripeClients) so the dunning retrier, invoice handler,
+	// and billing engine can all use the canonical payment-status
+	// view (compositePaymentSetupStore) without dual-table reads.
 
 	// Hosted invoice page — Stripe-equivalent hosted_invoice_url surface.
 	// Public tokenized routes that the partner's end customer visits from
@@ -464,19 +494,32 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 		}
+		// setupLinkEmail is the operator-initiated "Send setup email"
+		// path on CustomerDetail. Routed through the outbox just like
+		// every other email producer — operator gets a queued
+		// confirmation, retries + DLQ kick in on SMTP failure. Direct
+		// SMTP only when the outbox feature flag is off.
+		setupLinkEmail paymentmethods.SetupLinkEmailer
 	)
+	// emailOutboxSenderRef captures the OutboxSender at the outer scope
+	// so the blinder-wiring block further below can attach the
+	// suppression-checker to it. nil when the feature flag is off.
+	var emailOutboxSenderRef *email.OutboxSender
 	if emailOutboxEnabled {
 		outboxSender := email.NewOutboxSender(emailOutboxStore)
+		emailOutboxSenderRef = outboxSender
 		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender
 		paymentSetupEmail = outboxSender
 		paymentFailedEmail = outboxSender
 		passwordResetEmail = outboxSender
+		setupLinkEmail = outboxSender
 		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
 	} else {
 		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = emailSender, emailSender, emailSender, emailSender
 		paymentSetupEmail = emailSender
 		paymentFailedEmail = emailSender
 		passwordResetEmail = emailSender
+		setupLinkEmail = emailSender
 		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
 	}
 	invoiceH.SetEmailSender(invoiceEmail)
@@ -496,6 +539,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
 	couponH.SetAuditLogger(auditLogger)
+	// Wire audit on paymentmethods.Service so attach/setDefault/detach
+	// surface in the operator Activity feed + AuditLog page. Without
+	// this, customer-driven card mutations are invisible to operators.
+	paymentMethodsSvc.SetAuditLogger(auditLogger)
+	// paymentMethodsH (Handler-side) is constructed further down — its
+	// operator-only send-setup-email path is wired immediately after
+	// the NewHandler call to keep declaration + dep-wiring co-located.
+	// Tier-2 audit handlers — API key, dunning policy, pricing,
+	// Stripe connection, webhook endpoint lifecycle. testClockH is
+	// wired after its declaration further down. Each adds a forensics
+	// trail for operator-driven state changes that previously had
+	// no audit row.
+	authH.SetAuditLogger(auditLogger)
+	dunningH.SetAuditLogger(auditLogger)
+	pricingH.SetAuditLogger(auditLogger)
+	tenantStripeH.SetAuditLogger(auditLogger)
+	webhookOutH.SetAuditLogger(auditLogger)
 	// Service-level audit logger so state-changing service calls reachable
 	// from multiple entry points (operator handler + dunning adapter + any
 	// future caller) produce a single canonical audit row.
@@ -523,6 +583,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	testClockStore := testclock.NewPostgresStore(db)
 	testClockSvc := testclock.NewService(testClockStore)
 	testClockH := testclock.NewHandler(testClockSvc)
+	testClockH.SetAuditLogger(auditLogger)
 	// Customer-level test-clock attach (ADR-027): customer service
 	// validates test_clock_id at create time. Wired after the store
 	// exists; before this point customer creation always rejects
@@ -543,10 +604,21 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	testClockSvc.SetCustomerReader(customerSvc)
 
 	// Billing engine + manual trigger (with credit auto-application)
+	// PaymentReadiness combines customers.stripe_customer_id +
+	// payment_methods canonical → "can we charge this customer?"
+	// in one call. Replaces the legacy customer_payment_setups
+	// summary table.
+	paymentReadiness := &paymentReadinessAdapter{customers: customerStore, pms: paymentMethodsSvc}
 	engine := billing.NewEngine(subStore, usageStore, pricingSvc,
-		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, customerStore, stripeAdapter, clk, customerStore)
+		&invoiceWriterAdapter{store: invoiceStore}, creditSvc, settingsStore, paymentReadiness, stripeAdapter, clk, customerStore)
 	engine.SetTestClockReader(testClockStore)
 	engine.SetEventDispatcher(eventDispatcher)
+	// Engine writes audit_log on background-fired lifecycle events
+	// (currently: scheduled-cancellation auto-fire at period end).
+	// Without this, the sub Activity timeline shows "Cancellation
+	// scheduled" with no terminal "Subscription canceled" partner —
+	// the gap that surfaced this session.
+	engine.SetAuditLogger(auditLogger)
 	// Customer reader powers EffectiveNowForCustomer (subscription
 	// create / one-off invoice composer / clock-pinned customer
 	// path). Without this, the engine's customer-side clock resolution
@@ -562,6 +634,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// catchup window that compares to the frozen_time the operator is
 	// advancing through. ADR-029 follow-up.
 	dunningSvc.SetResolver(engine)
+	// Dunning handler: resolveRun binds from invoice before MarkPaid so
+	// `invoice.paid_at` lands in sim-time for clock-pinned invoices
+	// instead of wall-clock. Last unbound seam in the operator invoice
+	// path (2026-05-28).
+	dunningH.SetResolver(engine)
+	// Payment reconciler: the cron-driven fallback that resolves
+	// invoices stuck in PaymentUnknown by polling Stripe for the real
+	// outcome. Without the resolver, paid_at on a clock-pinned invoice
+	// landed in wall-clock — split-brain against issued_at / due_at /
+	// billing_period on the same row. ADR-030 cross-flow audit
+	// 2026-05-28.
+	paymentReconciler.SetResolver(engine)
 	// Stripe webhook handler (handlePaymentSucceeded / handlePaymentFailed)
 	// fires async with no inherited ctx binding. Wire the resolver so
 	// every webhook-driven write (paid_at, payment-failure stamp,
@@ -590,6 +674,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// + handleItemProration would use wall-clock now even when the
 	// underlying sub is in simulated time.
 	subH.SetResolver(engine)
+	// Wire the db handle so addItem (and updateItem / removeItem when
+	// they migrate to the same pattern) can open an outer tx wrapping
+	// the sub-item insert + proration writes — atomic guarantee that
+	// pre-2026-05-29 left half-committed orphan items on proration
+	// failures. ADR-030 atomic-proration follow-through.
+	subH.SetDB(db)
 	// ADR-031: wire the engine so subscription.Service.Create emits
 	// the day-1 invoice for in_advance plans. No-op for in_arrears
 	// (default) — best-effort path that logs but doesn't fail Create
@@ -657,6 +747,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		customerEmail:    customerEmailAdapter,
 		paymentUpdateURL: paymentUpdateURL,
 		tokenSvc:         tokenSvc,
+		auditLogger:      auditLogger,
 	})
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
@@ -672,6 +763,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoice. Manual/none providers receive the call but no-op.
 	invoiceSvc.SetTaxCommitter(engine)
 
+	// Invoice Void reverses the upstream tax_transaction so the
+	// authority stops reporting voided invoices as collected tax.
+	// Same engine instance handles credit-note tax reversals — single
+	// code path keeps the Reference uniqueness contract intact.
+	invoiceSvc.SetTaxReverser(engine)
+
 	// Operator-initiated apply-coupon-to-draft-invoice routes through the
 	// billing engine, which owns redeem → tax recompute → atomic persist
 	// → mark-periods orchestration. Keeps the HTTP surface on the invoice
@@ -686,9 +783,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	// Payment-method reader powers the no_payment_method attention
 	// branch — distinguishes operator-actionable "add a PM" state from
-	// the generic awaiting_payment race window. customerStore satisfies
-	// the PaymentMethodReader interface (GetPaymentSetup).
-	invoiceSvc.SetPaymentMethodReader(customerStore)
+	// the generic awaiting_payment race window. paymentSetupStore
+	// (the canonical composite) satisfies PaymentMethodReader.
+	invoiceSvc.SetPaymentMethodReader(paymentSetupStore)
 	// Stripe-connected probe lets the attention classifier swap copy
 	// from "Stripe isn't connected" → "calculation queued, retry now"
 	// for tax_status='pending' invoices when the operator has just
@@ -760,7 +857,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 				store:   customerStore,
 				svc:     customerSvc,
 			})
-			slog.Info("email blind index enabled for customer-portal magic-link lookup + bounce reporting")
+			// Wire the recipient-suppression gate on both code paths
+			// (direct Sender + OutboxSender). Closes the bounce →
+			// suppression loop: once email_status='bounced' is recorded,
+			// no further sends to that recipient enter the outbox.
+			// Same blinder powers both — symmetric to the bounce reporter.
+			suppressionChecker := &suppressionCheckerAdapter{blinder: b, store: customerStore}
+			emailSender.SetSuppressionChecker(suppressionChecker)
+			if emailOutboxSenderRef != nil {
+				emailOutboxSenderRef.SetSuppressionChecker(suppressionChecker)
+			}
+			slog.Info("email blind index enabled for customer-portal magic-link lookup + bounce reporting + suppression gate")
 		}
 	} else {
 		slog.Warn("VELOX_EMAIL_BIDX_KEY not set — magic-link requests will fail closed (no customers findable by email)")
@@ -787,15 +894,19 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 	publicPortalH := customerportal.NewPublicHandler(magicLinkRequestSvc, magicLinkSvc)
 
-	// Customer self-service payment methods — the customer-facing half of
-	// the portal. Writes to payment_methods (multi-row) and keeps the
-	// 1:1 customer_payment_setups summary in sync via Service.syncSummary.
-	paymentMethodsStore := paymentmethods.NewPostgresStore(db)
-	// paymentMethodsStripe was constructed earlier (next to the
-	// hosted-invoice adapter wiring) so it could double as the
-	// Stripe-customer ensurer there.
-	paymentMethodsSvc := paymentmethods.NewService(paymentMethodsStore, paymentMethodsStripe, customerStore)
+	// Customer self-service payment methods — handler-only wiring
+	// here; the store + service were constructed earlier (next to
+	// the paymentMethodsStripe adapter) so the billing engine's
+	// PaymentReadiness adapter can depend on the same service.
 	paymentMethodsH := paymentmethods.NewHandler(paymentMethodsSvc)
+	// Operator-side send-setup-email needs a customer lookup +
+	// emailer + audit. Service-side audit lands separately on
+	// paymentMethodsSvc above (Tier-1 attach/setDefault/detach).
+	// Per-customer cooldown limiter is wired further down once
+	// rdb is constructed (line ~960).
+	paymentMethodsH.SetCustomerLookup(&pmCustomerLookupAdapter{store: customerStore})
+	paymentMethodsH.SetEmailer(setupLinkEmail)
+	paymentMethodsH.SetAuditLogger(auditLogger)
 
 	// setup_intent.succeeded webhooks write payment_methods rows via the
 	// service. Wired here because stripeAdapter (payment/) must not import
@@ -804,9 +915,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (tests, webhook) keep their own signatures.
 	stripeAdapter.SetPaymentMethodAttacher(paymentMethodsSvc)
 
-	// GDPR data export + deletion — wired into customer handler
-	gdprSvc := customer.NewGDPRService(customerStore, invoiceStore, creditStore, subStore, usageStore, auditLogger)
-	customerH.SetGDPR(customer.NewGDPRHandler(gdprSvc))
+	// GDPR data export + erasure was removed 2026-05-29 pre-launch.
+	// The prior implementation was a half-fix (didn't sync erasure
+	// to Stripe Customer, no acknowledgement-window tracking).
+	// Rebuild properly when the first EU-targeting DP signs.
 
 	// Dashboard sessions are user-bound (ADR-011) — minted by the
 	// email+password login flow, server-side revocable, httpOnly
@@ -907,6 +1019,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		hostedInvoiceRL.SetFailClosed(true)
 	}
+
+	// Per-customer cooldown on operator send-setup-email: 1 send /
+	// (tenant, customer) / 60s. Defends against operator double-click
+	// and the refresh-then-click race. Always fail-open even in prod —
+	// a Redis hiccup shouldn't block a legitimate operator's "send link"
+	// action; the worst case (Redis down + actual double-click) is two
+	// near-identical emails, no money/state at risk.
+	setupLinkCooldown := mw.NewRateLimiter(rdb, 1, time.Minute)
+	paymentMethodsH.SetCooldown(setupLinkCooldown)
 
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())
@@ -1097,6 +1218,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/customers/{id}/usage", customerUsageH.CustomerUsageRoutes(
 			auth.Require(auth.PermUsageRead),
 		))
+		// Operator-side payment-method management. Same Service as the
+		// /v1/me/payment-methods customer-facing surface — only the
+		// auth model + the customer_id source differ. List/setDefault/
+		// detach + a "send setup link" affordance that mints a Stripe
+		// Checkout setup URL the operator can hand to the customer.
+		// Card capture stays in the Stripe-hosted iframe so the
+		// operator's PCI scope stays SAQ-A. Industry parity:
+		// Chargebee, Lago, Orb expose the same shape.
+		r.With(auth.RequireMethod(auth.PermCustomerRead, auth.PermCustomerWrite)).Mount("/customers/{customer_id}/payment-methods", paymentMethodsH.OperatorRoutes())
 		r.With(auth.RequireMethod(auth.PermPricingRead, auth.PermPricingWrite)).Mount("/meters", pricingH.MeterRoutes())
 		// Meter-scoped pricing rule subtree. Mounted as a sibling of
 		// /meters so reads (PermPricingRead) and writes (PermPricingWrite)
@@ -1172,9 +1302,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// Customer portal — consolidated views across domains
 		portal := newCustomerPortalHandler(subStore, invoiceStore, usageStore)
 		r.With(auth.Require(auth.PermCustomerRead)).Mount("/customer-portal", portal.Routes())
-		if portalH != nil {
-			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/payment-portal", portalH.Routes())
-		}
+		// Legacy /v1/payment-portal/{id}/update-payment-method removed:
+		// all "add a payment method" flows now go through
+		// paymentmethods.Service.CreateSetupSession (single path).
+		// Operator dashboard uses POST /v1/customers/{id}/payment-methods/send-setup-email
+		// (email) or POST /v1/customers/{id}/payment-methods/setup-session (copy-link).
 
 		// Operator endpoint that mints portal bearer tokens for customers
 		// to use against /v1/me/* below. Customer-side routes deliberately
@@ -1195,16 +1327,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:     customerStore,
 		Settings:      settingsStore,
 		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
-		// Customer-self-serve PM update via Stripe Checkout (setup
-		// mode). Reuses the same Stripe path as the operator-driven
-		// /v1/portal endpoint; the adapter wires customer ctx + a
-		// portal-default return URL.
-		PaymentMethodUpdater: &portalPaymentMethodUpdaterAdapter{
-			clients:   stripeClients,
-			store:     customerStore,
-			portalURL: portalURL,
-		},
-		Events: eventDispatcher,
+		Credits:        &portalCreditReaderAdapter{svc: creditSvc},
+		CustomerWriter: &portalCustomerWriterAdapter{svc: customerSvc},
+		// Pay-now needs both the Stripe charger and a way to look
+		// up the customer's stripe_customer_id for the PI customer
+		// parameter. payment.Stripe satisfies the first;
+		// paymentSetupStore (the canonical composite) satisfies the
+		// second.
+		Charger: stripeAdapter,
+		PMSetup: paymentSetupStore,
+		// Payment methods are NOT wired here — the standalone
+		// internal/paymentmethods.Handler is mounted at
+		// /v1/me/payment-methods/* alongside this handler's routes
+		// (see r.Mount below). That package already provides the
+		// bootstrap-aware setup-session, list, set-default, and
+		// detach surface. Single source of truth for PM operations.
+		Events:      eventDispatcher,
+		AuditLogger: auditLogger,
 	})
 	r.Route("/v1/me", func(r chi.Router) {
 		r.Use(portalSvc.Middleware())

@@ -106,14 +106,31 @@ func TestIsPermanentSMTPBounce(t *testing.T) {
 		permanent bool
 	}{
 		{"no error", "", false},
+		// Recipient-rejection codes — should classify as bounce
 		{"classic 550", "550 5.1.1 User unknown", true},
 		{"553 relaying", "553 relaying denied", true},
 		{"552 too big", "552 message size exceeds limits", true},
+		{"550 mailbox unavailable", "550 mailbox unavailable", true},
+		{"wrapped 550", "send email: smtp: 550 mailbox unavailable", true},
+		{"enhanced 5.1.1 no basic", "smtp: 5.1.1 user unknown", true},
+		{"enhanced 5.2.2 over quota", "5.2.2 mailbox full", true},
+		// Sender/server-side 5xx — must NOT classify as bounce (the
+		// recipient is fine; OUR side has a problem). Pre-fix every
+		// 5xx mapped to bounce; surfaced 2026-05-29 when a wrong
+		// Postmark Server Token returned 535 and Velox flagged
+		// every recipient as bounced as a result.
+		{"535 auth failed (Postmark token mismatch)", "535 5.7.8 Error: authentication failed", false},
+		{"530 access denied", "530 5.7.0 authentication required", false},
+		{"521 server doesn't accept mail", "521 mail not accepted", false},
+		{"534 auth too weak", "534 5.7.9 auth too weak", false},
+		{"538 encryption required", "538 5.7.11 encryption required", false},
+		{"554 transaction failed ambiguous", "554 transaction failed", false},
+		{"enhanced 5.7.x security policy", "smtp: 5.7.1 message rejected by policy", false},
+		// Transient + non-SMTP — not bounces
 		{"421 transient", "421 try again later", false},
 		{"450 soft bounce", "450 mailbox busy", false},
-		{"zip code false-positive", "SMTP relay error for customer at 95014", false},
-		{"wrapped 550", "send email: smtp: 550 mailbox unavailable", true},
 		{"timeout", "dial tcp: i/o timeout", false},
+		{"zip code false-positive", "SMTP relay error for customer at 95014", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

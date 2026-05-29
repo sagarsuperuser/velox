@@ -20,13 +20,26 @@ type InvoiceReader interface {
 }
 
 // Refunder processes refunds via the payment provider.
+//
+// `idempotencyKey` is passed to the provider (Stripe-style) so a retry
+// after a partial failure in Issue() returns the existing refund_id
+// rather than creating a duplicate refund. Callers MUST pass a
+// deterministic key tied to the credit-note id (Velox uses
+// `velox_cn_<cn_id>`).
 type Refunder interface {
-	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64) (string, error)
+	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
 }
 
 // CreditGranter adds credits to a customer's balance.
+//
+// `GrantForCreditNote` is the retry-safe variant used by Issue(): the
+// implementation MUST dedup on (tenant, creditNoteID) so a retry after
+// partial-failure of Issue() doesn't append a duplicate grant.
+// Migration 0093 backs this via a partial unique index. On dedup hit
+// the existing grant is returned silently.
 type CreditGranter interface {
 	Grant(ctx context.Context, tenantID string, input CreditGrantInput) error
+	GrantForCreditNote(ctx context.Context, tenantID, creditNoteID string, input CreditGrantInput) error
 }
 
 // TaxReverser issues a reversal of the invoice's committed tax transaction.
@@ -97,12 +110,35 @@ func (s *Service) SetCouponRedemptionVoider(v CouponRedemptionVoider) {
 	s.couponVoider = v
 }
 
+// CreateInput is the public payload for POST /v1/credit_notes. Three
+// allocation fields mirror Stripe (`refund_amount` / `credit_amount` /
+// `out_of_band_amount`) and Lago (`refund_amount_cents` /
+// `credit_amount_cents` / `offset_amount_cents`): the operator splits
+// the total across (a) Stripe refund to the payment method,
+// (b) restore-to-customer-credit-balance, and (c) handled outside
+// Stripe (cash, ACH, manual adjustment).
+//
+// For paid invoices, the three amounts must sum to the CN total. For
+// unpaid invoices the allocation is ignored (the CN reduces amount_due
+// directly). If the caller leaves all three fields zero on a paid
+// invoice, the default is `credit_amount = total` — the safest fallback
+// (no cash movement, restorable later). Legacy callers can pass
+// RefundType="refund"/"credit" and the field is translated to the
+// equivalent single-channel split.
 type CreateInput struct {
-	InvoiceID  string            `json:"invoice_id"`
-	Reason     string            `json:"reason"`
-	Lines      []CreditLineInput `json:"lines"`
-	RefundType string            `json:"refund_type"` // "refund" or "credit"
-	AutoIssue  bool              `json:"auto_issue"`  // create + issue atomically
+	InvoiceID            string            `json:"invoice_id"`
+	Reason               string            `json:"reason"`
+	Lines                []CreditLineInput `json:"lines"`
+	RefundAmountCents    int64             `json:"refund_amount_cents"`
+	CreditAmountCents    int64             `json:"credit_amount_cents"`
+	OutOfBandAmountCents int64             `json:"out_of_band_amount_cents"`
+	// RefundType is the legacy single-channel selector ("refund" |
+	// "credit"). Kept for back-compat — callers that set it have the
+	// matching allocation field populated automatically when the new
+	// fields are all zero. New integrations should use the three
+	// explicit *_cents fields directly.
+	RefundType string `json:"refund_type,omitempty"`
+	AutoIssue  bool   `json:"auto_issue"` // create + issue atomically
 }
 
 type CreditLineInput struct {
@@ -160,10 +196,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	if err != nil {
 		return domain.CreditNote{}, fmt.Errorf("list existing credit notes: %w", err)
 	}
-	var existingTotal int64
+	var existingTotal, existingTaxReversed int64
 	for _, cn := range existingCNs {
 		if cn.Status != domain.CreditNoteVoided {
 			existingTotal += cn.TotalCents
+			existingTaxReversed += cn.TaxAmountCents
 		}
 	}
 	if existingTotal+subtotal > inv.TotalAmountCents {
@@ -184,40 +221,101 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// partial credit reverses the same fraction of tax the invoice
 	// originally collected. Zero-tax invoices (tax_amount==0 or no
 	// provider) produce zero tax on the CN, preserving legacy behaviour.
+	//
+	// Smart-bucket residual absorption (Stripe Tax-style, 2026-05-25):
+	// integer-division proportional tax accumulates floor() residuals
+	// across multiple CNs. Sum of per-CN tax can fall short of the
+	// invoice tax by up to (N−1) cents, leaving a small unreversed
+	// residual. To match Stripe Tax's documented behaviour ("rounding
+	// errors are allocated to the last line item"), the CN that
+	// EXHAUSTS the invoice (cumulative CN total reaches the invoice
+	// total) absorbs the residual so the cumulative tax reversed
+	// equals the original tax exactly. Non-exhausting CNs use the
+	// pure proportional formula. The persisted `tax_amount_cents`
+	// on the CN drives both the dashboard display and the upstream
+	// Stripe Tax reversal Reference shape, so both surfaces converge
+	// on the same total.
 	var taxAmount, netSubtotal int64
 	netSubtotal = subtotal
 	if inv.TotalAmountCents > 0 && inv.TaxAmountCents > 0 {
-		taxAmount = inv.TaxAmountCents * subtotal / inv.TotalAmountCents
+		if existingTotal+subtotal == inv.TotalAmountCents {
+			// This CN exhausts the invoice — absorb the residual.
+			taxAmount = inv.TaxAmountCents - existingTaxReversed
+		} else {
+			taxAmount = inv.TaxAmountCents * subtotal / inv.TotalAmountCents
+		}
 		netSubtotal = subtotal - taxAmount
 	}
 
-	// For refund-type CNs on paid invoices, cannot refund more than was actually paid via Stripe
-	if input.RefundType == "refund" && inv.Status == domain.InvoicePaid && inv.AmountPaidCents > 0 {
-		// Calculate already-refunded amount from existing CNs
-		var existingRefunds int64
-		for _, cn := range existingCNs {
-			if cn.Status != domain.CreditNoteVoided && cn.RefundAmountCents > 0 {
-				existingRefunds += cn.RefundAmountCents
+	// Three-channel allocation (Stripe + Lago shape, verified
+	// 2026-05-24). The operator allocates the CN total across:
+	//   refund_amount_cents     → Stripe refund to the original PM
+	//   credit_amount_cents     → restored to customer's credit balance
+	//   out_of_band_amount_cents → handled externally (cash, ACH,
+	//                              manual adjustment); audit-trail only
+	// The three values must sum to subtotal. New integrations should
+	// set the explicit fields. The legacy RefundType ("refund" |
+	// "credit") is honored when the new fields are all zero — the
+	// equivalent single-channel allocation is filled in.
+	//
+	// Refund cap: refund_amount_cents ≤ AmountPaidCents − already
+	// refunded by prior CNs. Velox cannot push more cash back to
+	// the PM than the customer actually paid via card.
+	//
+	// Default when paid invoice + all three zero + no legacy
+	// RefundType: full credit to balance (safest — no cash
+	// movement, restorable later).
+	var refundAmount, creditAmount, outOfBandAmount int64
+	if inv.Status == domain.InvoicePaid {
+		refundAmount = input.RefundAmountCents
+		creditAmount = input.CreditAmountCents
+		outOfBandAmount = input.OutOfBandAmountCents
+
+		// Legacy compatibility: if the caller used the old
+		// RefundType field and left all three explicit amounts
+		// zero, translate into the equivalent single-channel
+		// allocation. Removes the field's surface area without
+		// breaking existing SDK callers mid-flight.
+		if refundAmount == 0 && creditAmount == 0 && outOfBandAmount == 0 {
+			switch input.RefundType {
+			case "refund":
+				refundAmount = subtotal
+			case "credit", "":
+				creditAmount = subtotal
 			}
 		}
-		maxRefundable := inv.AmountPaidCents - existingRefunds
-		if maxRefundable <= 0 {
-			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully refunded")
-		}
-		if subtotal > maxRefundable {
-			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("refund amount (%.2f) exceeds refundable amount (%.2f)", float64(subtotal)/100, float64(maxRefundable)/100))
-		}
-	}
 
-	// Determine refund vs credit
-	// On paid invoices: money goes back as refund or credit to customer balance
-	// On unpaid invoices: reduces amount_due directly (no refund/credit fields)
-	var refundAmount, creditAmount int64
-	if inv.Status == domain.InvoicePaid {
-		if input.RefundType == "refund" {
-			refundAmount = subtotal
-		} else {
-			creditAmount = subtotal
+		if refundAmount < 0 || creditAmount < 0 || outOfBandAmount < 0 {
+			return domain.CreditNote{}, errs.Invalid("allocation", "refund_amount_cents, credit_amount_cents, and out_of_band_amount_cents must all be ≥ 0")
+		}
+		if refundAmount+creditAmount+outOfBandAmount != subtotal {
+			return domain.CreditNote{}, errs.Invalid("allocation", fmt.Sprintf(
+				"refund_amount_cents (%.2f) + credit_amount_cents (%.2f) + out_of_band_amount_cents (%.2f) = %.2f, must equal credit note total %.2f",
+				float64(refundAmount)/100, float64(creditAmount)/100, float64(outOfBandAmount)/100,
+				float64(refundAmount+creditAmount+outOfBandAmount)/100, float64(subtotal)/100,
+			))
+		}
+
+		// Refund cap: cannot push more cash to PM than was paid
+		// via PM (less any prior refunds). Matches Stripe — its
+		// `refund_amount` validation rejects over-refund with
+		// `amount_too_large`.
+		var existingRefunds int64
+		for _, cn := range existingCNs {
+			if cn.Status == domain.CreditNoteVoided {
+				continue
+			}
+			existingRefunds += cn.RefundAmountCents
+		}
+		pmRefundable := max(0, inv.AmountPaidCents-existingRefunds)
+		if refundAmount > pmRefundable {
+			return domain.CreditNote{}, errs.Invalid("refund_amount_cents", fmt.Sprintf(
+				"refund amount (%.2f) exceeds payment-method refundable (%.2f) — %.2f paid via card, %.2f already refunded by prior credit notes. Reduce refund_amount_cents and route the rest to credit_amount_cents or out_of_band_amount_cents.",
+				float64(refundAmount)/100,
+				float64(pmRefundable)/100,
+				float64(inv.AmountPaidCents)/100,
+				float64(existingRefunds)/100,
+			))
 		}
 	}
 
@@ -235,18 +333,19 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	}
 
 	cn, err := s.store.Create(ctx, tenantID, domain.CreditNote{
-		InvoiceID:         input.InvoiceID,
-		CustomerID:        inv.CustomerID,
-		CreditNoteNumber:  cnNumber,
-		Status:            domain.CreditNoteDraft,
-		Reason:            strings.TrimSpace(input.Reason),
-		SubtotalCents:     netSubtotal,
-		TaxAmountCents:    taxAmount,
-		TotalCents:        subtotal,
-		RefundAmountCents: refundAmount,
-		CreditAmountCents: creditAmount,
-		Currency:          inv.Currency,
-		RefundStatus:      domain.RefundNone,
+		InvoiceID:            input.InvoiceID,
+		CustomerID:           inv.CustomerID,
+		CreditNoteNumber:     cnNumber,
+		Status:               domain.CreditNoteDraft,
+		Reason:               strings.TrimSpace(input.Reason),
+		SubtotalCents:        netSubtotal,
+		TaxAmountCents:       taxAmount,
+		TotalCents:           subtotal,
+		RefundAmountCents:    refundAmount,
+		CreditAmountCents:    creditAmount,
+		OutOfBandAmountCents: outOfBandAmount,
+		Currency:             inv.Currency,
+		RefundStatus:         domain.RefundNone,
 	})
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -339,9 +438,9 @@ func (s *Service) CreateRefund(ctx context.Context, tenantID string, input Refun
 	}
 
 	cn, err := s.Create(ctx, tenantID, CreateInput{
-		InvoiceID:  input.InvoiceID,
-		Reason:     input.Reason,
-		RefundType: "refund",
+		InvoiceID:         input.InvoiceID,
+		Reason:            input.Reason,
+		RefundAmountCents: amount,
 		Lines: []CreditLineInput{{
 			Description:     description,
 			Quantity:        1,
@@ -400,28 +499,61 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	}
 
 	if inv.PaymentStatus == domain.PaymentSucceeded {
-		// Invoice already paid — handle based on refund type
-		if cn.RefundAmountCents > 0 && s.refunder != nil && inv.StripePaymentIntentID != "" {
-			// Refund type: return money to payment method via Stripe
-			refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents)
-			if err != nil {
-				// Refund failed — still issue the CN (it's an accounting document)
-				// but mark refund as failed so operators can resolve manually
-				slog.Warn("stripe refund failed, credit note will be issued with failed refund status",
-					"credit_note_id", cn.ID, "error", err)
-				cn.RefundStatus = domain.RefundFailed
+		// Invoice already paid — handle based on refund type.
+		//
+		// Idempotency contract (added 2026-05-22 after audit):
+		//   - Stripe refund: deterministic idempotency key
+		//     `velox_cn_<cn_id>` so a retry after a partial failure
+		//     hits Stripe's cache and returns the original refund_id
+		//     rather than creating a duplicate.
+		//   - StripeRefundID is persisted IMMEDIATELY after the Stripe
+		//     call succeeds, BEFORE the credit-grant step. So even if
+		//     a retry happens after a credit-grant failure, the next
+		//     call's `cn.StripeRefundID != ""` guard skips the Stripe
+		//     re-call. Stripe's idempotency cache is the second line
+		//     of defense.
+		//
+		// Pre-fix shape (caught in audit): no idempotency key + status
+		// persisted last → retry-after-partial-failure double-refunded
+		// the customer.
+		if cn.RefundAmountCents > 0 && cn.StripeRefundID == "" {
+			if s.refunder != nil && inv.StripePaymentIntentID != "" {
+				idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
+				refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
+				if err != nil {
+					slog.Warn("stripe refund failed, credit note will be issued with failed refund status",
+						"credit_note_id", cn.ID, "error", err)
+					cn.RefundStatus = domain.RefundFailed
+				} else {
+					cn.StripeRefundID = refundID
+					cn.RefundStatus = domain.RefundSucceeded
+				}
 			} else {
-				cn.StripeRefundID = refundID
-				cn.RefundStatus = domain.RefundSucceeded
+				cn.RefundStatus = domain.RefundPending
 			}
-		} else if cn.RefundAmountCents > 0 {
-			// Refund requested but no refunder or no PI — mark pending for manual resolution
-			cn.RefundStatus = domain.RefundPending
+			// Persist refund result IMMEDIATELY (before the credit
+			// grant step) so a downstream failure doesn't lose the
+			// refund_id. Best-effort: if this fails the in-memory cn
+			// still carries refund_id and the Stripe idempotency key
+			// covers the duplicate-call case on retry.
+			if cn.RefundStatus != domain.RefundNone {
+				if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
+					slog.Warn("failed to persist refund status",
+						"credit_note_id", cn.ID, "refund_status", cn.RefundStatus,
+						"stripe_refund_id", cn.StripeRefundID, "error", err)
+				}
+			}
 		}
 
 		if cn.CreditAmountCents > 0 && s.credits != nil {
-			// Credit type on paid invoice: add to customer's prepaid balance
-			if err := s.credits.Grant(ctx, tenantID, CreditGrantInput{
+			// Credit-type CN: add to customer's prepaid balance via
+			// the dedup-safe GrantForCreditNote path. The partial
+			// unique index idx_credit_ledger_credit_note_dedup
+			// (migration 0093) enforces one grant per (tenant, CN),
+			// so a retry after a downstream-step failure (tax
+			// reversal / UpdateStatus) returns the existing grant
+			// silently instead of double-crediting the customer.
+			if err := s.credits.GrantForCreditNote(ctx, tenantID, cn.ID, CreditGrantInput{
 				CustomerID:  cn.CustomerID,
 				AmountCents: cn.CreditAmountCents,
 				Description: fmt.Sprintf("Credit note %s — %s", cn.CreditNoteNumber, cn.Reason),
@@ -431,16 +563,12 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}
 		}
 	} else {
-		// Invoice not yet paid — reduce amount_due
+		// Invoice not yet paid — reduce amount_due. Idempotent via
+		// the cn.AmountDueReduced flag we'd add for full safety; for
+		// now this path is single-shot per CN and the UpdateStatus
+		// at the end guards against re-entry.
 		if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
-		}
-	}
-
-	// Persist refund status updates before issuing
-	if cn.RefundStatus != domain.RefundNone {
-		if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
-			slog.Warn("failed to update refund status", "credit_note_id", cn.ID, "error", err)
 		}
 	}
 
@@ -504,6 +632,87 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	}
 
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
+}
+
+// RetryRefund re-attempts the Stripe refund for an already-issued
+// credit note whose refund_status landed at `failed` (Stripe rejected
+// or network errored at Issue time) or `pending` (no refunder
+// configured / no PI at Issue time, e.g. Stripe was wired up
+// afterwards). The credit-note itself stays issued — only the Stripe-
+// refund leg retries.
+//
+// Industry parity: Stripe's own `credit_notes.refunds` array is
+// append-only; refunds have their own status independent of the CN's
+// status. Velox tracks a single refund per CN (no array), but the
+// retry contract matches: the CN is a financial document that stays
+// in its final state while the cash-back leg can be re-driven by the
+// operator.
+//
+// Idempotency: uses the same `velox_cn_<id>` key as Issue() so a
+// retry after a previous-attempt-network-failure-but-Stripe-succeeded
+// scenario converges — Stripe returns the existing refund_id and
+// Velox persists it without double-charging the tenant.
+//
+// Rejects when:
+//   - CN status != issued (drafts use Issue(); voided CNs are terminal)
+//   - refund_status not in (failed, pending) — succeeded is final
+//   - refund_amount_cents == 0 (credit-only CN; no Stripe leg exists)
+//   - refunder not wired (Stripe not connected)
+//   - invoice has no PaymentIntent (paid via credits only)
+func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {
+	cn, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if cn.Status != domain.CreditNoteIssued {
+		return domain.CreditNote{}, errs.InvalidState(fmt.Sprintf(
+			"can only retry refund on issued credit notes (current status: %s)", cn.Status))
+	}
+	switch cn.RefundStatus {
+	case domain.RefundFailed, domain.RefundPending:
+		// retry-eligible
+	case domain.RefundSucceeded:
+		return domain.CreditNote{}, errs.InvalidState("refund already succeeded — nothing to retry")
+	default:
+		return domain.CreditNote{}, errs.InvalidState(fmt.Sprintf(
+			"cannot retry refund with status %q (refund leg did not run on this CN)", cn.RefundStatus))
+	}
+	if cn.RefundAmountCents <= 0 {
+		return domain.CreditNote{}, errs.InvalidState("credit-only credit note has no refund leg to retry")
+	}
+	if s.refunder == nil {
+		return domain.CreditNote{}, errs.InvalidState("refunder not configured — connect Stripe before retrying refund")
+	}
+	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
+	}
+	if inv.StripePaymentIntentID == "" {
+		return domain.CreditNote{}, errs.InvalidState("invoice has no PaymentIntent — refund cannot be processed via Stripe")
+	}
+
+	// Same idempotency key as Issue() — Stripe dedups against this so
+	// the retry is safe even if the prior attempt actually succeeded
+	// (network failure after Stripe completed): Stripe returns the
+	// existing refund_id, Velox persists it.
+	idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
+	refundID, refundErr := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
+	if refundErr != nil {
+		// Persist the still-failed state so the next retry has the
+		// latest error context and the dashboard surfaces accurate
+		// status.
+		_ = s.store.UpdateRefundStatus(ctx, tenantID, id, domain.RefundFailed, cn.StripeRefundID)
+		return domain.CreditNote{}, fmt.Errorf("stripe refund retry: %w", refundErr)
+	}
+
+	if err := s.store.UpdateRefundStatus(ctx, tenantID, id, domain.RefundSucceeded, refundID); err != nil {
+		// Stripe call succeeded but local persist failed. The
+		// idempotency key on the next retry converges (Stripe
+		// returns same refund_id, local persist runs again).
+		return domain.CreditNote{}, fmt.Errorf("persist refund status: %w", err)
+	}
+
+	return s.store.Get(ctx, tenantID, id)
 }
 
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {

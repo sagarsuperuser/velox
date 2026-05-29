@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -13,12 +14,29 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// AuditWriter is the narrow audit surface the auth handler uses.
+// Declared here so the package stays decoupled from internal/audit
+// and can be tested with a fake. Production wires *audit.Logger via
+// SetAuditLogger in router.go.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger AuditWriter
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetAuditLogger wires the audit logger so API key lifecycle changes
+// (create / revoke / rotate) write audit_log rows. Without this,
+// security-critical key mutations are invisible to the operator's
+// Audit Log page — a SOC2 / forensics blocker.
+func (h *Handler) SetAuditLogger(a AuditWriter) {
+	h.auditLogger = a
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -47,6 +65,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "api_key")
 		return
+	}
+
+	// Never log the raw key (security-critical). The audit row records
+	// only the key id, name, and permission set so an auditor can trace
+	// "who issued this credential" without the row becoming a credential
+	// harvesting target.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "api_key", result.Key.ID, result.Key.Name, map[string]any{
+			"key_type": result.Key.KeyType,
+			"livemode": result.Key.Livemode,
+		})
 	}
 
 	respond.JSON(w, r, http.StatusCreated, result)
@@ -94,6 +123,12 @@ func (h *Handler) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRevoke, "api_key", key.ID, key.Name, map[string]any{
+			"key_type": key.KeyType,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusOK, key)
 }
 
@@ -121,6 +156,14 @@ func (h *Handler) rotate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "api_key")
 		return
+	}
+
+	// Same hygiene as create — no raw key value in the audit row.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "api_key", result.NewKey.ID, result.NewKey.Name, map[string]any{
+			"key_type":   result.NewKey.KeyType,
+			"old_key_id": id,
+		})
 	}
 
 	respond.JSON(w, r, http.StatusOK, result)

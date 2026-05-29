@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
@@ -346,7 +347,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	invoices, total, err := h.svc.List(r.Context(), ListFilter{
+	filter := ListFilter{
 		TenantID:       tenantID,
 		CustomerID:     r.URL.Query().Get("customer_id"),
 		SubscriptionID: r.URL.Query().Get("subscription_id"),
@@ -360,7 +361,19 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		// default to created_at; unknown dir defaults to desc.
 		Sort:    r.URL.Query().Get("sort"),
 		SortDir: r.URL.Query().Get("dir"),
-	})
+	}
+	// Cursor pagination (2026-05-29). Takes precedence over offset.
+	// Only supported on the default sort (created_at DESC) — a custom
+	// sort + cursor combination would yield inconsistent seek-vs-
+	// order pairings.
+	if c := r.URL.Query().Get("after"); c != "" && filter.Sort == "" {
+		if cur, err := middleware.DecodeCursor(c); err == nil {
+			filter.AfterCreatedAt = cur.CreatedAt
+			filter.AfterID = cur.ID
+		}
+	}
+
+	invoices, total, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list invoices", "error", err)
@@ -368,6 +381,26 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if invoices == nil {
 		invoices = []domain.Invoice{}
+	}
+
+	if !filter.AfterCreatedAt.IsZero() && filter.AfterID != "" {
+		l := filter.Limit
+		if l <= 0 {
+			l = 50
+		} else if l > 100 {
+			l = 100
+		}
+		hasMore := len(invoices) > l
+		if hasMore {
+			invoices = invoices[:l]
+		}
+		resp := middleware.PageResponse{Data: invoices, HasMore: hasMore}
+		if hasMore && len(invoices) > 0 {
+			last := invoices[len(invoices)-1]
+			resp.NextCursor = middleware.EncodeCursor(last.ID, last.CreatedAt)
+		}
+		respond.JSON(w, r, http.StatusOK, resp)
+		return
 	}
 
 	respond.List(w, r, invoices, total)
@@ -452,10 +485,11 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 			}
 			email := cust.Email
 			name := cust.DisplayName
+			// customers.email is the single canonical recipient (Phase 1
+			// of the dual-email collapse, migration 0100). LegalName
+			// fallback to BP stays — that's a document-display field,
+			// not a send target.
 			if bp, err := h.customers.GetBillingProfile(emailCtx, tenantID, inv.CustomerID); err == nil {
-				if bp.Email != "" {
-					email = bp.Email
-				}
 				if bp.LegalName != "" {
 					name = bp.LegalName
 				}
@@ -584,6 +618,19 @@ func (h *Handler) markUncollectible(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AuditLog.tsx already has a special-case renderer for
+	// meta.action='marked_uncollectible' — but the audit row was never
+	// written, so that branch was dead code. Wire it up so the
+	// Audit Log page can finally show "Marked INV-NNN uncollectible".
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+			"action":          "marked_uncollectible",
+			"customer_id":     inv.CustomerID,
+			"amount_due":      inv.AmountDueCents,
+			"invoice_number":  inv.InvoiceNumber,
+		})
+	}
+
 	// Halt dunning automation. Best-effort — failure is logged not
 	// surfaced; the invoice transition is the authoritative state
 	// change, and dunning runs scan the invoice status on next tick
@@ -631,6 +678,23 @@ func (h *Handler) recordOfflinePayment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "invoice")
 		return
+	}
+
+	// AuditLog.tsx already has a special-case renderer for
+	// meta.action='payment_recorded' — wire the audit write so it
+	// surfaces. Money-critical action: operator marking an invoice
+	// paid out-of-band must be traceable for finance reconciliation.
+	if h.auditLogger != nil {
+		meta := map[string]any{
+			"action":          "payment_recorded",
+			"customer_id":     inv.CustomerID,
+			"amount_paid":     inv.AmountPaidCents,
+			"invoice_number":  inv.InvoiceNumber,
+		}
+		if input.Note != "" {
+			meta["note"] = input.Note
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "invoice", inv.ID, inv.InvoiceNumber, meta)
 	}
 
 	if h.dunning != nil {
@@ -1666,9 +1730,8 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 			if bp.LegalName != "" {
 				bt.Name = bp.LegalName
 			}
-			if bp.Email != "" {
-				bt.Email = bp.Email
-			}
+			// bp.Email removed in migration 0100 — bill-to email on the
+			// PDF tracks customers.email (set above from cust.Email).
 			bt.AddressLine1 = bp.AddressLine1
 			bt.AddressLine2 = bp.AddressLine2
 			bt.City = bp.City
@@ -1705,12 +1768,15 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 			for _, cn := range notes {
 				if cn.Status == domain.CreditNoteIssued {
 					cnInfos = append(cnInfos, CreditNoteInfo{
-						Number:            cn.CreditNoteNumber,
-						Reason:            cn.Reason,
-						Amount:            cn.TotalCents,
-						RefundAmountCents: cn.RefundAmountCents,
-						CreditAmountCents: cn.CreditAmountCents,
-						RefundStatus:      string(cn.RefundStatus),
+						Number:               cn.CreditNoteNumber,
+						Reason:               cn.Reason,
+						Amount:               cn.TotalCents,
+						RefundAmountCents:    cn.RefundAmountCents,
+						CreditAmountCents:    cn.CreditAmountCents,
+						OutOfBandAmountCents: cn.OutOfBandAmountCents,
+						TaxAmountCents:       cn.TaxAmountCents,
+						TaxTransactionID:     cn.TaxTransactionID,
+						RefundStatus:         string(cn.RefundStatus),
 					})
 				}
 			}

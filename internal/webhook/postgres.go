@@ -422,8 +422,11 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string, limit i
 	}
 	defer postgres.Rollback(tx)
 
-	if limit <= 0 || limit > 100 {
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	rows, err := tx.QueryContext(ctx, `

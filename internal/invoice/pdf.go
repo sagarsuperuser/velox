@@ -170,12 +170,22 @@ func parseBrandColor(hex string) (r, g, b uint8, ok bool) {
 
 // CreditNoteInfo holds credit note data for the totals section.
 type CreditNoteInfo struct {
-	Number            string
-	Reason            string
-	Amount            int64
-	RefundAmountCents int64
-	CreditAmountCents int64
-	RefundStatus      string
+	Number               string
+	Reason               string
+	Amount               int64
+	RefundAmountCents    int64
+	CreditAmountCents    int64
+	OutOfBandAmountCents int64
+	// TaxAmountCents is the proportional tax portion of this CN
+	// (back-solved from the invoice's tax ratio at CN create time).
+	// Rendered as a sub-fact under the CN row when > 0.
+	TaxAmountCents int64
+	// TaxTransactionID is the upstream reversal transaction id (Stripe
+	// Tax: tx_xxx). Non-empty when the CN issued an upstream reversal;
+	// empty for manual/none providers and legacy CNs. Drives the
+	// "(Stripe Tax)" vs "(no upstream provider)" suffix.
+	TaxTransactionID string
+	RefundStatus     string
 }
 
 // BillToInfo holds the customer's billing address for the PDF.
@@ -529,10 +539,16 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 	y += 2
 	totalsRow("Total", formatCents(inv.TotalAmountCents), true, 30, 30, 30, 30, 30, 30)
 
-	// Credit notes (pre-payment)
+	// Credit notes (pre-payment). A CN is "post-payment" if any of
+	// the three channels is populated — refund-to-PM, credit-balance,
+	// or out-of-band. Pre-payment CNs reduce the invoice subtotal
+	// directly (unpaid-invoice path). Out-of-band-only CNs must NOT
+	// be treated as pre-payment, otherwise they'd reduce the invoice
+	// total even though the operator already handled the refund
+	// externally.
 	var postPaymentCNs []CreditNoteInfo
 	for _, cn := range creditNotes {
-		if cn.RefundAmountCents > 0 || cn.CreditAmountCents > 0 {
+		if cn.RefundAmountCents > 0 || cn.CreditAmountCents > 0 || cn.OutOfBandAmountCents > 0 {
 			postPaymentCNs = append(postPaymentCNs, cn)
 			continue
 		}
@@ -582,12 +598,19 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(inv.AmountDueCents))
 		y += 20
 
-		// Post-payment adjustments
+		// Post-payment adjustments. A CN is "completed" when at least
+		// one channel has settled — credit-balance and out-of-band
+		// are immediate at Issue time; the Stripe refund leg is
+		// considered settled only on refund_status=succeeded so a
+		// pending/failed refund doesn't render as if it landed.
 		var completedCNs []CreditNoteInfo
 		for _, cn := range postPaymentCNs {
-			if cn.CreditAmountCents > 0 {
+			switch {
+			case cn.CreditAmountCents > 0:
 				completedCNs = append(completedCNs, cn)
-			} else if cn.RefundAmountCents > 0 && cn.RefundStatus == string(domain.RefundSucceeded) {
+			case cn.OutOfBandAmountCents > 0:
+				completedCNs = append(completedCNs, cn)
+			case cn.RefundAmountCents > 0 && cn.RefundStatus == string(domain.RefundSucceeded):
 				completedCNs = append(completedCNs, cn)
 			}
 		}
@@ -597,20 +620,56 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 			setColor(150, 150, 150)
 			textAt(margin, y, "POST-PAYMENT ADJUSTMENTS")
 			y += 12
-			setFont(false, 8)
-			setColor(120, 120, 120)
 			for _, cn := range completedCNs {
-				kind := "credited to balance"
+				// Channel breakdown — concat of whichever channels are
+				// non-zero. Matches the dashboard row's channelDescription
+				// shape so PDF + UI tell the same story.
+				// PDF font (embedded Noto Sans subset) covers Latin +
+				// currency symbols but NOT arrows (→, ↳) or
+				// checkmarks. Use ASCII-safe labels so the rendered
+				// PDF doesn't show missing-glyph boxes. The dashboard
+				// renders with system fonts and can keep the arrows.
+				var channels []string
 				if cn.RefundAmountCents > 0 {
-					kind = "refunded"
+					channels = append(channels, formatCents(cn.RefundAmountCents)+" to card")
 				}
+				if cn.CreditAmountCents > 0 {
+					channels = append(channels, formatCents(cn.CreditAmountCents)+" to credit")
+				}
+				if cn.OutOfBandAmountCents > 0 {
+					channels = append(channels, formatCents(cn.OutOfBandAmountCents)+" out of band")
+				}
+				channelDesc := strings.Join(channels, " | ")
 				reason := cn.Reason
 				if len([]rune(reason)) > 40 {
 					reason = string([]rune(reason)[:37]) + "..."
 				}
-				textAt(margin, y, fmt.Sprintf("%s - %s (%s)", cn.Number, reason, kind))
+				setFont(false, 8)
+				setColor(120, 120, 120)
+				textAt(margin, y, fmt.Sprintf("%s - %s", cn.Number, reason))
 				rightAlignAt(totalsX+labelW, y, totalsW-labelW, formatCents(cn.Amount))
-				y += 12
+				y += 11
+				// Channel breakdown line — smaller, indented, matches
+				// dashboard layout.
+				setFont(false, 7)
+				setColor(140, 140, 140)
+				textAt(margin+8, y, channelDesc)
+				y += 10
+				// Tax reversal sub-fact — same content as the dashboard
+				// row but ASCII-safe (no ↳ — Noto Sans subset doesn't
+				// cover the Arrows block).
+				if cn.TaxAmountCents > 0 {
+					var taxLine string
+					if cn.TaxTransactionID != "" {
+						taxLine = fmt.Sprintf("Tax reversed %s (Stripe Tax)", formatCents(cn.TaxAmountCents))
+					} else {
+						taxLine = fmt.Sprintf("Tax: %s (no upstream provider)", formatCents(cn.TaxAmountCents))
+					}
+					setColor(160, 160, 160)
+					textAt(margin+12, y, taxLine)
+					y += 10
+				}
+				y += 2
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // ReconcileInvoiceStore is the narrow interface the reconciler needs from
@@ -36,6 +37,14 @@ type Reconciler struct {
 	olderThan time.Duration
 	now       func() time.Time // injectable for tests
 	breaker   *breaker.Breaker // optional; skip reconcile ticks when breaker is open
+	// resolver binds ctx to effective-now from the invoice's pin before
+	// MarkPaid so clock-pinned invoices stamp `paid_at` in simulated
+	// time. Wired via SetResolver from router.go (same pattern as
+	// payment.Stripe + dunning.Handler). Nil-tolerant: when unwired
+	// (tests, bare construction) paid_at falls back to r.now() wall-
+	// clock — that's the legacy behavior, preserved so the constructor
+	// stays zero-arg.
+	resolver clock.Resolver
 }
 
 // NewReconciler constructs a Reconciler. If olderThan <= 0, defaults to 60s.
@@ -58,6 +67,14 @@ func NewReconciler(client StripeClient, invoices ReconcileInvoiceStore, olderTha
 func (r *Reconciler) SetBreaker(b *breaker.Breaker) {
 	r.breaker = b
 }
+
+// SetResolver wires the clock resolver so `paid_at` writes land in
+// simulated time on clock-pinned invoices. Without this the reconciler
+// would call MarkPaid with wall-clock — leaking wall-clock onto an
+// invoice whose every other timestamp (issued_at, due_at, billing
+// period) lives on the simulated timeline. Same shape as
+// payment.Stripe.SetResolver + dunning.Handler.SetResolver.
+func (r *Reconciler) SetResolver(res clock.Resolver) { r.resolver = res }
 
 // Run scans for unresolved PaymentUnknown invoices older than the cool-off
 // window and reconciles each one against Stripe. Returns the number
@@ -137,8 +154,18 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 
 	switch res.Status {
 	case "succeeded":
-		now := r.now()
-		if _, err := r.invoices.MarkPaid(ctx, inv.TenantID, inv.ID, res.ID, now); err != nil {
+		// Bind effective-now from the invoice's pin so `paid_at` lands
+		// in simulated time on clock-pinned invoices. Without this bind,
+		// paid_at leaked wall-clock — visible on the activity timeline
+		// + invoice CSV export as a today-stamped paid_at next to
+		// simulated billing-period dates. ADR-030 cross-flow audit
+		// 2026-05-28.
+		markCtx := ctx
+		if r.resolver != nil {
+			markCtx, _ = clock.BindEffectiveNow(markCtx, r.resolver, clock.Pin{TenantID: inv.TenantID, InvoiceID: inv.ID})
+		}
+		now := clock.Now(markCtx)
+		if _, err := r.invoices.MarkPaid(markCtx, inv.TenantID, inv.ID, res.ID, now); err != nil {
 			return false, fmt.Errorf("mark paid: %w", err)
 		}
 		slog.Info("reconciled unknown → succeeded",

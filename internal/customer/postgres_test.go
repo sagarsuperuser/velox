@@ -204,3 +204,90 @@ func TestPostgresStore_Update(t *testing.T) {
 		t.Errorf("email: got %q", updated.Email)
 	}
 }
+
+// TestService_Update_ResetsBounceStateOnEmailChange asserts the
+// service-layer reset of email_status / email_bounce_reason /
+// email_last_bounced_at. Without this reset, a bounced flag on the
+// previous email would carry to the new one and the suppression gate
+// would silently drop sends to a brand-new untested address.
+//
+// Goes through service.Update (not the store directly) because the
+// reset logic lives in the service — it has both the prior and new
+// email values in scope and the store doesn't.
+//
+// Three cases:
+//  1. Email changes → bounce state resets to 'unknown' + NULLs.
+//  2. Email doesn't change (same plaintext) → bounce state preserved.
+//  3. Only display_name changes → bounce state preserved.
+func TestService_Update_ResetsBounceStateOnEmailChange(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := customer.NewPostgresStore(db)
+	svc := customer.NewService(store)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Bounce-reset")
+
+	cust, _ := store.Create(ctx, tenantID, domain.Customer{
+		ExternalID:  "br",
+		DisplayName: "Original",
+		Email:       "old@example.com",
+	})
+
+	// Mark the customer as bounced — simulates the post-5xx state
+	// that ReportBounce → MarkEmailBounced writes.
+	if err := store.MarkEmailBounced(ctx, tenantID, cust.ID, "550 5.1.1 user unknown"); err != nil {
+		t.Fatalf("seed bounce: %v", err)
+	}
+	bounced, err := store.Get(ctx, tenantID, cust.ID)
+	if err != nil {
+		t.Fatalf("get bounced: %v", err)
+	}
+	if bounced.EmailStatus != domain.EmailStatusBounced {
+		t.Fatalf("expected bounced status; got %q", bounced.EmailStatus)
+	}
+	if bounced.EmailBounceReason == "" {
+		t.Fatal("expected bounce reason populated")
+	}
+
+	// Case 1: change the email via the service — bounce state should
+	// reset to unknown and NULL out the reason + last-bounced timestamp.
+	_, err = svc.Update(ctx, tenantID, cust.ID, customer.UpdateInput{Email: "new@example.com"})
+	if err != nil {
+		t.Fatalf("update with new email: %v", err)
+	}
+	updated, _ := store.Get(ctx, tenantID, cust.ID)
+	if updated.EmailStatus != domain.EmailStatusUnknown {
+		t.Errorf("expected email_status reset to unknown after email change; got %q", updated.EmailStatus)
+	}
+	if updated.EmailBounceReason != "" {
+		t.Errorf("expected email_bounce_reason cleared; got %q", updated.EmailBounceReason)
+	}
+	if updated.EmailLastBouncedAt != nil {
+		t.Errorf("expected email_last_bounced_at cleared; got %v", *updated.EmailLastBouncedAt)
+	}
+
+	// Case 2: re-bounce, then no-op update (same email value) — state
+	// must be preserved. Edit that doesn't change the email shouldn't
+	// erase real bounce signal.
+	if err := store.MarkEmailBounced(ctx, tenantID, cust.ID, "550 again"); err != nil {
+		t.Fatalf("re-bounce: %v", err)
+	}
+	_, err = svc.Update(ctx, tenantID, cust.ID, customer.UpdateInput{DisplayName: "Renamed", Email: "new@example.com"})
+	if err != nil {
+		t.Fatalf("update no-op-email: %v", err)
+	}
+	noop, _ := store.Get(ctx, tenantID, cust.ID)
+	if noop.EmailStatus != domain.EmailStatusBounced {
+		t.Errorf("bounce state must persist when email value unchanged; got %q", noop.EmailStatus)
+	}
+	if noop.EmailBounceReason == "" {
+		t.Error("bounce reason must persist when email value unchanged")
+	}
+	if noop.DisplayName != "Renamed" {
+		t.Errorf("display_name should still update; got %q", noop.DisplayName)
+	}
+
+	// Migration 0100 collapsed BP.email — customers.email is now the
+	// single canonical recipient. There's no BP→customer sync left to
+	// exercise here. The Case 1/2 paths (via svc.Update) already cover
+	// the email-change reset behavior end-to-end.
+}

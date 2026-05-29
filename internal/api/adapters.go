@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stripe/stripe-go/v82"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
@@ -17,13 +19,164 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
-	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/paymentmethods"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
+
+// compositePaymentSetupStore implements payment.PaymentSetupStore on
+// top of the canonical sources — customers.stripe_customer_id +
+// payment_methods. Lets payment/checkout.go and payment/stripe.go
+// keep their existing PaymentSetupStore-shaped wiring while the
+// deprecated customer_payment_setups table is read-only on its way
+// out. Compose the CustomerPaymentSetup wire shape from canonical
+// state on read; write only the parts the new architecture owns
+// (stripe_customer_id) and drop the rest (card details flow through
+// paymentmethods.Service via the webhook attach path).
+type compositePaymentSetupStore struct {
+	customers *customer.PostgresStore
+	pms       *paymentmethods.Service
+}
+
+func (a *compositePaymentSetupStore) GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error) {
+	cust, err := a.customers.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return domain.CustomerPaymentSetup{}, err
+	}
+	pms, err := a.pms.List(ctx, tenantID, customerID)
+	if err != nil {
+		return domain.CustomerPaymentSetup{}, err
+	}
+	ps := domain.CustomerPaymentSetup{
+		CustomerID:       customerID,
+		TenantID:         tenantID,
+		StripeCustomerID: cust.StripeCustomerID,
+		UpdatedAt:        cust.UpdatedAt,
+		CreatedAt:        cust.CreatedAt,
+	}
+	// Find the default active PM. List returns active rows only
+	// (detached_at IS NULL) and orders is_default DESC.
+	for _, pm := range pms {
+		if pm.IsDefault {
+			ps.SetupStatus = domain.PaymentSetupReady
+			ps.DefaultPaymentMethodPresent = true
+			ps.PaymentMethodType = pm.Type
+			ps.StripePaymentMethodID = pm.StripePaymentMethodID
+			ps.CardBrand = pm.CardBrand
+			ps.CardLast4 = pm.CardLast4
+			ps.CardExpMonth = pm.CardExpMonth
+			ps.CardExpYear = pm.CardExpYear
+			return ps, nil
+		}
+	}
+	// Stripe Customer exists but no default PM yet → pending.
+	// No Stripe Customer at all → missing.
+	if cust.StripeCustomerID != "" {
+		ps.SetupStatus = domain.PaymentSetupPending
+	} else {
+		ps.SetupStatus = domain.PaymentSetupMissing
+	}
+	return ps, nil
+}
+
+func (a *compositePaymentSetupStore) UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error) {
+	// Only the stripe_customer_id mapping survives on this code
+	// path. Card details, default-PM flag, and setup_status now
+	// live on payment_methods (written via paymentmethods.Service
+	// from the webhook attach path). The other fields on ps are
+	// ignored — they're either redundant with payment_methods or
+	// state-machine vestiges from the dropped summary table.
+	if ps.StripeCustomerID != "" && ps.CustomerID != "" {
+		if err := a.customers.SetStripeCustomerID(ctx, tenantID, ps.CustomerID, ps.StripeCustomerID); err != nil {
+			return domain.CustomerPaymentSetup{}, err
+		}
+	}
+	// Return the post-write composed view so callers see their
+	// write reflected.
+	return a.GetPaymentSetup(ctx, tenantID, ps.CustomerID)
+}
+
+// paymentReadinessAdapter implements billing.PaymentReadiness by
+// combining customer.PostgresStore (for the Stripe Customer ID
+// mapping) and paymentmethods.Service (for the canonical "has
+// default active PM?" query). Replaces the legacy
+// customer_payment_setups.GetPaymentSetup read path which lumped
+// both facts into a single denorm-cache table. Single source of
+// truth per concern:
+//   - customers.stripe_customer_id is the customer ↔ Stripe Customer
+//     mapping (1:1, lazy creation).
+//   - payment_methods is the canonical multi-PM store; the default
+//     row (is_default=true, detached_at IS NULL) is the chargeable
+//     PM. List filters out detached rows server-side.
+type paymentReadinessAdapter struct {
+	customers *customer.PostgresStore
+	pms       *paymentmethods.Service
+}
+
+func (a *paymentReadinessAdapter) ResolveForCharge(ctx context.Context, tenantID, customerID string) (string, bool, error) {
+	cust, err := a.customers.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return "", false, err
+	}
+	if cust.StripeCustomerID == "" {
+		// No Stripe Customer object yet — can't auto-charge.
+		return "", false, nil
+	}
+	pms, err := a.pms.List(ctx, tenantID, customerID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, pm := range pms {
+		if pm.IsDefault {
+			return cust.StripeCustomerID, true, nil
+		}
+	}
+	// Stripe Customer exists but no default PM attached (e.g. customer
+	// created via Stripe but card removed). Engine treats this as
+	// "no PM ready" → queues for retry-on-attach.
+	return cust.StripeCustomerID, false, nil
+}
+
+// portalCustomerWriterAdapter narrows customer.Service.Update to the
+// portal's allow-list (display_name + email only). Status, dunning-
+// policy assignment, and other operator-controlled fields stay
+// untouched — the portal caller can't reach them through this seam.
+type portalCustomerWriterAdapter struct {
+	svc *customer.Service
+}
+
+func (a *portalCustomerWriterAdapter) UpdateProfile(ctx context.Context, tenantID, customerID, displayName, email string) (domain.Customer, error) {
+	return a.svc.Update(ctx, tenantID, customerID, customer.UpdateInput{
+		DisplayName: displayName,
+		Email:       email,
+	})
+}
+
+// portalCreditReaderAdapter bridges credit.Service → portalapi.CreditReader.
+// Translates the local credit.ListFilter shape to portalapi's narrower
+// view so the portal handler doesn't gain a reverse import of internal/
+// credit. Pure shape conversion; no business logic.
+type portalCreditReaderAdapter struct {
+	svc *credit.Service
+}
+
+func (a *portalCreditReaderAdapter) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
+	return a.svc.GetBalance(ctx, tenantID, customerID)
+}
+
+func (a *portalCreditReaderAdapter) ListEntries(ctx context.Context, f portalapi.CreditListFilter) ([]domain.CreditLedgerEntry, error) {
+	return a.svc.ListEntries(ctx, credit.ListFilter{
+		TenantID:   f.TenantID,
+		CustomerID: f.CustomerID,
+		Limit:      f.Limit,
+		Sort:       f.Sort,
+		SortDir:    f.SortDir,
+	})
+}
 
 // invoiceWriterAdapter bridges invoice.PostgresStore → billing.InvoiceWriter.
 type invoiceWriterAdapter struct {
@@ -93,6 +246,18 @@ type creditGrantAdapter struct {
 
 func (a *creditGrantAdapter) Grant(ctx context.Context, tenantID string, input creditnote.CreditGrantInput) error {
 	_, err := a.svc.Grant(ctx, tenantID, credit.GrantInput{
+		CustomerID:  input.CustomerID,
+		AmountCents: input.AmountCents,
+		Description: input.Description,
+		InvoiceID:   input.InvoiceID,
+	})
+	return err
+}
+
+// GrantForCreditNote bridges to credit.Service.GrantForCreditNote so
+// CN Issue() retries dedup via migration 0093's partial unique index.
+func (a *creditGrantAdapter) GrantForCreditNote(ctx context.Context, tenantID, creditNoteID string, input creditnote.CreditGrantInput) error {
+	_, err := a.svc.GrantForCreditNote(ctx, tenantID, creditNoteID, credit.GrantInput{
 		CustomerID:  input.CustomerID,
 		AmountCents: input.AmountCents,
 		Description: input.Description,
@@ -243,11 +408,11 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 	}
 	email := cust.Email
 	name := cust.DisplayName
-	// Prefer billing profile email/name if available
+	// customers.email is the single canonical recipient (Phase 1 of the
+	// dual-email collapse, migration 0100). Billing-profile legal_name
+	// still wins for display because the operator types the document
+	// display name there, but the send target is always cust.Email.
 	if bp, err := a.store.GetBillingProfile(ctx, tenantID, customerID); err == nil {
-		if bp.Email != "" {
-			email = bp.Email
-		}
 		if bp.LegalName != "" {
 			name = bp.LegalName
 		}
@@ -275,80 +440,6 @@ func (a *passwordResetEmailAdapter) SendPasswordReset(ctx context.Context, tenan
 	// flow. tenantID comes from user.Service.IssueResetToken so the
 	// outbox row stamps the right tenant for operator visibility.
 	return a.sender.SendPasswordReset(ctx, tenantID, email, email, resetLink)
-}
-
-// portalPaymentMethodUpdaterAdapter bridges Stripe Checkout (setup
-// mode) into portalapi.PaymentMethodUpdater. The customer's portal
-// session ctx supplies tenantID + customerID; this adapter mints the
-// Stripe Checkout URL the customer redirects to. On success, the
-// existing webhook reconciler flips PaymentSetup → ready and the
-// engine's RetryPendingCharges scheduler auto-collects pending
-// invoices on its next tick.
-//
-// Reuses the same Stripe client + store the operator-driven
-// /v1/portal endpoint uses; the only difference is identity comes
-// from the portal session, not a Bearer key.
-type portalPaymentMethodUpdaterAdapter struct {
-	clients   *payment.StripeClients
-	store     payment.PaymentSetupStore
-	portalURL string
-}
-
-func (a *portalPaymentMethodUpdaterAdapter) CreateUpdateSession(ctx context.Context, tenantID, customerID, returnURL string) (string, error) {
-	sc := a.clients.ForCtx(ctx)
-	if sc == nil {
-		return "", errs.New("stripe_unavailable", "Stripe is not configured for this mode")
-	}
-	ps, err := a.store.GetPaymentSetup(ctx, tenantID, customerID)
-	if err != nil || ps.StripeCustomerID == "" {
-		return "", errs.Invalid("customer", "no Stripe payment setup yet — complete the initial setup flow first")
-	}
-	if returnURL == "" {
-		base := a.portalURL
-		if base == "" {
-			base = "http://localhost:5173/portal"
-		}
-		returnURL = fmt.Sprintf("%s?payment=updated", base)
-	}
-
-	sess, err := sc.V1CheckoutSessions.Create(ctx, &stripe.CheckoutSessionCreateParams{
-		Customer:           stripe.String(ps.StripeCustomerID),
-		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
-		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		SuccessURL:         stripe.String(returnURL),
-		CancelURL:          stripe.String(returnURL),
-		Params: stripe.Params{
-			Metadata: map[string]string{
-				"velox_customer_id": customerID,
-				"velox_tenant_id":   tenantID,
-				"velox_purpose":     "update_payment_method",
-				"velox_initiator":   "customer_portal",
-			},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("create checkout session: %w", err)
-	}
-
-	// Mark setup as pending update — preserves existing card details
-	// until the new ones arrive via webhook (avoids a flicker where
-	// PaymentSetup briefly shows "missing").
-	now := time.Now().UTC()
-	_, _ = a.store.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
-		CustomerID:                  customerID,
-		TenantID:                    tenantID,
-		SetupStatus:                 domain.PaymentSetupPending,
-		StripeCustomerID:            ps.StripeCustomerID,
-		CardBrand:                   ps.CardBrand,
-		CardLast4:                   ps.CardLast4,
-		CardExpMonth:                ps.CardExpMonth,
-		CardExpYear:                 ps.CardExpYear,
-		StripePaymentMethodID:       ps.StripePaymentMethodID,
-		DefaultPaymentMethodPresent: ps.DefaultPaymentMethodPresent,
-		PaymentMethodType:           ps.PaymentMethodType,
-		UpdatedAt:                   now,
-	})
-	return sess.URL, nil
 }
 
 // invoiceEmailEventsAdapter bridges email.OutboxStore.ListByInvoice
@@ -426,11 +517,20 @@ func (a *customerSentEmailsAdapter) ListByCustomer(ctx context.Context, tenantID
 // (Stripe.handlePaymentFailed) which points the customer at the
 // hosted invoice URL — this email mints a single-use token for the
 // /update-payment SPA route. ADR-013, ADR-023.
+//
+// The token-then-SPA indirection is retained (vs. embedding the Stripe
+// Checkout URL directly) because the SPA validates the customer-scoped
+// token first, surfaces invoice context to the customer, and only THEN
+// mints a Checkout session. That two-step is the right shape for an
+// email link the customer clicks days after issuance: the operator can
+// invalidate tokens at any time, and the SPA shows "for invoice X, $Y"
+// before sending the customer to Stripe.
 type noPaymentMethodNotifierAdapter struct {
 	email            paymentSetupEmailSender
 	customerEmail    *customerEmailFetcherAdapter
 	paymentUpdateURL string
 	tokenSvc         *payment.TokenService
+	auditLogger      *audit.Logger // optional — engine fires this background task; audit row records the send for operator forensics.
 }
 
 func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error {
@@ -455,7 +555,23 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 		return fmt.Errorf("create payment update token: %w", err)
 	}
 	updateURL := fmt.Sprintf("%s?token=%s", a.paymentUpdateURL, rawToken)
-	return a.email.SendPaymentSetupRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL)
+	if err := a.email.SendPaymentSetupRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
+		return err
+	}
+	// Audit the engine-fired send so the operator can answer
+	// "did we email the customer at finalize?" from the AuditLog page
+	// without grepping outbox tables. Mirrors the operator-driven
+	// setup_link_sent audit row written by paymentmethods.Handler.
+	if a.auditLogger != nil {
+		_ = a.auditLogger.Log(ctx, tenantID, "update", "customer", inv.CustomerID, name, map[string]any{
+			"action":         "setup_link_sent",
+			"to":             to,
+			"invoice_id":     inv.ID,
+			"invoice_number": inv.InvoiceNumber,
+			"trigger":        "finalize_no_pm",
+		})
+	}
+	return nil
 }
 
 // prorationCreditGranterAdapter bridges credit.Service → subscription.ProrationCreditGranter.
@@ -481,6 +597,23 @@ func (a *prorationCreditGranterAdapter) GetByProrationSource(ctx context.Context
 	return a.svc.GetByProrationSource(ctx, tenantID, subscriptionID, subscriptionItemID, changeType, changeAt)
 }
 
+// GrantProrationTx is the in-transaction variant. The caller owns the
+// tx; this adapter forwards to the credit service's tx-aware grant
+// path. ADR-030 atomic-proration follow-through (2026-05-29).
+func (a *prorationCreditGranterAdapter) GrantProrationTx(ctx context.Context, tx *sql.Tx, tenantID string, input subscription.ProrationGrantInput) error {
+	planChangedAt := input.SourcePlanChangedAt
+	_, err := a.svc.GrantTx(ctx, tx, tenantID, credit.GrantInput{
+		CustomerID:               input.CustomerID,
+		AmountCents:              input.AmountCents,
+		Description:              input.Description,
+		SourceSubscriptionID:     input.SourceSubscriptionID,
+		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
+		SourcePlanChangedAt:      &planChangedAt,
+		SourceChangeType:         input.SourceChangeType,
+	})
+	return err
+}
+
 // prorationInvoiceCreatorAdapter bridges invoice.PostgresStore + tenant.SettingsStore → subscription.ProrationInvoiceCreator.
 type prorationInvoiceCreatorAdapter struct {
 	store    *invoice.PostgresStore
@@ -501,6 +634,19 @@ func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumber(ctx context.Context, 
 
 func (a *prorationInvoiceCreatorAdapter) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
 	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
+}
+
+// CreateInvoiceWithLineItemsTx + NextInvoiceNumberTx are the
+// in-transaction variants used by the atomic AddItem-with-proration
+// flow. The caller (subscription.Handler) owns the tx; this adapter
+// just forwards to the underlying store + numberer's Tx methods.
+// ADR-030 atomic-proration follow-through (2026-05-29).
+func (a *prorationInvoiceCreatorAdapter) CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.CreateWithLineItemsTx(ctx, tx, tenantID, inv, items)
+}
+
+func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumberTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error) {
+	return a.numberer.NextInvoiceNumberTx(ctx, tx, tenantID)
 }
 
 // prorationTaxApplierAdapter bridges billing.Engine → subscription.ProrationTaxApplier.
@@ -525,6 +671,23 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		DiscountCents:  r.DiscountCents,
 		TaxStatus:      r.TaxStatus,
 	}, nil
+}
+
+// pmCustomerLookupAdapter bridges customer.PostgresStore →
+// paymentmethods.CustomerLookup. paymentmethods doesn't import
+// customer (keeps the dep graph one-way); router.go composes the
+// adapter so the operator send-setup-email endpoint can resolve the
+// recipient address + display name from the canonical customer row.
+type pmCustomerLookupAdapter struct {
+	store *customer.PostgresStore
+}
+
+func (a *pmCustomerLookupAdapter) GetForSetupLink(ctx context.Context, tenantID, customerID string) (email, displayName string, err error) {
+	c, err := a.store.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return "", "", err
+	}
+	return c.Email, c.DisplayName, nil
 }
 
 // customerLookupAdapter bridges customer.PostgresStore → customerportal.CustomerLookup.
@@ -588,6 +751,51 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 			_ = err
 		}
 	}
+}
+
+// suppressionCheckerAdapter is the inverse of bounceReporterAdapter:
+// given (tenant, email), it answers "is this recipient suppressable
+// because we've already seen them bounce or complain?". Both
+// email.Sender and email.OutboxSender consult this before every send
+// so bounced addresses don't get hammered with retry-DLQ noise.
+//
+// Returns the first matching customer's email_status; if multiple
+// customers share the same email (rare) and any one is suppressed,
+// the address is treated as suppressed for that tenant. Better to
+// suppress one legitimate send than to keep mailing a dead address.
+type suppressionCheckerAdapter struct {
+	blinder *crypto.Blinder
+	store   *customer.PostgresStore
+}
+
+func (a *suppressionCheckerAdapter) IsSuppressed(ctx context.Context, tenantID, emailAddr string) (bool, string, error) {
+	if a == nil || a.store == nil || a.blinder == nil || emailAddr == "" || tenantID == "" {
+		return false, "", nil
+	}
+	blind := a.blinder.Blind(emailAddr)
+	if blind == "" {
+		return false, "", nil
+	}
+	matches, err := a.store.FindByEmailBlindIndex(ctx, blind, 10)
+	if err != nil {
+		return false, "", err
+	}
+	for _, m := range matches {
+		if m.TenantID != tenantID {
+			continue
+		}
+		c, err := a.store.Get(ctx, tenantID, m.CustomerID)
+		if err != nil {
+			continue
+		}
+		switch c.EmailStatus {
+		case domain.EmailStatusBounced:
+			return true, "bounced: " + c.EmailBounceReason, nil
+		case domain.EmailStatusComplained:
+			return true, "complained", nil
+		}
+	}
+	return false, "", nil
 }
 
 // stripeCustomerEnsurer resolves-or-creates the Stripe customer for a

@@ -665,7 +665,15 @@ function CreateCouponDialog({ open, onOpenChange, onCreated, initialValues }: {
   open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void
   initialValues?: Partial<CreateCouponData>
 }) {
-  const [plans, setPlans] = useState<{ id: string; name: string; code: string }[]>([])
+  // Plans list for the "scope to specific plans" multi-select.
+  // Lazy-fetched on dialog open via React Query — shares the cache
+  // with any other Coupons page mounting that already loaded plans.
+  const plansQuery = useQuery({
+    queryKey: ['coupon-dialog', 'plans'],
+    queryFn: () => api.listPlans(),
+    enabled: open,
+  })
+  const plans = (plansQuery.data?.data ?? []) as { id: string; name: string; code: string }[]
   const [isPrivate, setIsPrivate] = useState(false)
 
   const form = useForm<CreateCouponData>({
@@ -678,12 +686,6 @@ function CreateCouponDialog({ open, onOpenChange, onCreated, initialValues }: {
       minAmount: '', firstTimeCustomerOnly: false, maxRedemptionsPerCustomer: '',
     },
   })
-
-  useEffect(() => {
-    if (open) {
-      api.listPlans().then(res => setPlans(res.data || [])).catch(() => {})
-    }
-  }, [open])
 
   // Duplicate flow — seed the form with values from the source coupon
   // on the open transition only. Keyed on [open] so re-renders in the

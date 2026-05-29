@@ -2,13 +2,12 @@ package usage
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/api/timefilter"
 	"github.com/sagarsuperuser/velox/internal/auth"
-	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // CustomerUsageHandler exposes GET /v1/customers/{id}/usage. Kept distinct
@@ -57,25 +56,16 @@ func (h *CustomerUsageHandler) get(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, result)
 }
 
-// parseUsagePeriodQuery reads ?from= and ?to= from the request URL. Empty
-// query → zero-valued CustomerUsagePeriod (service defaults to current
-// cycle). Unparseable values surface as 400 via the handler's FromError
-// path, with the field set so the dashboard can route the message.
+// parseUsagePeriodQuery reads ?from= and ?to= from the request URL.
+// Empty query → zero-valued CustomerUsagePeriod (service defaults to
+// current cycle). Unparseable values surface as 400 via the handler's
+// FromError path. Accepts both RFC3339 instants and bare YYYY-MM-DD
+// dates via the shared timefilter helper so every operator endpoint
+// reads dates the same way.
 func parseUsagePeriodQuery(r *http.Request) (CustomerUsagePeriod, error) {
-	var period CustomerUsagePeriod
-	if v := r.URL.Query().Get("from"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return CustomerUsagePeriod{}, errs.Invalid("from", "must be RFC 3339 (e.g. 2026-04-01T00:00:00Z)")
-		}
-		period.From = t
+	from, to, err := timefilter.ParseRange(r, "from", "to")
+	if err != nil {
+		return CustomerUsagePeriod{}, err
 	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return CustomerUsagePeriod{}, errs.Invalid("to", "must be RFC 3339 (e.g. 2026-05-01T00:00:00Z)")
-		}
-		period.To = t
-	}
-	return period, nil
+	return CustomerUsagePeriod{From: from, To: to}, nil
 }

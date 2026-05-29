@@ -139,11 +139,15 @@ func TestParsePageParams_Defaults(t *testing.T) {
 }
 
 func TestParsePageParams_MaxLimit(t *testing.T) {
+	// Over-cap asks clamp to the max (100), not fall back to the default
+	// (25). Pre-2026-05-28 this returned 25 — a silent truncation that
+	// hid the true page-size ceiling from clients. Per no-silent-
+	// fallbacks principle: honor the intent, just cap it.
 	req := httptest.NewRequest("GET", "/v1/customers?limit=500", nil)
 	params := ParsePageParams(req)
 
-	if params.Limit != 25 {
-		t.Errorf("over-max limit should default: got %d, want 25", params.Limit)
+	if params.Limit != 100 {
+		t.Errorf("over-max limit should clamp to MAX: got %d, want 100", params.Limit)
 	}
 }
 

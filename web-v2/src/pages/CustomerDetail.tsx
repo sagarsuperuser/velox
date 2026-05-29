@@ -5,9 +5,10 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForPaymentSetup, type Customer, type BillingProfile, type Invoice, type PaymentSetup, type DunningPolicyWithCount, type CustomerCouponAssignment, type Subscription } from '@/lib/api'
+import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type DunningPolicyWithCount, type CustomerCouponAssignment, type Subscription, type CustomerPaymentMethod } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import { CostDashboard } from '@/components/CostDashboard'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { TestClockBanner } from '@/components/TestClockBanner'
@@ -57,7 +58,6 @@ type EditCustomerData = z.infer<typeof editCustomerSchema>
 
 const billingProfileSchema = z.object({
   legal_name: z.string(),
-  email: z.string().email('Invalid email address').or(z.literal('')),
   phone: z.string().regex(/^[\+\d\s\-\(\)]{7,20}$/, 'Invalid phone number').or(z.literal('')),
   address_line1: z.string(), address_line2: z.string(),
   city: z.string(), state: z.string(), postal_code: z.string(),
@@ -141,7 +141,6 @@ export default function CustomerDetailPage() {
   const [showDunningOverride, setShowDunningOverride] = useState(false)
   const [showAssignCoupon, setShowAssignCoupon] = useState(false)
   const [showNewInvoice, setShowNewInvoice] = useState(false)
-  const [settingUpPayment, setSettingUpPayment] = useState(false)
   // Collapse-by-default for the "Sent emails" card — show 5 latest
   // rows inline; "Show all" expands into a scroll-constrained list.
   // Operator-dashboard convention (Stripe / Linear / Vercel all
@@ -228,16 +227,45 @@ export default function CustomerDetailPage() {
     ? subBuckets.active
     : subBuckets.active.slice(0, SUB_VISIBLE_CAP)
 
-  // Polls during an active update flow (setup_status='pending') so the
-  // operator returning from a Stripe Checkout tab sees the new card
-  // swap in within ~2s of the webhook landing — no manual refresh.
-  // Stops polling once setup is ready or missing (terminal states).
-  const { data: paymentSetup } = useQuery({
-    queryKey: ['customer-payment-status', id],
-    queryFn: () => api.getPaymentStatus(id!).catch(() => ({ customer_id: '', setup_status: 'missing' } as PaymentSetup)),
+  // Operator-side PM list (post-FEAT-3 surface). Lists every attached
+  // PM with brand/last4/exp + default flag, drives the multi-card UI
+  // below. Card capture stays in Stripe Checkout via setup-session URL
+  // — operator never touches PAN.
+  const { data: paymentMethodsList, refetch: refetchPMs } = useQuery({
+    queryKey: ['customer-payment-methods', id],
+    queryFn: () => api.listCustomerPaymentMethods(id!),
     enabled: !!id,
-    refetchInterval: (query) => pollIntervalForPaymentSetup(query.state.data),
   })
+  const paymentMethods: CustomerPaymentMethod[] = paymentMethodsList?.data ?? []
+  const [pmActionLoading, setPmActionLoading] = useState<string | null>(null)
+  const [setupLinkDialogOpen, setSetupLinkDialogOpen] = useState(false)
+
+  const handleSetPMDefault = async (pmId: string) => {
+    if (!id) return
+    setPmActionLoading(pmId)
+    try {
+      await api.setDefaultCustomerPaymentMethod(id, pmId)
+      await refetchPMs()
+      toast.success('Default payment method updated')
+    } catch (err) {
+      showApiError(err)
+    } finally {
+      setPmActionLoading(null)
+    }
+  }
+  const handleDetachPM = async (pmId: string) => {
+    if (!id) return
+    setPmActionLoading(pmId)
+    try {
+      await api.detachCustomerPaymentMethod(id, pmId)
+      await refetchPMs()
+      toast.success('Payment method removed')
+    } catch (err) {
+      showApiError(err)
+    } finally {
+      setPmActionLoading(null)
+    }
+  }
 
   // Sent emails — last 30 days, Stripe shape (customer page email log).
   // Empty list is the common case for a fresh customer; failing the
@@ -296,7 +324,7 @@ export default function CustomerDetailPage() {
     handledPaymentParam.current = payment
     if (payment === 'success') {
       toast.success('Payment method saved')
-      queryClient.invalidateQueries({ queryKey: ['customer-payment-status', id] })
+      queryClient.invalidateQueries({ queryKey: ['customer-payment-methods', id] })
     } else if (payment === 'cancel') {
       toast.info('Setup canceled — no changes were made')
     }
@@ -312,45 +340,10 @@ export default function CustomerDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['customer-billing-profile', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-subscriptions', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-usage', id] })
-    queryClient.invalidateQueries({ queryKey: ['customer-payment-status', id] })
+    queryClient.invalidateQueries({ queryKey: ['customer-payment-methods', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-dunning-override', id] })
     queryClient.invalidateQueries({ queryKey: ['customer-coupon', id] })
     queryClient.invalidateQueries({ queryKey: ['customers'] })
-  }
-
-  const handleSetupPayment = async () => {
-    if (!id || !customer) return
-    setSettingUpPayment(true)
-    try {
-      // Return URL is the page the operator is on now. Stripe will
-      // redirect back here with `?payment=success|cancel` so the SPA
-      // can toast + refetch payment_setup. Strip any existing query
-      // string so we don't stack `?payment=cancel&payment=success`.
-      const returnURL = window.location.origin + window.location.pathname
-      if (paymentSetup?.setup_status === 'ready') {
-        const res = await api.updatePaymentMethod(id, returnURL)
-        window.open(res.url, '_blank')
-        toast.success('Stripe payment update page opened in new tab')
-      } else {
-        const res = await api.setupPayment({
-          customer_id: id,
-          customer_name: customer.display_name,
-          email: customer.email || billingProfile?.email || '',
-          address_line1: billingProfile?.address_line1 || '',
-          address_city: billingProfile?.city || '',
-          address_state: billingProfile?.state || '',
-          address_postal_code: billingProfile?.postal_code || '',
-          address_country: billingProfile?.country || 'US',
-          return_url: returnURL,
-        })
-        window.open(res.url, '_blank')
-        toast.success('Stripe checkout opened in new tab')
-      }
-    } catch (err) {
-      showApiError(err, 'Failed to set up payment')
-    } finally {
-      setSettingUpPayment(false)
-    }
   }
 
   const loading = isLoading
@@ -556,7 +549,7 @@ export default function CustomerDetailPage() {
                 {customer.email || '—'}
                 {customer.email_status === 'bounced' && customer.email_last_bounced_at && (
                   <Badge variant="destructive" className="text-xs" title={customer.email_bounce_reason || 'Permanent delivery failure'}>
-                    Bounced \u00b7 {formatDate(customer.email_last_bounced_at)}
+                    Bounced · {formatDate(customer.email_last_bounced_at)}
                   </Badge>
                 )}
               </span>
@@ -599,14 +592,10 @@ export default function CustomerDetailPage() {
               {/* Contact */}
               <section>
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">Contact</p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Legal Name</p>
                     <p className="text-sm text-foreground mt-1">{billingProfile.legal_name || '—'}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="text-sm text-foreground mt-1">{billingProfile.email || '—'}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Phone</p>
@@ -852,100 +841,107 @@ export default function CustomerDetailPage() {
         <PublicCostDashboardCard customerId={id!} />
       </div>
 
-      {/* Payment Method.
-
-          Three render states, gated on whether a card has ever been
-          attached (card_last4 populated) — NOT on setup_status alone.
-          When an operator kicks off an Update flow, the server flips
-          the row to setup_status='pending' but PRESERVES card details
-          (internal/payment/portal.go) so the panel keeps showing the
-          current card until the new one webhook-replaces it. Stripe's
-          own dashboard does the same — atomic swap, never a between-
-          cards empty state.
-
-            1. card_last4 + ready    → card shown, Active badge,
-                                       "Update Payment Method" button.
-            2. card_last4 + pending  → card shown, amber "Update in
-                                       progress" sub-line, button still
-                                       offers Update.
-            3. no card_last4         → "Awaiting setup" (pending) or
-                                       "No payment method" (missing). */}
-      {(() => {
-        const hasCard = !!paymentSetup?.card_last4
-        const status = paymentSetup?.setup_status ?? 'missing'
-        const buttonLabel = settingUpPayment
-          ? 'Setting up...'
-          : hasCard
-            ? 'Update Payment Method'
-            : status === 'pending'
-              ? 'Complete Setup'
-              : 'Set Up Payment'
-        return (
-          <Card className="mt-6">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">Payment Method</CardTitle>
-                {!isArchived && (
-                  <Button
-                    variant={hasCard && status === 'ready' ? 'outline' : 'default'}
-                    size="sm"
-                    onClick={handleSetupPayment}
-                    disabled={settingUpPayment}
-                  >
-                    {buttonLabel}
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {hasCard ? (
-                    <>
-                      <div className="w-10 h-10 rounded-lg bg-foreground flex items-center justify-center">
-                        <CreditCard size={18} className="text-background" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-foreground">
-                          {(paymentSetup!.card_brand || 'Card').charAt(0).toUpperCase() + (paymentSetup!.card_brand || 'card').slice(1)} ending in {paymentSetup!.card_last4}
+      {/* Payment methods — multi-card operator panel.
+          Industry-standard surface (Stripe, Chargebee, Recurly, Lago,
+          Orb): operator can list, set-default, detach. Card capture
+          happens browser → Stripe.js → Stripe via the setup-session
+          URL — operator never touches PAN, tenant stays in PCI SAQ-A.
+          The "Send setup link" button mints a Stripe Checkout URL
+          the operator copies and hands to the customer. */}
+      <Card className="mt-6">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">Payment methods</CardTitle>
+            {!isArchived && (
+              <Button size="sm" onClick={() => setSetupLinkDialogOpen(true)}>
+                Add payment method
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {paymentMethods.length === 0 ? (
+            <div className="px-6 py-8 text-center">
+              <CreditCard size={28} className="text-muted-foreground mx-auto mb-2" />
+              <p className="text-sm text-foreground">No payment methods on file</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Click "Add payment method" to email the customer a secure setup link.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {paymentMethods.map(pm => (
+                <div key={pm.id} className="flex items-center justify-between px-6 py-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                      <CreditCard size={16} className="text-foreground" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-foreground truncate">
+                          {(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····{pm.card_last4 || '????'}
                         </p>
-                        <p className="text-sm text-muted-foreground">
-                          Expires {String(paymentSetup!.card_exp_month).padStart(2, '0')}/{paymentSetup!.card_exp_year}
-                          {status === 'pending' && (
-                            <span className="ml-2 text-amber-600 dark:text-amber-400">· Update in progress</span>
-                          )}
-                        </p>
+                        {pm.is_default && <Badge variant="outline" className="shrink-0 text-[10px]">Default</Badge>}
                       </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className={cn(
-                        'w-10 h-10 rounded-lg flex items-center justify-center',
-                        status === 'pending' ? 'bg-amber-50 dark:bg-amber-950/20' : 'bg-muted'
-                      )}>
-                        <CreditCard size={18} className={cn(
-                          status === 'pending' ? 'text-amber-500' : 'text-muted-foreground'
-                        )} />
-                      </div>
-                      <div>
-                        <p className="text-sm text-foreground">
-                          {status === 'pending' ? 'Awaiting payment method setup' : 'No payment method'}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          {status === 'pending' ? 'Customer needs to complete Stripe Checkout' : 'Set up a payment method to enable automatic billing'}
-                        </p>
-                      </div>
-                    </>
+                      <p className="text-xs text-muted-foreground">
+                        {pm.card_exp_month && pm.card_exp_year
+                          ? `Expires ${String(pm.card_exp_month).padStart(2, '0')}/${pm.card_exp_year}`
+                          : 'Saved card'}
+                      </p>
+                    </div>
+                  </div>
+                  {!isArchived && (
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!pm.is_default && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleSetPMDefault(pm.id)}
+                          disabled={pmActionLoading === pm.id}
+                        >
+                          Set as default
+                        </Button>
+                      )}
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={pmActionLoading === pm.id}
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove this payment method?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              {paymentMethods.length === 1
+                                ? `${(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····${pm.card_last4 || '????'} will be detached in Stripe and removed from this customer. After this the customer will have no payment method on file — auto-collection on any active subscriptions will fail until a new card is added, which will trigger dunning per your policy.`
+                                : `${(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····${pm.card_last4 || '????'} will be detached in Stripe and removed from this customer. Any subscriptions billing against it will fall back to the new default (if any) on next charge.`}
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => void handleDetachPM(pm.id)}>Remove</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
                   )}
                 </div>
-                {hasCard && status === 'ready' && (
-                  <Badge variant="success">Active</Badge>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        )
-      })()}
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <SendSetupLinkDialog
+        open={setupLinkDialogOpen}
+        onOpenChange={setSetupLinkDialogOpen}
+        customerId={id || ''}
+        customerEmail={customer?.email}
+      />
 
       {/* Subscriptions & Invoices grid */}
       <div className="grid grid-cols-2 gap-6 mt-6">
@@ -1344,7 +1340,6 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
 }) {
   const defaultValues: BillingProfileData = {
     legal_name: profile?.legal_name || '',
-    email: profile?.email || '',
     phone: profile?.phone || '',
     address_line1: profile?.address_line1 || '',
     address_line2: profile?.address_line2 || '',
@@ -1373,7 +1368,7 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
       onSaved()
     } catch (err) {
       applyApiError(formMethods, err, [
-        'legal_name', 'email', 'phone',
+        'legal_name', 'phone',
         'address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country',
         'currency', 'tax_status', 'tax_exempt_reason', 'tax_id', 'tax_id_type',
       ], { toastTitle: 'Failed to save billing profile' })
@@ -1383,9 +1378,6 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
   const fillFromCustomer = () => {
     if (!form.legal_name && customer.display_name) {
       setValue('legal_name', customer.display_name, { shouldDirty: true })
-    }
-    if (!form.email && customer.email) {
-      setValue('email', customer.email, { shouldDirty: true })
     }
   }
 
@@ -1409,9 +1401,7 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
     })),
   ]
 
-  const canFillFromCustomer = !profile && (
-    (!form.legal_name && !!customer.display_name) || (!form.email && !!customer.email)
-  )
+  const canFillFromCustomer = !profile && !form.legal_name && !!customer.display_name
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
@@ -1429,10 +1419,10 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
             >
               <span className="flex items-center gap-2 min-w-0">
                 <Wand2 size={14} className="shrink-0 text-muted-foreground" />
-                <span>Use customer details for name and email</span>
+                <span>Use customer name as legal name</span>
               </span>
               <span className="text-xs text-muted-foreground truncate">
-                {customer.display_name}{customer.email && ` \u00b7 ${customer.email}`}
+                {customer.display_name}
               </span>
             </button>
           )}
@@ -1444,17 +1434,10 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
               <Label>Legal Name</Label>
               <Input maxLength={255} placeholder="Acme Corporation Inc." {...register('legal_name')} />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Email</Label>
-                <Input type="email" maxLength={254} placeholder="billing@acme.com" {...register('email')} />
-                {formErrors.email && <p className="text-xs text-destructive">{formErrors.email.message}</p>}
-              </div>
-              <div className="space-y-2">
-                <Label>Phone</Label>
-                <Input type="tel" placeholder="+1 (555) 123-4567" maxLength={20} {...register('phone')} />
-                {formErrors.phone && <p className="text-xs text-destructive">{formErrors.phone.message}</p>}
-              </div>
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input type="tel" placeholder="+1 (555) 123-4567" maxLength={20} {...register('phone')} />
+              {formErrors.phone && <p className="text-xs text-destructive">{formErrors.phone.message}</p>}
             </div>
           </div>
 
@@ -1845,7 +1828,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
       let sent = false
       if (action === 'send') {
         invoice = await api.finalizeInvoice(invoice.id)
-        const recipient = billingProfile?.email || customer.email
+        const recipient = customer.email
         if (recipient) {
           // Best-effort send: a transient SMTP failure shouldn't unwind a
           // successfully finalized invoice. Operators can resend from the

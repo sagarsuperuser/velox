@@ -54,6 +54,16 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		return CreateKeyResult{}, errs.Invalid("key_type", "must be one of: platform, secret, publishable")
 	}
 
+	// Reject past expires_at — a key that's already expired at creation
+	// is DOA (any auth attempt fails with `api key expired`). Industry
+	// parity (Stripe rejects past expiry on credentials). API keys are
+	// tenant-level resources used outside any per-customer clock-pin
+	// context, so wall-clock comparison is the correct reference frame.
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(time.Now().UTC()) {
+		return CreateKeyResult{}, errs.Invalid("expires_at",
+			"must be in the future — a key that expires at or before now is dead on arrival")
+	}
+
 	// Mode inherits from caller ctx, matching Stripe: a test-mode key creates
 	// new test-mode keys, a live-mode key creates live. There is no cross-mode
 	// key creation path — caller must switch authenticators to switch mode.

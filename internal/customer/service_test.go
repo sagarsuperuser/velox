@@ -14,14 +14,12 @@ import (
 type memoryStore struct {
 	customers       map[string]domain.Customer
 	billingProfiles map[string]domain.CustomerBillingProfile
-	paymentSetups   map[string]domain.CustomerPaymentSetup
 }
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{
 		customers:       make(map[string]domain.Customer),
 		billingProfiles: make(map[string]domain.CustomerBillingProfile),
-		paymentSetups:   make(map[string]domain.CustomerPaymentSetup),
 	}
 }
 
@@ -103,18 +101,14 @@ func (m *memoryStore) GetBillingProfile(_ context.Context, tenantID, customerID 
 	return bp, nil
 }
 
-func (m *memoryStore) UpsertPaymentSetup(_ context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error) {
-	ps.TenantID = tenantID
-	m.paymentSetups[ps.CustomerID] = ps
-	return ps, nil
-}
-
-func (m *memoryStore) GetPaymentSetup(_ context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error) {
-	ps, ok := m.paymentSetups[customerID]
-	if !ok {
-		return domain.CustomerPaymentSetup{}, errs.ErrNotFound
+func (m *memoryStore) SetStripeCustomerID(_ context.Context, tenantID, customerID, stripeCustomerID string) error {
+	c, ok := m.customers[customerID]
+	if !ok || c.TenantID != tenantID {
+		return errs.ErrNotFound
 	}
-	return ps, nil
+	c.StripeCustomerID = stripeCustomerID
+	m.customers[customerID] = c
+	return nil
 }
 
 func (m *memoryStore) MarkEmailBounced(_ context.Context, tenantID, customerID, reason string) error {
@@ -126,6 +120,18 @@ func (m *memoryStore) MarkEmailBounced(_ context.Context, tenantID, customerID, 
 	c.EmailStatus = domain.EmailStatusBounced
 	c.EmailLastBouncedAt = &now
 	c.EmailBounceReason = reason
+	m.customers[customerID] = c
+	return nil
+}
+
+func (m *memoryStore) ResetEmailStatus(_ context.Context, tenantID, customerID string) error {
+	c, ok := m.customers[customerID]
+	if !ok || c.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	c.EmailStatus = domain.EmailStatusUnknown
+	c.EmailLastBouncedAt = nil
+	c.EmailBounceReason = ""
 	m.customers[customerID] = c
 	return nil
 }

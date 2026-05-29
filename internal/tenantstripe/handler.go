@@ -1,6 +1,7 @@
 package tenantstripe
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -14,16 +15,29 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
+// AuditWriter is the narrow audit surface tenantstripe uses.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
 // Handler serves the tenant-facing Stripe connection endpoints. Mount under
 // /v1/settings/stripe with auth middleware that populates the tenant ctx.
 // This endpoint is deliberately platform-scoped: a tenant uses their single
 // set of platform API keys to administer both modes via the same surface.
 type Handler struct {
-	svc *Service
+	svc         *Service
+	auditLogger AuditWriter
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SetAuditLogger wires audit on Stripe connection management. Each
+// mutation (connect / delete / set-webhook) is a security-relevant
+// integration change — auditors look for these.
+func (h *Handler) SetAuditLogger(a AuditWriter) {
+	h.auditLogger = a
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -52,6 +66,15 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "stripe_credentials")
 		return
+	}
+	// Never log the secret key value itself — just record that a
+	// connection was made for (tenant, mode). Auditor can correlate
+	// with the timestamp + actor.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "stripe_credentials", creds.ID, "", map[string]any{
+			"action":   "connected",
+			"livemode": creds.Livemode,
+		})
 	}
 	respond.JSON(w, r, http.StatusOK, creds)
 }
@@ -106,6 +129,14 @@ func (h *Handler) setWebhook(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "stripe_credentials")
 		return
 	}
+	// Webhook-secret rotation is an integration-security event;
+	// record the rotation without the secret value.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "stripe_credentials", creds.ID, "", map[string]any{
+			"action":   "webhook_secret_set",
+			"livemode": livemode,
+		})
+	}
 	respond.JSON(w, r, http.StatusOK, creds)
 }
 
@@ -131,6 +162,11 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "delete stripe credentials", "error", err)
 		return
+	}
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionDelete, "stripe_credentials", "", "", map[string]any{
+			"livemode": livemode,
+		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -38,6 +38,14 @@ func (f *fakeInvoiceService) List(_ context.Context, filter invoice.ListFilter) 
 	return out, len(out), nil
 }
 
+func (f *fakeInvoiceService) Get(_ context.Context, tenantID, id string) (domain.Invoice, error) {
+	inv, ok := f.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, nil
+}
+
 func (f *fakeInvoiceService) GetWithLineItems(_ context.Context, tenantID, id string) (domain.Invoice, []domain.InvoiceLineItem, error) {
 	inv, ok := f.invoices[id]
 	if !ok || inv.TenantID != tenantID {
@@ -71,6 +79,16 @@ func (f *fakeSubscriptionService) Get(_ context.Context, tenantID, id string) (d
 	if !ok || sub.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
 	}
+	return sub, nil
+}
+
+func (f *fakeSubscriptionService) ClearScheduledCancel(_ context.Context, tenantID, id string) (domain.Subscription, error) {
+	sub, ok := f.subs[id]
+	if !ok || sub.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	sub.CancelAtPeriodEnd = false
+	f.subs[id] = sub
 	return sub, nil
 }
 

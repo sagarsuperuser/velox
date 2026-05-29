@@ -2,12 +2,14 @@ package credit
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 type memStore struct {
@@ -16,6 +18,13 @@ type memStore struct {
 
 func newMemStore() *memStore {
 	return &memStore{}
+}
+
+// AppendEntryTx mirrors AppendEntry for tx-aware callers. The fake
+// ignores the tx since it's in-memory — the test exercises business
+// rules, not transactional atomicity.
+func (m *memStore) AppendEntryTx(ctx context.Context, _ *sql.Tx, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
+	return m.AppendEntry(ctx, tenantID, entry)
 }
 
 func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
@@ -31,6 +40,16 @@ func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.
 		}
 	}
 
+	// Emulate idx_credit_ledger_credit_note_dedup (migration 0093):
+	// one grant per (tenant, source_credit_note_id).
+	if entry.SourceCreditNoteID != "" {
+		for _, e := range m.entries {
+			if e.TenantID == tenantID && e.SourceCreditNoteID == entry.SourceCreditNoteID {
+				return domain.CreditLedgerEntry{}, errs.ErrAlreadyExists
+			}
+		}
+	}
+
 	// Compute balance
 	var balance int64
 	for _, e := range m.entries {
@@ -41,9 +60,23 @@ func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.
 	entry.BalanceAfter = balance + entry.AmountCents
 	entry.ID = fmt.Sprintf("vlx_ccl_%d", len(m.entries)+1)
 	entry.TenantID = tenantID
-	entry.CreatedAt = time.Now().UTC()
+	// Honor caller-supplied CreatedAt (mirrors PostgresStore.AppendEntry
+	// which lets the credit-expiry path stamp the row at the grant's
+	// expires_at, not wall-clock now). Fall back when zero.
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
+	}
 	m.entries = append(m.entries, entry)
 	return entry, nil
+}
+
+func (m *memStore) GetByCreditNoteSource(_ context.Context, tenantID, creditNoteID string) (domain.CreditLedgerEntry, error) {
+	for _, e := range m.entries {
+		if e.TenantID == tenantID && e.SourceCreditNoteID == creditNoteID {
+			return e, nil
+		}
+	}
+	return domain.CreditLedgerEntry{}, errs.ErrNotFound
 }
 
 func (m *memStore) GetByProrationSource(_ context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error) {
@@ -124,11 +157,16 @@ func (m *memStore) AdjustAtomic(ctx context.Context, tenantID, customerID, descr
 		return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
 			float64(bal.BalanceCents)/100, float64(-amountCents)/100)
 	}
+	// Mirror PostgresStore.AdjustAtomic: stamp created_at from the
+	// ctx-bound clock so a clock-pinned customer's deduct lands in sim
+	// time, not wall-clock. AppendEntry's zero-CreatedAt fallback
+	// would otherwise mask the missing bind in Service.Adjust.
 	return m.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
 		CustomerID:  customerID,
 		EntryType:   domain.CreditAdjustment,
 		AmountCents: amountCents,
 		Description: description,
+		CreatedAt:   clock.Now(ctx),
 	})
 }
 
@@ -207,6 +245,68 @@ func TestGrant(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+
+	t.Run("past expires_at rejected", func(t *testing.T) {
+		// Operator picked a date in the past — DOA grant. Industry
+		// parity with Stripe's 422 on past expires_at. The customer
+		// is NOT clock-pinned in this test, so clock.Now(ctx) returns
+		// wall-clock; the past date should fail.
+		past := time.Now().AddDate(0, 0, -1) // yesterday
+		_, err := svc.Grant(ctx, "t1", GrantInput{
+			CustomerID:  "cus_1",
+			AmountCents: 10000,
+			Description: "DOA grant",
+			ExpiresAt:   &past,
+		})
+		if err == nil {
+			t.Fatal("expected error on past expires_at")
+		}
+	})
+
+	t.Run("expires_at == now rejected", func(t *testing.T) {
+		// Strict inequality: expires_at == now is also DOA.
+		nowT := time.Now()
+		_, err := svc.Grant(ctx, "t1", GrantInput{
+			CustomerID:  "cus_1",
+			AmountCents: 10000,
+			Description: "expires now",
+			ExpiresAt:   &nowT,
+		})
+		if err == nil {
+			t.Fatal("expected error on expires_at == now")
+		}
+	})
+
+	t.Run("future expires_at accepted", func(t *testing.T) {
+		future := time.Now().AddDate(0, 1, 0) // 1 month from now
+		entry, err := svc.Grant(ctx, "t1", GrantInput{
+			CustomerID:  "cus_1",
+			AmountCents: 10000,
+			Description: "future-expiring grant",
+			ExpiresAt:   &future,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if entry.ExpiresAt == nil || !entry.ExpiresAt.Equal(future) {
+			t.Errorf("expires_at: got %v, want %v", entry.ExpiresAt, future)
+		}
+	})
+
+	t.Run("nil expires_at accepted (forever credit)", func(t *testing.T) {
+		entry, err := svc.Grant(ctx, "t1", GrantInput{
+			CustomerID:  "cus_1",
+			AmountCents: 10000,
+			Description: "forever credit",
+			ExpiresAt:   nil,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if entry.ExpiresAt != nil {
+			t.Errorf("expires_at should remain nil for forever credits, got %v", entry.ExpiresAt)
+		}
+	})
 }
 
 func TestApplyToInvoice(t *testing.T) {
@@ -258,6 +358,98 @@ func TestApplyToInvoice(t *testing.T) {
 	})
 }
 
+// TestProcessExpiry_SkipsFullyConsumed locks in the Orb credit-block
+// model behavior: a grant whose consumed_cents already equals
+// amount_cents is fully drained — expiry must be a no-op (no ledger
+// row, no balance change), not a -amount_cents deduction that would
+// drive balance arbitrarily negative.
+//
+// Pre-fix bug shape: ListExpiredGrants* returned grants regardless of
+// consumed state, and processExpiry appended -g.AmountCents. A
+// $50 grant fully consumed by a usage entry would then get expired
+// for -$50, taking balance from $0 to -$50.
+func TestProcessExpiry_SkipsFullyConsumed(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	// Synthesize the candidate list directly — same shape
+	// ListExpiredGrantsForClock would return, but with consumed_cents
+	// already set to the full amount (i.e., grant drained by usage).
+	expiresAt := time.Date(2027, 7, 21, 18, 30, 0, 0, time.UTC)
+	grants := []domain.CreditLedgerEntry{{
+		ID:            "vlx_ccl_drained",
+		TenantID:      "t1",
+		CustomerID:    "cus_1",
+		EntryType:     domain.CreditGrant,
+		AmountCents:   5000,
+		ConsumedCents: 5000, // fully drained by prior usage
+		ExpiresAt:     &expiresAt,
+	}}
+
+	expired, errs := svc.processExpiry(ctx, grants)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if expired != 0 {
+		t.Errorf("expected 0 grants expired (already fully consumed), got %d", expired)
+	}
+
+	// Verify no expiry row was appended.
+	entries, _ := svc.store.ListEntries(ctx, ListFilter{TenantID: "t1", CustomerID: "cus_1"})
+	for _, e := range entries {
+		if e.EntryType == domain.CreditExpiry {
+			t.Errorf("unexpected expiry row appended for fully-consumed grant: amount_cents=%d", e.AmountCents)
+		}
+	}
+}
+
+// TestProcessExpiry_DeductRemaining covers the partial-consumption
+// case: a $50 grant with $30 already consumed → expiry deducts $20
+// (the un-drained portion), not the full $50.
+func TestProcessExpiry_DeductRemaining(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	expiresAt := time.Date(2027, 7, 21, 18, 30, 0, 0, time.UTC)
+	grants := []domain.CreditLedgerEntry{{
+		ID:            "vlx_ccl_partial",
+		TenantID:      "t1",
+		CustomerID:    "cus_1",
+		EntryType:     domain.CreditGrant,
+		AmountCents:   5000,
+		ConsumedCents: 3000, // partially drained
+		ExpiresAt:     &expiresAt,
+	}}
+
+	expired, errs := svc.processExpiry(ctx, grants)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if expired != 1 {
+		t.Errorf("expected 1 grant expired, got %d", expired)
+	}
+
+	// Find the expiry row.
+	entries, _ := store.ListEntries(ctx, ListFilter{TenantID: "t1", CustomerID: "cus_1"})
+	var expiryRow *domain.CreditLedgerEntry
+	for i := range entries {
+		if entries[i].EntryType == domain.CreditExpiry {
+			expiryRow = &entries[i]
+			break
+		}
+	}
+	if expiryRow == nil {
+		t.Fatal("no expiry row was appended")
+	}
+	if expiryRow.AmountCents != -2000 {
+		t.Errorf("expiry amount_cents: got %d, want -2000 (remaining = 5000 - 3000)", expiryRow.AmountCents)
+	}
+	if !expiryRow.CreatedAt.Equal(expiresAt) {
+		t.Errorf("expiry created_at: got %v, want %v (grant's expires_at)", expiryRow.CreatedAt, expiresAt)
+	}
+}
+
 func TestAdjust(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
@@ -294,6 +486,58 @@ func TestAdjust(t *testing.T) {
 			t.Fatal("expected error for missing description")
 		}
 	})
+
+	// Adjust on a clock-pinned customer must bind effective-now from
+	// the customer pin so the ledger entry's created_at lands in
+	// simulated time, not wall-clock. Symptom of the missing bind
+	// (caught 2026-05-24): a deduct row on a clock-pinned customer
+	// appeared at wall-clock-now on the Credits tab, out-of-band with
+	// the surrounding sim-time activity.
+	t.Run("clock-pinned customer stamps ledger at sim time", func(t *testing.T) {
+		svc := NewService(newMemStore())
+		simNow := time.Date(2028, 6, 15, 12, 0, 0, 0, time.UTC)
+		svc.SetResolver(&stubResolverForCustomer{pinned: map[string]time.Time{"cus_sim": simNow}})
+
+		// Seed a grant first so the deduct has balance to pull from.
+		// Grant already binds — leverage it to verify the resolver
+		// wiring works end-to-end before exercising Adjust.
+		if _, err := svc.Grant(context.Background(), "t1", GrantInput{
+			CustomerID: "cus_sim", AmountCents: 10000, Description: "seed",
+		}); err != nil {
+			t.Fatalf("seed grant: %v", err)
+		}
+
+		entry, err := svc.Adjust(context.Background(), "t1", AdjustInput{
+			CustomerID: "cus_sim", AmountCents: -3000, Description: "Deduct",
+		})
+		if err != nil {
+			t.Fatalf("Adjust on clock-pinned customer: %v", err)
+		}
+		if !entry.CreatedAt.Equal(simNow) {
+			t.Errorf("created_at: got %v want %v (sim time from clock pin)", entry.CreatedAt, simNow)
+		}
+	})
+}
+
+// stubResolverForCustomer is a minimal clock.Resolver that maps
+// customer ids → a frozen simulated-now. Returns errs.ErrNotFound for
+// unmapped customers so unbound rows fall back to wall-clock (the
+// production behaviour for non-pinned customers).
+type stubResolverForCustomer struct {
+	pinned map[string]time.Time
+}
+
+func (s *stubResolverForCustomer) EffectiveNowForCustomer(_ context.Context, _, customerID string) (time.Time, error) {
+	if t, ok := s.pinned[customerID]; ok {
+		return t, nil
+	}
+	return time.Time{}, errs.ErrNotFound
+}
+func (s *stubResolverForCustomer) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
+	return time.Time{}, errs.ErrNotFound
+}
+func (s *stubResolverForCustomer) EffectiveNowForInvoice(_ context.Context, _, _ string) (time.Time, error) {
+	return time.Time{}, errs.ErrNotFound
 }
 
 func TestGetBalance(t *testing.T) {

@@ -20,23 +20,24 @@ const (
 )
 
 type CreditNote struct {
-	ID                string           `json:"id"`
-	TenantID          string           `json:"tenant_id,omitempty"`
-	InvoiceID         string           `json:"invoice_id"`
-	CustomerID        string           `json:"customer_id"`
-	CreditNoteNumber  string           `json:"credit_note_number"`
-	Status            CreditNoteStatus `json:"status"`
-	Reason            string           `json:"reason"`
-	SubtotalCents     int64            `json:"subtotal_cents"`
-	TaxAmountCents    int64            `json:"tax_amount_cents"`
-	TotalCents        int64            `json:"total_cents"`
-	RefundAmountCents int64            `json:"refund_amount_cents"`
-	CreditAmountCents int64            `json:"credit_amount_cents"`
-	Currency          string           `json:"currency"`
-	IssuedAt          *time.Time       `json:"issued_at,omitempty"`
-	VoidedAt          *time.Time       `json:"voided_at,omitempty"`
-	RefundStatus      RefundStatus     `json:"refund_status"`
-	StripeRefundID    string           `json:"stripe_refund_id,omitempty"`
+	ID                   string           `json:"id"`
+	TenantID             string           `json:"tenant_id,omitempty"`
+	InvoiceID            string           `json:"invoice_id"`
+	CustomerID           string           `json:"customer_id"`
+	CreditNoteNumber     string           `json:"credit_note_number"`
+	Status               CreditNoteStatus `json:"status"`
+	Reason               string           `json:"reason"`
+	SubtotalCents        int64            `json:"subtotal_cents"`
+	TaxAmountCents       int64            `json:"tax_amount_cents"`
+	TotalCents           int64            `json:"total_cents"`
+	RefundAmountCents    int64            `json:"refund_amount_cents"`
+	CreditAmountCents    int64            `json:"credit_amount_cents"`
+	OutOfBandAmountCents int64            `json:"out_of_band_amount_cents"`
+	Currency             string           `json:"currency"`
+	IssuedAt             *time.Time       `json:"issued_at,omitempty"`
+	VoidedAt             *time.Time       `json:"voided_at,omitempty"`
+	RefundStatus         RefundStatus     `json:"refund_status"`
+	StripeRefundID       string           `json:"stripe_refund_id,omitempty"`
 	// TaxTransactionID is the upstream reversal transaction id returned
 	// by the tax provider (Stripe: tx_xxx for the negative tax_transaction)
 	// when Issue succeeds. Empty while the credit note is draft, or when

@@ -116,7 +116,12 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.Coupon{}, errs.Invalid("max_redemptions", "must be at least 1")
 	}
 
-	if input.ExpiresAt != nil && input.ExpiresAt.Before(time.Now()) {
+	// Strict future check — `Before(now)` would accept `expires_at == now`,
+	// which is also DOA. Matches the credit-grant gate added 2026-05-24
+	// for symmetry across operator-facing expiry inputs. Coupons are
+	// tenant-level (not customer-scoped), so wall-clock is the right
+	// reference frame.
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(time.Now()) {
 		return domain.Coupon{}, errs.Invalid("expires_at", "must be in the future")
 	}
 
@@ -543,6 +548,8 @@ func translateGate(err error) error {
 		return errs.InvalidState("coupon has expired").WithCode(CodeExpired)
 	case GateMaxRedemptions:
 		return errs.InvalidState("coupon has reached maximum redemptions").WithCode(CodeMaxed)
+	case GatePerCustomerMaxed:
+		return errs.InvalidState("coupon has reached per-customer redemption limit").WithCode(CodePerCustomerMaxed)
 	case GateNotFound:
 		return errs.Invalid("code", "coupon not found").WithCode(CodeNotFound)
 	default:

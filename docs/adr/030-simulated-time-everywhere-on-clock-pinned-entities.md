@@ -128,7 +128,7 @@ Adopt Stripe's model end-to-end:
 | Outbound webhook event `occurred_at` for billing events | simulated | Stripe `event.created` for billing events tracks frozen_time |
 | Cron tick scheduler timestamp | wall-clock | The scheduler IS wall-clock; carve-out filters out pinned rows |
 | Stripe webhook delivery (`Stripe-Signature` t=, retry timing) | wall-clock | Real network; replay protection requires real timestamps |
-| Audit log row `recorded_at` (when added) | wall-clock | Forensics; never on the public API |
+| Audit log row `created_at` | wall-clock **always** | Forensics. The row records "when did the operator click" — a real-time event regardless of which test clock the affected entity is pinned to. Simulated effect-time enriched as `metadata.sim_effective_at` + `metadata.test_clock_id` when relevant; UI renders that as a subline below the wall-clock primary stamp. See 2026-05-28 amendment below. |
 | Webhook delivery audit (delivered_at, failed_at) | wall-clock | Real HTTP timing |
 
 No `physical_created_at` forensics column on any business-logic
@@ -229,3 +229,75 @@ the postgres-store-layer stamps end-to-end.
 - ADR-028 (billing engine period loop + disjoint flows)
 - ADR-029 (fully disjoint test-clock flows across every time-aware
   engine path)
+
+## Amendment 2026-05-28 — audit-log actor distinction
+
+**What changed:** Audit-log `created_at` is wall-clock for **all** audit
+rows, not "wall-clock by default but simulated when the handler binds
+ctx." Sim-time of the action on a clock-pinned entity moves into
+metadata as `sim_effective_at` + `test_clock_id`.
+
+**Why:** The table line above (originally line 131) always said
+wall-clock for forensics. But two weeks after this ADR shipped, the
+`subscription.auditCtxForSub` helper landed in `internal/subscription/
+handler.go` — it bound ctx to `sub.UpdatedAt` (simulated) before
+calling `audit.Logger.Log`, so subscription audit rows stamped
+simulated `created_at`. Invoice and dunning handlers never had that
+helper, so their audit rows stayed wall-clock. The result was a
+mixed-domain `audit_log.created_at` column where:
+
+- Subscription mutations on clock-pinned subs → `created_at` = simulated
+- Invoice / dunning mutations on the same clock-pinned customer →
+  `created_at` = wall-clock
+- Middleware catch-all → wall-clock unless a handler bound ctx earlier
+
+This broke the audit page's compliance story (auditor can't trust
+"when did X happen" because the answer depends on which handler wrote
+the row) and confused the activity-timeline-on-sub-detail-page
+rendering (the embedded audit rows showed timestamps an operator
+couldn't reconcile against the wall-clock "Sagar clicked Cancel just
+now" they actually experienced).
+
+**The clean actor model:**
+
+| Actor | `created_at` domain | Sim-time exposure |
+|---|---|---|
+| **Operator action** (HTTP handler emits audit row) | wall-clock — when did Sagar click? | `metadata.sim_effective_at` + `metadata.test_clock_id` if entity is clock-pinned |
+| **Engine-generated event** (invoice.issued_at on period rollover, dunning row scheduled by RunCycleForClock) | simulated — engine ran on the clock's frozen_time | Already in the primary timestamp; no metadata enrichment needed |
+| **External-event ingest** (Stripe webhook `occurred_at`, SMTP dispatch) | wall-clock — real network event | n/a |
+| **Async-worker writes** (background workers running on wall-clock cadence) | wall-clock — worker ran in real time | n/a |
+
+**Code changes:**
+
+- `internal/audit/audit.go`: `created_at = time.Now().UTC()`
+  unconditionally; dropped the `clock` import.
+- `internal/api/middleware/audit.go`: same — middleware catch-all
+  stamps wall-clock.
+- `internal/subscription/handler.go`: `auditCtxForSub` deleted;
+  replaced with `auditMetaForSub(sub, extra) map[string]any` that
+  injects `sim_effective_at` + `test_clock_id` into the metadata bag
+  for clock-pinned subs. All ~11 call sites updated.
+- `internal/dunning/handler.go`: `resolveRun` now binds ctx via
+  `clock.BindEffectiveNow` from the invoice's pin before calling
+  `invoices.MarkPaid` — this was a separate pre-existing leak where
+  `invoice.paid_at` stamped wall-clock on clock-pinned invoices.
+  Added `dunning.Handler.SetResolver`; wired from `router.go`.
+- UI: `web-v2` audit-log page reads `metadata.sim_effective_at` /
+  `metadata.test_clock_id` and renders an "effective on clock X at
+  sim-T" subline under the wall-clock primary timestamp on rows that
+  have it.
+
+**Industry-research validation:** Stripe's audit/Events API records
+operator-action `created` in wall-clock; engine-generated events from
+test-clock advance use the simulated `created` from the advance.
+Chargebee / Orb / Lago / Recurly all use single-timestamp-per-row but
+the timestamp is the effect-time of the event, not the audit-actor
+click time. The convergence is "one timestamp per row," not "always
+simulated." Velox's choice — wall-clock primary on audit rows, sim
+effect-time as metadata — preserves both the forensics answer and the
+sim-effect answer without conflating them.
+
+**Why no `physical_created_at` column?** The line above still holds —
+adding a parallel forensics column on business-logic rows forces every
+read path to choose. The audit log IS the forensics table; that's
+where wall-clock lives.

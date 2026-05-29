@@ -22,6 +22,72 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+// Unique-index names on the invoices table. Constants instead of inline
+// string literals so the constraint-name router in mapInvoiceUniqueViolation
+// is type-checked against actual index names — a typo here surfaces in
+// integration tests, not as a silent fall-through to the generic
+// "unknown constraint" branch. Mirrors the pattern in
+// internal/coupon/postgres.go which has been doing this since the
+// customer-discount idempotency work.
+const (
+	idxInvoicesBillingIdempotency  = "idx_invoices_billing_idempotency"
+	idxInvoicesProrationDedup      = "idx_invoices_proration_dedup"
+	idxInvoicesInvoiceNumberUnique = "invoices_tenant_id_livemode_invoice_number_key"
+	idxInvoicesPublicTokenUnique   = "idx_invoices_public_token"
+	idxInvoicesThresholdPerCycle   = "idx_invoices_threshold_unique_per_cycle"
+	idxInvoicesStripeInvoiceID     = "idx_invoices_stripe_invoice_id"
+)
+
+// mapInvoiceUniqueViolation routes a Postgres unique-violation error to
+// a structured DomainError tagged with the constraint that fired. Pre-
+// 2026-05-28 every invoice unique violation was squashed into a single
+// "billing_period" or "invoice_number" message — callers couldn't tell
+// which constraint fired and the proration-retry path mis-routed
+// billing-period collisions through GetByProrationSource (which then
+// returned "not found" because the existing row had a different item
+// ID). See ADR-030 cross-flow audit + feedback_no_silent_fallbacks
+// memory.
+//
+// Returns nil if err isn't a unique violation; caller passes the
+// original err through unchanged in that case.
+func mapInvoiceUniqueViolation(err error, inv domain.Invoice) error {
+	if !postgres.IsUniqueViolation(err) {
+		return nil
+	}
+	switch postgres.UniqueViolationConstraint(err) {
+	case idxInvoicesBillingIdempotency:
+		return errs.AlreadyExists("billing_period",
+			fmt.Sprintf("invoice already exists for subscription %q period %s..%s",
+				inv.SubscriptionID,
+				inv.BillingPeriodStart.UTC().Format("2006-01-02"),
+				inv.BillingPeriodEnd.UTC().Format("2006-01-02"))).WithCode("invoice_billing_period_taken")
+	case idxInvoicesProrationDedup:
+		return errs.AlreadyExists("proration_source",
+			"proration invoice already exists for this item change").WithCode("invoice_proration_source_taken")
+	case idxInvoicesInvoiceNumberUnique:
+		return errs.AlreadyExists("invoice_number",
+			fmt.Sprintf("invoice number %q already exists", inv.InvoiceNumber)).WithCode("invoice_number_taken")
+	case idxInvoicesPublicTokenUnique:
+		// 256-bit random token collision is astronomically unlikely; if
+		// it ever fires, fail loudly rather than re-use the existing
+		// row (would expose another invoice via the duplicate URL).
+		return errs.AlreadyExists("public_token",
+			"public token collision — regenerate").WithCode("invoice_public_token_collision")
+	case idxInvoicesThresholdPerCycle:
+		return errs.AlreadyExists("threshold_cycle",
+			"threshold invoice already exists for this subscription cycle").WithCode("invoice_threshold_cycle_taken")
+	case idxInvoicesStripeInvoiceID:
+		return errs.AlreadyExists("stripe_invoice_id",
+			"a Velox invoice is already linked to this Stripe invoice id").WithCode("invoice_stripe_id_taken")
+	}
+	// Unknown constraint — surface the constraint name in the message
+	// so the operator + logs identify what fired, instead of squashing
+	// into a generic "already exists" that the caller misroutes.
+	return errs.AlreadyExists("",
+		fmt.Sprintf("unique constraint %q violated on invoice insert",
+			postgres.UniqueViolationConstraint(err))).WithCode("invoice_unique_violation")
+}
+
 const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoice_number, status,
 	payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents, tax_rate_bp,
 	COALESCE(tax_name,''), COALESCE(tax_country,''), COALESCE(tax_id,''),
@@ -155,8 +221,8 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			return domain.Invoice{}, errs.AlreadyExists("invoice_number", fmt.Sprintf("invoice number %q already exists", inv.InvoiceNumber))
+		if mapped := mapInvoiceUniqueViolation(err, inv); mapped != nil {
+			return domain.Invoice{}, mapped
 		}
 		return domain.Invoice{}, err
 	}
@@ -231,16 +297,47 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.I
 	}
 	defer postgres.Rollback(tx)
 
+	// Limit: default to 50 when unset/invalid; clamp to 100 when caller
+	// asks for more. Pre-2026-05-28 the over-cap branch silently fell
+	// back to 50 — surprising for any caller asking for >100 (e.g. the
+	// CSV export's exportPageSize=1000 only ever got 50 back, then the
+	// pagination loop broke early on len(rows)<requested). Explicit
+	// clamp preserves the runaway-query protection without lying about
+	// what was returned. See ADR-030 / feedback_no_silent_fallbacks.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	where, args := buildInvWhere(filter)
+	useCursor := !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
 
+	if useCursor {
+		// Cursor predicate honors the primary sort direction. Only
+		// the default `created_at DESC` cursor is supported today —
+		// callers asking for a custom Sort+After combination would
+		// hit an inconsistent seek-vs-order pairing; the handler
+		// rejects those upstream. The (created_at, id) tuple matches
+		// invoiceOrderBy's tie-break, so seek + ORDER BY are aligned.
+		args = append(args, filter.AfterCreatedAt, filter.AfterID)
+		clause := fmt.Sprintf(`(created_at, id) < ($%d, $%d)`, len(args)-1, len(args))
+		if where == "" {
+			where = " WHERE " + clause
+		} else {
+			where += " AND " + clause
+		}
+	}
+
+	// Cursor path skips COUNT — handler derives hasMore from the
+	// limit+1 over-fetch. Offset path still needs total for "Page
+	// X of N" UX in the legacy dashboard.
 	var total int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoices`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	if !useCursor {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoices`+where, args...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// Sort with deterministic tie-break on id. Without the tie-break,
@@ -250,11 +347,18 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.I
 	// sort direction so consecutive ties read as a single ordered
 	// group rather than zig-zagging.
 	orderBy := invoiceOrderBy(filter.Sort, filter.SortDir)
+	queryLimit := limit
+	if useCursor {
+		queryLimit = limit + 1
+	}
+	args = append(args, queryLimit)
 	query := `SELECT ` + invCols + ` FROM invoices` + where +
 		` ORDER BY ` + orderBy +
-		` LIMIT $` + fmt.Sprintf("%d", len(args)+1) +
-		` OFFSET $` + fmt.Sprintf("%d", len(args)+2)
-	args = append(args, limit, filter.Offset)
+		` LIMIT $` + fmt.Sprintf("%d", len(args))
+	if !useCursor {
+		args = append(args, filter.Offset)
+		query += ` OFFSET $` + fmt.Sprintf("%d", len(args))
+	}
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -342,6 +446,60 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		return domain.Invoice{}, err
 	}
 	defer postgres.Rollback(tx)
+
+	// Hard invariant: paying an invoice implies authoritative amounts.
+	// Authoritative amounts require status IN (finalized, uncollectible)
+	// — draft means tax may still be pending or the operator's still
+	// editing line items; voided means the invoice was annulled and
+	// must not transition to paid.
+	//
+	// Also reject when tax_status is still pending/failed: even a
+	// finalized invoice with unresolved tax (rare — finalize itself
+	// gates on tax_status=ok, but a manual finalize bypassing that
+	// gate could create one) would lock the customer at the wrong
+	// total. Stripe Tax-equivalent shape.
+	//
+	// Pre-fix bug (caught 2026-05-22): billOnePeriod's "credits cover
+	// 100%, mark paid immediately" branch called MarkPaid on a draft
+	// + tax_status=pending invoice, transitioning draft→paid directly
+	// and bypassing the finalize gate. Customer charged subtotal-only
+	// (tax=0) and tax retry blocked forever (retry requires
+	// status='draft', but status is now 'paid').
+	//
+	// Re-paying an already-paid invoice is allowed (idempotent — the
+	// PaymentSucceeded webhook can fire twice on legitimate retries).
+	var status, taxStatus string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, tax_status FROM invoices WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&status, &taxStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Invoice{}, errs.ErrNotFound
+		}
+		return domain.Invoice{}, fmt.Errorf("load invoice for mark-paid: %w", err)
+	}
+	switch domain.InvoiceStatus(status) {
+	case domain.InvoiceFinalized, domain.InvoiceUncollectible, domain.InvoicePaid:
+		// ok
+	default:
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"cannot mark invoice paid from status %q — finalize the invoice first (tax-pending invoices stay draft until tax resolves; voided invoices are terminal)",
+			status,
+		))
+	}
+	if domain.InvoiceTaxStatus(taxStatus) != domain.InvoiceTaxOK {
+		// Pending = tax provider hasn't returned a final answer; the
+		// invoice total is subtotal-only and would lock if marked paid.
+		// Failed = retries exhausted; the operator should void or
+		// manually finalize after resolving the tax decision out-of-
+		// band, not silently pay at $0 tax.
+		// (Tax-exempt customers / regions resolve to tax_status='ok'
+		// with tax_amount_cents=0 + tax_exempt_reason — they're not a
+		// separate status.)
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"cannot mark invoice paid with tax_status=%q — wait for tax retry to resolve, then re-attempt",
+			taxStatus,
+		))
+	}
 
 	now := clock.Now(ctx)
 	var inv domain.Invoice
@@ -1063,7 +1221,28 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		return domain.Invoice{}, err
 	}
 	defer postgres.Rollback(tx)
+	out, err := s.createWithLineItemsInTx(ctx, tx, tenantID, inv, items)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return out, nil
+}
 
+// CreateWithLineItemsTx is the in-transaction variant used by the
+// subscription handler's atomic AddItem-with-proration flow: the caller
+// has already opened a tx wrapping the sub-item insert, and the
+// proration invoice insert needs to share that tx so a failure here
+// rolls back the item add too. ADR-030 atomic-proration follow-through.
+func (s *PostgresStore) CreateWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return s.createWithLineItemsInTx(ctx, tx, tenantID, inv, items)
+}
+
+// createWithLineItemsInTx is the shared body. The exported wrappers
+// differ only in tx ownership.
+func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	id := postgres.NewID("vlx_inv")
 	// Honor caller-provided CreatedAt — engine paths pass clk.Now()
 	// so test-clock-driven invoices align with their issued_at /
@@ -1097,7 +1276,7 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 			publicToken = t
 		}
 	}
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO invoices (id, tenant_id, customer_id, subscription_id, invoice_number,
 			status, payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents,
 			tax_rate_bp, tax_name, tax_country, tax_id,
@@ -1133,8 +1312,8 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 	).Scan(scanInvDest(&inv)...)
 
 	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			return domain.Invoice{}, errs.AlreadyExists("billing_period", "invoice already exists for this billing period")
+		if mapped := mapInvoiceUniqueViolation(err, inv); mapped != nil {
+			return domain.Invoice{}, mapped
 		}
 		return domain.Invoice{}, err
 	}
@@ -1168,9 +1347,6 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
-	}
 	return inv, nil
 }
 

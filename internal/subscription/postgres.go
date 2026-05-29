@@ -145,9 +145,12 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	where, args := buildSubWhere(filter)
@@ -977,7 +980,10 @@ func (s *PostgresStore) GetItem(ctx context.Context, tenantID, itemID string) (d
 	defer postgres.Rollback(tx)
 
 	var item domain.SubscriptionItem
-	err = tx.QueryRowContext(ctx, `SELECT `+itemCols+` FROM subscription_items WHERE id = $1`, itemID).
+	// deleted_at IS NULL — soft-deleted items are hidden from live
+	// reads (migration 0102). Operators wanting historical state read
+	// from subscription_item_changes / the audit log.
+	err = tx.QueryRowContext(ctx, `SELECT `+itemCols+` FROM subscription_items WHERE id = $1 AND deleted_at IS NULL`, itemID).
 		Scan(scanItemDest(&item)...)
 	if err == sql.ErrNoRows {
 		return domain.SubscriptionItem{}, errs.ErrNotFound
@@ -991,14 +997,37 @@ func (s *PostgresStore) AddItem(ctx context.Context, tenantID string, item domai
 		return domain.SubscriptionItem{}, err
 	}
 	defer postgres.Rollback(tx)
+	stored, err := s.addItemInTx(ctx, tx, tenantID, item)
+	if err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	return stored, nil
+}
 
+// AddItemTx is the in-transaction variant of AddItem — the caller owns
+// the tx (already opened with the correct RLS/tenant context) and is
+// responsible for commit/rollback. Used by the subscription handler's
+// AddItem flow to compose the item insert atomically with the proration
+// invoice or credit insert. Without this, item add committed in its own
+// tx and a subsequent proration failure left an orphan item — the bug
+// surfaced during EX3 manual test 2026-05-28.
+func (s *PostgresStore) AddItemTx(ctx context.Context, tx *sql.Tx, tenantID string, item domain.SubscriptionItem) (domain.SubscriptionItem, error) {
+	return s.addItemInTx(ctx, tx, tenantID, item)
+}
+
+// addItemInTx is the shared implementation. AddItem opens+commits its
+// own tx; AddItemTx delegates commit to the caller.
+func (s *PostgresStore) addItemInTx(ctx context.Context, tx *sql.Tx, tenantID string, item domain.SubscriptionItem) (domain.SubscriptionItem, error) {
 	qty := item.Quantity
 	if qty <= 0 {
 		qty = 1
 	}
 	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO subscription_items (tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,COALESCE(NULLIF($5,'')::jsonb,'{}'::jsonb),$6,$6)
 		RETURNING `+itemCols,
@@ -1011,9 +1040,6 @@ func (s *PostgresStore) AddItem(ctx context.Context, tenantID string, item domai
 		}
 		return domain.SubscriptionItem{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.SubscriptionItem{}, err
-	}
 	return stored, nil
 }
 
@@ -1023,10 +1049,28 @@ func (s *PostgresStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID
 		return domain.SubscriptionItem{}, err
 	}
 	defer postgres.Rollback(tx)
+	stored, err := s.updateItemQuantityInTx(ctx, tx, itemID, quantity)
+	if err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	return stored, nil
+}
 
+// UpdateItemQuantityTx is the in-transaction variant. Used by the
+// atomic UpdateItem-with-proration flow so the quantity update + the
+// proration write share one tx. ADR-030 atomic-proration follow-
+// through (2026-05-29).
+func (s *PostgresStore) UpdateItemQuantityTx(ctx context.Context, tx *sql.Tx, _ string, itemID string, quantity int64) (domain.SubscriptionItem, error) {
+	return s.updateItemQuantityInTx(ctx, tx, itemID, quantity)
+}
+
+func (s *PostgresStore) updateItemQuantityInTx(ctx context.Context, tx *sql.Tx, itemID string, quantity int64) (domain.SubscriptionItem, error) {
 	now := clock.Now(ctx)
 	var stored domain.SubscriptionItem
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		UPDATE subscription_items
 		SET quantity = $1, updated_at = $2
 		WHERE id = $3
@@ -1039,9 +1083,6 @@ func (s *PostgresStore) UpdateItemQuantity(ctx context.Context, tenantID, itemID
 	if err != nil {
 		return domain.SubscriptionItem{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.SubscriptionItem{}, err
-	}
 	return stored, nil
 }
 
@@ -1051,10 +1092,27 @@ func (s *PostgresStore) ApplyItemPlanImmediately(ctx context.Context, tenantID, 
 		return domain.SubscriptionItem{}, err
 	}
 	defer postgres.Rollback(tx)
+	stored, err := s.applyItemPlanImmediatelyInTx(ctx, tx, itemID, newPlanID, changedAt)
+	if err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+	return stored, nil
+}
 
+// ApplyItemPlanImmediatelyTx is the in-transaction variant — same
+// atomicity rationale as the other Tx variants. ADR-030 atomic-
+// proration follow-through (2026-05-29).
+func (s *PostgresStore) ApplyItemPlanImmediatelyTx(ctx context.Context, tx *sql.Tx, _ string, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error) {
+	return s.applyItemPlanImmediatelyInTx(ctx, tx, itemID, newPlanID, changedAt)
+}
+
+func (s *PostgresStore) applyItemPlanImmediatelyInTx(ctx context.Context, tx *sql.Tx, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error) {
 	// Clears any scheduled change — an immediate swap supersedes a pending one.
 	var stored domain.SubscriptionItem
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		UPDATE subscription_items
 		SET plan_id = $1,
 		    plan_changed_at = $2,
@@ -1073,9 +1131,6 @@ func (s *PostgresStore) ApplyItemPlanImmediately(ctx context.Context, tenantID, 
 			return domain.SubscriptionItem{}, errs.AlreadyExists("plan_id",
 				fmt.Sprintf("subscription already has an item for plan %q", newPlanID))
 		}
-		return domain.SubscriptionItem{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.SubscriptionItem{}, err
 	}
 	return stored, nil
@@ -1194,8 +1249,31 @@ func (s *PostgresStore) RemoveItem(ctx context.Context, tenantID, itemID string)
 		return err
 	}
 	defer postgres.Rollback(tx)
+	if err := s.removeItemInTx(ctx, tx, itemID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	result, err := tx.ExecContext(ctx, `DELETE FROM subscription_items WHERE id = $1`, itemID)
+// RemoveItemTx is the in-transaction variant — same atomicity
+// rationale as the other Tx variants. ADR-030 atomic-proration follow-
+// through (2026-05-29).
+func (s *PostgresStore) RemoveItemTx(ctx context.Context, tx *sql.Tx, _ string, itemID string) error {
+	return s.removeItemInTx(ctx, tx, itemID)
+}
+
+func (s *PostgresStore) removeItemInTx(ctx context.Context, tx *sql.Tx, itemID string) error {
+	// Soft-delete (migration 0102). Physical DELETE fought the
+	// `invoices_source_subscription_item_id_fkey` constraint whenever
+	// the item had been involved in a proration event — common after
+	// the first cycle. Marking the row deleted preserves the FK
+	// back-pointer for auditors while making the item invisible to
+	// active-state queries via their `deleted_at IS NULL` filter.
+	now := clock.Now(ctx)
+	result, err := tx.ExecContext(ctx,
+		`UPDATE subscription_items SET deleted_at = $1, updated_at = $1 WHERE id = $2 AND deleted_at IS NULL`,
+		now, itemID,
+	)
 	if err != nil {
 		return err
 	}
@@ -1203,7 +1281,7 @@ func (s *PostgresStore) RemoveItem(ctx context.Context, tenantID, itemID string)
 	if n == 0 {
 		return errs.ErrNotFound
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,9 +1694,12 @@ func hydrateSubChildrenTx(ctx context.Context, tx *sql.Tx, sub *domain.Subscript
 // callers on the hot load path don't pay a second BEGIN/COMMIT. Returns items
 // ordered by created_at so item display order stays stable across requests.
 func listItemsTx(ctx context.Context, tx *sql.Tx, subscriptionID string) ([]domain.SubscriptionItem, error) {
+	// deleted_at IS NULL — sub.Items hydration sees the LIVE item set
+	// only (migration 0102 soft-delete model). The
+	// idx_subscription_items_live partial index keeps this hot.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+itemCols+` FROM subscription_items
-		WHERE subscription_id = $1
+		WHERE subscription_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at ASC, id ASC
 	`, subscriptionID)
 	if err != nil {
@@ -1874,7 +1955,9 @@ func buildSubWhere(f ListFilter) (string, []any) {
 
 	prefix := ""
 	if hasPlanFilter {
-		prefix = " JOIN subscription_items si ON si.subscription_id = s.id"
+		// AND si.deleted_at IS NULL — only live items count for the
+		// plan filter (migration 0102 soft-delete model).
+		prefix = " JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL"
 	}
 
 	if len(clauses) == 0 {
@@ -1910,7 +1993,7 @@ func (s *PostgresStore) CountLiveSubsByPlan(ctx context.Context, tenantID, planI
 	err = tx.QueryRowContext(ctx, `
 		SELECT COUNT(DISTINCT s.id)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		WHERE si.plan_id = $1
 		  AND s.status NOT IN ('canceled', 'archived')
 	`, planID).Scan(&count)

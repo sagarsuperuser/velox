@@ -190,6 +190,15 @@ export default function CreditNotesPage() {
     onError: (err) => showApiError(err, 'Failed to void'),
   })
 
+  const retryRefundMutation = useMutation({
+    mutationFn: (id: string) => api.retryCreditNoteRefund(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
+      toast.success('Refund retried successfully')
+    },
+    onError: (err) => showApiError(err, 'Failed to retry refund'),
+  })
+
   // Stats
   const stats = useMemo(() => {
     const draft = notes.filter(n => n.status === 'draft').length
@@ -197,8 +206,9 @@ export default function CreditNotesPage() {
     const voided = notes.filter(n => n.status === 'voided').length
     const totalCredited = issued.reduce((sum, n) => sum + n.credit_amount_cents, 0)
     const totalRefunded = issued.reduce((sum, n) => sum + n.refund_amount_cents, 0)
+    const totalOutOfBand = issued.reduce((sum, n) => sum + (n.out_of_band_amount_cents ?? 0), 0)
     const totalAmount = issued.reduce((sum, n) => sum + n.total_cents, 0)
-    return { draft, issued: issued.length, voided, totalCredited, totalRefunded, totalAmount }
+    return { draft, issued: issued.length, voided, totalCredited, totalRefunded, totalOutOfBand, totalAmount }
   }, [notes])
 
   // Filter + search
@@ -233,12 +243,14 @@ export default function CreditNotesPage() {
       customerMap[n.customer_id]?.display_name || '',
       invoiceMap[n.invoice_id]?.invoice_number || '',
       n.status,
-      n.refund_amount_cents > 0 ? 'Refund' : 'Credit',
+      (n.refund_amount_cents / 100).toFixed(2),
+      (n.credit_amount_cents / 100).toFixed(2),
+      ((n.out_of_band_amount_cents ?? 0) / 100).toFixed(2),
       n.reason,
       (n.total_cents / 100).toFixed(2),
       n.issued_at || n.created_at,
     ])
-    downloadCSV('credit-notes.csv', ['Number', 'Customer', 'Invoice', 'Status', 'Type', 'Reason', 'Amount', 'Date'], rows)
+    downloadCSV('credit-notes.csv', ['Number', 'Customer', 'Invoice', 'Status', 'Refund', 'Credit', 'Out of band', 'Reason', 'Amount', 'Date'], rows)
   }
 
   return (
@@ -385,11 +397,16 @@ export default function CreditNotesPage() {
                 <TableBody>
                   {paginated.map((note: CreditNote) => {
                     const isRefund = note.refund_amount_cents > 0
+                    const channels: string[] = []
+                    if (note.refund_amount_cents > 0) channels.push('refund')
+                    if (note.credit_amount_cents > 0) channels.push('credit')
+                    if ((note.out_of_band_amount_cents ?? 0) > 0) channels.push('out of band')
+                    const channelLabel = channels.length === 0 ? '—' : channels.join(' + ')
                     return (
                       <TableRow key={note.id} className={cn('border-l-[3px]', statusBorderColor(note.status))}>
                         <TableCell>
                           <p className="text-sm font-medium text-foreground">{note.credit_note_number}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">{isRefund ? 'Refund to card' : 'Credit to balance'}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{channelLabel}</p>
                         </TableCell>
                         <TableCell className="text-sm">
                           <Link to={`/customers/${note.customer_id}`} className="text-primary hover:underline">
@@ -433,20 +450,32 @@ export default function CreditNotesPage() {
                               </div>
                             )}
                             {note.status === 'issued' && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="ml-3"
-                                onClick={async () => {
-                                  try {
-                                    await downloadCreditNotePDF(note.id, note.credit_note_number)
-                                  } catch (err) {
-                                    showApiError(err, 'Failed to download PDF')
-                                  }
-                                }}
-                              >
-                                <Download size={14} className="mr-1.5" /> PDF
-                              </Button>
+                              <div className="flex items-center gap-1 ml-3">
+                                {(note.refund_status === 'failed' || note.refund_status === 'pending') && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => retryRefundMutation.mutate(note.id)}
+                                    disabled={retryRefundMutation.isPending}
+                                    title={note.refund_status === 'failed' ? 'Retry Stripe refund' : 'Process Stripe refund'}
+                                  >
+                                    Retry refund
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={async () => {
+                                    try {
+                                      await downloadCreditNotePDF(note.id, note.credit_note_number)
+                                    } catch (err) {
+                                      showApiError(err, 'Failed to download PDF')
+                                    }
+                                  }}
+                                >
+                                  <Download size={14} className="mr-1.5" /> PDF
+                                </Button>
+                              </div>
                             )}
                           </div>
                         </TableCell>
@@ -562,8 +591,22 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
   customerMap: Record<string, Customer>
   onCreated: () => void
 }) {
-  const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [loadingInvoices, setLoadingInvoices] = useState(true)
+  // Invoices for the dropdown — combined finalized + paid lists.
+  // Two parallel queries gated on dialog `open` so we lazy-fetch and
+  // share the cache with the parent CreditNotes page (which uses the
+  // same backend). React Query handles the StrictMode dedupe.
+  const finalizedQuery = useQuery({
+    queryKey: ['cn-dialog', 'invoices', 'finalized'],
+    queryFn: () => api.listInvoices('status=finalized'),
+    enabled: open,
+  })
+  const paidQuery = useQuery({
+    queryKey: ['cn-dialog', 'invoices', 'paid'],
+    queryFn: () => api.listInvoices('status=paid'),
+    enabled: open,
+  })
+  const invoices: Invoice[] = [...(finalizedQuery.data?.data ?? []), ...(paidQuery.data?.data ?? [])]
+  const loadingInvoices = (finalizedQuery.isLoading || paidQuery.isLoading) && open
 
   const form = useForm<CreditNoteFormData>({
     resolver: zodResolver(creditNoteSchema),
@@ -575,18 +618,6 @@ function CreateCreditNoteDialog({ open, onOpenChange, customerMap, onCreated }: 
   const amount = form.watch('amount')
   const refundType = form.watch('refundType')
 
-  useEffect(() => {
-    if (open) {
-      setLoadingInvoices(true)
-      Promise.all([
-        api.listInvoices('status=finalized').catch(() => ({ data: [] as Invoice[], total: 0 })),
-        api.listInvoices('status=paid').catch(() => ({ data: [] as Invoice[], total: 0 })),
-      ]).then(([fin, paid]) => {
-        setInvoices([...fin.data, ...paid.data])
-        setLoadingInvoices(false)
-      })
-    }
-  }, [open])
 
   const selectedInvoice = invoices.find(inv => inv.id === invoiceId)
   const isPaid = selectedInvoice?.status === 'paid'

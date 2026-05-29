@@ -110,6 +110,7 @@ const CreditsPage = lazy(() => import('@/pages/Credits'))
 const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
+const PaymentMethodAddedPage = lazy(() => import('@/pages/PaymentMethodAdded'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
 const PortalLoginPage = lazy(() => import('@/pages/PortalLogin'))
 const PortalMagicPage = lazy(() => import('@/pages/PortalMagic'))
@@ -167,6 +168,12 @@ const App = () => (
               <Route path="/plans/:id" element={<ProtectedRoute><PlanDetailPage /></ProtectedRoute>} />
               <Route path="/meters/:id" element={<ProtectedRoute><MeterDetailPage /></ProtectedRoute>} />
               <Route path="/update-payment" element={<UpdatePaymentPage />} />
+              {/* Stripe Checkout setup-session return URL.
+                  Public, unauthenticated — customers arrive here via
+                  the email link → Stripe Checkout → here, with no
+                  portal session. Renders success/cancel copy based
+                  on ?status=success|cancel query. */}
+              <Route path="/payment-method-added" element={<PaymentMethodAddedPage />} />
               <Route path="/invoice/:token" element={<HostedInvoicePage />} />
               {/* Customer-facing self-service portal — magic-link auth, no
                   operator dashboard chrome. /portal/login + /portal/magic
