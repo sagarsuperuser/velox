@@ -4,9 +4,23 @@
 // filesystem trick the first renderer shipped with — the compiled binary
 // carries the fonts and renders work identically on any machine.
 //
-// Noto Sans is the default family because it covers the Latin, Greek,
-// Cyrillic and several CJK ranges out of the box, which matters for
-// customer names, tax IDs and memos that can land in any script.
+// Noto Sans is the default family. The EMBEDDED subset covers:
+//   - Latin (basic + extended), Greek, Cyrillic, IPA
+//   - Currency symbols ($, €, £, ₹, ¥, ฿, ₩, …)
+//   - Basic punctuation including em/en dash, bullet (•), middle dot (·)
+//
+// What it does NOT cover (verified 2026-05-25 via fontTools):
+//   - Arrows block (→ U+2192, ↳ U+21B3, etc.)
+//   - Checkmarks (✓ U+2713, ✗ U+2717)
+//   - Devanagari / Arabic / Hebrew / Thai / CJK scripts
+//
+// PDF renderers MUST use ASCII-safe glyphs for layout chrome (use "to"
+// instead of "→", drop arrow prefixes, etc.). Customer-facing content
+// (names, memos) in CJK / Devanagari / Arabic will render as
+// missing-glyph boxes. If a tenant needs full multi-script support,
+// swap in the full Noto Sans family (separate TTFs per script — Noto
+// CJK is 16 MB alone, so we keep the basic subset by default and
+// document the upgrade path).
 package pdffonts
 
 import (

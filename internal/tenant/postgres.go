@@ -61,9 +61,12 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.T
 	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
 	defer cancel()
 
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	query := `SELECT id, name, status, created_at, updated_at FROM tenants`

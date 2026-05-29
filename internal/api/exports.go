@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/api/timefilter"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -32,9 +33,19 @@ import (
 // range, an export would walk the entire history).
 
 const (
-	// exportPageSize balances query latency vs memory pressure. The
-	// operator sees a continuous stream regardless.
-	exportPageSize = 1000
+	// exportPageSize is the rows-per-store-query the export streams.
+	// Capped at 100 to match every list store's clamp ceiling (see
+	// invoice/postgres.go, customer/postgres.go, etc.). Pre-2026-05-28
+	// this was 1000, but stores silently truncated to 50 for
+	// over-cap asks — so the export was actually fetching first-page-
+	// only and the pagination loop's `len(rows) < exportPageSize` check
+	// always broke after one iteration. Aligning with the store cap
+	// (now an honest clamp) lets the loop iterate correctly.
+	//
+	// Usage events tolerate higher per-page (their store caps at 1000),
+	// but 100 is fine — they paginate through the same loop, just more
+	// iterations for the same total throughput.
+	exportPageSize = 100
 
 	// usageExportMaxSpanDays caps the date range for usage_events
 	// exports. Larger spans should be split into multiple calls so a
@@ -67,27 +78,15 @@ func (h *exportsHandler) Routes(customerRead, invoiceRead, subscriptionRead, usa
 	return r
 }
 
-// parseDateRange reads ?from / ?to off the request. Returns zero
-// time.Time when missing — callers branch on IsZero to decide
-// whether to apply the filter post-load (for stores that don't have
-// native created_at filtering on their ListFilter).
+// parseDateRange reads ?from / ?to off the request. Thin wrapper
+// around timefilter.ParseRange so exports share the same date-filter
+// contract as audit-log queries + usage queries — RFC3339 OR
+// YYYY-MM-DD, both accepted everywhere. Returns zero time.Time when
+// missing; callers branch on IsZero to decide whether to apply the
+// filter post-load (for stores that don't have native created_at
+// filtering on their ListFilter).
 func parseDateRange(r *http.Request) (from, to time.Time, err error) {
-	if v := r.URL.Query().Get("from"); v != "" {
-		from, err = time.Parse(time.RFC3339, v)
-		if err != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid `from`: must be RFC3339 (e.g. 2026-01-01T00:00:00Z)")
-		}
-	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		to, err = time.Parse(time.RFC3339, v)
-		if err != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid `to`: must be RFC3339")
-		}
-	}
-	if !from.IsZero() && !to.IsZero() && !to.After(from) {
-		return time.Time{}, time.Time{}, fmt.Errorf("`to` must be after `from`")
-	}
-	return from, to, nil
+	return timefilter.ParseRange(r, "from", "to")
 }
 
 // writeCSVHeaders sets the response headers for a CSV download. The
@@ -134,7 +133,7 @@ func (h *exportsHandler) exportCustomers(w http.ResponseWriter, r *http.Request)
 	}
 	from, to, err := parseDateRange(r)
 	if err != nil {
-		respond.BadRequest(w, r, err.Error())
+		respond.FromError(w, r, err, "export")
 		return
 	}
 
@@ -199,7 +198,7 @@ func (h *exportsHandler) exportInvoices(w http.ResponseWriter, r *http.Request) 
 	}
 	from, to, err := parseDateRange(r)
 	if err != nil {
-		respond.BadRequest(w, r, err.Error())
+		respond.FromError(w, r, err, "export")
 		return
 	}
 
@@ -281,7 +280,7 @@ func (h *exportsHandler) exportSubscriptions(w http.ResponseWriter, r *http.Requ
 	}
 	from, to, err := parseDateRange(r)
 	if err != nil {
-		respond.BadRequest(w, r, err.Error())
+		respond.FromError(w, r, err, "export")
 		return
 	}
 
@@ -364,7 +363,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 	}
 	from, to, err := parseDateRange(r)
 	if err != nil {
-		respond.BadRequest(w, r, err.Error())
+		respond.FromError(w, r, err, "export")
 		return
 	}
 	// Required range — this table is unbounded.

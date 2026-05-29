@@ -259,7 +259,27 @@ func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) 
 		return "", err
 	}
 	defer postgres.Rollback(tx)
+	num, err := s.nextInvoiceNumberInTx(ctx, tx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return num, nil
+}
 
+// NextInvoiceNumberTx is the in-transaction variant. Used by callers
+// that need to allocate the invoice number and insert the invoice in a
+// single atomic step — e.g. the subscription handler's atomic
+// AddItem+proration flow. Without this the number was allocated in its
+// own tx and committed even when the subsequent invoice insert rolled
+// back, leaving a sequence gap. ADR-030 atomic-proration follow-through.
+func (s *SettingsStore) NextInvoiceNumberTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error) {
+	return s.nextInvoiceNumberInTx(ctx, tx, tenantID)
+}
+
+func (s *SettingsStore) nextInvoiceNumberInTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error) {
 	col := "invoice_next_seq_test"
 	if postgres.Livemode(ctx) {
 		col = "invoice_next_seq_live"
@@ -277,9 +297,6 @@ func (s *SettingsStore) NextInvoiceNumber(ctx context.Context, tenantID string) 
 	var prefix string
 	var seq int
 	if err := tx.QueryRowContext(ctx, q, tenantID).Scan(&prefix, &seq); err != nil {
-		return "", err
-	}
-	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return strings.ToUpper(prefix) + "-" + padSeq(seq), nil

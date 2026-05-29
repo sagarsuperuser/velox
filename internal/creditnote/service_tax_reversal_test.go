@@ -283,10 +283,33 @@ func TestIssue_ReversalFailureStillIssuesCN(t *testing.T) {
 // happy path doesn't call Grant, but wiring one keeps the service's
 // optional-dep surface exercised.
 type fakeCreditGranter struct {
-	calls []CreditGrantInput
+	calls     []CreditGrantInput
+	cnCalls   []fakeCreditGranterCNCall
+	seenCNIDs map[string]bool
+}
+
+type fakeCreditGranterCNCall struct {
+	creditNoteID string
+	input        CreditGrantInput
 }
 
 func (f *fakeCreditGranter) Grant(_ context.Context, _ string, in CreditGrantInput) error {
 	f.calls = append(f.calls, in)
+	return nil
+}
+
+// GrantForCreditNote mirrors the production dedup contract: if the
+// same CN id is granted twice, the second call returns nil silently
+// (representing "ErrAlreadyExists handled by GrantForCreditNote's
+// fetch-and-return path"), but only ONE Grant call is recorded.
+func (f *fakeCreditGranter) GrantForCreditNote(_ context.Context, _, creditNoteID string, in CreditGrantInput) error {
+	if f.seenCNIDs == nil {
+		f.seenCNIDs = make(map[string]bool)
+	}
+	if f.seenCNIDs[creditNoteID] {
+		return nil
+	}
+	f.seenCNIDs[creditNoteID] = true
+	f.cnCalls = append(f.cnCalls, fakeCreditGranterCNCall{creditNoteID: creditNoteID, input: in})
 	return nil
 }

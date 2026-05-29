@@ -178,6 +178,73 @@ func TestRequestByEmail_MultipleTenants_FanOut(t *testing.T) {
 	}
 }
 
+// TestRequestByEmail_SameTenantDuplicateEmail_PicksMostRecent locks in
+// the Stripe-style dedup contract (verified verbatim from Stripe docs:
+// "selects the most recently created customer that has both that email
+// and an active subscription"). Pre-fix, two customers at the same
+// tenant sharing the lookup email each got their own magic-link email
+// — the recipient got two emails for one request, out of step with
+// Stripe + Chargebee. Post-fix: silently disambiguate within a tenant
+// to the most-recently-created customer (customer IDs are xid-based
+// and time-sortable, so id-desc is created_at-desc).
+func TestRequestByEmail_SameTenantDuplicateEmail_PicksMostRecent(t *testing.T) {
+	svc, lookup, delivery, blinder := newRequestSvcForTest(t)
+	blind := blinder.Blind("dup@example.com")
+	// Two customers, same tenant, same email. cus_zzz is "newer"
+	// (lexicographically greater = newer xid).
+	lookup.seed(blind,
+		CustomerMatch{TenantID: "tnt_a", CustomerID: "cus_aaa"},
+		CustomerMatch{TenantID: "tnt_a", CustomerID: "cus_zzz"},
+	)
+
+	if err := svc.RequestByEmail(context.Background(), "dup@example.com"); err != nil {
+		t.Fatalf("RequestByEmail: %v", err)
+	}
+
+	calls := delivery.snap()
+	if len(calls) != 1 {
+		t.Fatalf("want 1 delivery (dedup), got %d: %+v", len(calls), calls)
+	}
+	if calls[0].CustomerID != "cus_zzz" {
+		t.Fatalf("want most-recent (cus_zzz), got %q", calls[0].CustomerID)
+	}
+}
+
+// TestRequestByEmail_CrossTenantDuplicates_StillFanOut verifies the
+// cross-tenant case is NOT collapsed. A person who's legitimately a
+// customer of two merchants gets one link per merchant (each merchant
+// dedupes independently within its own tenant).
+func TestRequestByEmail_CrossTenantDuplicates_StillFanOut(t *testing.T) {
+	svc, lookup, delivery, blinder := newRequestSvcForTest(t)
+	blind := blinder.Blind("shared@example.com")
+	// Three rows: tenant A has two (dedup to newest), tenant B has one.
+	// IDs are xid-based and lex-sortable, so the lex-greater ID is the
+	// "newer" one. cus_a_zzz > cus_a_aaa.
+	lookup.seed(blind,
+		CustomerMatch{TenantID: "tnt_a", CustomerID: "cus_a_aaa"},
+		CustomerMatch{TenantID: "tnt_a", CustomerID: "cus_a_zzz"},
+		CustomerMatch{TenantID: "tnt_b", CustomerID: "cus_b1"},
+	)
+
+	if err := svc.RequestByEmail(context.Background(), "shared@example.com"); err != nil {
+		t.Fatalf("RequestByEmail: %v", err)
+	}
+	calls := delivery.snap()
+	if len(calls) != 2 {
+		t.Fatalf("want 2 deliveries (one per tenant), got %d", len(calls))
+	}
+	picked := map[string]string{}
+	for _, c := range calls {
+		picked[c.TenantID] = c.CustomerID
+	}
+	if picked["tnt_a"] != "cus_a_zzz" {
+		t.Errorf("tnt_a picked: got %q want cus_a_zzz (most recent)", picked["tnt_a"])
+	}
+	if picked["tnt_b"] != "cus_b1" {
+		t.Errorf("tnt_b picked: got %q want cus_b1 (only option)", picked["tnt_b"])
+	}
+}
+
 // TestRequestByEmail_NoBlinder_FailsClosed — an unconfigured blinder
 // means no email can be resolved. The service returns nil (handler
 // responds 202, attacker learns nothing) but skips the lookup entirely.

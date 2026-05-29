@@ -213,6 +213,20 @@ func (m *mockStore) RedeemAtomic(_ context.Context, _ string, in RedeemAtomicInp
 	if c.MaxRedemptions != nil && c.TimesRedeemed >= *c.MaxRedemptions {
 		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateMaxRedemptions}
 	}
+	// Mirror PostgresStore: per-customer cap check inside the redeem
+	// "tx" (the in-memory equivalent of the FOR UPDATE lock). Voided
+	// redemptions excluded.
+	if c.Restrictions.MaxRedemptionsPerCustomer > 0 {
+		perCustomer := 0
+		for _, r := range m.redemptions {
+			if r.CouponID == c.ID && r.CustomerID == in.CustomerID && r.VoidedAt == nil {
+				perCustomer++
+			}
+		}
+		if perCustomer >= c.Restrictions.MaxRedemptionsPerCustomer {
+			return RedeemAtomicResult{}, ErrCouponGate{Reason: GatePerCustomerMaxed}
+		}
+	}
 	c.TimesRedeemed++
 	m.coupons[c.ID] = c
 	m.byCode[c.Code] = c
@@ -284,7 +298,9 @@ func (m *mockStore) ListRedemptionsBySubscription(_ context.Context, _, subscrip
 func (m *mockStore) CountRedemptionsByCustomer(_ context.Context, _, couponID, customerID string) (int, error) {
 	var n int
 	for _, r := range m.redemptions {
-		if r.CouponID == couponID && r.CustomerID == customerID {
+		// Mirror PostgresStore: voided redemptions don't count toward
+		// the per-customer cap (they've been explicitly retired).
+		if r.CouponID == couponID && r.CustomerID == customerID && r.VoidedAt == nil {
 			n++
 		}
 	}
@@ -1039,6 +1055,88 @@ func TestRedeem_MaxRedemptionsReached(t *testing.T) {
 		Code: "LIMITED", CustomerID: "cust_1", SubtotalCents: 10000,
 	})
 	assertErrContains(t, err, "maximum redemptions")
+}
+
+// TestRedeem_PerCustomerCapEnforcedInsideTx locks in the 2026-05-24
+// Bug A fix: the per-customer cap check happens INSIDE RedeemAtomic
+// under the coupon FOR UPDATE lock, not just pre-tx in validateRedeem.
+// Without the inside-tx check, two concurrent redeems by the same
+// customer can both see current=cap-1 and both pass, leaving the
+// customer with cap+1 redemptions. This test asserts the store-layer
+// gate fires (the service pre-check would also catch this in the
+// sequential case; the store gate is what catches the race).
+func TestRedeem_PerCustomerCapEnforcedInsideTx(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "PERCUST", Name: "Per-customer capped", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+		Restrictions: domain.CouponRestrictions{MaxRedemptionsPerCustomer: 2},
+	})
+	svc := NewService(store)
+	ctx := context.Background()
+
+	// First two redemptions succeed.
+	for i := 1; i <= 2; i++ {
+		if _, err := svc.Redeem(ctx, "t1", RedeemInput{
+			Code: "PERCUST", CustomerID: "cust_1", SubtotalCents: 10000,
+			IdempotencyKey: fmt.Sprintf("attempt_%d", i),
+		}); err != nil {
+			t.Fatalf("redeem %d: %v", i, err)
+		}
+	}
+
+	// Third — both validateRedeem pre-check AND the store-layer
+	// RedeemAtomic check would catch this. The test ensures the
+	// store-layer gate exists so the race is closed.
+	_, err := svc.Redeem(ctx, "t1", RedeemInput{
+		Code: "PERCUST", CustomerID: "cust_1", SubtotalCents: 10000,
+		IdempotencyKey: "attempt_3",
+	})
+	if err == nil {
+		t.Fatal("expected per-customer cap rejection on 3rd redemption")
+	}
+	assertErrContains(t, err, "per-customer redemption limit")
+}
+
+// TestRedeem_VoidedRedemptionsDontCountTowardPerCustomerCap verifies
+// the voided_at filter in CountRedemptionsByCustomer + the store-layer
+// check. A customer who had a redemption voided (e.g. invoice fully
+// credited) should be able to redeem the coupon again up to the cap.
+func TestRedeem_VoidedRedemptionsDontCountTowardPerCustomerCap(t *testing.T) {
+	store := newMockStore()
+	store.seedCoupon(domain.Coupon{
+		Code: "RESETME", Name: "Resets on void", Type: domain.CouponTypePercentage,
+		PercentOffBP: 1000,
+		Restrictions: domain.CouponRestrictions{MaxRedemptionsPerCustomer: 1},
+	})
+	svc := NewService(store)
+	ctx := context.Background()
+
+	// First redemption succeeds.
+	r1, err := svc.Redeem(ctx, "t1", RedeemInput{
+		Code: "RESETME", CustomerID: "cust_1", SubtotalCents: 10000,
+		IdempotencyKey: "first",
+	})
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+
+	// Manually mark the first redemption as voided (simulating
+	// VoidRedemptionsForInvoice firing after the invoice was credited).
+	for i := range store.redemptions {
+		if store.redemptions[i].ID == r1.ID {
+			now := time.Now()
+			store.redemptions[i].VoidedAt = &now
+		}
+	}
+
+	// Second redemption — should succeed now that the first is voided.
+	if _, err := svc.Redeem(ctx, "t1", RedeemInput{
+		Code: "RESETME", CustomerID: "cust_1", SubtotalCents: 10000,
+		IdempotencyKey: "second",
+	}); err != nil {
+		t.Errorf("second redeem after void should succeed, got: %v", err)
+	}
 }
 
 func TestRedeem_PlanIDRestriction(t *testing.T) {

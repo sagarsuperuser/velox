@@ -66,6 +66,7 @@ type Sender struct {
 	// 'bounced'. Nil means bounces are still logged but not persisted —
 	// acceptable in tests and standalone contexts.
 	bounceReporter BounceReporter
+	suppression    RecipientSuppressionChecker
 }
 
 // SettingsGetter resolves a tenantID to the tenant's public-facing
@@ -85,6 +86,20 @@ type SettingsGetter interface {
 // bound their own latency so a bounce doesn't stall the outbox worker.
 type BounceReporter interface {
 	ReportBounce(ctx context.Context, tenantID, email, reason string)
+}
+
+// RecipientSuppressionChecker reports whether the (tenant, email) is
+// known-bounced or known-complained — in which case we soft-skip the
+// send instead of pounding a dead inbox. Implementation looks up the
+// customer row via email blind index and checks email_status. Wired
+// via SetSuppressionChecker on both Sender and OutboxSender so the
+// gate covers both direct-SMTP and outbox paths.
+//
+// The check is best-effort. On error (DB down, blinder misconfigured)
+// the send proceeds — failing closed would mean a bouncing recipient
+// blocks every outbound send if the lookup ever flakes.
+type RecipientSuppressionChecker interface {
+	IsSuppressed(ctx context.Context, tenantID, email string) (suppressed bool, reason string, err error)
 }
 
 // NewSender creates an email sender from environment variables. When
@@ -130,21 +145,98 @@ func (s *Sender) SetSettingsGetter(g SettingsGetter) { s.settings = g }
 // adapter resolves email → customer ID → customer.MarkEmailBounced.
 func (s *Sender) SetBounceReporter(r BounceReporter) { s.bounceReporter = r }
 
-// isPermanentSMTPBounce checks an SMTP send error for an RFC 5321
-// permanent-failure (5yz) reply code. Pure SMTP returns these
-// synchronously when the MX rejects MAIL FROM / RCPT TO / DATA —
-// "550 mailbox unavailable", "553 relaying denied", etc. Transient 4xx
-// failures are left to the outbox retry path.
+// SetSuppressionChecker wires the recipient-suppression gate. Without
+// it, the Sender skips the check and always attempts SMTP — same
+// behavior as before this gate existed (back-compat for tests).
+func (s *Sender) SetSuppressionChecker(c RecipientSuppressionChecker) { s.suppression = c }
+
+// checkSuppression returns true if the send should be soft-skipped.
+// Logs the skip at INFO so operators can see it in `make dev` output.
+// Errors from the checker fail-open (proceed with the send) so a flaky
+// lookup doesn't block all outbound mail. ErrRecipientSuppressed is
+// returned to the caller so producers can distinguish "skipped" from
+// "delivered" if they care; most callers swallow it.
+var ErrRecipientSuppressed = errors.New("email: recipient suppressed (bounced or complained)")
+
+func (s *Sender) checkSuppression(ctx context.Context, tenantID, to string) error {
+	if s.suppression == nil || tenantID == "" || to == "" {
+		return nil
+	}
+	suppressed, reason, err := s.suppression.IsSuppressed(ctx, tenantID, to)
+	if err != nil {
+		// Fail-open: log + proceed. A bouncing-recipient lookup that
+		// errors out shouldn't block legitimate sends to other addresses.
+		slog.Warn("email suppression check failed; proceeding with send",
+			"tenant_id", tenantID, "to", to, "error", err)
+		return nil
+	}
+	if suppressed {
+		slog.Info("email suppressed — recipient is bounced or complained",
+			"tenant_id", tenantID, "to", to, "reason", reason)
+		return ErrRecipientSuppressed
+	}
+	return nil
+}
+
+// isPermanentSMTPBounce checks an SMTP send error for a
+// recipient-rejection permanent-failure reply — the recipient address
+// itself is bad, so flagging the customer's email as bounced is the
+// correct response. Sender-side 5xx codes (authentication failure,
+// policy reject, server refusal) are explicitly excluded: those mean
+// MY side has a problem, not the recipient's, and flipping the
+// customer to bounced would block future legitimate sends as soon as
+// the operator fixes their config.
+//
+// Classification per RFC 5321 + RFC 3463:
+//
+//	Basic 5xx codes that ARE recipient bounces:
+//	  550 - mailbox unavailable / no such user
+//	  551 - user not local (rare)
+//	  552 - storage quota exceeded
+//	  553 - mailbox name not allowed
+//
+//	Basic 5xx codes that are NOT recipient bounces (sender/server):
+//	  521 - server doesn't accept mail
+//	  530 - access denied / auth required
+//	  534 - auth too weak
+//	  535 - authentication failed  (Postmark token mismatch lands here)
+//	  538 - encryption required
+//	  554 - transaction failed (ambiguous; conservatively excluded)
+//
+//	Enhanced status (X.Y.Z) interpretation:
+//	  5.1.x - addressing (recipient)  → bounce
+//	  5.2.x - mailbox (recipient)     → bounce
+//	  5.7.x - security/policy (sender) → not a bounce
+//	  5.3.x - mail system (server)     → not a bounce
+//
+// Pre-2026-05-29 every 5xx was treated as a recipient bounce.
+// Surfaced live during Postmark token misconfiguration: a wrong
+// Server Token returned 535 → Velox flagged the recipient as bounced
+// → next send to the same recipient was suppression-gated → operator
+// had to manually `UPDATE customers SET email_status='unknown'` to
+// recover. The auth failure was a sender-side error all along.
 //
 // Heuristic string-match because stdlib net/smtp wraps the underlying
-// textproto.Error by the time callers see it. False negatives get
-// retried; false positives mark the customer once and surface as an
-// operator "unexpected bounce" — tolerable for MVP.
+// textproto.Error by the time callers see it. Bias: false negatives
+// (real bounces missed) cost a wasted retry; false positives
+// (sender errors marked as recipient bounces) cost the operator a
+// manual recovery — much worse, so the classifier is conservative
+// toward "not a bounce."
 func isPermanentSMTPBounce(err error) (bool, string) {
 	if err == nil {
 		return false, ""
 	}
 	msg := err.Error()
+
+	// Enhanced status code in the addressing/mailbox classes wins
+	// over the basic code's classification — 5.1.x and 5.2.x are
+	// unambiguously recipient-side per RFC 3463. Some MX servers
+	// send only the enhanced form (no leading 550 token), so this
+	// check is independent of the basic-code scan below.
+	if hasEnhancedRecipientStatus(msg) {
+		return true, msg
+	}
+
 	for i := 0; i <= len(msg)-3; i++ {
 		if msg[i] != '5' {
 			continue
@@ -158,9 +250,47 @@ func isPermanentSMTPBounce(err error) (bool, string) {
 				continue
 			}
 		}
-		return true, msg
+		// Found a 5xx token. Only the recipient-rejection codes
+		// (550-553) classify as a bounce. Everything else is sender
+		// or server-side and should be surfaced to the operator
+		// without flipping recipient state.
+		code := msg[i : i+3]
+		if code == "550" || code == "551" || code == "552" || code == "553" {
+			return true, msg
+		}
+		// Sender-side or ambiguous 5xx — surface but don't bounce
+		// the recipient.
+		return false, ""
 	}
 	return false, ""
+}
+
+// hasEnhancedRecipientStatus returns true when msg contains an RFC
+// 3463 enhanced status code in the 5.1.x (addressing) or 5.2.x
+// (mailbox) classes — both indicate the recipient is the problem.
+// 5.7.x (security/policy) and 5.3.x (mail system) are excluded as
+// sender/server-side.
+func hasEnhancedRecipientStatus(msg string) bool {
+	for i := 0; i <= len(msg)-5; i++ {
+		if msg[i] != '5' || msg[i+1] != '.' {
+			continue
+		}
+		if msg[i+2] != '1' && msg[i+2] != '2' {
+			continue
+		}
+		if msg[i+3] != '.' || !isDigit(msg[i+4]) {
+			continue
+		}
+		// Boundary check on the left so "x5.1.x" doesn't match.
+		if i > 0 {
+			prev := msg[i-1]
+			if isDigit(prev) || isLetter(prev) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
@@ -361,6 +491,50 @@ func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerNa
 	})
 }
 
+// SendPaymentSetupLink emails the operator-initiated "add a payment
+// method" link. Distinct from SendPaymentSetupRequest (which fires
+// at invoice finalize with no PM on file and carries the failing
+// invoice context). This variant is for an operator clicking "Send
+// Setup Link" on a customer page when there's no specific invoice
+// pressure — the customer just needs a card on file. operatorNote
+// is an optional free-form prefix the operator typed into the
+// dashboard dialog (e.g. "Your card on file expired last week —
+// here's a link to update it.").
+func (s *Sender) SendPaymentSetupLink(ctx context.Context, tenantID, to, customerName, operatorNote, setupURL string) error {
+	// Required: the email body promises "use the secure link below" —
+	// without the URL we'd render a CTA-less email with that copy and
+	// no actionable button (silent template fallback via
+	// `{{if .CTAURL}}` in renderLayout). Surfaced 2026-05-29: an
+	// older outbox row written by a pre-SetupURL binary dispatched
+	// with empty CTA and the customer received a useless email.
+	// Per feedback_no_silent_fallbacks — fail loud at the boundary
+	// instead of producing a broken email.
+	if setupURL == "" {
+		return fmt.Errorf("setup_url required: refusing to send payment-setup email with no link")
+	}
+	brand := s.brandingFor(ctx, tenantID)
+
+	subject, contentHTML, ctaURL, ctaLabel := renderPaymentSetupLinkHTML(paymentSetupLinkContext{
+		CustomerName: customerName,
+		OperatorNote: operatorNote,
+		SetupURL:     setupURL,
+	})
+	htmlBody, err := renderLayout(layoutInputs{
+		Subject: subject, CompanyName: brand.CompanyName, LogoURL: brand.LogoURL,
+		BrandColor: brand.BrandColor, SupportURL: brand.SupportURL,
+		Content: template.HTML(contentHTML), CTAURL: ctaURL, CTALabel: ctaLabel,
+	})
+	if err != nil {
+		return fmt.Errorf("render payment setup link html: %w", err)
+	}
+	textBody := paymentSetupLinkTextBody(customerName, operatorNote, setupURL)
+
+	return s.sendRich(ctx, richMessage{
+		TenantID: tenantID, To: to, Subject: subject,
+		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
+	})
+}
+
 // SendPaymentSetupRequest emails the tokenized payment-method-setup
 // link. CTA points at updateURL (NOT the hosted invoice URL — this
 // flow sets up the saved payment method, a separate concern from
@@ -368,6 +542,9 @@ func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerNa
 // on file. Distinct from SendPaymentFailed which fires after a charge
 // has already been attempted and declined.
 func (s *Sender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	if updateURL == "" {
+		return fmt.Errorf("update_url required: refusing to send payment-setup-request email with no link")
+	}
 	brand := s.brandingFor(ctx, tenantID)
 	amount := formatAmount(amountDueCents, currency)
 
@@ -392,6 +569,9 @@ func (s *Sender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, cust
 // tenant branding context) ----
 
 func (s *Sender) SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error {
+	if resetURL == "" {
+		return fmt.Errorf("reset_url required: refusing to send password-reset email with no link")
+	}
 	subject := "Reset your Velox password"
 	body := fmt.Sprintf(`Hi %s,
 
@@ -407,6 +587,9 @@ If you didn't request this, you can safely ignore this email — your current pa
 }
 
 func (s *Sender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+	if acceptURL == "" {
+		return fmt.Errorf("accept_url required: refusing to send member-invite email with no link")
+	}
 	subject := fmt.Sprintf("You've been invited to %s on Velox", tenantName)
 	body := fmt.Sprintf(`Hi,
 
@@ -422,6 +605,9 @@ If you weren't expecting this invitation, you can safely ignore this email.
 }
 
 func (s *Sender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
+	if magicLinkURL == "" {
+		return fmt.Errorf("magic_link_url required: refusing to send portal-magic-link email with no link")
+	}
 	subject := "Your Velox customer portal sign-in link"
 	body := fmt.Sprintf(`Hi %s,
 
@@ -509,6 +695,21 @@ Update your payment method using the secure link below. It expires in 24 hours.
 `, customerName, invoiceNumber, amount, updateURL)
 }
 
+func paymentSetupLinkTextBody(customerName, operatorNote, setupURL string) string {
+	intro := operatorNote
+	if intro == "" {
+		intro = "Please add a payment method on file so we can process your billing. Use the secure link below — your card details go directly to our payment processor and never touch our servers."
+	}
+	return fmt.Sprintf(`Hi %s,
+
+%s
+
+%s
+
+The link expires in 24 hours and can only be used once.
+`, customerName, intro, setupURL)
+}
+
 // ---- Low-level send helpers ----
 
 // richMessage is a multipart/alternative-or-mixed email payload. When
@@ -529,6 +730,9 @@ type richMessage struct {
 func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 	if !s.IsConfigured() {
 		return ErrSMTPNotConfigured
+	}
+	if err := s.checkSuppression(ctx, msg.TenantID, msg.To); err != nil {
+		return err
 	}
 
 	var body strings.Builder
@@ -646,6 +850,9 @@ func (s *Sender) deliver(to string, body []byte) error {
 func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject, body string) error {
 	if !s.IsConfigured() {
 		return ErrSMTPNotConfigured
+	}
+	if err := s.checkSuppression(ctx, tenantID, to); err != nil {
+		return err
 	}
 	var msg strings.Builder
 	fromHeader := s.from

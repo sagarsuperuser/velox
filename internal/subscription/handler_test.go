@@ -3,6 +3,7 @@ package subscription
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,6 +85,18 @@ func (m *invoicesMock) FindBaseInvoiceForPeriod(_ context.Context, _, _ string, 
 	return m.sourceInvoice, nil
 }
 
+// CreateInvoiceWithLineItemsTx + NextInvoiceNumberTx mirror their
+// non-Tx counterparts for tx-aware callers. Fakes ignore the tx; the
+// tests exercise business logic, not transactional atomicity (a
+// dedicated integration test covers that path against a real DB).
+func (m *invoicesMock) CreateInvoiceWithLineItemsTx(ctx context.Context, _ *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return m.CreateInvoiceWithLineItems(ctx, tenantID, inv, items)
+}
+
+func (m *invoicesMock) NextInvoiceNumberTx(ctx context.Context, _ *sql.Tx, tenantID string) (string, error) {
+	return m.NextInvoiceNumber(ctx, tenantID)
+}
+
 type creditsMock struct {
 	grantErr       error
 	grantCalls     []ProrationGrantInput
@@ -94,6 +107,12 @@ type creditsMock struct {
 func (m *creditsMock) GrantProration(_ context.Context, _ string, input ProrationGrantInput) error {
 	m.grantCalls = append(m.grantCalls, input)
 	return m.grantErr
+}
+
+// GrantProrationTx mirrors GrantProration for tx-aware callers. Same
+// rationale as the invoice mock's Tx variant — fake ignores the tx.
+func (m *creditsMock) GrantProrationTx(ctx context.Context, _ *sql.Tx, tenantID string, input ProrationGrantInput) error {
+	return m.GrantProration(ctx, tenantID, input)
 }
 
 func (m *creditsMock) GetByProrationSource(_ context.Context, _, _, _ string, _ domain.ItemChangeType, _ time.Time) (domain.CreditLedgerEntry, error) {
@@ -235,14 +254,18 @@ func TestUpdateItem_ProrationDedup_UpgradeReturnsExisting(t *testing.T) {
 		SourcePlanChangedAt:      &existingAt,
 		SourceSubscriptionItemID: itemID,
 	}
-	// CreateInvoiceWithLineItems returns ErrAlreadyExists to emulate the
-	// unique partial index firing. The handler must then call
-	// GetByProrationSource and surface that result instead of bubbling up the
-	// error.
+	// CreateInvoiceWithLineItems returns the proration-source-taken
+	// constraint-coded error to emulate idx_invoices_proration_dedup
+	// firing. The handler must then call GetByProrationSource and
+	// surface that result instead of bubbling up the error. Other
+	// unique-violation codes (billing_period_taken, etc.) intentionally
+	// do NOT trigger the dedup-lookup branch — they're distinct bugs.
+	// See ADR-030 cross-flow audit 2026-05-28.
 	invoices := &invoicesMock{
-		createInvoiceErr: errs.ErrAlreadyExists,
-		lookupInvoice:    existingInvoice,
-		sourceInvoice:    domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+		createInvoiceErr: errs.AlreadyExists("proration_source",
+			"proration invoice already exists for this item change").WithCode("invoice_proration_source_taken"),
+		lookupInvoice: existingInvoice,
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
 	}
 	credits := &creditsMock{}
 
@@ -315,7 +338,12 @@ func TestUpdateItem_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
 	}
 	credits := &creditsMock{
-		grantErr:    errs.ErrAlreadyExists,
+		// Specific constraint-coded error so the handler's discriminator
+		// routes to the idempotent dedup-lookup branch. Generic
+		// ErrAlreadyExists no longer triggers the lookup (would have
+		// misrouted credit_note_dedup collisions pre-2026-05-28).
+		grantErr: errs.AlreadyExists("proration_source",
+			"credit ledger entry already exists for this item change").WithCode("credit_proration_source_taken"),
 		lookupEntry: existingEntry,
 	}
 

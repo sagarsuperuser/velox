@@ -192,7 +192,7 @@ func currentMRR(ctx context.Context, tx *sql.Tx) (int64, error) {
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.status = 'active'
 	`).Scan(&v)
@@ -297,7 +297,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMov
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $1 AND s.activated_at < $2
 	`, start, end).Scan(&m.New); err != nil {
@@ -312,7 +312,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMov
 			END
 		), 0)
 		FROM subscriptions s
-		JOIN subscription_items si ON si.subscription_id = s.id
+		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $1 AND s.canceled_at < $2
 	`, start, end).Scan(&m.Churned); err != nil {

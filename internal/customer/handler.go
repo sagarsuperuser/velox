@@ -22,7 +22,6 @@ import (
 
 type Handler struct {
 	svc         *Service
-	gdpr        *GDPRHandler
 	auditLogger *audit.Logger
 	costSvc     CostDashboardService
 	sentEmails  SentEmailsLister
@@ -77,11 +76,6 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// SetGDPR attaches the GDPR handler so its routes are served under /customers.
-func (h *Handler) SetGDPR(gh *GDPRHandler) {
-	h.gdpr = gh
-}
-
 // SetAuditLogger wires the audit logger. Currently used by the
 // cost-dashboard token rotate endpoint (record that a rotation happened
 // without leaking the plaintext token into the audit trail). Nil-safe —
@@ -118,11 +112,12 @@ func (h *Handler) Routes() chi.Router {
 	})
 	r.Post("/{id}/rotate-cost-dashboard-token", h.rotateCostDashboardToken)
 	r.Get("/{id}/sent-emails", h.listSentEmails)
-	// GDPR endpoints (data export + right to erasure)
-	if h.gdpr != nil {
-		r.Get("/{id}/export", h.gdpr.exportData)
-		r.Post("/{id}/delete-data", h.gdpr.deleteData)
-	}
+	// GDPR endpoints (data export + right to erasure) were removed
+	// 2026-05-29 pre-launch — the prior half-implementation didn't
+	// propagate erasure to Stripe (so PII survived in the Stripe
+	// Customer object) and lacked the audit + acknowledgement-window
+	// machinery a real regulator-facing GDPR flow needs. Rebuild
+	// when the first EU-targeting DP defines actual regulatory scope.
 	return r
 }
 
@@ -224,6 +219,28 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Customer updates (display_name, email, dunning policy, status)
+	// are operator-visible state changes. An email change can break
+	// invoice delivery; a dunning-policy reassignment changes when
+	// auto-collection fires. Without the audit row the AuditLog page
+	// shows nothing when ops asks "who changed this customer's email?".
+	if h.auditLogger != nil {
+		meta := map[string]any{}
+		if input.DisplayName != "" {
+			meta["display_name"] = input.DisplayName
+		}
+		if input.Email != "" {
+			meta["email"] = input.Email
+		}
+		if input.Status != "" {
+			meta["status"] = input.Status
+		}
+		if input.DunningPolicyID != nil {
+			meta["dunning_policy_id"] = *input.DunningPolicyID
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "customer", customer.ID, customer.DisplayName, meta)
+	}
+
 	respond.JSON(w, r, http.StatusOK, customer)
 }
 
@@ -242,6 +259,20 @@ func (h *Handler) upsertBillingProfile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.FromError(w, r, err, "billing profile")
 		return
+	}
+
+	// Billing-profile changes flow directly into every future invoice
+	// computed for the customer (tax_status, tax_id, address used by
+	// tax engines). Auditable for both compliance and incident review
+	// — a regressed invoice tax line is often traced back to a
+	// billing-profile edit.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "customer", customerID, profile.LegalName, map[string]any{
+			"action":     "billing_profile_upserted",
+			"tax_status": string(profile.TaxStatus),
+			"tax_id":     profile.TaxID,
+			"country":    profile.Country,
+		})
 	}
 
 	respond.JSON(w, r, http.StatusOK, profile)

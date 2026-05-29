@@ -55,7 +55,7 @@ type Engine struct {
 	credits       CreditApplier
 	creditGranter CreditGranter
 	settings      SettingsReader
-	paymentSetups PaymentSetupReader
+	paymentSetups PaymentReadiness
 	charger       InvoiceCharger
 	profiles      BillingProfileReader
 	customers     CustomerReader
@@ -66,6 +66,24 @@ type Engine struct {
 	testClocks    TestClockReader
 	events        domain.EventDispatcher
 	noPMNotifier  NoPaymentMethodNotifier
+	auditLogger   AuditWriter
+}
+
+// AuditWriter is the narrow audit surface the engine needs. Defined
+// here (not imported from internal/audit) so billing doesn't gain a
+// reverse import of the audit package — production wires
+// *audit.Logger via SetAuditLogger in router.go. Optional: nil = engine
+// skips the audit write but still mutates state + dispatches webhooks.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// SetAuditLogger wires the audit logger used by the engine to record
+// background-fired lifecycle events (currently: scheduled cancellation
+// firing at period end). Without this, those auto-fires only show in
+// outbound webhooks and slog — the operator Activity feed misses them.
+func (e *Engine) SetAuditLogger(a AuditWriter) {
+	e.auditLogger = a
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel
@@ -186,9 +204,16 @@ type BillingProfileReader interface {
 	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
 }
 
-// PaymentSetupReader checks if a customer has a payment method.
-type PaymentSetupReader interface {
-	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+// PaymentReadiness resolves the data the engine needs to decide
+// "can we auto-charge this customer's invoice right now?" Two values
+// in one call — the Stripe Customer ID (required as the PI customer
+// param) plus a flag for whether the customer has an active default
+// PM. Replaces the older PaymentReadiness / GetPaymentSetup shape
+// (customer_payment_setups table, retired in migration 0097): the
+// Stripe Customer ID lives on customers.stripe_customer_id, the PM-
+// presence check queries payment_methods canonically.
+type PaymentReadiness interface {
+	ResolveForCharge(ctx context.Context, tenantID, customerID string) (stripeCustomerID string, hasDefaultPM bool, err error)
 }
 
 // InvoiceCharger creates a Stripe PaymentIntent for a finalized invoice.
@@ -335,7 +360,7 @@ type InvoiceWriter interface {
 	UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
 }
 
-func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentSetupReader, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {
+func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentReadiness, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {
 	if clk == nil {
 		clk = clock.Real()
 	}
@@ -356,9 +381,27 @@ type TaxProviderResolver interface {
 // TaxCalculationWriter persists a provider calculation to the
 // tax_calculations audit table. Separate interface so engine tests can
 // skip persistence without wiring a full postgres store.
+//
+// LookupCalculationCreatedAt powers the CommitTax expiry guard.
+// Stripe Tax calculations expire 24h after creation — operator-finalized
+// drafts held longer than that quietly fail at commit time and leave
+// the invoice with tax_calculation_id but no tax_transaction_id (i.e.
+// Stripe Tax reporting silently broken). Returning the calc's age lets
+// CommitTax fail loud before calling Stripe so the operator knows to
+// retry tax first. Returns errs.ErrNotFound when no row matches —
+// caller treats as "skip the guard" (manual / none provider produces
+// no row; defensive against tests that wire a fake store without the
+// row pre-loaded).
 type TaxCalculationWriter interface {
 	Record(ctx context.Context, tenantID, invoiceID string, req tax.Request, res *tax.Result) (string, error)
+	LookupCalculationCreatedAt(ctx context.Context, tenantID, invoiceID, providerRef string) (time.Time, error)
 }
+
+// taxCalculationMaxAge is the Stripe Tax calculation window. Stripe's
+// own docs put it at 24h; we use 23h to leave a safety buffer so a
+// near-expiry calc isn't sent to Stripe just to bounce. Operator
+// guidance on expiry: "Retry tax to refresh, then finalize."
+const taxCalculationMaxAge = 23 * time.Hour
 
 // SetTaxProviderResolver wires the per-tenant tax provider resolver. When
 // nil, the engine skips tax calculation entirely and invoices carry zero
@@ -401,6 +444,32 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 	}
 	if provider == nil {
 		return nil
+	}
+	// Expiry guard. Stripe Tax calculations are valid for 24h after
+	// creation; operator-finalized drafts held longer fail at Stripe's
+	// CreateFromCalculation with "calculation expired" and previously
+	// left the invoice with tax_calculation_id but no
+	// tax_transaction_id. Fail loud here so the operator sees a clear
+	// "retry tax to refresh" message instead of a silent reporting gap.
+	// Skipped when the store isn't wired (engine tests) — the store
+	// row IS the source of truth for calc creation time, and tests
+	// without it shouldn't be gated by a guard they didn't opt into.
+	if e.taxCalcStore != nil && calculationID != "" {
+		createdAt, lookupErr := e.taxCalcStore.LookupCalculationCreatedAt(ctx, tenantID, invoiceID, calculationID)
+		if lookupErr == nil {
+			if age := clock.Now(ctx).Sub(createdAt); age > taxCalculationMaxAge {
+				return errs.InvalidState(fmt.Sprintf(
+					"tax calculation expired (age %s, max %s) — retry tax to refresh, then finalize",
+					age.Truncate(time.Minute), taxCalculationMaxAge))
+			}
+		} else if !errors.Is(lookupErr, errs.ErrNotFound) {
+			// Lookup failure on a real DB error: log and fall through.
+			// Better to attempt commit and let Stripe reject than to
+			// block finalize on a transient DB blip.
+			slog.Warn("tax: expiry-guard lookup failed; attempting commit anyway",
+				"error", lookupErr, "tenant_id", tenantID, "invoice_id", invoiceID,
+				"calculation_id", calculationID)
+		}
 	}
 	txID, err := provider.Commit(ctx, calculationID, invoiceID)
 	if err != nil {
@@ -692,13 +761,27 @@ func (e *Engine) advanceCycleOrCancel(ctx context.Context, sub domain.Subscripti
 		"canceled_at", now.UTC(),
 	)
 
+	// Audit row for the engine-initiated transition. Operator-side
+	// cancel + portal-side cancel both write AuditActionCancel; this
+	// is the third path (auto-fire at period end) that previously
+	// skipped audit, leaving the subscription Activity timeline
+	// showing "Cancellation scheduled" with no terminal event. The
+	// canceled_by='schedule' field matches the outbound-webhook
+	// shape so a CS rep reading both surfaces sees the same vocabulary.
+	if e.auditLogger != nil {
+		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, map[string]any{
+			"canceled_by": "schedule",
+			"customer_id": canceled.CustomerID,
+		})
+	}
+
 	if e.events != nil {
 		payload := map[string]any{
 			"subscription_id": canceled.ID,
 			"customer_id":     canceled.CustomerID,
 			"status":          string(canceled.Status),
 			"canceled_at":     now.UTC(),
-			"triggered_by":    "schedule",
+			"canceled_by":     "schedule",
 		}
 		if err := e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCanceled, payload); err != nil {
 			slog.Error("dispatch subscription.canceled (scheduled)",
@@ -1817,6 +1900,17 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			if !ok || segPlan.BaseAmountCents <= 0 {
 				continue
 			}
+			// Skip segments whose plan was in_advance — that portion of
+			// the period was already prepaid (BillOnCreate / prior cycle
+			// close) and emitting a segment line here would double-bill
+			// it. Matches the Pass 2 guard for removed in_advance items
+			// below. Lets cross-cadence plan-swaps (in_advance OLD →
+			// in_arrears NEW) bill correctly: the OLD prepaid segment
+			// is skipped, the NEW in_arrears segment bills its consumed
+			// portion at the NEW rate.
+			if segPlan.BaseBillTiming == domain.BillInAdvance {
+				continue
+			}
 			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, &lineItems, &subtotal)
 		}
 	}
@@ -2279,8 +2373,22 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		}
 	}
 
-	// If credits covered 100%, mark as paid immediately (no Stripe charge needed)
-	if totalWithTax > 0 {
+	// If credits covered 100%, mark as paid immediately (no Stripe
+	// charge needed) — BUT only when the invoice was finalized at
+	// create time (i.e., tax_status=ok and pause_collection unset, per
+	// InvoiceFinalizationStatus). For draft invoices (tax pending or
+	// pause-collection set), skip the MarkPaid call: leave the
+	// invoice draft with credits already applied. Tax retry's
+	// auto-finalize chain will land the draft → finalized + auto-pay
+	// when tax resolves; pause-collection's resume path will do the
+	// same when collection unpauses.
+	//
+	// Pre-fix bug (caught 2026-05-22): this block called MarkPaid
+	// regardless of status, transitioning a tax-pending draft directly
+	// to paid. The customer was charged subtotal-only (tax_amount=0)
+	// and tax retry blocked forever (retry requires status='draft',
+	// but status was 'paid'). Customer DEMO-000906 demonstrated.
+	if totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			// Reuse the sub-scoped `now` so fully-credit-paid invoices on a
@@ -2309,8 +2417,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// because finalize hasn't happened. This is the Stripe-parity behavior:
 	// pause_collection neuters the financial side without touching the cycle.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
-		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
 
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -2318,7 +2426,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
 					slog.Warn("auto-charge failed, marking for retry",
 						"invoice_id", inv.ID,
 						"error", err,
@@ -2609,15 +2717,15 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	// Auto-charge: PM ready → synchronous charge; no PM → queue +
 	// notify. Mirrors the post-finalize block in billOnePeriod.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
 
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
 					slog.Warn("subscription_create auto-charge failed, marking for retry",
 						"invoice_id", inv.ID,
 						"error", err,
@@ -3058,14 +3166,14 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	// BillOnCreate. PM ready → synchronous attempt; no PM → queue +
 	// notify (dunning takes over on a real failure).
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		ps, psErr := e.paymentSetups.GetPaymentSetup(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, ps.StripeCustomerID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
 					slog.Warn("final-on-cancel auto-charge failed, marking for retry",
 						"invoice_id", inv.ID, "error", err)
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
@@ -3094,6 +3202,7 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	)
 	return inv, nil
 }
+
 
 // BillOnCancel emits the cancel proration credit for an in_advance
 // subscription that was canceled before its current period closed
@@ -3162,10 +3271,12 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 
 	// Day-based math to avoid int64 overflow. Nanosecond math overflows
 	// for ~$36+ base fees on a full-month proration. Same pattern as
-	// emitBaseSegmentLine + BillOnCycleReset.
-	periodDays := roundDays(periodEnd.Sub(periodStart))
+	// emitBaseSegmentLine — denominator is the FULL plan-interval cycle
+	// (not the current period's length), since the customer paid
+	// baseFee × periodDays/fullCycleDays for a stub. Using periodDays
+	// as the denominator over-refunds whenever periodDays<fullCycleDays.
 	unusedDays := roundDays(periodEnd.Sub(cancelAt))
-	if periodDays <= 0 || unusedDays <= 0 {
+	if unusedDays <= 0 {
 		return 0, nil
 	}
 
@@ -3178,8 +3289,12 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
 			continue
 		}
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+		if fullCycleDays <= 0 {
+			continue
+		}
 		baseFee := plan.BaseAmountCents * it.Quantity
-		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(periodDays))
+		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(fullCycleDays))
 		if unused > 0 {
 			totalUnused += unused
 		}
@@ -3251,6 +3366,132 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	return totalUnused, nil
 }
 
+// BillOnPlanSwapImmediate issues the refund credit for the unused
+// portion of an in_advance billed period when a sub's plan is swapped
+// to a different cadence/interval mid-period. Returns the cents amount
+// granted (0 when none).
+//
+// Mirrors BillOnCancel's refund math but takes `at` as a parameter and
+// does not gate on canceled status — the caller (Service.UpdateItem)
+// invokes this BEFORE applying the plan swap, while the OLD plan is
+// still on the items so plan lookups resolve the outgoing rate.
+//
+// No-op when:
+//   - creditGranter not wired (production wires; narrow unit tests skip)
+//   - no current period set
+//   - at at/after period_end OR at/before period_start (clean swap)
+//   - no item's plan is in_advance (nothing prebilled to refund)
+//   - source in_advance invoice not paid (mirrors BillOnCancel paid-check)
+//   - computed unused amount rounds to zero
+//
+// Caller is responsible for applying the plan swap and updating the
+// billing period AFTER this call — this method only handles the
+// refund for the OLD in_advance portion.
+func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscription, at time.Time) (int64, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnPlanSwapImmediate",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+		),
+	)
+	defer span.End()
+
+	if e.creditGranter == nil {
+		return 0, nil
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return 0, nil
+	}
+
+	periodStart := *sub.CurrentBillingPeriodStart
+	periodEnd := *sub.CurrentBillingPeriodEnd
+
+	if !at.Before(periodEnd) || !at.After(periodStart) {
+		return 0, nil
+	}
+
+	// Denominator is the FULL plan-interval cycle (mirrors
+	// emitBaseSegmentLine / BillOnCancel). On a stub period the
+	// customer paid baseFee × periodDays/fullCycleDays, so refunding
+	// baseFee × unusedDays/periodDays over-credits whenever
+	// periodDays<fullCycleDays.
+	unusedDays := roundDays(periodEnd.Sub(at))
+	if unusedDays <= 0 {
+		return 0, nil
+	}
+
+	totalUnused := int64(0)
+	for _, it := range sub.Items {
+		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return 0, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
+			continue
+		}
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval).Sub(periodStart))
+		if fullCycleDays <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(fullCycleDays))
+		if unused > 0 {
+			totalUnused += unused
+		}
+	}
+
+	if totalUnused <= 0 {
+		return 0, nil
+	}
+
+	if e.invoices != nil {
+		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
+		if lookupErr != nil {
+			slog.WarnContext(ctx, "plan-swap refund: source in_advance invoice not found; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"period_start", periodStart,
+				"error", lookupErr,
+			)
+			return 0, nil
+		}
+		if src.PaymentStatus != domain.PaymentSucceeded {
+			slog.InfoContext(ctx, "plan-swap refund: source in_advance invoice not paid; skipping credit grant",
+				"subscription_id", sub.ID,
+				"customer_id", sub.CustomerID,
+				"source_invoice_id", src.ID,
+				"source_payment_status", src.PaymentStatus,
+			)
+			return 0, nil
+		}
+	}
+
+	_, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{
+		CustomerID:           sub.CustomerID,
+		AmountCents:          totalUnused,
+		SourceSubscriptionID: sub.ID,
+		Description: fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
+			sub.Code,
+			periodStart.UTC().Format("2006-01-02"),
+			periodEnd.UTC().Format("2006-01-02"),
+			at.UTC().Format("2006-01-02")),
+		At: at,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("plan-swap refund credit grant: %w", err)
+	}
+
+	slog.Info("plan-swap refund credit issued",
+		"subscription_id", sub.ID,
+		"customer_id", sub.CustomerID,
+		"amount_cents", totalUnused,
+		"period_start", periodStart,
+		"period_end", periodEnd,
+		"swapped_at", at,
+	)
+	return totalUnused, nil
+}
+
 // RetryPendingCharges picks up invoices flagged for auto-charge retry
 // and attempts to charge them. CRON path — the wall-clock scheduler
 // calls this every tick. ADR-029 Phase 1: clock-pinned invoices are
@@ -3311,13 +3552,13 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 	charged := 0
 	var errs []error
 	for _, inv := range pending {
-		ps, err := e.paymentSetups.GetPaymentSetup(ctx, inv.TenantID, inv.CustomerID)
-		if err != nil || ps.SetupStatus != domain.PaymentSetupReady || ps.StripeCustomerID == "" {
+		stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
+		if err != nil || !hasDefaultPM || stripeCusID == "" {
 			continue
 		}
 
 		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, ps.StripeCustomerID); err != nil {
+		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, stripeCusID); err != nil {
 			cancel()
 			// Card decline: expected outcome. ChargeInvoice already
 			// stamped invoice.payment_status='failed' and fired

@@ -164,9 +164,12 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string, filter ListFi
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 25, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 25
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	// Args track $1, $2, ... positions; conds is joined with AND.
@@ -391,6 +394,31 @@ func (s *PostgresStore) RedeemAtomic(ctx context.Context, tenantID string, in Re
 		return RedeemAtomicResult{}, ErrCouponGate{Reason: GateMaxRedemptions}
 	}
 
+	// Per-customer cap check (Restrictions.MaxRedemptionsPerCustomer)
+	// re-asserted under the coupon FOR UPDATE lock. The service-layer
+	// validateRedeem also runs this check pre-tx for friendly error
+	// surfacing, but that pre-check has a race window: two concurrent
+	// redeems by the same customer can both see current=cap-1 and
+	// both pass. Re-checking here, after the lock has serialized all
+	// redeems of this coupon, closes the race — the second redeem
+	// sees the committed count from the first and is rejected.
+	//
+	// Voided redemptions don't count toward the cap (they were
+	// explicitly retired via VoidRedemptionsForInvoice).
+	if c.Restrictions.MaxRedemptionsPerCustomer > 0 {
+		var perCustomer int
+		err = tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM coupon_redemptions
+			WHERE coupon_id = $1 AND customer_id = $2 AND voided_at IS NULL
+		`, c.ID, in.CustomerID).Scan(&perCustomer)
+		if err != nil {
+			return RedeemAtomicResult{}, fmt.Errorf("count per-customer redemptions: %w", err)
+		}
+		if perCustomer >= c.Restrictions.MaxRedemptionsPerCustomer {
+			return RedeemAtomicResult{}, ErrCouponGate{Reason: GatePerCustomerMaxed}
+		}
+	}
+
 	// Bump the counter first. If the redemption insert then fails (e.g.
 	// subscription-unique collision), the tx rolls back and we're back
 	// to the pre-redeem state — no counter drift.
@@ -495,9 +523,12 @@ func (s *PostgresStore) ListRedemptions(ctx context.Context, tenantID, couponID 
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 25, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 25
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	args := []any{couponID}
@@ -570,6 +601,14 @@ func (s *PostgresStore) ListRedemptionsBySubscription(ctx context.Context, tenan
 	return redemptions, rows.Err()
 }
 
+// CountRedemptionsByCustomer returns the count of non-voided
+// redemptions by a customer for the given coupon. Voided redemptions
+// (set by VoidRedemptionsForInvoice when an invoice is fully credited
+// or refunded) are excluded — they've been explicitly retired and
+// shouldn't count toward the per-customer cap. Used by the service
+// layer's pre-tx validateRedeem for friendly error surfacing; the
+// authoritative check is re-asserted inside RedeemAtomic under the
+// coupon FOR UPDATE lock to close the concurrent-redeem race.
 func (s *PostgresStore) CountRedemptionsByCustomer(ctx context.Context, tenantID, couponID, customerID string) (int, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -580,7 +619,7 @@ func (s *PostgresStore) CountRedemptionsByCustomer(ctx context.Context, tenantID
 	var n int
 	err = tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM coupon_redemptions
-		WHERE coupon_id = $1 AND customer_id = $2
+		WHERE coupon_id = $1 AND customer_id = $2 AND voided_at IS NULL
 	`, couponID, customerID).Scan(&n)
 	return n, err
 }

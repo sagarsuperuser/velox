@@ -20,10 +20,15 @@ type fakeRefunder struct {
 type fakeRefundCall struct {
 	paymentIntentID string
 	amountCents     int64
+	idempotencyKey  string
 }
 
-func (f *fakeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64) (string, error) {
-	f.calls = append(f.calls, fakeRefundCall{paymentIntentID: paymentIntentID, amountCents: amountCents})
+func (f *fakeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error) {
+	f.calls = append(f.calls, fakeRefundCall{
+		paymentIntentID: paymentIntentID,
+		amountCents:     amountCents,
+		idempotencyKey:  idempotencyKey,
+	})
 	if f.failWith != nil {
 		return "", f.failWith
 	}
@@ -251,5 +256,194 @@ func TestCreateRefund_StripeFailure_IssuesWithFailedStatus(t *testing.T) {
 	}
 	if cn.StripeRefundID != "" {
 		t.Errorf("stripe_refund_id: got %q, want empty on failure", cn.StripeRefundID)
+	}
+}
+
+// TestIssue_PassesIdempotencyKeyToStripe locks in the contract that
+// Issue() always passes a deterministic idempotency key to the
+// refunder. Without this, a retry after a partial-failure (e.g.
+// post-refund credit-grant DB error) would call Stripe again with no
+// dedup and create a DUPLICATE refund — customer over-refunded.
+//
+// Key shape: `velox_cn_<cn_id>`. Same key + same params returns the
+// cached response from Stripe.
+func TestIssue_PassesIdempotencyKeyToStripe(t *testing.T) {
+	svc, _, _, refunder := setupRefundSvc(t)
+
+	cn, err := svc.CreateRefund(context.Background(), "t1", RefundInput{
+		InvoiceID: "inv_paid",
+		Reason:    "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateRefund: %v", err)
+	}
+
+	if len(refunder.calls) != 1 {
+		t.Fatalf("expected 1 refund call, got %d", len(refunder.calls))
+	}
+	expected := "velox_cn_" + cn.ID
+	if refunder.calls[0].idempotencyKey != expected {
+		t.Errorf("idempotency_key: got %q, want %q", refunder.calls[0].idempotencyKey, expected)
+	}
+}
+
+// TestRetryRefund exercises the operator-driven retry of a Stripe
+// refund leg that failed/was-pending at Issue() time. The CN itself
+// stays issued; only the cash-back leg is re-driven. Same idempotency
+// key as Issue() so retries after network-failure-but-Stripe-actually-
+// succeeded converge cleanly (Stripe returns the existing refund_id).
+func TestRetryRefund(t *testing.T) {
+	t.Run("failed → succeeded; uses same idempotency key as Issue", func(t *testing.T) {
+		svc, store, _, refunder := setupRefundSvc(t)
+
+		cn, err := store.Create(context.Background(), "t1", domain.CreditNote{
+			TenantID: "t1", InvoiceID: "inv_paid", CustomerID: "cus_1",
+			CreditNoteNumber:  "CN-RETRY-1",
+			Status:            domain.CreditNoteDraft,
+			Reason:            "retry",
+			SubtotalCents:     5000,
+			TotalCents:        5000,
+			RefundAmountCents: 5000,
+			Currency:          "USD",
+			RefundStatus:      domain.RefundFailed,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// Manually transition to issued (bypass Issue() flow so we
+		// land at status=issued + refund_status=failed for the retry
+		// test).
+		stale := store.notes[cn.ID]
+		stale.Status = domain.CreditNoteIssued
+		store.notes[cn.ID] = stale
+
+		out, err := svc.RetryRefund(context.Background(), "t1", cn.ID)
+		if err != nil {
+			t.Fatalf("RetryRefund: %v", err)
+		}
+		if out.RefundStatus != domain.RefundSucceeded {
+			t.Errorf("refund_status: got %q want succeeded", out.RefundStatus)
+		}
+		if out.StripeRefundID == "" {
+			t.Error("stripe_refund_id should be set after successful retry")
+		}
+		if len(refunder.calls) != 1 {
+			t.Fatalf("expected 1 refund call, got %d", len(refunder.calls))
+		}
+		expectedKey := "velox_cn_" + cn.ID
+		if refunder.calls[0].idempotencyKey != expectedKey {
+			t.Errorf("idempotency_key: got %q want %q (must match Issue() key for Stripe-side dedup)",
+				refunder.calls[0].idempotencyKey, expectedKey)
+		}
+	})
+
+	t.Run("rejects already-succeeded refund", func(t *testing.T) {
+		svc, store, _, _ := setupRefundSvc(t)
+		cn, _ := store.Create(context.Background(), "t1", domain.CreditNote{
+			TenantID: "t1", InvoiceID: "inv_paid", CustomerID: "cus_1",
+			CreditNoteNumber:  "CN-OK",
+			Status:            domain.CreditNoteIssued,
+			RefundAmountCents: 5000,
+			Currency:          "USD",
+			RefundStatus:      domain.RefundSucceeded,
+			StripeRefundID:    "re_prior",
+		})
+		_, err := svc.RetryRefund(context.Background(), "t1", cn.ID)
+		if err == nil {
+			t.Error("expected retry on already-succeeded refund to reject")
+		}
+	})
+
+	t.Run("rejects draft CN", func(t *testing.T) {
+		svc, store, _, _ := setupRefundSvc(t)
+		cn, _ := store.Create(context.Background(), "t1", domain.CreditNote{
+			TenantID: "t1", InvoiceID: "inv_paid", CustomerID: "cus_1",
+			CreditNoteNumber:  "CN-DRAFT",
+			Status:            domain.CreditNoteDraft,
+			RefundAmountCents: 5000,
+			Currency:          "USD",
+			RefundStatus:      domain.RefundFailed,
+		})
+		_, err := svc.RetryRefund(context.Background(), "t1", cn.ID)
+		if err == nil {
+			t.Error("expected retry on draft CN to reject")
+		}
+	})
+
+	t.Run("rejects credit-only CN (no refund leg)", func(t *testing.T) {
+		svc, store, _, _ := setupRefundSvc(t)
+		cn, _ := store.Create(context.Background(), "t1", domain.CreditNote{
+			TenantID: "t1", InvoiceID: "inv_paid", CustomerID: "cus_1",
+			CreditNoteNumber:  "CN-CREDIT-ONLY",
+			Status:            domain.CreditNoteIssued,
+			RefundAmountCents: 0,
+			CreditAmountCents: 5000,
+			Currency:          "USD",
+			RefundStatus:      domain.RefundNone,
+		})
+		_, err := svc.RetryRefund(context.Background(), "t1", cn.ID)
+		if err == nil {
+			t.Error("expected retry on credit-only CN to reject")
+		}
+	})
+
+	t.Run("rejects when invoice has no PaymentIntent", func(t *testing.T) {
+		svc, store, invoices, _ := setupRefundSvc(t)
+		invoices.invoices["inv_no_pi"] = domain.Invoice{
+			ID: "inv_no_pi", TenantID: "t1", CustomerID: "cus_1",
+			Status:           domain.InvoicePaid,
+			Currency:         "USD",
+			TotalAmountCents: 5000,
+		}
+		cn, _ := store.Create(context.Background(), "t1", domain.CreditNote{
+			TenantID: "t1", InvoiceID: "inv_no_pi", CustomerID: "cus_1",
+			CreditNoteNumber:  "CN-NO-PI",
+			Status:            domain.CreditNoteIssued,
+			RefundAmountCents: 5000,
+			Currency:          "USD",
+			RefundStatus:      domain.RefundPending,
+		})
+		_, err := svc.RetryRefund(context.Background(), "t1", cn.ID)
+		if err == nil {
+			t.Error("expected retry to reject when invoice has no PI")
+		}
+	})
+}
+
+// TestIssue_SkipsStripeRefundIfAlreadyRefunded locks in the retry-
+// safety guard: when a CN already has a StripeRefundID stamped on it
+// (i.e. a prior Issue() attempt persisted it before failing on a
+// downstream step), the retry's Issue() MUST NOT call Stripe again.
+// The guard is `cn.StripeRefundID == ""`.
+func TestIssue_SkipsStripeRefundIfAlreadyRefunded(t *testing.T) {
+	svc, store, invoices, refunder := setupRefundSvc(t)
+	_ = invoices
+
+	// Create a draft CN manually with a pre-stamped StripeRefundID,
+	// simulating "Stripe refund succeeded on first attempt, persisted,
+	// then a downstream step failed and operator is retrying Issue()".
+	created, err := store.Create(context.Background(), "t1", domain.CreditNote{
+		TenantID: "t1", InvoiceID: "inv_paid", CustomerID: "cus_1",
+		CreditNoteNumber:  "CN-RETRY",
+		Status:            domain.CreditNoteDraft,
+		Reason:            "retry",
+		SubtotalCents:     5000,
+		TotalCents:        5000,
+		RefundAmountCents: 5000,
+		CreditAmountCents: 0,
+		Currency:          "USD",
+		RefundStatus:      domain.RefundSucceeded,
+		StripeRefundID:    "re_prior_attempt",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.Issue(context.Background(), "t1", created.ID); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	if len(refunder.calls) != 0 {
+		t.Errorf("expected 0 refund calls on retry-with-pre-existing-refund_id, got %d (would have been duplicate Stripe charge)", len(refunder.calls))
 	}
 }

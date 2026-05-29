@@ -3,6 +3,7 @@ package creditnote
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,11 +172,14 @@ func TestCreate_CreditNote(t *testing.T) {
 		}
 	})
 
-	t.Run("refund for paid invoice", func(t *testing.T) {
+	t.Run("refund for paid invoice (PM-paid → Stripe refund)", func(t *testing.T) {
+		// Stripe-paid invoice: amount_paid_cents = total_amount_cents,
+		// credits_applied_cents = 0. Refund routes 100% to PM.
 		invoices.invoices["inv_paid"] = domain.Invoice{
 			ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
 			Status: domain.InvoicePaid, Currency: "USD",
 			TotalAmountCents: 10000,
+			AmountPaidCents:  10000,
 		}
 		cn, err := svc.Create(ctx, "t1", CreateInput{
 			InvoiceID:  "inv_paid",
@@ -187,7 +191,170 @@ func TestCreate_CreditNote(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if cn.RefundAmountCents != 5000 {
+			t.Errorf("refund_amount: got %d, want 5000 (full PM refund)", cn.RefundAmountCents)
+		}
+		if cn.CreditAmountCents != 0 {
+			t.Errorf("credit_amount: got %d, want 0 (no credit was applied to invoice)", cn.CreditAmountCents)
+		}
+	})
+
+	t.Run("refund REJECTED on credit-only-paid invoice (operator must use Credit type)", func(t *testing.T) {
+		// Invoice paid entirely by customer credits: amount_paid=0.
+		// Operator picked "Refund -- return to payment method" — but
+		// there's no payment method to refund against. Reject with a
+		// helpful error rather than silently routing to credits;
+		// honor the explicit UI choice.
+		invoices.invoices["inv_credit_only"] = domain.Invoice{
+			ID: "inv_credit_only", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    10000,
+			AmountPaidCents:     0,
+			CreditsAppliedCents: 10000,
+		}
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_credit_only",
+			Reason:     "Refund attempt",
+			RefundType: "refund",
+			Lines:      []CreditLineInput{{Description: "Refund", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err == nil {
+			t.Fatal("expected refund-type CN on credit-only-paid invoice to reject")
+		}
+		// Error message should steer operator toward the right choice.
+		msg := err.Error()
+		if !strings.Contains(msg, "credit") {
+			t.Errorf("error message should mention credit alternative: %q", msg)
+		}
+	})
+
+	t.Run("credit-type CN restores credit balance on credit-only-paid invoice", func(t *testing.T) {
+		// Same setup as above, but operator picks RefundType='credit'.
+		// Should succeed — credit_amount = subtotal, restoring the
+		// credit balance via the existing credit-grant path at Issue().
+		invoices.invoices["inv_credit_only_2"] = domain.Invoice{
+			ID: "inv_credit_only_2", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    10000,
+			AmountPaidCents:     0,
+			CreditsAppliedCents: 10000,
+		}
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_credit_only_2",
+			Reason:     "Restore credits",
+			RefundType: "credit",
+			Lines:      []CreditLineInput{{Description: "Restore", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cn.RefundAmountCents != 0 {
+			t.Errorf("refund_amount: got %d, want 0", cn.RefundAmountCents)
+		}
+		if cn.CreditAmountCents != 10000 {
+			t.Errorf("credit_amount: got %d, want 10000", cn.CreditAmountCents)
+		}
+	})
+
+	t.Run("refund REJECTED when amount exceeds PM-refundable on mixed-paid invoice", func(t *testing.T) {
+		// $200 invoice, paid $50 by card + $150 by credits.
+		// Operator picks Refund type with amount $80 — but only $50
+		// was charged to card. Reject with a helpful error explaining
+		// the options: lower to $50, or use Credit type for the full
+		// amount, or split into two CNs.
+		invoices.invoices["inv_mixed"] = domain.Invoice{
+			ID: "inv_mixed", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    20000,
+			AmountPaidCents:     5000,
+			CreditsAppliedCents: 15000,
+		}
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_mixed",
+			Reason:     "Partial refund attempt",
+			RefundType: "refund",
+			Lines:      []CreditLineInput{{Description: "Refund", Quantity: 1, UnitAmountCents: 8000}},
+		})
+		if err == nil {
+			t.Fatal("expected refund-type CN above PM-refundable to reject")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "50.00") {
+			t.Errorf("error message should mention the $50.00 PM-refundable max: %q", msg)
+		}
+	})
+
+	t.Run("refund AT EXACTLY PM-refundable on mixed-paid invoice succeeds", func(t *testing.T) {
+		// Same shape, but operator lowers the amount to $50 (the PM-
+		// refundable max). Should succeed as a pure Stripe refund.
+		invoices.invoices["inv_mixed_at_max"] = domain.Invoice{
+			ID: "inv_mixed_at_max", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    20000,
+			AmountPaidCents:     5000,
+			CreditsAppliedCents: 15000,
+		}
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_mixed_at_max",
+			Reason:     "Refund at PM max",
+			RefundType: "refund",
+			Lines:      []CreditLineInput{{Description: "Refund", Quantity: 1, UnitAmountCents: 5000}},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cn.RefundAmountCents != 5000 {
 			t.Errorf("refund_amount: got %d, want 5000", cn.RefundAmountCents)
+		}
+		if cn.CreditAmountCents != 0 {
+			t.Errorf("credit_amount: got %d, want 0", cn.CreditAmountCents)
+		}
+	})
+
+	t.Run("refund within PM-paid portion stays 100% PM", func(t *testing.T) {
+		// Same mixed invoice as above. CN for $40 ≤ $50 PM portion
+		// → all PM, no credit involvement.
+		invoices.invoices["inv_mixed2"] = domain.Invoice{
+			ID: "inv_mixed2", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    20000,
+			AmountPaidCents:     5000,
+			CreditsAppliedCents: 15000,
+		}
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_mixed2",
+			Reason:     "Refund within PM-paid portion",
+			RefundType: "refund",
+			Lines:      []CreditLineInput{{Description: "Refund", Quantity: 1, UnitAmountCents: 4000}},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cn.RefundAmountCents != 4000 {
+			t.Errorf("refund_amount: got %d, want 4000 (within PM portion)", cn.RefundAmountCents)
+		}
+		if cn.CreditAmountCents != 0 {
+			t.Errorf("credit_amount: got %d, want 0", cn.CreditAmountCents)
+		}
+	})
+
+	t.Run("rejects refund that exceeds PM+credit refundable", func(t *testing.T) {
+		invoices.invoices["inv_overcap"] = domain.Invoice{
+			ID: "inv_overcap", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents:    10000,
+			AmountPaidCents:     3000,
+			CreditsAppliedCents: 7000,
+		}
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_overcap",
+			Reason:     "Too big",
+			RefundType: "refund",
+			// 9999 fits in total but exists alongside other rules
+			// Total refundable = 3000 + 7000 = 10000. 11000 > 10000.
+			Lines: []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 11000}},
+		})
+		if err == nil {
+			t.Error("expected error when refund exceeds total refundable")
 		}
 	})
 
@@ -230,6 +397,304 @@ func TestCreate_CreditNote(t *testing.T) {
 			t.Fatal("expected error for no lines")
 		}
 	})
+}
+
+// TestCreate_ExplicitAllocation locks in the Stripe + Lago three-channel
+// shape: callers pass refund_amount_cents + credit_amount_cents +
+// out_of_band_amount_cents whose sum equals the CN total. The legacy
+// RefundType field is honored as a single-channel shortcut when all
+// three explicit amounts are zero.
+func TestCreate_ExplicitAllocation(t *testing.T) {
+	t.Parallel()
+
+	mkSvc := func(inv domain.Invoice) (*Service, *memStore) {
+		store := newMemStore()
+		invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
+		return NewService(store, invoices, nil), store
+	}
+	ctx := context.Background()
+
+	t.Run("refund+credit split — Stripe rule example ($80 CN on $82.60 invoice)", func(t *testing.T) {
+		// Customer paid $62.60 by card, $20 via credit balance. CN
+		// for $80: operator routes $62.60 to PM (the full card
+		// portion) and $17.40 to credit balance.
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_split", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 8260, AmountPaidCents: 6260, CreditsAppliedCents: 2000,
+		})
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:         "inv_split",
+			Reason:            "Partial refund + credit restore",
+			RefundAmountCents: 6260,
+			CreditAmountCents: 1740,
+			Lines:             []CreditLineInput{{Description: "Refund", Quantity: 1, UnitAmountCents: 8000}},
+		})
+		if err != nil {
+			t.Fatalf("Create split CN: %v", err)
+		}
+		if cn.RefundAmountCents != 6260 {
+			t.Errorf("refund_amount_cents: got %d want 6260", cn.RefundAmountCents)
+		}
+		if cn.CreditAmountCents != 1740 {
+			t.Errorf("credit_amount_cents: got %d want 1740", cn.CreditAmountCents)
+		}
+		if cn.OutOfBandAmountCents != 0 {
+			t.Errorf("out_of_band_amount_cents: got %d want 0", cn.OutOfBandAmountCents)
+		}
+	})
+
+	t.Run("three-channel split — refund + credit + out-of-band", func(t *testing.T) {
+		// $100 CN: $40 to PM, $30 to credit, $30 marked as
+		// handled outside Stripe (e.g. operator already wrote a
+		// check). All three fields used together.
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_3ch", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 10000, AmountPaidCents: 10000,
+		})
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:            "inv_3ch",
+			Reason:               "Mixed channels",
+			RefundAmountCents:    4000,
+			CreditAmountCents:    3000,
+			OutOfBandAmountCents: 3000,
+			Lines:                []CreditLineInput{{Description: "Mixed", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err != nil {
+			t.Fatalf("Create 3-channel CN: %v", err)
+		}
+		if cn.RefundAmountCents != 4000 || cn.CreditAmountCents != 3000 || cn.OutOfBandAmountCents != 3000 {
+			t.Errorf("allocation: got (%d,%d,%d), want (4000,3000,3000)",
+				cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents)
+		}
+	})
+
+	t.Run("default when paid invoice + all three zero + no RefundType → credit only", func(t *testing.T) {
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_default", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 5000, AmountPaidCents: 5000,
+		})
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID: "inv_default",
+			Reason:    "Operator picked nothing",
+			Lines:     []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 5000}},
+		})
+		if err != nil {
+			t.Fatalf("Create with default routing: %v", err)
+		}
+		if cn.CreditAmountCents != 5000 {
+			t.Errorf("default routing should be credit-only; got refund=%d credit=%d oob=%d",
+				cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents)
+		}
+	})
+
+	t.Run("sum mismatch rejected", func(t *testing.T) {
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_mismatch", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 10000, AmountPaidCents: 10000,
+		})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:         "inv_mismatch",
+			Reason:            "Bad sum",
+			RefundAmountCents: 3000,
+			CreditAmountCents: 3000,
+			// 6000 != 10000 line total
+			Lines: []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err == nil {
+			t.Fatal("expected sum-mismatch rejection")
+		}
+		if !strings.Contains(err.Error(), "must equal") {
+			t.Errorf("error should mention sum invariant: %q", err.Error())
+		}
+	})
+
+	t.Run("refund > pmRefundable rejected — explicit fields", func(t *testing.T) {
+		// $200 invoice, $50 PM + $150 credit. Operator asks for
+		// $80 to PM — only $50 available. Error must steer to
+		// credit_amount_cents.
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_overrefund", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 20000, AmountPaidCents: 5000, CreditsAppliedCents: 15000,
+		})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:         "inv_overrefund",
+			Reason:            "Too much to PM",
+			RefundAmountCents: 8000,
+			Lines:             []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 8000}},
+		})
+		if err == nil {
+			t.Fatal("expected refund > pmRefundable to reject")
+		}
+		if !strings.Contains(err.Error(), "50.00") {
+			t.Errorf("error should mention $50.00 PM-refundable max: %q", err.Error())
+		}
+	})
+
+	t.Run("negative amount rejected", func(t *testing.T) {
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_neg", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 10000, AmountPaidCents: 10000,
+		})
+		_, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:         "inv_neg",
+			Reason:            "Bad",
+			RefundAmountCents: -100,
+			CreditAmountCents: 10100,
+			Lines:             []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err == nil {
+			t.Fatal("expected negative-amount rejection")
+		}
+	})
+
+	t.Run("out-of-band only on credit-paid invoice", func(t *testing.T) {
+		// Invoice paid 100% by credits. Operator manually
+		// processed the refund outside Stripe (cash/wire) and
+		// records it as out-of-band — no PM refund, no credit
+		// restore. Sum check still applies; pmRefundable is 0
+		// so refund_amount_cents must be 0.
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_oob", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 5000, AmountPaidCents: 0, CreditsAppliedCents: 5000,
+		})
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:            "inv_oob",
+			Reason:               "Wire refund processed",
+			OutOfBandAmountCents: 5000,
+			Lines:                []CreditLineInput{{Description: "Wired $50", Quantity: 1, UnitAmountCents: 5000}},
+		})
+		if err != nil {
+			t.Fatalf("Create OOB-only CN: %v", err)
+		}
+		if cn.OutOfBandAmountCents != 5000 {
+			t.Errorf("out_of_band_amount_cents: got %d want 5000", cn.OutOfBandAmountCents)
+		}
+		if cn.RefundAmountCents != 0 || cn.CreditAmountCents != 0 {
+			t.Errorf("expected refund=credit=0; got refund=%d credit=%d",
+				cn.RefundAmountCents, cn.CreditAmountCents)
+		}
+	})
+
+	t.Run("legacy RefundType=refund honored when explicit fields zero", func(t *testing.T) {
+		svc, _ := mkSvc(domain.Invoice{
+			ID: "inv_legacy_refund", TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoicePaid, Currency: "USD",
+			TotalAmountCents: 10000, AmountPaidCents: 10000,
+		})
+		cn, err := svc.Create(ctx, "t1", CreateInput{
+			InvoiceID:  "inv_legacy_refund",
+			Reason:     "Legacy SDK",
+			RefundType: "refund",
+			Lines:      []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 10000}},
+		})
+		if err != nil {
+			t.Fatalf("Create with legacy refund-type: %v", err)
+		}
+		if cn.RefundAmountCents != 10000 {
+			t.Errorf("legacy refund-type translation: got refund=%d want 10000", cn.RefundAmountCents)
+		}
+	})
+}
+
+// TestCreate_SmartBucketTaxResidual locks in the Stripe-Tax-style
+// "last CN absorbs the rounding residual" behavior (2026-05-25). Pre-fix:
+// proportional tax via integer division left a 1-cent gap when an invoice
+// was split into multiple CNs whose totals exhausted it. Post-fix: the
+// CN that brings cumulative coverage to 100% gets `inv.tax - prior_tax`
+// so the sum of per-CN tax exactly equals the invoice tax.
+func TestCreate_SmartBucketTaxResidual(t *testing.T) {
+	t.Parallel()
+
+	// $82.60 invoice = $70 net + $12.60 IGST (18%).
+	inv := domain.Invoice{
+		ID: "inv_split", TenantID: "t1", CustomerID: "cus_1",
+		Status: domain.InvoicePaid, Currency: "INR",
+		TotalAmountCents: 8260, TaxAmountCents: 1260,
+		AmountPaidCents: 8260,
+	}
+	store := newMemStore()
+	invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
+	svc := NewService(store, invoices, nil)
+	ctx := context.Background()
+
+	// CN-A: $2.60 — proportional tax floor(1260*260/8260) = floor(39.66) = 39c.
+	cnA, err := svc.Create(ctx, "t1", CreateInput{
+		InvoiceID:         inv.ID,
+		Reason:            "billing error 1",
+		RefundAmountCents: 260,
+		Lines:             []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 260}},
+	})
+	if err != nil {
+		t.Fatalf("CN A: %v", err)
+	}
+	if cnA.TaxAmountCents != 39 {
+		t.Errorf("CN A tax: got %d want 39 (floor of proportional)", cnA.TaxAmountCents)
+	}
+
+	// CN-B: $80 — brings cumulative CN total to $82.60 (== invoice total).
+	// Smart-bucket: absorb residual. tax = 1260 - 39 = 1221 (not the
+	// pure proportional floor(1260*8000/8260) = 1220).
+	cnB, err := svc.Create(ctx, "t1", CreateInput{
+		InvoiceID:         inv.ID,
+		Reason:            "billing error 2",
+		CreditAmountCents: 8000,
+		Lines:             []CreditLineInput{{Description: "y", Quantity: 1, UnitAmountCents: 8000}},
+	})
+	if err != nil {
+		t.Fatalf("CN B: %v", err)
+	}
+	if cnB.TaxAmountCents != 1221 {
+		t.Errorf("CN B tax: got %d want 1221 (residual-absorbing — not the floor() proportional 1220)",
+			cnB.TaxAmountCents)
+	}
+
+	// Cumulative tax reversed must equal the original invoice tax exactly.
+	if total := cnA.TaxAmountCents + cnB.TaxAmountCents; total != inv.TaxAmountCents {
+		t.Errorf("cumulative tax reversed: got %d want %d (invoice tax) — residual not absorbed",
+			total, inv.TaxAmountCents)
+	}
+}
+
+// TestCreate_PartialCNUsesPureProportional pins that non-exhausting CNs
+// stay on the pure proportional formula (so two partial CNs that don't
+// add up to the invoice total still produce a small residual — the
+// residual only gets absorbed when a CN actually completes the invoice).
+func TestCreate_PartialCNUsesPureProportional(t *testing.T) {
+	t.Parallel()
+
+	inv := domain.Invoice{
+		ID: "inv_partial", TenantID: "t1", CustomerID: "cus_1",
+		Status: domain.InvoicePaid, Currency: "INR",
+		TotalAmountCents: 8260, TaxAmountCents: 1260,
+		AmountPaidCents: 8260,
+	}
+	store := newMemStore()
+	invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
+	svc := NewService(store, invoices, nil)
+	ctx := context.Background()
+
+	// Single $40 CN — doesn't exhaust the $82.60 invoice. Should use
+	// pure proportional: floor(1260*4000/8260) = floor(610.16) = 610c.
+	cn, err := svc.Create(ctx, "t1", CreateInput{
+		InvoiceID:         inv.ID,
+		Reason:            "partial",
+		CreditAmountCents: 4000,
+		Lines:             []CreditLineInput{{Description: "x", Quantity: 1, UnitAmountCents: 4000}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if cn.TaxAmountCents != 610 {
+		t.Errorf("partial CN tax: got %d want 610 (pure proportional, no residual absorption)",
+			cn.TaxAmountCents)
+	}
 }
 
 func TestIssueAndVoid_CreditNote(t *testing.T) {

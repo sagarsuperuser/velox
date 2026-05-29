@@ -2,6 +2,8 @@ package credit
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -52,6 +54,12 @@ type GrantInput struct {
 	SourcePlanChangedAt      *time.Time            `json:"source_plan_changed_at,omitempty"`
 	SourceChangeType         domain.ItemChangeType `json:"source_change_type,omitempty"`
 
+	// SourceCreditNoteID dedups grants created by credit-note Issue()
+	// — a retry after partial-failure hits the unique partial index
+	// (migration 0093) and the store returns ErrAlreadyExists. Service
+	// callers use GrantOrFetch (below) to handle the retry path.
+	SourceCreditNoteID string `json:"source_credit_note_id,omitempty"`
+
 	// At is the simulated instant the grant was earned (cancel time
 	// for cancel-proration credits, plan-change time for plan-change
 	// credits, operator action time for manual grants). Empty falls
@@ -81,6 +89,24 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 	if len(desc) > 500 {
 		return domain.CreditLedgerEntry{}, errs.Invalid("description", "must be at most 500 characters")
 	}
+	// Reject past expires_at — a grant that's already expired at
+	// creation time is dead-on-arrival: it briefly inflates the
+	// balance, then the next expiry catchup retires it (with my
+	// fullCycleDays/consumed-aware fixes, net effect is $0). But the
+	// operator clearly didn't intend this — they likely picked the
+	// wrong year/date. Industry parity: Stripe credit-grant API
+	// returns 422 on past expires_at.
+	//
+	// Compare against clock.Now(ctx) so clock-pinned customers
+	// (bindForCustomer above seeded ctx with the sim clock) evaluate
+	// against simulated time, not wall-clock. Internal engine callers
+	// (BillOnCancel / BillOnPlanSwapImmediate / CN Issue) don't set
+	// ExpiresAt on their grants, so this gate doesn't affect refund
+	// flows — only operator-driven and SDK-driven Grant calls.
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(clock.Now(ctx)) {
+		return domain.CreditLedgerEntry{}, errs.Invalid("expires_at",
+			"must be in the future — a grant that expires at or before now is dead on arrival")
+	}
 
 	return s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
 		CustomerID:               input.CustomerID,
@@ -93,8 +119,76 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
 		SourcePlanChangedAt:      input.SourcePlanChangedAt,
 		SourceChangeType:         input.SourceChangeType,
+		SourceCreditNoteID:       input.SourceCreditNoteID,
 		CreatedAt:                input.At,
 	})
+}
+
+// GrantTx is the in-transaction variant used by the subscription
+// handler's atomic AddItem-with-proration flow. The caller owns the
+// tx; this method runs the same validation as Grant but writes the
+// ledger entry via the store's AppendEntryTx so it shares the caller's
+// tx. ADR-030 atomic-proration follow-through (2026-05-29).
+//
+// Note: skips the bindForCustomer call (the caller is expected to have
+// already bound effective-now from the affected entity's pin via the
+// handler's resolver — passing the bound ctx through to us).
+func (s *Service) GrantTx(ctx context.Context, tx *sql.Tx, tenantID string, input GrantInput) (domain.CreditLedgerEntry, error) {
+	if input.CustomerID == "" {
+		return domain.CreditLedgerEntry{}, errs.Required("customer_id")
+	}
+	if input.AmountCents <= 0 {
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "must be greater than 0")
+	}
+	if input.AmountCents > 100_000_000 {
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot exceed 1,000,000")
+	}
+	desc := strings.TrimSpace(input.Description)
+	if desc == "" {
+		return domain.CreditLedgerEntry{}, errs.Required("description")
+	}
+	if len(desc) > 500 {
+		return domain.CreditLedgerEntry{}, errs.Invalid("description", "must be at most 500 characters")
+	}
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(clock.Now(ctx)) {
+		return domain.CreditLedgerEntry{}, errs.Invalid("expires_at",
+			"must be in the future — a grant that expires at or before now is dead on arrival")
+	}
+	return s.store.AppendEntryTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:               input.CustomerID,
+		EntryType:                domain.CreditGrant,
+		AmountCents:              input.AmountCents,
+		Description:              desc,
+		InvoiceID:                input.InvoiceID,
+		ExpiresAt:                input.ExpiresAt,
+		SourceSubscriptionID:     input.SourceSubscriptionID,
+		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
+		SourcePlanChangedAt:      input.SourcePlanChangedAt,
+		SourceChangeType:         input.SourceChangeType,
+		SourceCreditNoteID:       input.SourceCreditNoteID,
+		CreatedAt:                input.At,
+	})
+}
+
+// GrantForCreditNote is the retry-safe Grant variant used by
+// credit-note Issue(). Sets SourceCreditNoteID so the partial unique
+// index (migration 0093) dedups retries. On ErrAlreadyExists the
+// existing grant is fetched and returned — caller continues without
+// double-crediting.
+func (s *Service) GrantForCreditNote(ctx context.Context, tenantID, creditNoteID string, input GrantInput) (domain.CreditLedgerEntry, error) {
+	if creditNoteID == "" {
+		return domain.CreditLedgerEntry{}, errs.Required("credit_note_id")
+	}
+	input.SourceCreditNoteID = creditNoteID
+	entry, err := s.Grant(ctx, tenantID, input)
+	if errors.Is(err, errs.ErrAlreadyExists) {
+		existing, fetchErr := s.store.GetByCreditNoteSource(ctx, tenantID, creditNoteID)
+		if fetchErr != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("dedup hit but fetch failed: %w", fetchErr)
+		}
+		return existing, nil
+	}
+	return entry, err
 }
 
 // GetByProrationSource exposes the store-level source lookup. Used by the
@@ -131,6 +225,10 @@ func (s *Service) ApplyToInvoiceAt(ctx context.Context, tenantID, customerID, in
 }
 
 func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {
+	// Bind ctx clock to the customer pin so the reversal grant entry's
+	// created_at stamps in simulated time when called from the void /
+	// dunning-writeoff flow on a clock-pinned customer.
+	ctx = s.bindForCustomer(ctx, tenantID, customerID)
 	entries, err := s.store.ListEntries(ctx, ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
@@ -197,16 +295,31 @@ func (s *Service) ExpireCreditsForClock(ctx context.Context, tenantID, clockID s
 // processExpiry is the shared per-grant body of ExpireCredits and
 // ExpireCreditsForClock — the candidate list shape differs by trigger
 // path; the per-grant ledger-append is identical.
+//
+// Orb's credit-block model: each grant carries consumed_cents
+// reflecting how much was drained by usage entries (FIFO via
+// ApplyToInvoiceAtomic). Expiry deducts only the REMAINING portion
+// (amount - consumed), never the original amount. A fully-consumed
+// grant (consumed == amount) yields a 0-cents expiry — skipped
+// entirely so the customer's Credits tab doesn't show a meaningless
+// "Expired grant X — $0.00" row.
 func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedgerEntry) (int, []error) {
 	var expired int
 	var expiryErrs []error
 	for _, g := range grants {
+		remaining := g.AmountCents - g.ConsumedCents
+		if remaining <= 0 {
+			// Already fully drained by usage — nothing to expire.
+			// Defensive: the SQL filter (consumed_cents < amount_cents)
+			// should have excluded this row, but we double-check.
+			continue
+		}
 		// Stamp the expiry entry at the grant's own expires_at — the
 		// simulated instant the grant actually expired — instead of
 		// the store's clock.Now() fallback (= advance-end frozen_time
-		// during catchup). Without this, every grant expired in one
-		// Advance click stacks at one timestamp on the customer's
-		// Credits tab.
+		// during catchup, or wall-clock now from the CRON path).
+		// Without this, every grant expired in one Advance click
+		// stacks at one timestamp on the customer's Credits tab.
 		var expiredAt time.Time
 		if g.ExpiresAt != nil {
 			expiredAt = *g.ExpiresAt
@@ -214,7 +327,7 @@ func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedge
 		_, err := s.store.AppendEntry(ctx, g.TenantID, domain.CreditLedgerEntry{
 			CustomerID:  g.CustomerID,
 			EntryType:   domain.CreditExpiry,
-			AmountCents: -g.AmountCents,
+			AmountCents: -remaining,
 			Description: fmt.Sprintf("Expired grant %s", g.ID),
 			CreatedAt:   expiredAt,
 		})
@@ -249,6 +362,14 @@ func (s *Service) Adjust(ctx context.Context, tenantID string, input AdjustInput
 	if input.CustomerID == "" {
 		return domain.CreditLedgerEntry{}, errs.Required("customer_id")
 	}
+	// Bind effective-now from the customer pin so a deduct/credit on a
+	// clock-pinned customer stamps the ledger entry's created_at in
+	// simulated time — same shape as Grant (line 77). Without this, the
+	// AdjustAtomic path falls back to clock.Now(ctx) = wall-clock and the
+	// deduction row appears out-of-band on the customer's Credits tab.
+	// Audit follow-up to feedback_ctx_attr_audit (2026-05-24): Grant
+	// bound, Adjust didn't.
+	ctx = s.bindForCustomer(ctx, tenantID, input.CustomerID)
 	if input.AmountCents == 0 {
 		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot be zero")
 	}

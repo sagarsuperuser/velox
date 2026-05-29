@@ -2,7 +2,9 @@ package email
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // Email type tags written into email_outbox.email_type. Kept stable because
@@ -25,9 +27,17 @@ const (
 	TypeDunningEscalation   = "dunning_escalation"
 	TypePaymentFailed       = "payment_failed"
 	TypePaymentSetupRequest = "payment_setup_request"
-	TypePortalMagicLink     = "portal_magic_link"
-	TypePasswordReset       = "password_reset"
-	TypeMemberInvite        = "member_invite"
+	// TypePaymentSetupLink is the operator-initiated "add a payment
+	// method" email (operator clicks Send setup email on a customer
+	// page). Distinct from TypePaymentSetupRequest which fires from
+	// the engine at invoice finalize when no PM is on file — that
+	// one carries invoice context, this one doesn't. Both render via
+	// the same unified template (renderPaymentSetupLinkHTML); the
+	// type tag is purely for routing + observability.
+	TypePaymentSetupLink = "payment_setup_link"
+	TypePortalMagicLink  = "portal_magic_link"
+	TypePasswordReset    = "password_reset"
+	TypeMemberInvite     = "member_invite"
 )
 
 // outboxMessage is the union payload persisted to email_outbox.payload. Each
@@ -51,7 +61,14 @@ type outboxMessage struct {
 	// the customer can act (insufficient_funds → top up; lost_card →
 	// swap card). Distinct from Reason which is used by dunning_
 	// escalation to carry the final-action verb.
-	FailureReason    string `json:"failure_reason,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	// SetupURL + OperatorNote carry the operator-initiated
+	// "add a payment method" email payload (TypePaymentSetupLink).
+	// SetupURL is the Stripe Checkout setup-session URL; OperatorNote
+	// is the optional free-form prefix the operator typed in the
+	// dialog (empty → template falls back to generic copy).
+	SetupURL         string `json:"setup_url,omitempty"`
+	OperatorNote     string `json:"operator_note,omitempty"`
 	UpdateURL        string `json:"update_url,omitempty"`
 	MagicLinkURL     string `json:"magic_link_url,omitempty"`
 	PasswordResetURL string `json:"password_reset_url,omitempty"`
@@ -75,39 +92,55 @@ type outboxMessage struct {
 // already know the tenant at every site — they just weren't passing it
 // through.
 type OutboxSender struct {
-	store *OutboxStore
+	store       *OutboxStore
+	suppression RecipientSuppressionChecker
 }
 
 func NewOutboxSender(store *OutboxStore) *OutboxSender {
 	return &OutboxSender{store: store}
 }
 
+// SetSuppressionChecker wires the recipient-suppression gate. Without
+// it, the OutboxSender skips the check and always enqueues. Mirrors
+// Sender.SetSuppressionChecker so both code paths gate identically.
+func (s *OutboxSender) SetSuppressionChecker(c RecipientSuppressionChecker) { s.suppression = c }
+
 func (s *OutboxSender) enqueue(ctx context.Context, tenantID, emailType string, msg outboxMessage) error {
 	if tenantID == "" {
 		return fmt.Errorf("email outbox sender: tenant_id required for %s", emailType)
 	}
-	payload := map[string]any{
-		"to":                 msg.To,
-		"customer_name":      msg.CustomerName,
-		"invoice_number":     msg.InvoiceNumber,
-		"amount_cents":       msg.AmountCents,
-		"currency":           msg.Currency,
-		"attempt_number":     msg.AttemptNumber,
-		"max_attempts":       msg.MaxAttempts,
-		"next_retry_date":    msg.NextRetryDate,
-		"action":             msg.Action,
-		"reason":             msg.Reason,
-		"failure_reason":     msg.FailureReason,
-		"update_url":         msg.UpdateURL,
-		"magic_link_url":     msg.MagicLinkURL,
-		"password_reset_url": msg.PasswordResetURL,
-		"invite_url":         msg.InviteURL,
-		"inviter_email":      msg.InviterEmail,
-		"tenant_name":        msg.TenantName,
-		"public_token":       msg.PublicToken,
+	// Suppression gate. Bounced/complained recipients never get an
+	// outbox row written — the dispatcher would just retry-bounce-DLQ
+	// otherwise, which wastes provider quota + sender reputation.
+	// Same fail-open semantics as Sender.checkSuppression: a flaky
+	// lookup logs WARN and proceeds.
+	if s.suppression != nil && msg.To != "" {
+		suppressed, reason, err := s.suppression.IsSuppressed(ctx, tenantID, msg.To)
+		if err != nil {
+			slog.Warn("email outbox: suppression check failed; proceeding with enqueue",
+				"tenant_id", tenantID, "to", msg.To, "email_type", emailType, "error", err)
+		} else if suppressed {
+			slog.Info("email outbox: recipient suppressed — skipping enqueue",
+				"tenant_id", tenantID, "to", msg.To, "email_type", emailType, "reason", reason)
+			return ErrRecipientSuppressed
+		}
 	}
-	if len(msg.PDF) > 0 {
-		payload["pdf"] = msg.PDF
+	// Marshal-then-unmarshal-to-map: drives the wire payload off the
+	// outboxMessage struct's `json:` tags so adding a new field to the
+	// struct can't silently drop on the way out. Pre-2026-05-29 this
+	// was a hand-written map[string]any of 18 keys — when SetupURL +
+	// OperatorNote were added to the struct, nobody updated the map,
+	// and the operator-initiated "Send setup email" path silently
+	// dropped the Stripe Checkout URL → customers received an email
+	// promising "use the secure link below" with no link.
+	// feedback_no_silent_fallbacks + feedback_audit_overlapping_flows.
+	payloadBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("unmarshal outbox payload: %w", err)
 	}
 	// ctx must carry livemode (set by caller's auth middleware or, for
 	// system-initiated emails fired from background workers, derived
@@ -117,7 +150,7 @@ func (s *OutboxSender) enqueue(ctx context.Context, tenantID, emailType string, 
 	// land on test-mode rows and the dispatcher routes them correctly.
 	// Pre-fix this used context.Background() and every email_outbox row
 	// got stamped livemode=true regardless of the actual mode.
-	_, err := s.store.EnqueueStandalone(ctx, tenantID, emailType, payload)
+	_, err = s.store.EnqueueStandalone(ctx, tenantID, emailType, payload)
 	return err
 }
 
@@ -185,6 +218,9 @@ func (s *OutboxSender) SendPaymentFailed(ctx context.Context, tenantID, to, cust
 // SendPaymentSetupRequest enqueues a payment-setup-request email
 // (customer must set up a PM on a finalized invoice).
 func (s *OutboxSender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error {
+	if updateURL == "" {
+		return fmt.Errorf("update_url required: refusing to enqueue payment-setup-request email with no link")
+	}
 	return s.enqueue(ctx, tenantID, TypePaymentSetupRequest, outboxMessage{
 		To:            to,
 		CustomerName:  customerName,
@@ -195,11 +231,40 @@ func (s *OutboxSender) SendPaymentSetupRequest(ctx context.Context, tenantID, to
 	})
 }
 
+// SendPaymentSetupLink enqueues the operator-initiated "add a payment
+// method" email. Distinct from SendPaymentSetupRequest (invoice
+// context, engine-fired); this one is the operator's "Send setup
+// email" dashboard action. Routes through the unified template
+// (renderPaymentSetupLinkHTML) with operatorNote prefacing the body
+// when set. Industry standard — every other operator-action email
+// goes through the outbox for resilience; this brings the setup-link
+// path into parity.
+func (s *OutboxSender) SendPaymentSetupLink(ctx context.Context, tenantID, to, customerName, operatorNote, setupURL string) error {
+	// Required at enqueue time — see Sender.SendPaymentSetupLink for
+	// rationale. A row written with empty SetupURL would dispatch
+	// successfully (the outbox layer doesn't know what each email type
+	// needs) and produce a button-less email at render time. Reject
+	// here so the operator sees a clear error on their dashboard click
+	// instead of the customer receiving broken mail.
+	if setupURL == "" {
+		return fmt.Errorf("setup_url required: refusing to enqueue payment-setup email with no link")
+	}
+	return s.enqueue(ctx, tenantID, TypePaymentSetupLink, outboxMessage{
+		To:           to,
+		CustomerName: customerName,
+		OperatorNote: operatorNote,
+		SetupURL:     setupURL,
+	})
+}
+
 // SendPortalMagicLink enqueues a portal magic-link email. Satisfies
 // customerportal.MagicLinkEmailSender (narrow interface at the wiring
 // layer). The URL carries the one-time-use raw token that lands the
 // customer at the frontend /login page for consumption.
 func (s *OutboxSender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
+	if magicLinkURL == "" {
+		return fmt.Errorf("magic_link_url required: refusing to enqueue portal-magic-link email with no link")
+	}
 	return s.enqueue(ctx, tenantID, TypePortalMagicLink, outboxMessage{
 		To:           to,
 		CustomerName: customerName,
@@ -211,6 +276,9 @@ func (s *OutboxSender) SendPortalMagicLink(ctx context.Context, tenantID, to, cu
 // one-time-use raw reset token that lands the dashboard user on the
 // frontend password-reset confirmation page.
 func (s *OutboxSender) SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error {
+	if resetURL == "" {
+		return fmt.Errorf("reset_url required: refusing to enqueue password-reset email with no link")
+	}
 	return s.enqueue(ctx, tenantID, TypePasswordReset, outboxMessage{
 		To:               to,
 		CustomerName:     displayName,
@@ -222,6 +290,9 @@ func (s *OutboxSender) SendPasswordReset(ctx context.Context, tenantID, to, disp
 // raw invite token. Unlike the other flows this is tenant-initiated
 // (inviter sits inside tenantID) rather than system-initiated.
 func (s *OutboxSender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error {
+	if acceptURL == "" {
+		return fmt.Errorf("accept_url required: refusing to enqueue member-invite email with no link")
+	}
 	return s.enqueue(ctx, tenantID, TypeMemberInvite, outboxMessage{
 		To:           to,
 		InviterEmail: inviterEmail,

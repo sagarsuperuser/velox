@@ -156,9 +156,12 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.A
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	query := `SELECT ` + keyCols + ` FROM api_keys`

@@ -109,12 +109,6 @@ const emailSchema = z.object({
 })
 type EmailFormData = z.infer<typeof emailSchema>
 
-const creditModalSchema = z.object({
-  reason: z.string().min(1, 'Reason is required'),
-  amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01').refine(v => parseFloat(v) <= 999999.99, 'Must be at most 999999.99'),
-})
-type CreditModalData = z.infer<typeof creditModalSchema>
-
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
@@ -208,12 +202,16 @@ export default function InvoiceDetailPage() {
   // the customer's CURRENT default method, which may differ from what
   // was actually charged (deferred — needs a schema migration to
   // snapshot brand+last4 onto the invoice at payment time).
-  const { data: paymentSetup } = useQuery({
-    queryKey: ['payment-setup', invoice?.customer_id],
-    queryFn: () => api.getPaymentStatus(invoice!.customer_id),
+  // Canonical PM check post-cleanup: list payment_methods for the
+  // customer and look for a default-flagged row. Replaces the legacy
+  // setup_status='ready' check that polled the dropped
+  // customer_payment_setups summary table.
+  const { data: paymentMethodsList } = useQuery({
+    queryKey: ['customer-payment-methods', invoice?.customer_id],
+    queryFn: () => api.listCustomerPaymentMethods(invoice!.customer_id),
     enabled: !!invoice?.customer_id && invoice?.status !== 'draft',
   })
-  const hasPaymentMethod = paymentSetup?.setup_status === 'ready'
+  const hasPaymentMethod = (paymentMethodsList?.data ?? []).some(pm => pm.is_default)
 
   // Dunning runs + operator-context (diagnosis/resolution) card. Shown
   // only when the invoice is in an actionable mid-flight state — the
@@ -949,11 +947,15 @@ export default function InvoiceDetailPage() {
                   </div>
                 </>
               ) : (() => {
+                // Post-payment CNs route the refund somewhere: PM, credit balance, or out-of-band.
+                // Pre-payment CNs (unpaid invoice flow) just reduce amount_due and have all three zero.
+                const isPostPaymentCN = (cn: CreditNote) =>
+                  cn.refund_amount_cents > 0 || cn.credit_amount_cents > 0 || (cn.out_of_band_amount_cents ?? 0) > 0
                 const prePaymentCNs = invoice.status === 'paid'
-                  ? creditNotes.filter(cn => cn.refund_amount_cents === 0 && cn.credit_amount_cents === 0)
+                  ? creditNotes.filter(cn => !isPostPaymentCN(cn))
                   : creditNotes
                 const postPaymentCNs = invoice.status === 'paid'
-                  ? creditNotes.filter(cn => cn.refund_amount_cents > 0 || cn.credit_amount_cents > 0)
+                  ? creditNotes.filter(isPostPaymentCN)
                   : []
 
                 return (
@@ -987,24 +989,54 @@ export default function InvoiceDetailPage() {
 
                     {/* Post-payment adjustments */}
                     {(() => {
+                      // Show CNs that have settled at least one channel.
+                      // Refund leg counts when refund_status=succeeded.
+                      // Credit / out-of-band are immediate at Issue time.
                       const completedCNs = postPaymentCNs.filter(cn =>
                         cn.credit_amount_cents > 0 ||
+                        (cn.out_of_band_amount_cents ?? 0) > 0 ||
                         (cn.refund_amount_cents > 0 && cn.refund_status === 'succeeded')
                       )
+                      const channelDescription = (cn: CreditNote): string => {
+                        const parts: string[] = []
+                        if (cn.refund_amount_cents > 0) parts.push(`${formatCents(cn.refund_amount_cents, invoice.currency)} → card`)
+                        if (cn.credit_amount_cents > 0) parts.push(`${formatCents(cn.credit_amount_cents, invoice.currency)} → credit`)
+                        if ((cn.out_of_band_amount_cents ?? 0) > 0) parts.push(`${formatCents(cn.out_of_band_amount_cents ?? 0, invoice.currency)} → out of band`)
+                        return parts.join(' · ')
+                      }
                       return completedCNs.length > 0 ? (
-                        <div className="mt-3 pt-3 border-t border-dashed border-border space-y-1.5">
+                        <div className="mt-3 pt-3 border-t border-dashed border-border space-y-2">
                           <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Post-payment adjustments</p>
-                          {completedCNs.map(cn => (
-                            <div key={cn.id} className="flex justify-between text-xs text-muted-foreground">
-                              <span className="truncate mr-2">
-                                {cn.credit_note_number} -- {cn.reason}
-                                <span className="ml-1">
-                                  {cn.refund_amount_cents > 0 ? '(refunded)' : '(credited)'}
-                                </span>
-                              </span>
-                              <span className="font-mono tabular-nums shrink-0">{formatCents(cn.total_cents, invoice.currency)}</span>
-                            </div>
-                          ))}
+                          {completedCNs.map(cn => {
+                            const taxReversed = cn.tax_amount_cents ?? 0
+                            const taxTxID = cn.tax_transaction_id
+                            return (
+                              <div key={cn.id} className="text-xs text-muted-foreground">
+                                <div className="flex justify-between gap-2">
+                                  <span className="truncate">
+                                    {cn.credit_note_number} -- {cn.reason}
+                                  </span>
+                                  <span className="font-mono tabular-nums shrink-0">{formatCents(cn.total_cents, invoice.currency)}</span>
+                                </div>
+                                <div className="text-[11px] mt-0.5 leading-snug">
+                                  {channelDescription(cn)}
+                                </div>
+                                {taxReversed > 0 && (
+                                  <div
+                                    className="text-[11px] mt-0.5 leading-snug pl-3 text-muted-foreground/80"
+                                    title={taxTxID ? `Stripe Tax reversal: ${taxTxID}` : undefined}
+                                  >
+                                    {/* U+21B3 (↳) marks this as a sub-fact of the row above —
+                                        same nesting affordance Linear / Vercel use for metadata
+                                        that belongs to a parent row but isn't a peer item. */}
+                                    {taxTxID
+                                      ? `↳ Tax reversed ${formatCents(taxReversed, invoice.currency)} (Stripe Tax)`
+                                      : `↳ Tax: ${formatCents(taxReversed, invoice.currency)} (no upstream provider)`}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
                         </div>
                       ) : null
                     })()}
@@ -1223,6 +1255,7 @@ export default function InvoiceDetailPage() {
       {showCreditModal && (
         <IssueCreditDialog
           invoice={invoice}
+          existingCreditNotes={creditNotes}
           onClose={() => setShowCreditModal(false)}
           onCreated={() => { setShowCreditModal(false); toast.success('Credit note issued'); invalidateAll() }}
         />
@@ -1531,42 +1564,119 @@ function EmailInvoiceDialog({ invoiceId, defaultEmail, onClose, onSent }: {
   )
 }
 
-function IssueCreditDialog({ invoice, onClose, onCreated }: {
-  invoice: Invoice; onClose: () => void; onCreated: () => void
+function IssueCreditDialog({ invoice, existingCreditNotes, onClose, onCreated }: {
+  invoice: Invoice
+  existingCreditNotes: CreditNote[]
+  onClose: () => void
+  onCreated: () => void
 }) {
-  const [type, setType] = useState<string>('credit')
+  const isPaid = invoice.status === 'paid'
 
-  const form = useForm<CreditModalData>({
-    resolver: zodResolver(creditModalSchema),
-    defaultValues: { reason: '', amount: '' },
-  })
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = form
+  // Composition-aware caps for the paid path. Refund to PM is bounded
+  // by what the customer actually paid via card (minus prior CN
+  // refunds). Credit-balance and out-of-band have no per-channel cap;
+  // the only invariant is sum == total.
+  const priorRefunds = existingCreditNotes
+    .filter(cn => cn.status !== 'voided')
+    .reduce((sum, cn) => sum + cn.refund_amount_cents, 0)
+  const pmRefundableCents = Math.max(0, invoice.amount_paid_cents - priorRefunds)
 
-  const onSubmit = handleSubmit(async (data) => {
+  const [amount, setAmount] = useState('')
+  const [refund, setRefund] = useState('')
+  const [credit, setCredit] = useState('')
+  const [outOfBand, setOutOfBand] = useState('')
+  const [reason, setReason] = useState('')
+  const [submitError, setSubmitError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const parseDollarsToCents = (s: string): number => {
+    const n = parseFloat(s || '0')
+    if (!isFinite(n)) return 0
+    return Math.round(n * 100)
+  }
+  const amountCents = parseDollarsToCents(amount)
+  const refundCents = parseDollarsToCents(refund)
+  const creditCents = parseDollarsToCents(credit)
+  const outOfBandCents = parseDollarsToCents(outOfBand)
+  const allocatedCents = refundCents + creditCents + outOfBandCents
+
+  // Auto-balance: typing in Refund auto-fills Credit with the
+  // remainder so the simple case stays one input + Save. The user
+  // can override by editing Credit directly, which sets the manual
+  // flag and stops auto-fill.
+  const [manualCredit, setManualCredit] = useState(false)
+  const [manualOOB, setManualOOB] = useState(false)
+
+  const handleAmountChange = (v: string) => {
+    setAmount(v)
+    if (!isPaid) return
+    // Default on a paid invoice: full amount → credit balance.
+    if (!manualCredit && !manualOOB && refund === '') {
+      setCredit(v)
+    }
+  }
+  const handleRefundChange = (v: string) => {
+    setRefund(v)
+    if (!isPaid) return
+    if (!manualCredit && !manualOOB) {
+      const remainder = amountCents - parseDollarsToCents(v) - outOfBandCents
+      setCredit(remainder >= 0 ? (remainder / 100).toFixed(2) : '0.00')
+    }
+  }
+  const handleCreditChange = (v: string) => {
+    setCredit(v)
+    setManualCredit(true)
+  }
+  const handleOOBChange = (v: string) => {
+    setOutOfBand(v)
+    setManualOOB(true)
+    if (!manualCredit) {
+      const remainder = amountCents - refundCents - parseDollarsToCents(v)
+      setCredit(remainder >= 0 ? (remainder / 100).toFixed(2) : '0.00')
+    }
+  }
+
+  // Live invariants for the Save gate.
+  const allocationMatches = isPaid ? allocatedCents === amountCents : true
+  const refundOverCap = refundCents > pmRefundableCents
+  const reasonOk = reason.trim().length > 0
+  const amountOk = amountCents > 0
+  const canSubmit = reasonOk && amountOk && allocationMatches && !refundOverCap && !submitting
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!canSubmit) return
+    setSubmitting(true)
+    setSubmitError('')
     try {
-      const amountCents = Math.round(parseFloat(data.amount) * 100)
       await api.createCreditNote({
         invoice_id: invoice.id,
-        reason: data.reason,
-        refund_type: type,
+        reason: reason.trim(),
+        ...(isPaid
+          ? {
+              refund_amount_cents: refundCents,
+              credit_amount_cents: creditCents,
+              out_of_band_amount_cents: outOfBandCents,
+            }
+          : {}),
         auto_issue: true,
-        lines: [{ description: data.reason, quantity: 1, unit_amount_cents: amountCents }],
+        lines: [{ description: reason.trim(), quantity: 1, unit_amount_cents: amountCents }],
       })
       onCreated()
     } catch (err) {
-      applyApiError(form, err, {
-        reason: 'reason',
-        lines: 'amount',
-        unit_amount_cents: 'amount',
-      }, { toastTitle: 'Failed to create credit note' })
+      setSubmitError(err instanceof Error ? err.message : 'Failed to create credit note')
+    } finally {
+      setSubmitting(false)
     }
-  })
+  }
+
+  const fmt = (cents: number) => `${getCurrencySymbol()}${(cents / 100).toFixed(2)}`
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Issue Credit / Refund</DialogTitle>
+          <DialogTitle>Issue credit note</DialogTitle>
         </DialogHeader>
         <form onSubmit={onSubmit} noValidate className="space-y-4">
           <div>
@@ -1574,33 +1684,93 @@ function IssueCreditDialog({ invoice, onClose, onCreated }: {
             <p className="text-sm text-muted-foreground font-mono mt-1">{invoice.invoice_number}</p>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="reason">Reason</Label>
-            <Input id="reason" placeholder="e.g. Service disruption, billing error" maxLength={500} {...register('reason')} />
-            {errors.reason && <p className="text-xs text-destructive">{errors.reason.message}</p>}
+            <Label htmlFor="cn-reason">Reason</Label>
+            <Input
+              id="cn-reason"
+              placeholder="e.g. Service disruption, billing error"
+              maxLength={500}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="amount">Amount ({getCurrencySymbol()})</Label>
-            <Input id="amount" type="number" step="0.01" min={0.01} max={999999.99} {...register('amount')} />
-            {errors.amount && <p className="text-xs text-destructive">{errors.amount.message}</p>}
+            <Label htmlFor="cn-amount">Amount ({getCurrencySymbol()})</Label>
+            <Input
+              id="cn-amount"
+              type="number"
+              step="0.01"
+              min={0.01}
+              max={999999.99}
+              value={amount}
+              onChange={(e) => handleAmountChange(e.target.value)}
+            />
           </div>
-          <div className="space-y-2">
-            <Label>Type</Label>
-            <Select value={type} onValueChange={(v) => setType(v ?? '')}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="credit">Credit</SelectItem>
-                {invoice.status === 'paid' && (
-                  <SelectItem value="refund">Refund -- return to payment method</SelectItem>
+
+          {isPaid && (
+            <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+              <div className="text-xs text-muted-foreground">
+                Allocate the credit note total across these channels. The three amounts must sum to the credit note total.
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cn-refund" className="flex items-center justify-between">
+                  <span>Refund to card</span>
+                  <span className="text-xs text-muted-foreground font-normal">max {fmt(pmRefundableCents)}</span>
+                </Label>
+                <Input
+                  id="cn-refund"
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={refund}
+                  onChange={(e) => handleRefundChange(e.target.value)}
+                />
+                {refundOverCap && (
+                  <p className="text-xs text-destructive">
+                    Refund cannot exceed {fmt(pmRefundableCents)} paid via card
+                    {priorRefunds > 0 ? ` (after ${fmt(priorRefunds)} prior refunds)` : ''}.
+                  </p>
                 )}
-              </SelectContent>
-            </Select>
-          </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cn-credit">Credit balance</Label>
+                <Input
+                  id="cn-credit"
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={credit}
+                  onChange={(e) => handleCreditChange(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cn-oob">Outside Stripe (cash, ACH, manual)</Label>
+                <Input
+                  id="cn-oob"
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={outOfBand}
+                  onChange={(e) => handleOOBChange(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t text-sm">
+                <span className="text-muted-foreground">Allocated</span>
+                <span className={allocationMatches ? 'font-medium text-foreground' : 'font-medium text-destructive'}>
+                  {fmt(allocatedCents)} / {fmt(amountCents)}
+                  {amountCents > 0 && (allocationMatches ? ' ✓' : ' ✗')}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {submitError && (
+            <p className="text-xs text-destructive">{submitError}</p>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? <><Loader2 size={14} className="animate-spin mr-2" />Creating...</> : 'Create Credit Note'}
+            <Button type="submit" disabled={!canSubmit}>
+              {submitting ? <><Loader2 size={14} className="animate-spin mr-2" />Creating...</> : 'Issue credit note'}
             </Button>
           </DialogFooter>
         </form>

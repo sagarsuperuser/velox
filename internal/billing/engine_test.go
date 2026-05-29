@@ -204,21 +204,15 @@ func (c *fakeChargerDecline) ChargeInvoice(_ context.Context, _ string, inv doma
 	return inv, &payment.PaymentError{Message: "Card was declined.", DeclineCode: "card_declined"}
 }
 
-// fakePaymentSetups returns a static "ready" setup for any customer.
+// fakePaymentSetups returns a static "ready" payment-readiness signal
+// for any customer. Implements billing.PaymentReadiness.
 type fakePaymentSetups struct {
 	ready            bool
 	stripeCustomerID string
 }
 
-func (f *fakePaymentSetups) GetPaymentSetup(_ context.Context, _, _ string) (domain.CustomerPaymentSetup, error) {
-	status := domain.PaymentSetupMissing
-	if f.ready {
-		status = domain.PaymentSetupReady
-	}
-	return domain.CustomerPaymentSetup{
-		SetupStatus:      status,
-		StripeCustomerID: f.stripeCustomerID,
-	}, nil
+func (f *fakePaymentSetups) ResolveForCharge(_ context.Context, _, _ string) (string, bool, error) {
+	return f.stripeCustomerID, f.ready, nil
 }
 
 // TestBillSubscription_LoopsUntilCaughtUp asserts the per-sub
@@ -644,6 +638,19 @@ func (m *mockInvoices) GetInvoice(_ context.Context, _, id string) (domain.Invoi
 func (m *mockInvoices) MarkPaid(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, error) {
 	for i, inv := range m.invoices {
 		if inv.ID == id {
+			// Mirror PostgresStore.MarkPaid's state-machine guard:
+			// reject draft (finalize first) and voided (terminal).
+			// Tax_status must be ok — pending/failed means
+			// authoritative total isn't established.
+			switch inv.Status {
+			case domain.InvoiceFinalized, domain.InvoiceUncollectible, domain.InvoicePaid:
+				// ok
+			default:
+				return domain.Invoice{}, fmt.Errorf("cannot mark invoice paid from status %q", inv.Status)
+			}
+			if inv.TaxStatus != domain.InvoiceTaxOK {
+				return domain.Invoice{}, fmt.Errorf("cannot mark invoice paid with tax_status=%q", inv.TaxStatus)
+			}
 			m.invoices[i].Status = domain.InvoicePaid
 			m.invoices[i].PaymentStatus = domain.PaymentSucceeded
 			m.invoices[i].AmountPaidCents = m.invoices[i].AmountDueCents
@@ -2586,8 +2593,13 @@ func TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary(t *testing.T) {
 	for _, ev := range dispatcher.events {
 		if ev.eventType == domain.EventSubscriptionCanceled {
 			got = ev.eventType
-			if ev.payload["triggered_by"] != "schedule" {
-				t.Errorf("triggered_by: got %v, want schedule", ev.payload["triggered_by"])
+			// canceled_by is the normalized field across all three
+			// cancel paths (operator / customer-portal / engine
+			// auto-fire). The engine emits "schedule" so a webhook
+			// consumer reading subscription.canceled can match on
+			// the same field regardless of origin.
+			if ev.payload["canceled_by"] != "schedule" {
+				t.Errorf("canceled_by: got %v, want schedule", ev.payload["canceled_by"])
 			}
 			break
 		}
@@ -3199,6 +3211,262 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 			t.Errorf("expected no credit grant when source invoice missing, got %d", len(granter.grants))
 		}
 	})
+}
+
+// TestBillOnPlanSwapImmediate covers the refund-credit half of the
+// immediate cross-interval plan-swap orchestrator. The math + paid-check
+// shape mirrors BillOnCancel; this lock pins:
+//   - in_advance OLD: credit issued for the (at, periodEnd) unused portion
+//   - in_arrears OLD: no-op (nothing prebilled)
+//   - paid-check gate: source invoice unpaid → credit suppressed
+//   - boundary cases: at >= period_end (clean swap) → no-op
+func TestBillOnPlanSwapImmediate(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	swapAt := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC) // mid-period
+
+	makeAdvanceSub := func() domain.Subscription {
+		return domain.Subscription{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
+			Status: domain.SubscriptionActive,
+			Items: []domain.SubscriptionItem{{
+				PlanID: "pln_advance", Quantity: 1,
+			}},
+			CurrentBillingPeriodStart: &periodStart,
+			CurrentBillingPeriodEnd:   &periodEnd,
+		}
+	}
+	makeArrearsSub := func() domain.Subscription {
+		return domain.Subscription{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
+			Status: domain.SubscriptionActive,
+			Items: []domain.SubscriptionItem{{
+				PlanID: "pln_arrears", Quantity: 1,
+			}},
+			CurrentBillingPeriodStart: &periodStart,
+			CurrentBillingPeriodEnd:   &periodEnd,
+		}
+	}
+	makePricing := func() *mockPricing {
+		return &mockPricing{plans: map[string]domain.Plan{
+			"pln_advance": {ID: "pln_advance", Name: "Advance", Currency: "USD",
+				BillingInterval: domain.BillingMonthly, BaseAmountCents: 6000,
+				BaseBillTiming: domain.BillInAdvance},
+			"pln_arrears": {ID: "pln_arrears", Name: "Arrears", Currency: "USD",
+				BillingInterval: domain.BillingMonthly, BaseAmountCents: 6000,
+				BaseBillTiming: domain.BillInArrears},
+		}}
+	}
+	paidInvoices := func() *mockInvoices {
+		paid := domain.Invoice{
+			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentSucceeded,
+		}
+		paidLine := domain.InvoiceLineItem{
+			ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &periodStart,
+		}
+		return &mockInvoices{invoices: []domain.Invoice{paid}, lineItems: []domain.InvoiceLineItem{paidLine}}
+	}
+
+	t.Run("in_advance + paid source → credit issued for unused portion", func(t *testing.T) {
+		granter := &fakeCreditGranter{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), paidInvoices(), nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), swapAt)
+		if err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		if len(granter.grants) != 1 {
+			t.Fatalf("expected 1 credit grant, got %d", len(granter.grants))
+		}
+		// Mar 1 → Apr 1 = 31 days; (Mar 16, Apr 1) = 16 unused days
+		// $60 × 16/31 ≈ $30.97 ≈ 3097¢. Tolerance ±2¢ for rounding.
+		if cents < 3095 || cents > 3100 {
+			t.Errorf("unused refund cents: got %d, want ~3097 ($60 × 16/31)", cents)
+		}
+		if cents != granter.grants[0].AmountCents {
+			t.Errorf("return cents (%d) must match granter cents (%d)", cents, granter.grants[0].AmountCents)
+		}
+	})
+
+	t.Run("in_arrears → no-op (nothing prebilled)", func(t *testing.T) {
+		granter := &fakeCreditGranter{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), paidInvoices(), nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeArrearsSub(), swapAt)
+		if err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		if cents != 0 {
+			t.Errorf("in_arrears refund cents: got %d, want 0", cents)
+		}
+		if len(granter.grants) != 0 {
+			t.Errorf("in_arrears expected no credit grants, got %d", len(granter.grants))
+		}
+	})
+
+	t.Run("source invoice UNPAID → credit suppressed (paid-check gate)", func(t *testing.T) {
+		unpaid := domain.Invoice{
+			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+		}
+		unpaidLine := domain.InvoiceLineItem{
+			ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &periodStart,
+		}
+		inv := &mockInvoices{invoices: []domain.Invoice{unpaid}, lineItems: []domain.InvoiceLineItem{unpaidLine}}
+		granter := &fakeCreditGranter{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		if _, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), swapAt); err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		if len(granter.grants) != 0 {
+			t.Errorf("expected no credit grant on unpaid source invoice, got %d grants", len(granter.grants))
+		}
+	})
+
+	t.Run("stub period refund uses fullCycleDays (no over-refund)", func(t *testing.T) {
+		// Calendar-snap creates stub periods at the start of an
+		// activation. If a swap fires inside a 7-of-30 stub at the
+		// period start, "unused" days = 7 BUT the customer only paid
+		// baseFee × 7/30 for that period — the refund must reflect the
+		// actual prepaid amount, not the full base fee. Pre-fix:
+		// baseFee × 7/7 = full base fee → over-refund. Post-fix:
+		// baseFee × 7/30 → matches the prepaid stub amount.
+		stubStart := time.Date(2026, 3, 24, 0, 0, 0, 0, time.UTC)
+		stubEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) // 8-day stub
+		stubSub := domain.Subscription{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
+			Status: domain.SubscriptionActive,
+			Items: []domain.SubscriptionItem{{PlanID: "pln_advance", Quantity: 1}},
+			CurrentBillingPeriodStart: &stubStart,
+			CurrentBillingPeriodEnd:   &stubEnd,
+		}
+		paid := domain.Invoice{
+			ID: "inv_stub", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentSucceeded,
+		}
+		paidLine := domain.InvoiceLineItem{
+			ID: "ili_stub", InvoiceID: "inv_stub", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &stubStart,
+		}
+		inv := &mockInvoices{invoices: []domain.Invoice{paid}, lineItems: []domain.InvoiceLineItem{paidLine}}
+		granter := &fakeCreditGranter{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		// at = a moment just after stubStart so the strict-after gate
+		// fires (`!at.After(periodStart)` would short-circuit if at==
+		// periodStart). roundDays absorbs the 1h difference.
+		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), stubSub, stubStart.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		// Stub paid amount = $60 × 8/31 ≈ $15.48. Swap at period start:
+		// all 8 stub days unused. Expected refund = $60 × 8/31 ≈
+		// 1548 cents. fullCycleDays = 31 (Mar 24 → Apr 24 monthly
+		// roll). Pre-fix this would have refunded $60 × 8/8 = $60.
+		if cents < 1540 || cents > 1560 {
+			t.Errorf("stub refund cents: got %d, want ~1548 ($60 × 8/31 stub-prorated); pre-fix would have been ~6000 (over-refund)", cents)
+		}
+	})
+
+	t.Run("at >= periodEnd → no-op (clean swap at boundary)", func(t *testing.T) {
+		granter := &fakeCreditGranter{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), paidInvoices(), nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+
+		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), periodEnd)
+		if err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		if cents != 0 {
+			t.Errorf("at=periodEnd refund: got %d cents, want 0", cents)
+		}
+		if len(granter.grants) != 0 {
+			t.Errorf("at=periodEnd expected no credit grants, got %d", len(granter.grants))
+		}
+	})
+}
+
+// TestRunCycle_SegmentAware_SkipsInAdvanceSegment is a defense-in-
+// depth regression test. The bill_timing-change reject at the service
+// layer is the canonical guard against billOnePeriod ever seeing an
+// in_advance segment in its Pass 1 segment-aware loop. The segment-
+// skip in the loop itself (matching Pass 2 and BillFinalOnImmediate-
+// Cancel's already-correct behavior) catches the failure mode if the
+// reject is ever loosened. Without the skip, an in_advance segment
+// would emit a segment line at cycle close and double-bill the
+// operator for a portion they already paid in the OLD day-1 or
+// prior-cycle invoice.
+func TestRunCycle_SegmentAware_SkipsInAdvanceSegment(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	swapAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items: []domain.SubscriptionItem{{
+					ID: "it_1", PlanID: "pln_b_arrears", Quantity: 1,
+				}},
+				Status:                    domain.SubscriptionActive,
+				BillingTime:               domain.BillingTimeAnniversary,
+				CurrentBillingPeriodStart: &periodStart,
+				CurrentBillingPeriodEnd:   &swapAt,
+				NextBillingAt:             &swapAt,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+		itemChanges: []domain.SubscriptionItemChange{{
+			ID:                 "vlx_sic_1",
+			TenantID:           "t1",
+			SubscriptionID:     "sub_1",
+			SubscriptionItemID: "it_1",
+			ChangeType:         "plan",
+			FromPlanID:         "pln_a_advance",
+			ToPlanID:           "pln_b_arrears",
+			FromQuantity:       1,
+			ToQuantity:         1,
+			ChangedAt:          swapAt,
+		}},
+	}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_a_advance": {ID: "pln_a_advance", Name: "A", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 9900, BaseBillTiming: domain.BillInAdvance},
+			"pln_b_arrears": {ID: "pln_b_arrears", Name: "B", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseAmountCents: 9900, BaseBillTiming: domain.BillInArrears},
+		},
+	}
+
+	invoices := &mockInvoices{}
+	usage := &mockUsage{totals: map[string]int64{}}
+	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, billingTestClock()))
+
+	_, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	// No invoice expected: the only segment in (Mar 1, Mar 15) was
+	// under in_advance plan A, which is now skipped. No usage either.
+	// Zero-subtotal guard skips invoice creation.
+	if len(invoices.invoices) != 0 {
+		t.Errorf("expected 0 invoices (in_advance segment skipped, no usage), got %d", len(invoices.invoices))
+		for _, inv := range invoices.invoices {
+			t.Logf("  invoice subtotal=%d", inv.SubtotalCents)
+		}
+	}
+	for _, li := range invoices.lineItems {
+		if li.LineType == domain.LineTypeBaseFee {
+			t.Errorf("no base-fee line should be emitted (in_advance segment must be skipped); got line for plan=%s amount=%d", li.Description, li.AmountCents)
+		}
+	}
 }
 
 // TestRunCycle_SegmentAware_InArrears_MidPeriodPlanChange locks in the

@@ -11,7 +11,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
-	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -78,8 +77,17 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		metaJSON = []byte("{}")
 	}
 
+	// Resolve actor: customer-portal requests (ctx stamped by
+	// customerportal.Middleware) take precedence, then API-key, then
+	// the 'system' fallback for background workers + cron paths that
+	// have neither. Mapping the portal session to actor_type='customer'
+	// lets the operator Activity feed render customer-initiated
+	// mutations with a correct by-line.
 	actorType := "api_key"
-	if actorID == "" {
+	if custID := auth.CustomerActorID(ctx); custID != "" {
+		actorType = "customer"
+		actorID = custID
+	} else if actorID == "" {
 		actorType = "system"
 		actorID = "system"
 	}
@@ -87,21 +95,25 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	ipAddress := ClientIP(ctx)
 	requestID := chimw.GetReqID(ctx)
 
-	// created_at honors ctx-bound effective-now per ADR-030 so audit
-	// entries on clock-pinned entities stamp simulated time, matching
-	// the rest of the entity's timestamps (sub.created_at,
-	// invoice.issued_at, etc). Falls back to wall-clock when ctx has
-	// no binding — which is the cron path + every operator action on
-	// non-clock-pinned (production) resources. Caller's responsibility
-	// to bind ctx via clock.WithEffectiveNow before invoking Log on a
-	// clock-pinned resource.
+	// created_at is wall-clock — the audit row answers "when did the
+	// operator click" / "when did the engine emit," which are both real-
+	// time events regardless of which test clock the affected entity is
+	// pinned to. ADR-030 table line 131 ("Audit log row recorded_at:
+	// wall-clock | Forensics; never on the public API"). Diverged from
+	// this for ~2 weeks via subscription.auditCtxForSub (since reverted
+	// 2026-05-28) — see ADR-030 amendment.
+	//
+	// Callers who care about the *simulated* effective time of an action
+	// on a clock-pinned entity pass it explicitly in metadata as
+	// `sim_effective_at` + `test_clock_id`; the audit UI renders that
+	// subline below the wall-clock primary timestamp.
 	_, err = tx.ExecContext(writeCtx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, ip_address,
 			request_id, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
-		nullIfEmpty(ipAddress), nullIfEmpty(requestID), clock.Now(writeCtx))
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC())
 	if err != nil {
 		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to insert entry",
@@ -143,9 +155,13 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 50, clamp to 100 — was silently falling back to 50 on
+	// >100 asks (no-silent-fallbacks principle, 2026-05-28).
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	args := []any{}
@@ -164,21 +180,26 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	if filter.ActorID != "" {
 		where += andClause(&idx, "al.actor_id", &args, filter.ActorID)
 	}
-	// Accept either a full RFC3339 instant (preferred — the dashboard
-	// sends start/end-of-day in tenant TZ as UTC ISO) or a bare
-	// yyyy-mm-dd date (legacy — interpreted as UTC midnight). The
-	// dashboard moved to ISO instants in commit b523c71 and onward;
-	// the date-only branch stays for any direct curl users that
-	// haven't migrated. See ADR-010 for the tenant-TZ model.
-	if filter.DateFrom != "" {
+	// DateFrom / DateTo arrive as time.Time (parsed at the handler via
+	// timefilter.ParseRange — accepts both RFC3339 and YYYY-MM-DD).
+	// Postgres-go driver handles TIMESTAMPTZ binding from time.Time.
+	// See ADR-010 for the tenant-TZ model.
+	if !filter.DateFrom.IsZero() {
 		where += fmt.Sprintf(" AND al.created_at >= $%d", idx)
-		args = append(args, normalizeDateFilter(filter.DateFrom, false))
+		args = append(args, filter.DateFrom)
 		idx++
 	}
-	if filter.DateTo != "" {
+	if !filter.DateTo.IsZero() {
 		where += fmt.Sprintf(" AND al.created_at <= $%d", idx)
-		args = append(args, normalizeDateFilter(filter.DateTo, true))
+		args = append(args, filter.DateTo)
 		idx++
+	}
+
+	useCursor := !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
+	if useCursor {
+		where += fmt.Sprintf(" AND (al.created_at, al.id) < ($%d, $%d)", idx, idx+1)
+		args = append(args, filter.AfterCreatedAt, filter.AfterID)
+		idx += 2
 	}
 
 	whereClause := ""
@@ -186,26 +207,51 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		whereClause = " WHERE " + where[5:] // Remove leading " AND "
 	}
 
+	// Cursor path skips COUNT — handler derives hasMore from
+	// limit+1 over-fetch. Offset path keeps the count for the
+	// legacy "Page X of N" UX in the dashboard.
 	var total int
-	countQuery := `SELECT COUNT(*) FROM audit_log al` + whereClause
-	if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	if !useCursor {
+		countQuery := `SELECT COUNT(*) FROM audit_log al` + whereClause
+		if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// LEFT JOIN api_keys so the UI can show a human-readable key name instead
 	// of the raw actor_id (e.g., "Production" vs "vlx_secret_live_abc123…").
 	// Join is (tenant_id, id) which matches the api_keys PK's tenant scope.
+	//
+	// Also LEFT JOIN customers for actor_type='customer' rows (customer-
+	// portal-driven mutations). Picks display_name so the AuditLog page
+	// shows "Acme Corp" instead of the generic "Customer" fallback.
+	// COALESCE prefers the api-key name (when the row is api_key-actored)
+	// over the customer display name (the joins are mutually exclusive in
+	// practice — actor_id can't be both a key and a customer).
 	query := `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
-		COALESCE(k.name, '') AS actor_name,
+		COALESCE(NULLIF(k.name, ''), c.display_name, '') AS actor_name,
 		al.action, al.resource_type, al.resource_id,
 		COALESCE(al.resource_label,''), al.metadata,
 		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
 		FROM audit_log al
-		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id` + whereClause
+		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
+		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'` + whereClause
 
-	query += " ORDER BY al.created_at DESC"
-	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", idx, idx+1)
-	args = append(args, limit, filter.Offset)
+	// Order by (created_at, id) DESC — id tiebreaker aligns with the
+	// cursor predicate's tuple ordering so seek + ORDER BY stay in
+	// lockstep regardless of microsecond-level ties.
+	query += " ORDER BY al.created_at DESC, al.id DESC"
+	queryLimit := limit
+	if useCursor {
+		queryLimit = limit + 1
+	}
+	args = append(args, queryLimit)
+	query += fmt.Sprintf(" LIMIT $%d", idx)
+	idx++
+	if !useCursor {
+		args = append(args, filter.Offset)
+		query += fmt.Sprintf(" OFFSET $%d", idx)
+	}
 
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -278,10 +324,22 @@ type QueryFilter struct {
 	ResourceID   string
 	Action       string
 	ActorID      string
-	DateFrom     string // YYYY-MM-DD
-	DateTo       string // YYYY-MM-DD
-	Limit        int
-	Offset       int
+	// DateFrom / DateTo are parsed at the handler via timefilter.ParseRange
+	// — accepts both RFC3339 and bare YYYY-MM-DD. Zero-value time.Time
+	// means "no filter on this end."
+	DateFrom time.Time
+	DateTo   time.Time
+	Limit    int
+	Offset   int
+	// Cursor-based pagination (2026-05-29). Seek-method query:
+	// WHERE (al.created_at, al.id) < (AfterCreatedAt, AfterID).
+	// Mutually exclusive with Offset — handler routes by ?after=
+	// query param taking precedence. Audit_log is high-write, and
+	// operators paginate deep for forensics, so OFFSET 50000 got
+	// slow fast. Cursor-method is O(log N) per page regardless of
+	// depth.
+	AfterCreatedAt time.Time
+	AfterID        string
 }
 
 func andClause(idx *int, col string, args *[]any, val string) string {
@@ -291,19 +349,3 @@ func andClause(idx *int, col string, args *[]any, val string) string {
 	return clause
 }
 
-// normalizeDateFilter accepts either an RFC3339 instant
-// (e.g. "2026-05-04T18:30:00Z" — what the dashboard sends, derived
-// from tenant TZ start/end-of-day) or a bare yyyy-mm-dd date string
-// (legacy — interpreted as UTC midnight). Returns a string suitable
-// for a TIMESTAMPTZ comparison. endOfDay=true uses 23:59:59 instead
-// of 00:00:00 for the date-only branch so date_to filters
-// inclusively. See ADR-010.
-func normalizeDateFilter(val string, endOfDay bool) string {
-	if _, err := time.Parse(time.RFC3339, val); err == nil {
-		return val
-	}
-	if endOfDay {
-		return val + "T23:59:59Z"
-	}
-	return val + "T00:00:00Z"
-}

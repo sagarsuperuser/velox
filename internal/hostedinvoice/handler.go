@@ -279,9 +279,8 @@ func (h *Handler) viewInvoice(w http.ResponseWriter, r *http.Request) {
 			if bp.LegalName != "" {
 				billTo.Name = bp.LegalName
 			}
-			if bp.Email != "" {
-				billTo.Email = bp.Email
-			}
+			// bp.Email removed in migration 0100 — bill-to email tracks
+			// customers.email (set above).
 			billTo.AddressLine1 = bp.AddressLine1
 			billTo.AddressLine2 = bp.AddressLine2
 			billTo.City = bp.City
@@ -387,9 +386,8 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 			if bp.LegalName != "" {
 				bt.Name = bp.LegalName
 			}
-			if bp.Email != "" {
-				bt.Email = bp.Email
-			}
+			// bp.Email removed in migration 0100 — bill-to email tracks
+			// customers.email (set above).
 			bt.AddressLine1 = bp.AddressLine1
 			bt.AddressLine2 = bp.AddressLine2
 			bt.City = bp.City
@@ -427,12 +425,15 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				cnInfos = append(cnInfos, invoice.CreditNoteInfo{
-					Number:            cn.CreditNoteNumber,
-					Reason:            cn.Reason,
-					Amount:            cn.TotalCents,
-					RefundAmountCents: cn.RefundAmountCents,
-					CreditAmountCents: cn.CreditAmountCents,
-					RefundStatus:      string(cn.RefundStatus),
+					Number:               cn.CreditNoteNumber,
+					Reason:               cn.Reason,
+					Amount:               cn.TotalCents,
+					RefundAmountCents:    cn.RefundAmountCents,
+					CreditAmountCents:    cn.CreditAmountCents,
+					OutOfBandAmountCents: cn.OutOfBandAmountCents,
+					TaxAmountCents:       cn.TaxAmountCents,
+					TaxTransactionID:     cn.TaxTransactionID,
+					RefundStatus:         string(cn.RefundStatus),
 				})
 			}
 		}

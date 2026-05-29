@@ -797,7 +797,7 @@ export default function SubscriptionDetailPage() {
                         {sub.billing_time === 'calendar'
                           ? 'For monthly plans, the first period runs from the activation day to the next 1st of the month, then bills on the 1st thereafter.'
                           : 'The period anchors on the activation day-of-month and rolls forward by the plan interval.'}
-                        {' '}Plan-interval changes (e.g. yearly → monthly) preserve the existing day-of-month anchor — they don't snap back to the calendar boundary. To re-anchor, cancel and recreate the subscription.
+                        {' '}Scheduled plan-interval changes (immediate=false) preserve the existing day-of-month anchor at the boundary. Immediate cross-interval swaps (e.g. yearly → monthly with immediate=true) re-anchor the cycle on the swap day.
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -986,19 +986,23 @@ export default function SubscriptionDetailPage() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <p className="text-sm text-foreground">{event.description}</p>
-                        {/* Simulated chip mirrors the invoice timeline
-                            shape — backend stamps is_simulated=true on
-                            events that landed in frozen-time (operator
-                            audit actions on a clock-pinned sub, after
-                            PR-11/12 + b46bdee). Wall-clock events ship
-                            false. Authoritative flag; no client-side
-                            timestamp heuristic. */}
+                        {/* Chip semantics post ADR-030 2026-05-28
+                            amendment: the row's primary timestamp is
+                            wall-clock (audit_log.created_at), and
+                            sim_effective_at carries the simulated
+                            effect time when the action landed on a
+                            clock-pinned entity. Chip label "test clock"
+                            so operators don't misread "simulated" as
+                            "this timestamp is fake" — it's not, it's
+                            wall-clock; the test-clock effect time
+                            shows on the subline below. Mirrors the
+                            AuditLog page pattern. */}
                         {event.is_simulated && (
                           <span
-                            title="Timestamp came from a test-clock-bound action, not wall-clock"
+                            title={event.sim_effective_at ? `Operator action at wall-clock ${formatDateTime(event.timestamp)}; effect on test clock ${event.test_clock_id || ''} at simulated ${formatDateTime(event.sim_effective_at)}` : 'Action affected a clock-pinned entity'}
                             className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
                           >
-                            simulated
+                            test clock
                           </span>
                         )}
                       </div>
@@ -1010,6 +1014,11 @@ export default function SubscriptionDetailPage() {
                         {event.detail_timestamp && (
                           <>{event.detail ? ' ' : ''}{formatDateTime(event.detail_timestamp)}</>
                         )}
+                      </p>
+                    )}
+                    {event.sim_effective_at && (
+                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                        Effect on test clock {event.test_clock_id ? <span className="font-mono">{event.test_clock_id}</span> : ''} at {formatDateTime(event.sim_effective_at)}
                       </p>
                     )}
                     {(event.actor_name || event.actor_type) && (

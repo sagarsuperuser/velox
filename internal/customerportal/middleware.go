@@ -61,6 +61,12 @@ func (s *Service) Middleware() func(http.Handler) http.Handler {
 			// on "portal vs api-key" — the shared key is the contract
 			// every tenant-scoped middleware reads from.
 			ctx = auth.WithTenantID(ctx, sess.TenantID)
+			// Stamp the customer ID as the request actor so audit.Logger
+			// writes rows with actor_type='customer' (instead of the
+			// 'system' fallback when no api_key is set). Lets the
+			// operator Activity feed render customer-initiated mutations
+			// with the right by-line.
+			ctx = auth.WithCustomerActor(ctx, sess.CustomerID)
 			ctx = postgres.WithLivemode(ctx, sess.Livemode)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -95,6 +101,10 @@ func WithTestIdentity(ctx context.Context, tenantID, customerID string) context.
 	ctx = context.WithValue(ctx, tenantIDKey, tenantID)
 	ctx = context.WithValue(ctx, customerIDKey, customerID)
 	ctx = context.WithValue(ctx, sessionIDKey, "sess_test")
+	// Mirror the production middleware: stamp the customer-actor so
+	// audit writes from test handlers produce the same actor_type
+	// shape as live requests.
+	ctx = auth.WithCustomerActor(ctx, customerID)
 	return ctx
 }
 

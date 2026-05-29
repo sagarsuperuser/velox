@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/dunning"
@@ -40,4 +41,47 @@ func TestOutboxSender_RequiresTenantID(t *testing.T) {
 	if err == nil {
 		t.Error("SendInvoice with empty tenantID should error")
 	}
+}
+
+// TestOutboxSender_SuppressedRecipient verifies that when the
+// suppression checker reports a recipient is bounced/complained, the
+// enqueue is soft-skipped with ErrRecipientSuppressed and no DB write
+// is attempted. Nil store proves no write happened (would panic).
+func TestOutboxSender_SuppressedRecipient(t *testing.T) {
+	t.Parallel()
+	s := NewOutboxSender(nil)
+	s.SetSuppressionChecker(suppressionFake{suppressed: true, reason: "bounced: 550 user unknown"})
+
+	err := s.SendInvoice(context.Background(), "tnt_a", "bounced@x.com", "n", "inv", 1, "USD", nil, "")
+	if !errors.Is(err, ErrRecipientSuppressed) {
+		t.Errorf("expected ErrRecipientSuppressed; got %v", err)
+	}
+}
+
+// TestOutboxSender_SuppressionCheckerErrorFailsOpen — a flaky lookup
+// must NOT block legitimate sends. The enqueue should proceed and we
+// see the store call (nil store → expected nil-deref panic, which
+// confirms we passed the gate). Caught + recovered.
+func TestOutboxSender_SuppressionCheckerErrorFailsOpen(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		// Recovery confirms we reached the store call (intended panic)
+		// rather than short-circuiting on the suppression error.
+		_ = recover()
+	}()
+	s := NewOutboxSender(nil) // nil store will panic on enqueue
+	s.SetSuppressionChecker(suppressionFake{err: errors.New("db down")})
+
+	_ = s.SendInvoice(context.Background(), "tnt_a", "ok@x.com", "n", "inv", 1, "USD", nil, "")
+	t.Error("expected the nil-store panic confirming fail-open path")
+}
+
+type suppressionFake struct {
+	suppressed bool
+	reason     string
+	err        error
+}
+
+func (f suppressionFake) IsSuppressed(_ context.Context, _, _ string) (bool, string, error) {
+	return f.suppressed, f.reason, f.err
 }

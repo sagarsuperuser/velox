@@ -332,6 +332,9 @@ The headline test-clock use case — verifies the full Stripe-parity dunning sta
 - [ ] **Operator-driven uncollectible from the dunning resolve dialog** — on an active dunning run, click Resolve → pick **Write off invoice** → confirm. The dunning run flips to `resolved` with `resolution=invoice_not_collectible` AND the underlying invoice flips to `status=uncollectible` (cross-flow per ADR-036 — pre-fix this only updated the run row). Invoice detail page reflects the change: status banner reads "Marked uncollectible — recorded as bad debt", Collect Payment / Mark Uncollectible buttons disappear, Record Payment + Void + Issue Credit remain.
 - [ ] **Uncollectible page UX (Stripe parity — verified across Stripe + Chargebee + Recurly 2026-05-20)** — on an `uncollectible` invoice: InvoiceAttention banner is hidden, OperatorContext/Diagnosis card is hidden, status banner explains the bad-debt classification + that the subscription stays active + recovery options. Buttons present: Void, Email, Issue Credit, Record Payment, Copy Link, Preview/Download PDF. Buttons absent: Collect Payment, Mark Uncollectible, Finalize, Add Line Item, Apply Coupon.
 - [ ] **Stripe-parity offline recovery: uncollectible → paid** — click Record Payment on an uncollectible invoice, optionally enter a reference (e.g. "Cheque #1234"), confirm. Invoice flips to `status=paid`, `payment_status=succeeded`, `paid_at` set, `stripe_payment_intent_id` prefixed `out_of_band:` so reports can distinguish operator-recorded payments from engine charges. Audit row carries `recovered_from_status=uncollectible`. Webhook `invoice.payment_recorded` fires. Active dunning run (if any) resolves to `payment_recovered`.
+- [ ] **Audit timestamps: wall-clock primary, sim-time in metadata (ADR-030 amendment 2026-05-28)** — on the clock-pinned sub, click Cancel from the subscription detail page. Open `/audit-log`, find the just-written `subscription.cancel` row. `created_at` is wall-clock (within ~5s of system time the operator clicked) — NOT the test clock's simulated frozen_time. Row shows an amber **test clock** chip next to the action label. Expand the row: the "Timestamp" cell carries an amber subline reading "Effect on test clock `<clock_id>` at `<simulated frozen_time>`". `metadata.sim_effective_at` matches the sub's current period end (the simulated effect-time of the cancellation); `metadata.test_clock_id` matches the sub's pin.
+- [ ] **Dunning resolve on a clock-pinned invoice stamps simulated `paid_at`** — from an active dunning run on a clock-pinned invoice, click Resolve → Payment recovered. Reload invoice detail. `invoice.paid_at` lands in simulated time (the test clock's current frozen_time), NOT wall-clock. Pre-2026-05-28 this was wall-clock — verifies the dunning handler binds via the clock resolver before MarkPaid.
+- [ ] **Payment reconciler stamps simulated `paid_at` for clock-pinned PaymentUnknown invoices** — simulate an ambiguous charge outcome on a clock-pinned invoice (Stripe API timeout / 5xx → invoice lands `payment_status=unknown` with a populated `stripe_payment_intent_id`). Wait ~70s wall-clock for the reconciler to fire. After resolution, `invoice.paid_at` lands in simulated time (test clock's frozen_time at the moment of the original charge attempt), NOT today's wall-clock. Pre-2026-05-28 the reconciler used an injected wall-clock `now()` and split-brained the paid_at against issued_at / due_at on the same row.
 
 ## FLOW TC6: Trial expiration via catchup (ADR-037)
 
@@ -387,8 +390,9 @@ Locks in the 2026-05-20 "Renews on" annotation + alignment tooltip (Stripe/Lago/
 
 - [ ] Active sub detail page → stat card row shows primary label **"Renews <date>"** (concrete next-renewal date) with a muted secondary line **"Period: <start> — <end>"**. The "Current period: <range>" pre-redesign labeling is gone.
 - [ ] Details panel below shows **"Renews on"** row above **"Current period"** row — both filled in for active subs.
-- [ ] **"Billing alignment"** row (renamed from "Billing Time") shows `Calendar` or `Anniversary` with a `?` hover tooltip explaining: (a) alignment is set at activation, (b) calendar+monthly anchors to first-of-next-month at first cycle close; (c) plan-interval changes (yearly→monthly) preserve the existing day-of-month anchor and don't auto-snap — operator should cancel+recreate to re-anchor if needed.
+- [ ] **"Billing alignment"** row (renamed from "Billing Time") shows `Calendar` or `Anniversary` with a `?` hover tooltip explaining: (a) alignment is set at activation; (b) calendar+monthly anchors to first-of-next-month at first cycle close; (c) **scheduled** plan-interval changes (`immediate=false`) preserve the existing day-of-month anchor at the boundary; (d) **immediate** cross-interval swaps (e.g. yearly → monthly with immediate=true) re-anchor the cycle on the swap day (see FLOW B21).
 - [ ] Trialing subs: stat card shows trial-specific labels instead (no "Renews on" until trial ends).
+- [ ] **Activity timeline chip: wall-clock primary + sim-effective subline (ADR-030 amendment, 2026-05-29)**: on a clock-pinned active sub's detail page, click any item-add/cancel/etc. action. The new audit row in the Activity card shows: (a) primary timestamp = wall-clock (within seconds of the operator's click), (b) amber **test clock** chip next to the description (NOT "simulated"), (c) subline reading "Effect on test clock `<id>` at `<simulated time>`". Rows on a wall-clock (non-clock-pinned) sub show NO chip and NO subline. Pre-fix the chip read "simulated" and fired on every row regardless of timestamp domain, because the backend was using a sub-level heuristic instead of per-row metadata.sim_effective_at.
 
 ## FLOW TIMELINE-ORDER: Activity timeline ordering (invoice + subscription)
 
@@ -473,30 +477,81 @@ The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 ve
 - [ ] `/portal` without session → redirect to `/portal/login`.
 - [ ] `/portal` loads: Payment method, Subscriptions, Invoices sections. Header shows tenant company name + Sign out.
 
-## FLOW CP2: Customer cancels subscription
+## FLOW CP2: Customer cancels (and resumes) subscription
 
 - [ ] `GET /v1/me/subscriptions` (Bearer = portal token) → only that customer's subs.
 - [ ] `POST /v1/me/subscriptions/{id}/cancel` → 200, status canceled.
 - [ ] Cancel another customer's sub → 404 (no enumeration).
 - [ ] Webhook `subscription.canceled` payload includes `canceled_by:"customer"`.
-- [ ] UI: each non-canceled sub has Cancel button → typed confirm dialog (`CANCEL`) → row shows `canceled` badge after.
+- [ ] UI: each non-canceled sub has Cancel button → single-click confirm dialog ("Keep subscription" / "Cancel subscription") → row shows `canceled` badge after. Industry parity (Stripe / Lago / Chargebee portals): one-click confirm, no typed input — customer self-serve flows should not impose typed-CANCEL friction (that pattern is reserved for operator destructive ops with broader blast radius, see line 1142).
+- [ ] Sub with `cancel_at_period_end=true` (scheduled cancel via operator API) shows amber "cancels at period end" badge + "Will end {date} · won't renew" subtitle + **Resume** button (in place of Cancel).
+- [ ] `POST /v1/me/subscriptions/{id}/resume` → 200, `cancel_at_period_end=false`, regular renewal resumes. Webhook `subscription.cancel_cleared` fires with `resumed_by:"customer"`.
+- [ ] Resume on already-canceled sub (status=canceled) → 409 `subscription_canceled` ("contact support to reactivate").
+- [ ] Resume on another customer's sub → 404 (no enumeration).
 
-## FLOW CP3: Customer updates payment method
+## FLOW CP6: Customer pays an invoice from the portal
 
-- [ ] Customer must have existing PaymentSetup.
-- [ ] `POST /v1/me/payment-method/update {return_url}` → 201 `{url}` (Stripe Checkout setup-mode).
-- [ ] Open URL → enter new card → Stripe redirects to return_url → webhook flips `payment_setups.setup_status=ready`.
+- [ ] Finalized-but-unpaid invoice with PM on file → portal row shows primary **Pay now** button.
+- [ ] `POST /v1/me/invoices/{id}/pay` → 202 Accepted, response is the invoice with `payment_status=processing` and `stripe_payment_intent_id` stamped. Stripe `payment_intent.succeeded` webhook flips status to `paid` shortly after.
+- [ ] Already-paid invoice → 409 `invoice_already_paid`.
+- [ ] Invoice with `payment_status=processing` (charge in flight) → 409 `payment_in_flight`. UI button shows "Processing…" disabled state.
+- [ ] Voided / draft invoice → 409 `invoice_not_payable`.
+- [ ] No PM on file (or no default set) → 409 `no_payment_method_on_file` ("Add a payment method before paying this invoice").
+- [ ] Pay another customer's invoice → 404 (no enumeration).
+- [ ] No Stripe configured for this mode → 503 `stripe_unavailable`.
+
+## FLOW CP3: Customer adds, manages, and removes payment methods
+
+The portal's PM surface is the customer-side half of a unified design shared with the operator dashboard. Single self-serve flow that works whether the customer has a Stripe Customer object yet or not — `paymentmethods.StripeAdapter.EnsureStripeCustomer` lazily creates one on first action. Card capture stays in Stripe-hosted iframe (PCI SAQ-A). Industry parity: Stripe portal, Chargebee self-serve, Lago, Recurly all converge on this shape.
+
+### API
+
+- [ ] `GET /v1/me/payment-methods` (Bearer = portal token) → `{data: [], total: 0}` for a customer with no card yet.
+- [ ] `POST /v1/me/payment-methods/setup-session {return_url}` → 201 `{url, session_id}` (Stripe Checkout setup-mode). Works for first-time AND repeat use. Returns to `return_url?status=success` (or `?status=cancel`).
+- [ ] Open URL → enter card → Stripe redirects → `setup_intent.succeeded` webhook attaches PM. Metadata propagates to the underlying SetupIntent via `SetupIntentData` (regression-fix 2026-05-26: without this the attach silently skipped even though the webhook returned 200).
+- [ ] `GET /v1/me/payment-methods` again → `{data: [{card_brand, card_last4, card_exp_month, card_exp_year, is_default: true}], total: 1}`.
 - [ ] If invoices had `auto_charge_pending=true` → next scheduler tick collects them.
-- [ ] No PaymentSetup → 400 `missing_payment_setup`. No live Stripe → 503 `stripe_unavailable`.
+- [ ] No live Stripe configured for this mode → 503 `stripe_unavailable`.
+- [ ] Set default: `POST /v1/me/payment-methods/{id}/default` → 200; future invoices charge that card.
+- [ ] After Set default → Stripe Dashboard → Customer → `invoice_settings.default_payment_method` reflects the newly promoted PM (not the previously-default one). Phase 1 sync.
+- [ ] If Stripe is unreachable when SetDefault fires → operator save still succeeds (local default flips); the audit row for the action carries `stripe_sync_error` in its metadata. Local-wins per Lago/Recurly/Chargebee.
+- [ ] Remove: `DELETE /v1/me/payment-methods/{id}` → 204; PM detached upstream and locally.
+
+### UI — portal
+
+Section title is always **"Payment methods"** (plural). Primary CTA label is always **"Add payment method"** regardless of card count (future-proofed for ACH/SEPA). Default badge: `variant="outline"`.
+
+- [ ] Empty state: single card "No payment method on file · Add one to autopay invoices." with **Add payment method** button (inline-right).
+- [ ] With ≥1 cards: each row renders `{Brand} ending in {last4}` + Default badge (outline) on the active one + `Expires MM/YYYY` sub-line. Below the list: full-width **Add payment method** button (same label as empty state).
+- [ ] Default row: only **Remove** action visible (Set as default hidden — already default).
+- [ ] Non-default row: **Set default** + **Remove** actions.
+- [ ] Remove triggers AlertDialog "Remove this payment method?" with brand + last4 in body and destructive-styled confirm. Cancel closes; Remove detaches.
+- [ ] **Last-card Remove allowed with explicit warning copy.** When there's only one card and the customer clicks Remove, the dialog body reads "{Brand} ending in {last4} will be detached. After this you'll have no payment method on file — future invoices won't be charged automatically, and you'll need to add a new card or pay manually from this portal." Industry parity (Stripe / Chargebee / Lago all allow removing the last card). Confirming proceeds; auto-collection on subsequent invoices fails until a new card is added (dunning kicks in per policy).
+- [ ] Click Add payment method (either button) → Stripe Checkout in same tab → complete → redirected back to `/portal?status=success` → toast "Payment method added" + list refetches automatically (no manual reload).
+- [ ] Cancel mid-Checkout → redirected back to `/portal?status=cancel` → toast "Setup canceled — no changes were made".
+
+## FLOW CP7: Customer self-edits billing details
+
+- [ ] `GET /v1/me/profile` → `{customer_id, display_name, email}`.
+- [ ] `PATCH /v1/me/profile {"display_name": "New Co"}` → 200 with updated display_name.
+- [ ] `PATCH /v1/me/profile {"email": "new@example.com"}` → 200 with updated email.
+- [ ] `PATCH /v1/me/profile {"email": "not-an-email"}` → 422 `email` invalid (rides on the same validator the operator path uses).
+- [ ] `PATCH /v1/me/profile {}` → no-op, returns current profile.
+- [ ] `PATCH /v1/me/profile {"status": "archived"}` → no-op (locked field silently ignored — the portal allow-list never reaches Update). Operator-only fields stay operator-only.
+- [ ] **UI**: Billing details card shows Name + Email; click Edit → inline form; Save → toast + refresh; Cancel discards.
 
 ## FLOW CP4: Invoice PDF download
 
 - [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" $API/v1/me/invoices/$INV_ID/pdf` → PDF, `Content-Type: application/pdf`, `Content-Disposition: attachment`.
 - [ ] Different customer's invoice → 404.
+- [ ] `GET /v1/me/invoices` → each invoice row includes `credits_applied_cents` when > 0; UI surfaces "$X from credits · $Y card" breakdown on the row.
 
-## FLOW CP5: Branding
+## FLOW CP5: Branding + profile + credit balance
 
 - [ ] `GET /v1/me/branding` (Bearer = portal token) → tenant company name, logo URL, brand color, support URL.
+- [ ] `GET /v1/me/profile` → `{customer_id, display_name, email}`. Drives the portal header personalization ("Acme Corp · billing@…").
+- [ ] `GET /v1/me/credit-balance` → `{balance_cents, total_granted, total_used, total_expired, recent_entries[<=10]}`. Credit-zero customers get `balance_cents=0` and `recent_entries=[]`.
+- [ ] **UI portal**: header shows `<company_name> · <customer_name> · <email>` when profile loads. Credit-balance card appears above PM section only when balance != 0 OR there are ledger entries; click "Show history" toggles the recent-entries list.
 
 ## FLOW E: Email delivery (SMTP)
 
@@ -516,11 +571,12 @@ Boot warnings on startup (one each when var unset; never fatal):
 - [ ] **E4 5xx bounce**: send to `foo@invalid` → `customers.email_status='bounced'`, `email_bounce_reason` carries the SMTP error.
 - [ ] **E5 Per-provider**: verify SendGrid / Postmark / SES / Mailgun / Resend per `docs/ops/email-setup.md`.
 - [ ] **E6 Mailpit dev path**: `SMTP_HOST=localhost:1025 SMTP_TLS=none` → mail lands at http://localhost:8025 with HTML+text bodies.
+- [ ] **E7 Receipt + payment-failed land via outbox (no detached goroutine)**: simulate `payment_intent.succeeded` for an invoice → `email_outbox` immediately has a `payment_receipt` row pending (NOT a fire-and-forget goroutine that bypasses the outbox). Same for `payment_intent.payment_failed` → `payment_failed` row pending. Stop the dispatcher, fire a webhook → confirm the row persists and dispatches when the dispatcher restarts (retry guarantee). Pre-2026-05-29 the goroutine pattern silently dropped failures past its log line.
 
 ## FLOW EX: Streaming CSV exports
 
-- [ ] **EX1 customers**: `curl -OJ $API/v1/exports/customers.csv` → `customers-YYYYMMDD-HHMMSS.csv`. Date filter `?from=…&to=…` works. Invalid `from` → 400.
-- [ ] **EX2 invoices**: `$API/v1/exports/invoices.csv` → invoice rows incl. amounts, period, lifecycle timestamps.
+- [ ] **EX1 customers**: `curl -OJ $API/v1/exports/customers.csv` → `customers-YYYYMMDD-HHMMSS.csv`. Date filter accepts BOTH RFC3339 (`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`) AND bare YYYY-MM-DD (`?from=2026-01-01&to=2026-12-31` — `from` anchors at UTC 00:00:00, `to` at UTC 23:59:59 inclusive). Invalid `from` → 400 with field-level error. Same contract as the audit-log + usage endpoints via `internal/api/timefilter`. **Row-completeness check**: `wc -l customers-*.csv` ≈ `SELECT COUNT(*) FROM customers WHERE tenant_id='<your tenant>' AND created_at BETWEEN from AND to`. Pre-2026-05-28 the export silently truncated at 50 rows; verify a tenant with >50 customers exports all of them.
+- [ ] **EX2 invoices**: `$API/v1/exports/invoices.csv` → invoice rows incl. amounts, period, lifecycle timestamps. **Row-completeness check**: on a tenant with >100 invoices, `wc -l invoices-*.csv` matches `SELECT COUNT(*) FROM invoices WHERE tenant_id='<your tenant>'`. Pre-2026-05-28 the store's silent over-cap fallback to 50 rows truncated every export at the first page; clamp-to-100 + the matching `exportPageSize` makes the streaming loop iterate all the way through.
 - [ ] **EX3 subscriptions**: `$API/v1/exports/subscriptions.csv` → subs with `plan_ids` (pipe-delimited).
 - [ ] **EX4 usage-events**: requires `from`+`to`; missing → 400. Span >366d → 400.
 - [ ] Publishable key can call all exports (read-only perm).
@@ -549,6 +605,10 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 ## FLOW B3: Idempotency
 
 - [ ] Run billing twice in same period → no duplicate invoice. Logs `invoice already exists for billing period (idempotent skip)`.
+- [ ] **Multi-add proration in same period (ADR-030 cross-flow audit, migration 0101)**: pick a clock-pinned active sub. AddItem with plan A — succeeds, proration invoice DEMO-NNNN created. AddItem with plan B at the same simulated instant — also succeeds, distinct proration invoice DEMO-NNNN+1 created with the same `billing_period_start/end` as the first proration invoice but different `source_subscription_item_id`. `idx_invoices_billing_idempotency` correctly exempts both (predicate `WHERE source_plan_changed_at IS NULL`); `idx_invoices_proration_dedup` correctly distinguishes them by item id. Pre-migration: second add committed the item but failed proration with "proration dedup lookup: not found" — billing-period index spuriously fired and the handler mis-routed via GetByProrationSource (which queried for the wrong item id).
+- [ ] **AddItem atomicity (ADR-030 atomic-proration follow-through, 2026-05-29)**: simulate a proration write failure (e.g. temporarily kill the database after `BeginTx` succeeds but before the invoice insert — easiest reproduction: temporarily revoke INSERT on `invoices` for the velox role, run AddItem on a clock-pinned active sub, restore the grant). Expected: API returns 500 with `proration_failed`, AND `SELECT * FROM subscription_items WHERE id='<the new item id>'` returns ZERO rows. Pre-fix: the item was committed in its own tx so this query returned the half-committed orphan. With the atomic-tx flow wired (`subH.SetDB(db)` from router), the entire operation rolls back — either both writes land or neither does.
+- [ ] **UpdateItem + RemoveItem atomicity (same ADR-030 follow-through)**: same shape, different mutations. UpdateItem quantity change with simulated proration-write failure → item.quantity rollback to the pre-change value. RemoveItem with simulated credit-grant failure → item still present on sub (delete rolled back). Cross-interval plan swap is NOT atomic yet — that path still uses the legacy non-atomic flow (documented follow-up).
+- [ ] **RemoveItem soft-delete (migration 0102, 2026-05-29)**: pick an item that has at least one proration invoice or credit-ledger entry pointing at it (e.g. an item added mid-cycle with proration emitted). DELETE the item via `/v1/subscriptions/{id}/items/{itemID}` → 200 (NOT 500 with the FK-violation error). `GET /v1/subscriptions/{id}` shows the item gone from `sub.Items`. `psql -c "SELECT id, deleted_at FROM subscription_items WHERE id='<the id>'"` returns one row with `deleted_at IS NOT NULL`. Re-adding the same `plan_id` to the same sub succeeds (the partial unique index `WHERE deleted_at IS NULL` allows it). Pre-migration: DELETE fought `invoices_source_subscription_item_id_fkey` and 500'd whenever the item had any proration history.
 
 ## FLOW B4: Auto-charge retry
 
@@ -579,8 +639,8 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 - [ ] In_advance sub downgrade immediately + source invoice paid → immediate credit grant lands in `customer_credit_ledger`.
 - [ ] In_advance sub upgrade/downgrade immediately + source invoice **unpaid** → no immediate artifact (operator must wait for source invoice to clear OR void it).
 - [ ] Scheduled plan change (`immediate=false`) → no immediate artifact; engine emits closing invoice under OUTGOING plan at period boundary (FLOW B20).
-- [ ] Plan change across `base_bill_timing` rejected with 400 (`bill_timing change is not supported on plan-swap`) — both immediate and scheduled. Operator path: cancel + recreate.
-- [ ] Immediate cross-interval plan-swap (monthly → yearly) rejected with 400 (`immediate plan-swap across billing intervals is not supported`). Scheduled cross-interval still allowed.
+- [ ] Plan change across `base_bill_timing` rejected with 400 (`bill_timing change is not supported on plan-swap`) — both immediate and scheduled. 2026-05-22 industry verification (Stripe / Lago / Orb / Chargebee / Recurly / Metronome) found no peer documents cadence-change as an in-place plan-swap. Operator path: cancel + recreate.
+- [ ] Immediate same-cadence cross-interval plan-swap (yearly → monthly or monthly → yearly, both in_advance OR both in_arrears) accepted — see FLOW B21.
 - [ ] Plan billing-fields immutability (ADR-034): live-sub plans reject `PATCH` to `base_amount_cents` / `base_bill_timing` / `meter_ids` with 422; `name` / `description` / `tax_code` / `status` mutate cleanly.
 - [ ] **Plan billing-fields immutability (ADR-034)**: with at least one live sub on a plan, `PATCH /v1/plans/{id}` with a different `base_amount_cents`, `base_bill_timing`, or `meter_ids` → **422** with message naming the blocked field(s) + live-sub count + "Create a new plan instead." Display-only fields (`name`, `description`, `tax_code`, `status`) STILL mutate cleanly on the same call. On a plan with zero live subs, all fields are mutable (covers typo correction at plan creation). Canceled / archived subs do NOT count as live for the guard.
 
@@ -709,6 +769,21 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] **Mid-period item add:** sub with one item, AddItem on day 15. Cycle close: first item's full-period line + added item's segment line from day 15 to period_end. Added item's `billing_period_start` on the line equals add-time, NOT period_start.
 - [ ] **Mid-period item remove (in_arrears):** sub with one item-A + one item-B, RemoveItem on B day 15. Cycle close: item-A full-period line + item-B segment line from period_start to day 15. No credit grant emitted (in_arrears removed item was never prepaid).
 - [ ] **Immediate cancel after mid-period plan swap:** UpdateItem Plan A → Plan B day 10, Cancel day 20. `BillFinalOnImmediateCancel` invoice has TWO segment base lines: Plan A for [day 1, day 10) + Plan B for [day 10, day 20). Plus usage lines per (meter, segment).
+
+## FLOW B21: Immediate same-cadence cross-interval plan-swap (yearly ↔ monthly)
+
+Velox accepts `immediate=true` plan-swaps that change the billing interval as long as bill_timing matches on both sides (in_advance↔in_advance or in_arrears↔in_arrears). Industry parity verified 2026-05-22: Stripe / Lago / Orb / Chargebee / Recurly all ship this. Cross-cadence (in_advance↔in_arrears) is rejected — no peer documents it as an in-place plan-swap operation; operator path is cancel + recreate.
+
+- [ ] **In_advance yearly → monthly downgrade (same cadence, cross interval):** clock-pinned sub on `pro-yearly-adv` ($1200/yr in_advance), day-1 invoice paid. On day 90 of the year, `UpdateItem(new_plan_id=pro-monthly-adv, immediate=true)`. Three artifacts appear within the same tick:
+  1. Credit ledger entry: `Plan-swap refund — unused portion of <code> base fee (period <start> to <end>, swapped <today>)`, amount = `$1200 × 275/365 ≈ $904.11`.
+  2. Subscription's `current_period_start` = today; `current_period_end` = `NextBillingPeriodEnd(today, billing_time, monthly)` (anniversary: today + 1 month; calendar: first-of-next-month).
+  3. New invoice for the new in_advance period at the monthly $100 base (stub-prorated if calendar snap shortens it).
+- [ ] **In_advance monthly → yearly upgrade (same cadence, cross interval):** sub on `pro-monthly-adv` ($100/mo in_advance), day-1 invoice paid. On day 15 of a 30-day cycle, swap to `pro-yearly-adv` ($1200/yr). Refund credit `$100 × 15/30 = $50`; period jumps to (today, today + 1 year); new $1200 invoice.
+- [ ] **In_arrears yearly → monthly (same cadence, cross interval):** sub on `pro-yearly-arr` ($1200/yr in_arrears). On day 90 swap to `pro-monthly-arr` ($100/mo in_arrears, immediate=true). No immediate invoice or credit. `current_period_end` truncated to today; `next_billing_at = today`. On next scheduler tick / test-clock Advance, closing invoice fires under OLD yearly plan at `$1200 × 90/365 ≈ $295.89`, then a new period (today, today + 1 month) opens under the new monthly plan.
+- [ ] **In_arrears monthly → yearly (same cadence, cross interval):** symmetric. Closing invoice on next tick at OLD monthly rate × days-elapsed proration; new yearly period opens.
+- [ ] **Cross-cadence REJECTED (both directions, both immediate and scheduled):** swap from any in_advance plan to any in_arrears plan (or vice versa) → 400 (`bill_timing change is not supported on plan-swap (current X, new Y); cancel the subscription and start a new one with the target plan`). 2026-05-22 industry verification: no peer documents bill_timing change as an in-place plan-swap. Lago — the closest model to Velox (per-plan `pay_in_advance`) — documents same-cadence transitions only.
+- [ ] **Paid-check gate (NEW in_advance OR cross-cadence with OLD in_advance):** swap on an in_advance sub whose source invoice is `payment_status='pending'`. No credit grant; server log `plan-swap refund: source in_advance invoice not paid; skipping credit grant`. The plan swap + period jump/truncate still happen; operator can manually issue a credit grant from the dashboard.
+- [ ] **Same-interval same-cadence swap (no regression):** swap monthly $29 → monthly $49 immediately (both in_arrears). Existing segment-aware behavior — no credit grant, no period jump, no immediate invoice. Cycle close emits per-segment lines (FLOW B20).
 
 ## FLOW B18: Meter Detail page
 
@@ -940,11 +1015,15 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW C2: Credit notes
 
-- [ ] Unpaid invoice → Issue Credit "Billing error" $20 → preview → Issue → amount_due reduced.
-- [ ] Paid invoice → "Credit to balance" $15 → customer balance +$15; CN listed in invoice "Post-payment adjustments".
-- [ ] Paid invoice → "Refund to payment method" $10 → Stripe refund; CN badge "Refunded"; balance unchanged.
-- [ ] CN > amount_due (unpaid) or > amount_paid (paid) → error.
-- [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued), tab filters with counts, search, draft CNs show Issue+Void.
+- [ ] Unpaid invoice → Issue credit "Billing error" $20 → no allocation inputs shown → Issue → amount_due reduced.
+- [ ] Paid invoice ($100, fully card-paid) → enter $40 → defaults to Credit balance $40, Refund 0, Out-of-band 0 → Issue → customer balance +$40.
+- [ ] Same invoice → enter $30 + type $30 in Refund to card → Credit auto-fills to $0; Allocated $30 / $30 ✓ → Issue → Stripe refund processed; CN row label "refund"; refund_status=succeeded.
+- [ ] Mixed-paid invoice ($82.60 = $62.60 card + $20 credits) → enter $80 → type $62.60 in Refund to card → Credit auto-fills to $17.40 → Issue → Stripe refund $62.60 + credit grant $17.40; CN row label "refund + credit"; balance increases by $17.40.
+- [ ] Same mixed invoice → enter $80, type $70 in Refund → inline error "Refund cannot exceed $62.60 paid via card"; Save disabled.
+- [ ] Three-channel split: $100 CN → $40 Refund + $30 Credit + $30 Out-of-band → Allocated $100 / $100 ✓ → Issue → all three persisted; CN row label "refund + credit + out of band".
+- [ ] Sum mismatch: $50 CN with Refund $20 + Credit $20 + OOB $0 = $40 ≠ $50 → "Allocated $40 / $50 ✗" red; Save disabled.
+- [ ] CN > amount_due (unpaid) or > total_amount (paid) → error.
+- [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued); list rows show channel breakdown ("refund" / "credit" / "refund + credit" / etc.); CSV export has separate Refund/Credit/Out-of-band columns.
 
 ## FLOW C3: Coupons
 
@@ -997,6 +1076,10 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Settings: company name change → "Saved" indicator. Navigating with unsaved changes prompts.
 - [ ] Currency change → new invoices use it; existing unchanged.
 - [ ] Edit billing profile (address, tax ID) → PDF reflects update.
+- [ ] Edit billing profile when customer has `stripe_customer_id` set → Stripe Dashboard → Customer shows the updated legal_name / phone / address / tax_exempt immediately (Phase 1 Velox→Stripe sync, best-effort, fires on every customer/profile update).
+- [ ] Create a brand-new customer with email + display_name + billing profile → first PM action (Add card from portal) lazily creates the Stripe Customer pre-populated with email, name, address, and tax_exempt status — Stripe Dashboard shows a fully-populated row, NOT a blank one with only `velox_*` metadata.
+- [ ] Set billing profile tax_id (e.g. `eu_vat` + `DE123456789`) → Stripe Dashboard → Customer → Tax IDs tab shows the entry (Phase 2 reconcile). Change tax_id value → old entry gone, new entry present. Clear tax_id → Tax IDs tab empty. Brand-new customer with tax_id pre-filled in profile → first PM action creates the Stripe Customer with the tax_id already in the Tax IDs tab (no follow-up update call needed).
+- [ ] Draft invoice held >24h, then click Finalize → operator sees `tax calculation expired (age 24h0m, max 23h0m) — retry tax to refresh, then finalize` (Phase 2 expiry guard). Click Retry tax → tax recomputes → Finalize succeeds, Stripe Tax dashboard shows a `tx_*` transaction. Without the guard, finalize previously left the invoice with `tax_calculation_id` populated but no `tax_transaction_id`.
 - [ ] **Tax-retry flush on profile update.** Customer with a draft invoice stuck on `tax_error_code = customer_data_invalid` (e.g. US customer missing `postal_code`). Edit billing profile → fill the missing field → Save. Without per-invoice clicking: invoice's `tax_status` flips to `succeeded` (or back to `failed` with a different code if still wrong), and `slog | grep "billing profile flush retried tax errors"` shows `processed >= 1`. Other stuck-tax codes (e.g. `provider_outage`) are NOT replayed by the flush — only `customer_data_invalid`.
 
 ## FLOW CU2: Operator customer-portal API
@@ -1004,13 +1087,13 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] `GET /v1/customer-portal/{customer_id}/overview` → active subs, recent invoices, credit balance.
 - [ ] `/subscriptions`, `/invoices` scoped to that customer.
 
-## FLOW CU3: GDPR export + erasure
+## FLOW CU3: GDPR export + erasure (REMOVED 2026-05-29)
 
-- [ ] `GET /v1/customers/{id}/export` → customer + profile + invoices + subs + ledger + balance.
-- [ ] Stripe IDs redacted (last 4 visible); PM details redacted.
-- [ ] Delete with active subs → "cancel them before deletion".
-- [ ] Cancel subs, `POST /v1/customers/{id}/delete-data` → display_name="Deleted Customer", email cleared, profile PII anonymized, status archived, invoices preserved, audit entry.
-- [ ] Re-export deleted customer → anonymized.
+Removed pre-launch — the prior implementation was a half-fix that
+didn't propagate erasure to Stripe (PII persisted in the Stripe
+Customer object) and lacked the audit + acknowledgement-window
+machinery a real GDPR flow needs. Will be rebuilt when the first
+EU-targeting design partner defines actual regulatory scope.
 
 ## FLOW CU4: Archive cascade
 
@@ -1031,7 +1114,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/send-email). Operator audit / support surface for "did we tell the customer?"
 
 - [ ] Customer Detail → "Sent emails" card lists every customer-facing email sent for this customer in the last 30 days, newest first. Empty state: "No emails sent in the last 30 days."
-- [ ] After running a dunning catchup that exhausts an N-retry policy: the card shows N+1 rows for the run's invoice — 1 "Payment failed" + (N-1) "Payment retry — action required" + 1 "Retries exhausted". Each row's recipient matches `billing_profile.email` (else `customer.email`); each carries a wall-clock send time (real-time SMTP dispatch instant, NOT the simulated cycle date).
+- [ ] After running a dunning catchup that exhausts an N-retry policy: the card shows N+1 rows for the run's invoice — 1 "Payment failed" + (N-1) "Payment retry — action required" + 1 "Retries exhausted". Each row's recipient matches `customers.email` (the single canonical recipient since migration 0100); each carries a wall-clock send time (real-time SMTP dispatch instant, NOT the simulated cycle date).
 - [ ] Failed delivery rows show the SMTP error inline (red text under the type label).
 - [ ] Invoice-number link on each row navigates to the invoice list filtered to that number.
 - [ ] **Invoice activity timeline** no longer shows standalone "Dunning reminder emailed" / "Dunning escalation emailed" rows for those emails — the customer-page section is the canonical view (avoids wall-clock-vs-simulated time-domain mismatch in the invoice activity timeline). The initial Stripe-webhook payment-failed email still folds onto the `dunning_started` row as a "Customer notified by email" sub-line (same time domain — both wall-clock).
@@ -1067,6 +1150,50 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 - [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions.
 - [ ] Destructive rows have red left border. Expand → metadata + "View" link.
 - [ ] Filters: resource type, action, date range. Export CSV → all entries.
+- [ ] **Date filter accepts both formats**: `?date_from=2026-01-01&date_to=2026-12-31` (bare YYYY-MM-DD) and `?date_from=2026-01-01T00:00:00Z` (RFC3339) both work. Invalid input (`?date_from=garbage`) → 400 with field-level error. Same shared parser (`internal/api/timefilter`) as the export + usage endpoints.
+
+## FLOW P2A: Audit log — customer-initiated + Tier 2 coverage
+
+Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_log` and the AuditLog page renders the customer actor + new resource types correctly.
+
+- [ ] Customer cancels sub via portal → AuditLog row: actor "<Customer Name>" (customer actor type), "Canceled <sub>" with meta `canceled_by=customer`.
+- [ ] Customer resumes sub via portal → AuditLog row: "Cleared scheduled cancellation on <sub>" with meta `resumed_by=customer`.
+- [ ] Customer edits profile via portal → "Updated profile for <name>" with meta `updated_by=customer`.
+- [ ] Engine auto-fires scheduled cancellation (advance the test clock past cycle close) → AuditLog row: "Canceled <sub>" with meta `canceled_by=schedule`, actor "System".
+- [ ] Operator marks invoice uncollectible → "Marked INV-NNN uncollectible".
+- [ ] Operator records offline payment → "Recorded offline payment on INV-NNN".
+- [ ] Operator edits customer (display_name / email / dunning policy) → "Updated <name>".
+- [ ] Operator upserts billing profile (tax status / address / tax ID) → "Updated billing profile for <name>".
+- [ ] Customer adds card via Stripe Checkout → "Added Visa ····4242" (resource_type payment_method, action create, actor "<Customer Name>").
+- [ ] Operator promotes a non-default card to default → "Set Visa ····4242 as default".
+- [ ] Operator detaches a card → "Removed Visa ····4242".
+- [ ] Operator creates / revokes / rotates an API key → corresponding rows. Raw key value never appears in metadata.
+- [ ] Operator creates / updates / deletes a dunning policy + sets default + resolves a run → matching rows. Resolve row carries `meta.resolution=payment_recovered` etc.
+- [ ] Operator creates / updates a plan, creates a meter / rating rule / price override → matching rows.
+- [ ] Operator creates / advances / retries / deletes a test clock → matching rows with `frozen_time` snapshot in metadata.
+- [ ] Operator connects / disconnects Stripe / sets webhook secret → matching rows. Secret value never in metadata.
+- [ ] Operator creates / deletes / rotates a webhook endpoint + replays an event → matching rows. Secret value never in metadata; replay row links to original via `meta.replay_of`.
+
+## FLOW P2B: Operator-side payment-method management
+
+- [ ] CustomerDetail → Payment Methods card lists every attached PM with brand/last4/expiry + Default badge on the primary.
+- [ ] No card capture form on the dashboard (PCI: card data must go through Stripe-hosted iframe only).
+- [ ] "Add Card" → dialog opens with the customer's email pre-filled (read-only), an optional note field, primary "Send email" button, and a secondary "Copy link" path under an "or" divider.
+- [ ] Send email path: typing a note (≤2000 chars) + Send email → 202 from `/v1/customers/{id}/payment-methods/send-setup-email` → toast "Setup link sent to {address}" → Mailpit at http://localhost:8025 shows a branded "Add a payment method" email with the note rendered above the CTA → CTA opens a Stripe Checkout session → completing it adds a new PM and the panel refreshes.
+- [ ] Empty note → email body uses the generic fallback intro ("Please add a payment method on file so we can process your billing…").
+- [ ] Customer with no email on file → Send email button disabled with tooltip "Add an email on the customer record first"; Copy link path still works.
+- [ ] Copy link path: clicking "Copy link" mints the session, auto-copies the URL, and displays the URL in the dialog with a Copy button for re-copy → paste into incognito tab → flow completes the same as the email path.
+- [ ] Closing the dialog mid-flow discards any minted URL (operator can mint another fresh URL next time).
+- [ ] Non-default card → "Set as default" promotes it; the badge moves; previous default loses its badge.
+- [ ] "Remove" on a non-default card → confirm → card detaches in Stripe + disappears locally; default unchanged.
+- [ ] "Remove" on the last card → confirm dialog still works → list becomes empty.
+- [ ] "Remove" disabled (with tooltip) when only one card remains AND it's default — operator must add another card first.
+- [ ] Archived customer → all PM action buttons hidden (parity with other archived-customer UI guards).
+- [ ] AuditLog page renders the send-email action as "Updated {customer name}" with `meta.action=setup_link_sent`, `meta.to=<address>`, actor = the operator's API key name.
+- [ ] Cooldown: clicking "Send email" twice in <60s → second call returns 429 with `Retry-After` header + toast "a setup link was sent to this customer recently — wait before sending again". Wait 60s → next send works.
+- [ ] InvoiceAttention banner (invoice in attention state, e.g. `update_payment_method` action) → clicking "Update Payment Method" opens the SAME dialog as CustomerDetail's Add Card → recipient email pre-filled, note pre-filled with invoice context ("We couldn't process payment for invoice INV-NNN ($X.XX). Please add a payment method using the secure link below."), email path lands a branded "Action required — update payment for invoice INV-NNN" subject in Mailpit; copy-link path mints a Stripe Checkout URL the operator can paste into Slack/SMS.
+- [ ] Engine no-PM-at-finalize email (invoice finalizes for a customer with no PM on file) → branded "Action required — update payment for invoice X" email lands in Mailpit + AuditLog shows a `meta.action=setup_link_sent`, `meta.trigger=finalize_no_pm`, `meta.invoice_id=<id>` row with actor "System" (engine-fired).
+- [ ] Legacy endpoints removed: `curl -X POST .../v1/payment-portal/{id}/update-payment-method` returns 404 (route deleted in the unified-paths cleanup).
 
 ## FLOW P3: Usage summary
 
@@ -1171,7 +1298,7 @@ Major releases, infra changes, post-mortems.
 
 - [ ] `VELOX_ENCRYPTION_KEY` set (64 hex). Create customer + billing profile.
 - [ ] `SELECT display_name, email FROM customers …` → values prefixed `enc:`. API returns plaintext.
-- [ ] `SELECT legal_name, email, phone, tax_id FROM customer_billing_profiles …` → all 4 prefixed `enc:`.
+- [ ] `SELECT legal_name, phone, tax_id FROM customer_billing_profiles …` → all 3 prefixed `enc:`. (email column dropped in migration 0100 — recipient is `customers.email` only.)
 - [ ] Pre-encryption rows still read correctly (no `enc:` prefix → returned as-is).
 
 ## FLOW X7: Stripe Tax
@@ -1288,7 +1415,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 
 ## PII not encrypted
 - `VELOX_ENCRYPTION_KEY` not set when row created → backward-compat plaintext (FLOW X5).
-- Wrong field — only customer display_name/email + billing profile legal_name/email/phone/tax_id are encrypted.
+- Wrong field — only customer display_name/email + billing profile legal_name/phone/tax_id are encrypted.
 
 ## Webhook signature fails
 - Wrong `whsec_…` after `stripe listen` restart (CLI rotates per run).

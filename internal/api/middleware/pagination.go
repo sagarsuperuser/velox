@@ -49,8 +49,14 @@ type PageParams struct {
 // Supports both cursor-based (?after=token) and offset-based (?offset=N).
 func ParsePageParams(r *http.Request) PageParams {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 100 {
+	// Default 25, clamp to 100 — no-silent-fallbacks principle. Pre-
+	// 2026-05-28 the over-cap branch fell back to 25, indistinguishable
+	// from "operator didn't specify" — explicit clamp lets the client
+	// see they hit the page-size ceiling.
+	if limit <= 0 {
 		limit = 25
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))

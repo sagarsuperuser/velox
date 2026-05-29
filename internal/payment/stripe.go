@@ -16,7 +16,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment/breaker"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
-	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // Stripe is the payment adapter. It creates PaymentIntents for finalized invoices
@@ -635,33 +634,30 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		"currency":          inv.Currency,
 	})
 
-	// Send payment receipt email asynchronously. The goroutine
-	// outlives the webhook request, so the request ctx would be
-	// canceled by the time GetCustomerEmail / SendPaymentReceipt
-	// runs — observed in prod logs as "context canceled" warnings.
-	// Build a detached ctx with a 30s timeout, pinning the tenant
-	// + mode the request was operating in (per the ctx-attribute
-	// audit pattern). Captures everything the downstream
-	// code reads off ctx without inheriting the request lifecycle.
+	// Enqueue payment receipt email inline. Pre-2026-05-29 this ran
+	// in a detached goroutine — the goroutine pattern existed to
+	// avoid request-ctx cancellation tearing down a slow direct-SMTP
+	// send, but it also voided every retry guarantee: a transient
+	// failure (Postmark 5xx, SMTP timeout) silently dropped the
+	// receipt because nothing observed the error past the goroutine's
+	// log line. With the outbox path (s.emailReceipt is *OutboxSender
+	// in production), SendPaymentReceipt is a fast DB INSERT — there's
+	// no slow SMTP to detach from, and the dispatcher's retry loop
+	// owns delivery + backoff. Direct-SMTP fallback is operator-opt-in
+	// (VELOX_EMAIL_OUTBOX_ENABLED=false) and already flagged as a
+	// retry-less mode in the router boot WARN. Failure here logs but
+	// doesn't fail the webhook — the payment already committed, and
+	// returning an error would make Stripe retry the whole event
+	// (re-firing MarkPaid + double-firing the customer-facing event).
 	if s.emailReceipt != nil && s.customerEmail != nil {
-		livemode := postgres.Livemode(ctx)
-		go func() {
-			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			workerCtx = veloxauth.WithTenantID(workerCtx, tenantID)
-			workerCtx = postgres.WithLivemode(workerCtx, livemode)
-
-			email, name, err := s.customerEmail.GetCustomerEmail(workerCtx, tenantID, inv.CustomerID)
-			if err != nil || email == "" {
-				slog.Warn("skip payment receipt email — cannot resolve customer email",
-					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-				return
-			}
-			if err := s.emailReceipt.SendPaymentReceipt(workerCtx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
-				slog.Error("failed to send payment receipt email",
-					"invoice_id", inv.ID, "email", email, "error", err)
-			}
-		}()
+		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+		if err != nil || email == "" {
+			slog.Warn("skip payment receipt email — cannot resolve customer email",
+				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
+			slog.Error("failed to enqueue payment receipt email",
+				"invoice_id", inv.ID, "email", email, "error", err)
+		}
 	}
 
 	return nil
@@ -770,38 +766,25 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		return nil
 	}
 
-	// Send the payment-failed email. Points the customer at the hosted
-	// invoice page (long-lived public_token), where they can update PM
-	// and retry. Fires for INITIAL charge failures only — subsequent
-	// dunning retries are caught by the `dunning_retry` purpose check
-	// above and rely on the dunning warning/escalation emails fired
-	// inline from processRun / exhaustRun.
+	// Enqueue the payment-failed email inline. Same fix as the
+	// receipt path above (2026-05-29): detached goroutine voided
+	// outbox retry guarantees by burying SendPaymentFailed errors
+	// past the goroutine's log line. With OutboxSender, the call
+	// is a fast DB INSERT and the dispatcher owns delivery retry.
+	// Failure logs but doesn't fail the webhook — invoice state
+	// already committed, returning error would re-fire the whole
+	// event (re-marking PaymentFailed + double-firing dunning).
 	if s.emailPaymentFailed != nil {
-		// Detached ctx — the webhook request returns before this
-		// goroutine completes, so request ctx would cancel mid-call.
-		livemode := postgres.Livemode(ctx)
-		go func() {
-			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			workerCtx = veloxauth.WithTenantID(workerCtx, tenantID)
-			workerCtx = postgres.WithLivemode(workerCtx, livemode)
-
-			if s.customerEmail == nil {
-				slog.Error("payment failed email — customer email resolver not wired",
-					"invoice_id", inv.ID)
-				return
-			}
-			email, name, err := s.customerEmail.GetCustomerEmail(workerCtx, tenantID, inv.CustomerID)
-			if err != nil || email == "" {
-				slog.Warn("skip payment failed email — cannot resolve customer email",
-					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-				return
-			}
-			if err := s.emailPaymentFailed.SendPaymentFailed(workerCtx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
-				slog.Error("failed to send payment failed email",
-					"invoice_id", inv.ID, "email", email, "error", err)
-			}
-		}()
+		if s.customerEmail == nil {
+			slog.Error("payment failed email — customer email resolver not wired",
+				"invoice_id", inv.ID)
+		} else if email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
+			slog.Warn("skip payment failed email — cannot resolve customer email",
+				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
+			slog.Error("failed to enqueue payment failed email",
+				"invoice_id", inv.ID, "email", email, "error", err)
+		}
 	}
 
 	return nil

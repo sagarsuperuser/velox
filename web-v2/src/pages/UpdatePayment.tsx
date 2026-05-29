@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { formatCents } from '@/lib/api'
 
@@ -18,9 +19,6 @@ export default function UpdatePaymentPage() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token') || ''
 
-  const [data, setData] = useState<TokenData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [redirecting, setRedirecting] = useState(false)
   // submitError surfaces failures from the POST /checkout call inline
   // on the page (Stripe not connected, payment setup missing, etc.) —
@@ -29,25 +27,33 @@ export default function UpdatePaymentPage() {
   // the invoice context that the error refers to and retry.
   const [submitError, setSubmitError] = useState('')
 
-  useEffect(() => {
-    if (!token) {
-      setError('No payment update token provided')
-      setLoading(false)
-      return
-    }
-
-    const apiBase = import.meta.env.VITE_API_URL || ''
-    fetch(`${apiBase}/v1/public/payment-updates/${encodeURIComponent(token)}`)
-      .then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          throw new Error(body?.error?.message || 'This link has expired or is invalid')
-        }
-        return res.json()
-      })
-      .then(d => { setData(d); setLoading(false) })
-      .catch(err => { setError(err.message || 'This link has expired or is invalid'); setLoading(false) })
-  }, [token])
+  // Token validation. Single-use endpoint, but RQ still gives us
+  // proper loading/error state without per-mount thrash and matches
+  // the rest of the app's data-fetching pattern. retry=false so a
+  // genuinely invalid token doesn't pound the server.
+  const tokenQuery = useQuery({
+    queryKey: ['public-payment-update', token],
+    queryFn: async (): Promise<TokenData> => {
+      const apiBase = import.meta.env.VITE_API_URL || ''
+      const res = await fetch(`${apiBase}/v1/public/payment-updates/${encodeURIComponent(token)}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error?.message || 'This link has expired or is invalid')
+      }
+      return res.json()
+    },
+    enabled: !!token,
+    retry: false,
+  })
+  const data = tokenQuery.data ?? null
+  const loading = !!token && tokenQuery.isLoading
+  const error = !token
+    ? 'No payment update token provided'
+    : tokenQuery.error instanceof Error
+      ? tokenQuery.error.message
+      : tokenQuery.error
+        ? 'This link has expired or is invalid'
+        : ''
 
   // Update Payment Method click. The validate endpoint above only
   // resolves invoice context — it does not mint a Stripe Checkout

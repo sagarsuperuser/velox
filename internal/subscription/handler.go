@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // PlanReader reads plan data for proration calculations.
@@ -45,6 +47,13 @@ type ProrationInvoiceCreator interface {
 	// BillOnCancel paid-check; same industry rationale (Chargebee
 	// Refundable vs Adjustment / Stripe proration_behavior=none).
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+	// Tx variants — write the proration invoice + allocate the
+	// invoice-number inside a caller-owned transaction. Used by the
+	// atomic AddItem-with-proration flow so a failed proration insert
+	// rolls back the sub-item insert too. ADR-030 atomic-proration
+	// follow-through (2026-05-29).
+	CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
+	NextInvoiceNumberTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error)
 }
 
 // ProrationCreditGranter grants credits for downgrade proration. Dedup key is
@@ -52,6 +61,10 @@ type ProrationInvoiceCreator interface {
 type ProrationCreditGranter interface {
 	GrantProration(ctx context.Context, tenantID string, input ProrationGrantInput) error
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.CreditLedgerEntry, error)
+	// Tx variant — append the credit-ledger entry inside a caller-owned
+	// transaction. Same atomicity story as the invoice creator's Tx
+	// methods above.
+	GrantProrationTx(ctx context.Context, tx *sql.Tx, tenantID string, input ProrationGrantInput) error
 }
 
 // ProrationCouponApplier computes a coupon discount against a proration
@@ -121,6 +134,14 @@ type Handler struct {
 	// for the simulated state. Optional: nil-safe; without it the
 	// proration paths fall back to wall-clock (pre-PR-12 behavior).
 	resolver clock.Resolver
+	// db enables the atomic AddItem-with-proration flow — the handler
+	// opens an outer tx that wraps the sub-item insert + the proration
+	// invoice/credit insert, so a failure on either side rolls back
+	// both. Optional: nil-safe; when unwired (tests, narrow setups)
+	// addItem falls back to the legacy non-atomic flow with explicit
+	// orphan-item warning in the failure path. ADR-030 atomic-proration
+	// follow-through (2026-05-29).
+	db *postgres.DB
 }
 
 func NewHandler(svc *Service) *Handler {
@@ -136,6 +157,14 @@ func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 // (same resolver the Service uses internally).
 func (h *Handler) SetResolver(r clock.Resolver) { h.resolver = r }
 
+// SetDB wires the database handle so the handler can open the outer
+// transaction wrapping the atomic AddItem-with-proration flow.
+// Without this, addItem falls back to its legacy non-atomic flow
+// (item insert + proration insert in separate txs — a proration
+// failure leaves an orphan item that requires manual reconciliation).
+// Production wires this from router.go; tests can leave it nil.
+func (h *Handler) SetDB(db *postgres.DB) { h.db = db }
+
 // bindForSub returns ctx with effective-now bound from the sub pin
 // when the resolver is wired. Used at proration handler entries so
 // remainingPeriodFactor / changeAt stamps land in simulated time on
@@ -149,19 +178,26 @@ func (h *Handler) bindForSub(ctx context.Context, tenantID, subID string) contex
 	return bound
 }
 
-// auditCtxForSub returns ctx with effective-now bound to the entity's
-// UpdatedAt timestamp when the sub is clock-pinned, so audit.Logger.Log
-// stamps `created_at` in simulated time (ADR-030 — simulated time
-// everywhere on clock-pinned entities). Wall-clock subs fall through
-// unchanged — the audit row stamps wall-clock-now via clock.Now's
-// fallback path. Service.Cancel / Activate / EndTrial / etc. all
-// bound ctx internally and stamped sub.UpdatedAt in sim-time per PR-1;
-// this helper just propagates that stamp into the audit row.
-func auditCtxForSub(ctx context.Context, sub domain.Subscription) context.Context {
-	if sub.TestClockID == "" {
-		return ctx
+// auditMetaForSub merges sim-time context (sim_effective_at,
+// test_clock_id) into the metadata bag for clock-pinned subs. No-op for
+// wall-clock subs. ADR-030 amendment (2026-05-28): audit row created_at
+// is wall-clock for every entity; the simulated effect time of an
+// operator action on a clock-pinned sub lives in metadata so the audit
+// UI can render both "when Sagar clicked" (primary timestamp) and "what
+// sim moment that landed on" (subline) on the same row.
+//
+// Supersedes the prior auditCtxForSub helper which bound ctx so audit
+// stamped sub.UpdatedAt as created_at — that conflated operator-action
+// time with engine-effect time and broke forensics on the audit page.
+func auditMetaForSub(sub domain.Subscription, extra map[string]any) map[string]any {
+	if extra == nil {
+		extra = map[string]any{}
 	}
-	return clock.WithEffectiveNow(ctx, sub.UpdatedAt)
+	if sub.TestClockID != "" {
+		extra["sim_effective_at"] = sub.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		extra["test_clock_id"] = sub.TestClockID
+	}
+	return extra
 }
 
 // planIDsForAudit projects a sub's items into the audit metadata
@@ -293,16 +329,16 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Explicit audit row so the timestamp comes through auditCtxForSub
-	// (sim-time on clock-pinned subs, ADR-030). Without this the audit
-	// middleware's catch-all path fires with wall-clock created_at —
-	// the mixed-domain timestamp shows up on the embedded activity
-	// timeline next to the sim-time "Created" header on the same page.
+	// Explicit audit row — created_at is wall-clock for forensics
+	// (ADR-030 line 131, post-2026-05-28 amendment). For clock-pinned
+	// subs, auditMetaForSub adds sim_effective_at + test_clock_id to
+	// the metadata bag so the UI can render the simulated effect time
+	// as a subline.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCreate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_ids":    planIDsForAudit(sub),
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCreated, sub, nil)
@@ -366,13 +402,12 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Explicit audit so the row's created_at is sim-time on clock-pinned
-	// subs (auditCtxForSub binds from sub.UpdatedAt) — same rationale as
-	// the create handler above.
+	// Wall-clock created_at + sim metadata on clock-pinned subs — same
+	// pattern as the create handler above.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionActivate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionActivate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionActivated, sub, nil)
@@ -395,6 +430,14 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		meta := map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_ids":    planIDs,
+			// Tag the actor on the audit row so the activity timeline
+			// renders "Subscription canceled by operator" — matching
+			// the customer-portal and engine auto-fire paths' shape.
+			// Without this label the operator cancel showed up as just
+			// "Subscription canceled" with no by-line, while portal
+			// cancels showed "by customer". Consistent vocabulary
+			// across the three paths.
+			"canceled_by": "operator",
 		}
 		// Surface the cancel-proration credit on the timeline so
 		// operators see "Subscription canceled · Prorated credit
@@ -405,7 +448,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		if prorationCreditCents > 0 {
 			meta["prorated_credit_cents"] = prorationCreditCents
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionCancel, "subscription", sub.ID, sub.Code, meta)
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
@@ -443,7 +486,7 @@ func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 		if sub.CancelAt != nil {
 			meta["cancel_at"] = sub.CancelAt.UTC()
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
 
 	extra := map[string]any{"cancel_at_period_end": sub.CancelAtPeriodEnd}
@@ -507,10 +550,10 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"action":      "trial_ended",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialEnded, sub, map[string]any{
@@ -548,11 +591,11 @@ func (h *Handler) extendTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"action":      "trial_extended",
 			"customer_id": sub.CustomerID,
 			"trial_end":   body.TrialEnd.UTC(),
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialExtended, sub, map[string]any{
@@ -655,7 +698,7 @@ func (h *Handler) setBillingThresholds(w http.ResponseWriter, r *http.Request) {
 			"amount_gte":           input.AmountGTE,
 			"item_threshold_count": len(input.ItemThresholds),
 		}
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
 
 	respond.JSON(w, r, http.StatusOK, sub)
@@ -676,10 +719,10 @@ func (h *Handler) clearBillingThresholds(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"action":      "billing_thresholds_cleared",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	respond.JSON(w, r, http.StatusOK, sub)
@@ -699,10 +742,10 @@ func (h *Handler) clearScheduledCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(auditCtxForSub(r.Context(), sub), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
 			"action":      "cancel_cleared",
 			"customer_id": sub.CustomerID,
-		})
+		}))
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelCleared, sub, nil)
@@ -747,9 +790,27 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, err := h.svc.AddItem(ctx, tenantID, id, input)
-	if err != nil {
-		respond.FromError(w, r, err, "subscription")
+	// Atomic AddItem-with-proration path (ADR-030 atomic-proration
+	// follow-through, 2026-05-29): when proration emission is needed
+	// AND the db handle is wired, open one outer tx wrapping the item
+	// insert + the proration write so a failure on either side rolls
+	// back both. Pre-fix the item committed in its own tx and a
+	// proration failure left an orphan item — silent under-charge at
+	// next cycle close. Falls back to the legacy non-atomic path when
+	// db isn't wired (test scaffolding) or when no proration emission
+	// is needed (factor == 0 / no invoices wired).
+	wantProration := prorationFactor > 0 && h.invoices != nil
+	atomic := h.db != nil && wantProration
+
+	var item domain.SubscriptionItem
+	var addErr error
+	if atomic {
+		item, addErr = h.atomicAddItemWithProration(ctx, tenantID, id, input, subBefore, prorationFactor)
+	} else {
+		item, addErr = h.svc.AddItem(ctx, tenantID, id, input)
+	}
+	if addErr != nil {
+		respond.FromError(w, r, addErr, "subscription")
 		return
 	}
 
@@ -767,7 +828,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	// minimal struct for events — item.added is still useful without the
 	// enclosing snapshot.
 	var subAfter domain.Subscription
-	if h.events != nil || (prorationFactor > 0) {
+	if h.events != nil || (wantProration && !atomic) {
 		s, getErr := h.svc.Get(r.Context(), tenantID, id)
 		if getErr != nil {
 			subAfter = subBefore
@@ -779,7 +840,11 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if prorationFactor > 0 && h.invoices != nil {
+	// Legacy non-atomic proration path — only when atomic path wasn't
+	// taken (h.db unwired). Keeps the prior behavior intact for tests
+	// and minimal setups so this PR doesn't force every consumer to
+	// thread a db handle through.
+	if wantProration && !atomic {
 		changeAt := item.CreatedAt
 		if changeAt.IsZero() {
 			changeAt = clock.Now(ctx)
@@ -794,7 +859,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 			newPlanID:       item.PlanID,
 			newQuantity:     item.Quantity,
 		}
-		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
+		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
 			slog.ErrorContext(r.Context(), "item proration failed after item add committed",
 				"subscription_id", id,
@@ -874,9 +939,38 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.svc.UpdateItem(ctx, tenantID, subID, itemID, input)
-	if err != nil {
-		respond.FromError(w, r, err, "subscription item")
+	// Atomic UpdateItem-with-proration path (ADR-030 atomic-proration
+	// follow-through). Tries the atomic flow first when conditions are
+	// met (db wired, proration eligible, scheduled / cross-interval /
+	// cross-axis-orchestrator NOT in play). svc.UpdateItemTx returns
+	// errAtomicNotApplicable for the complex paths (cross-interval
+	// swap, scheduled change); on that signal we fall back to the
+	// legacy non-atomic flow which handles those cases via the
+	// existing multi-write engine orchestration. Quantity changes +
+	// same-interval immediate plan changes are now fully atomic with
+	// their proration writes.
+	wantProration := prorationEligible && prorationFactor > 0 && h.invoices != nil
+	atomic := h.db != nil && wantProration
+	var (
+		result    ItemChangeResult
+		atomicErr error
+	)
+	if atomic {
+		result, atomicErr = h.atomicUpdateItemWithProration(ctx, tenantID, subID, itemID, input, subBefore, oldPlanID, oldQuantity, prorationFactor)
+		if errors.Is(atomicErr, errAtomicNotApplicable) {
+			atomic = false
+			atomicErr = nil
+		}
+	}
+	if !atomic {
+		var err error
+		result, err = h.svc.UpdateItem(ctx, tenantID, subID, itemID, input)
+		if err != nil {
+			respond.FromError(w, r, err, "subscription item")
+			return
+		}
+	} else if atomicErr != nil {
+		respond.FromError(w, r, atomicErr, "subscription item")
 		return
 	}
 
@@ -896,7 +990,16 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, "", payload)
 	}
 
-	if prorationEligible && prorationFactor > 0 && h.invoices != nil {
+	// Skip the legacy delta-proration emission when the service used
+	// the cross-axis orchestrator. The orchestrator already issued
+	// the refund credit (for OLD in_advance unused) and — when NEW is
+	// in_advance — billed the new in_advance period synchronously via
+	// BillOnCreate. Firing handleItemProration on top would emit a
+	// second credit against the same OLD period; the gates inside
+	// handleItemProration aren't tight enough (a freshly auto-charged
+	// new in_advance invoice would pass the paid-check), so an
+	// explicit skip here is the only safe guard.
+	if !atomic && prorationEligible && prorationFactor > 0 && h.invoices != nil && !result.OrchestratedCrossAxis {
 		// Re-hydrate the subscription post-change so the Items slice reflects
 		// the swapped plan/quantity — handleProration walks it to resolve
 		// coupon plan eligibility. Fall back to subBefore on error so the
@@ -943,7 +1046,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				newQuantity:     result.Item.Quantity,
 			}
 		}
-		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec)
+		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
 			slog.ErrorContext(r.Context(), "item proration failed after item change committed",
 				"subscription_id", subID,
@@ -1066,9 +1169,22 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.svc.RemoveItem(ctx, tenantID, subID, itemID); err != nil {
-		respond.FromError(w, r, err, "subscription item")
-		return
+	// Atomic RemoveItem-with-proration: delete + credit grant in one
+	// tx so a failed credit grant rolls back the delete. Falls back to
+	// the legacy non-atomic flow when db isn't wired or no proration
+	// emission is needed.
+	wantProration := prorationFactor > 0 && removedPlanID != "" && h.credits != nil
+	atomic := h.db != nil && wantProration
+	if atomic {
+		if err := h.atomicRemoveItemWithProration(ctx, tenantID, subID, itemID, subBefore, removedPlanID, removedQuantity, prorationFactor); err != nil {
+			respond.FromError(w, r, err, "subscription item")
+			return
+		}
+	} else {
+		if err := h.svc.RemoveItem(ctx, tenantID, subID, itemID); err != nil {
+			respond.FromError(w, r, err, "subscription item")
+			return
+		}
 	}
 
 	if h.auditLogger != nil {
@@ -1078,7 +1194,8 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if prorationFactor > 0 && removedPlanID != "" {
+	// Legacy non-atomic proration emission path — only when atomic wasn't taken.
+	if !atomic && prorationFactor > 0 && removedPlanID != "" {
 		// Re-fetch for coupon plan eligibility over the remaining items.
 		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
@@ -1094,7 +1211,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 			newPlanID:       "",
 			newQuantity:     0,
 		}
-		prorationResult, prorationErr := h.handleItemProration(ctx, tenantID, subAfter, spec)
+		prorationResult, prorationErr := h.handleItemProration(ctx, tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
 			slog.ErrorContext(r.Context(), "item proration failed after item remove committed",
 				"subscription_id", subID,
@@ -1166,7 +1283,169 @@ type itemProrationSpec struct {
 // mutation. Dedup key is (tenant, subscription, item, change_type, change_at)
 // — retries of the same mutation converge on the existing artifact via the
 // proration dedup index.
-func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec) (*ProrationDetail, error) {
+// atomicAddItemWithProration opens one outer transaction that wraps
+// the subscription-item insert + the proration invoice/credit insert.
+// A failure on either side rolls back BOTH via the deferred Rollback —
+// so the API never returns success with the item committed but no
+// proration recorded. Pre-2026-05-29 the two writes were independent
+// txs and a proration failure left an orphan item (the bug surfaced
+// during EX3 manual test).
+//
+// Returns the new item on success; on any error, the entire operation
+// is rolled back and the caller sees a failure (no half-committed
+// state for them to reconcile).
+func (h *Handler) atomicAddItemWithProration(
+	ctx context.Context,
+	tenantID, subID string,
+	input AddItemInput,
+	subBefore domain.Subscription,
+	prorationFactor float64,
+) (domain.SubscriptionItem, error) {
+	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.SubscriptionItem{}, fmt.Errorf("begin atomic addItem tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	item, err := h.svc.AddItemTx(ctx, tx, tenantID, subID, input)
+	if err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+
+	changeAt := item.CreatedAt
+	if changeAt.IsZero() {
+		changeAt = clock.Now(ctx)
+	}
+	spec := itemProrationSpec{
+		changeType:      domain.ItemChangeTypeAdd,
+		changeAt:        changeAt,
+		prorationFactor: prorationFactor,
+		itemID:          item.ID,
+		oldPlanID:       "",
+		oldQuantity:     0,
+		newPlanID:       item.PlanID,
+		newQuantity:     item.Quantity,
+	}
+	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+		return domain.SubscriptionItem{}, fmt.Errorf("proration in atomic addItem tx: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.SubscriptionItem{}, fmt.Errorf("commit atomic addItem tx: %w", err)
+	}
+	return item, nil
+}
+
+// atomicUpdateItemWithProration mirrors atomicAddItemWithProration for
+// the UpdateItem path: open one outer tx, write the item update + the
+// proration in the same tx, commit on success. Returns
+// errAtomicNotApplicable if the input routes to the cross-interval or
+// scheduled path (caller falls back to legacy non-atomic flow).
+func (h *Handler) atomicUpdateItemWithProration(
+	ctx context.Context,
+	tenantID, subID, itemID string,
+	input UpdateItemInput,
+	subBefore domain.Subscription,
+	oldPlanID string, oldQuantity int64, prorationFactor float64,
+) (ItemChangeResult, error) {
+	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return ItemChangeResult{}, fmt.Errorf("begin atomic updateItem tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	result, err := h.svc.UpdateItemTx(ctx, tx, tenantID, subID, itemID, input)
+	if err != nil {
+		return ItemChangeResult{}, err
+	}
+
+	// Build the proration spec mirroring the legacy handler logic.
+	var spec itemProrationSpec
+	if input.NewPlanID != "" && input.Immediate {
+		var changeAt time.Time
+		if result.Item.PlanChangedAt != nil {
+			changeAt = *result.Item.PlanChangedAt
+		} else {
+			changeAt = clock.Now(ctx)
+		}
+		spec = itemProrationSpec{
+			changeType:      domain.ItemChangeTypePlan,
+			changeAt:        changeAt,
+			prorationFactor: prorationFactor,
+			itemID:          result.Item.ID,
+			oldPlanID:       oldPlanID,
+			oldQuantity:     result.Item.Quantity,
+			newPlanID:       result.Item.PlanID,
+			newQuantity:     result.Item.Quantity,
+		}
+	} else {
+		changeAt := result.Item.UpdatedAt
+		if changeAt.IsZero() {
+			changeAt = clock.Now(ctx)
+		}
+		spec = itemProrationSpec{
+			changeType:      domain.ItemChangeTypeQuantity,
+			changeAt:        changeAt,
+			prorationFactor: prorationFactor,
+			itemID:          result.Item.ID,
+			oldPlanID:       oldPlanID,
+			oldQuantity:     oldQuantity,
+			newPlanID:       result.Item.PlanID,
+			newQuantity:     result.Item.Quantity,
+		}
+	}
+	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+		return ItemChangeResult{}, fmt.Errorf("proration in atomic updateItem tx: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ItemChangeResult{}, fmt.Errorf("commit atomic updateItem tx: %w", err)
+	}
+	return result, nil
+}
+
+// atomicRemoveItemWithProration opens one outer tx wrapping the item
+// delete + the remove-proration credit grant. A failure on the credit
+// side rolls back the item delete — customer keeps the item (and its
+// future cycle billing) but at least there's no orphan-credit gap.
+// ADR-030 atomic-proration follow-through (2026-05-29).
+func (h *Handler) atomicRemoveItemWithProration(
+	ctx context.Context,
+	tenantID, subID, itemID string,
+	subBefore domain.Subscription,
+	oldPlanID string, oldQuantity int64, prorationFactor float64,
+) error {
+	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return fmt.Errorf("begin atomic removeItem tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	if err := h.svc.RemoveItemTx(ctx, tx, tenantID, subID, itemID); err != nil {
+		return err
+	}
+
+	spec := itemProrationSpec{
+		changeType:      domain.ItemChangeTypeRemove,
+		changeAt:        clock.Now(ctx),
+		prorationFactor: prorationFactor,
+		itemID:          itemID,
+		oldPlanID:       oldPlanID,
+		oldQuantity:     oldQuantity,
+		newPlanID:       "",
+		newQuantity:     0,
+	}
+	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+		return fmt.Errorf("proration in atomic removeItem tx: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit atomic removeItem tx: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec, tx *sql.Tx) (*ProrationDetail, error) {
 	// Resolve plans needed for pricing and naming. The "effective" plan drives
 	// currency and coupon eligibility — for a remove it's the old plan; for
 	// anything else it's the new plan.
@@ -1366,30 +1645,61 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			SourceChangeType:         spec.changeType,
 		}
 
-		invoiceNumber, err := h.invoices.NextInvoiceNumber(ctx, tenantID)
+		// Tx-aware allocation + insert. When called inside the atomic
+		// AddItem-with-proration flow (tx != nil), both operations share
+		// the caller's tx so a rollback frees the invoice number and
+		// rolls back the item add. When called via the legacy non-atomic
+		// path (tx == nil), the underlying methods open their own txs.
+		var (
+			invoiceNumber string
+			err           error
+		)
+		if tx != nil {
+			invoiceNumber, err = h.invoices.NextInvoiceNumberTx(ctx, tx, tenantID)
+		} else {
+			invoiceNumber, err = h.invoices.NextInvoiceNumber(ctx, tenantID)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("allocate proration invoice number: %w", err)
 		}
 		invoice.InvoiceNumber = invoiceNumber
 
-		inv, err := h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, lineItems)
-		if errors.Is(err, errs.ErrAlreadyExists) {
-			existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, sub.ID, spec.itemID, spec.changeType, spec.changeAt)
-			if lookupErr != nil {
-				return nil, fmt.Errorf("proration dedup lookup: %w", lookupErr)
-			}
-			slog.InfoContext(ctx, "proration invoice already exists; retry dedup",
-				"invoice_id", existing.ID,
-				"subscription_id", sub.ID,
-				"item_id", spec.itemID,
-				"change_type", spec.changeType,
-				"change_at", spec.changeAt,
-			)
-			detail.InvoiceID = existing.ID
-			detail.Type = "invoice"
-			return detail, nil
+		var inv domain.Invoice
+		if tx != nil {
+			inv, err = h.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, tenantID, invoice, lineItems)
+		} else {
+			inv, err = h.invoices.CreateInvoiceWithLineItems(ctx, tenantID, invoice, lineItems)
 		}
 		if err != nil {
+			// Only the proration-dedup constraint maps to an idempotent
+			// replay (look up the pre-existing row, return its id). Other
+			// unique violations — billing-period collision, invoice-number
+			// collision, etc. — are distinct bugs and must surface as
+			// errors, not be silently squashed into "this exact proration
+			// already ran." Pre-2026-05-28 the handler caught any
+			// ErrAlreadyExists and tried the proration-source lookup, which
+			// returned "not found" whenever the actual violation was on
+			// `idx_invoices_billing_idempotency` (cycle-dedup) — confusing
+			// "proration dedup lookup: not found" error masked the real
+			// constraint that fired. Migration 0101 also exempts proration
+			// invoices from the billing-idempotency index so the collision
+			// no longer triggers there.
+			if errs.Code(err) == "invoice_proration_source_taken" {
+				existing, lookupErr := h.invoices.GetByProrationSource(ctx, tenantID, sub.ID, spec.itemID, spec.changeType, spec.changeAt)
+				if lookupErr != nil {
+					return nil, fmt.Errorf("proration dedup lookup: %w", lookupErr)
+				}
+				slog.InfoContext(ctx, "proration invoice already exists; retry dedup",
+					"invoice_id", existing.ID,
+					"subscription_id", sub.ID,
+					"item_id", spec.itemID,
+					"change_type", spec.changeType,
+					"change_at", spec.changeAt,
+				)
+				detail.InvoiceID = existing.ID
+				detail.Type = "invoice"
+				return detail, nil
+			}
 			return nil, fmt.Errorf("create proration invoice: %w", err)
 		}
 
@@ -1415,7 +1725,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	} else {
 		creditAmount := -proratedCents
 		if h.credits != nil {
-			err := h.credits.GrantProration(ctx, tenantID, ProrationGrantInput{
+			grantInput := ProrationGrantInput{
 				CustomerID:               sub.CustomerID,
 				AmountCents:              creditAmount,
 				Description:              memo,
@@ -1423,8 +1733,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 				SourceSubscriptionItemID: spec.itemID,
 				SourcePlanChangedAt:      spec.changeAt,
 				SourceChangeType:         spec.changeType,
-			})
-			if errors.Is(err, errs.ErrAlreadyExists) {
+			}
+			var err error
+			if tx != nil {
+				err = h.credits.GrantProrationTx(ctx, tx, tenantID, grantInput)
+			} else {
+				err = h.credits.GrantProration(ctx, tenantID, grantInput)
+			}
+			// Same pattern as the invoice path above: only the
+			// proration-source code maps to an idempotent replay. Other
+			// AlreadyExists (e.g. credit_note_source) are distinct bugs
+			// and must propagate up. ADR-030 cross-flow audit 2026-05-28.
+			if errs.Code(err) == "credit_proration_source_taken" {
 				existing, lookupErr := h.credits.GetByProrationSource(ctx, tenantID, sub.ID, spec.itemID, spec.changeType, spec.changeAt)
 				if lookupErr != nil {
 					return nil, fmt.Errorf("proration credit dedup lookup: %w", lookupErr)
@@ -1550,14 +1870,27 @@ type timelineEvent struct {
 	ActorType       string `json:"actor_type,omitempty"`
 	ActorName       string `json:"actor_name,omitempty"`
 	ActorID         string `json:"actor_id,omitempty"`
-	// IsSimulated marks events whose timestamp is in the simulated-
-	// time domain. On a clock-pinned sub, operator audit actions
-	// stamp audit_log.created_at via clock.Now(boundCtx) (PR-11/12
-	// + b46bdee), so the row's timestamp IS in sim-time. Mirrors the
-	// invoice timeline's same-named field — authoritative flag,
-	// SPA renders the chip purely off this. Wall-clock subs ship
-	// false and no chip renders.
+	// IsSimulated marks events whose effect landed on the simulated
+	// timeline. After ADR-030's 2026-05-28 amendment, audit_log
+	// created_at is wall-clock for every row — the timestamp this
+	// event renders with IS wall-clock. The is_simulated flag now
+	// indicates a separate fact: the operator action affected a
+	// clock-pinned entity, and its simulated effect-time is in
+	// SimEffectiveAt below. Authoritative per row (driven off
+	// metadata.sim_effective_at), not a sub-level heuristic — wall-
+	// clock-active subs and one-off operator actions on a clock-
+	// pinned sub both report false / true correctly.
 	IsSimulated bool `json:"is_simulated,omitempty"`
+	// SimEffectiveAt is the simulated effect time of an operator
+	// action on a clock-pinned entity — what the test clock's
+	// frozen_time was when the action landed on the simulated
+	// timeline. Empty for events on wall-clock entities. SPA renders
+	// it as a subline ("Effect on test clock X at <simulated time>")
+	// under the wall-clock primary timestamp.
+	SimEffectiveAt string `json:"sim_effective_at,omitempty"`
+	// TestClockID identifies which test clock the SimEffectiveAt
+	// belongs to. Empty when SimEffectiveAt is empty.
+	TestClockID string `json:"test_clock_id,omitempty"`
 }
 
 // planLabel renders an operator-facing plan reference: prefer the
@@ -1743,10 +2076,8 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the subscription exists + belongs to this tenant before
 	// leaking a 200 with empty events — otherwise a bad id returns the
-	// same shape as a real sub that just has no audit yet. Sub is
-	// also used to compute is_simulated below.
-	sub, err := h.svc.Get(r.Context(), tenantID, id)
-	if err != nil {
+	// same shape as a real sub that just has no audit yet.
+	if _, err := h.svc.Get(r.Context(), tenantID, id); err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
 			respond.NotFound(w, r, "subscription")
 			return
@@ -1757,14 +2088,15 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	// Audit rows on clock-pinned subs stamp audit_log.created_at via
 	// clock.Now(boundCtx) (PR-11/12 + b46bdee), so each row's
 	// timestamp IS sim-time. Marking every audit-sourced row
-	// is_simulated=true on a clock-pinned sub mirrors the invoice
-	// timeline's lifecycle-row convention.
-	//
-	// Caveat: pre-fix audit rows (written before PR-11/12 landed)
-	// were stamped wall-clock and will be incorrectly flagged.
-	// Acceptable — the timestamp itself reads as recent wall-clock,
-	// which is obvious to the operator, and pre-launch DBs only.
-	subOnClock := sub.TestClockID != ""
+	// IsSimulated + SimEffectiveAt are computed PER ROW from
+	// metadata.sim_effective_at — the authoritative signal set by
+	// auditMetaForSub at write time. Pre-2026-05-28 this was a sub-
+	// level heuristic (every audit row flagged simulated when the
+	// sub was clock-pinned), which fired the chip on operator
+	// actions whose audit timestamp was actually wall-clock — the
+	// 2026-05-28 ADR-030 amendment made audit created_at wall-
+	// clock everywhere, so the heuristic became actively wrong.
+	// Per-row metadata check below.
 
 	events := []timelineEvent{}
 
@@ -1812,6 +2144,12 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, e := range entries {
 				desc, detail, detailTS, status := describeSubscriptionAction(e.Action, e.Metadata, planNames)
+				// Per-row sim context. metadata.sim_effective_at is
+				// populated by auditMetaForSub on writes affecting
+				// clock-pinned subs (2026-05-28 ADR-030 amendment).
+				// Empty for everything else.
+				simAt, _ := e.Metadata["sim_effective_at"].(string)
+				clockID, _ := e.Metadata["test_clock_id"].(string)
 				events = append(events, timelineEvent{
 					Timestamp:       e.CreatedAt.UTC().Format(time.RFC3339),
 					Source:          "audit",
@@ -1823,7 +2161,9 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 					ActorType:       e.ActorType,
 					ActorName:       e.ActorName,
 					ActorID:         e.ActorID,
-					IsSimulated:     subOnClock,
+					IsSimulated:     simAt != "",
+					SimEffectiveAt:  simAt,
+					TestClockID:     clockID,
 				})
 			}
 		} else {

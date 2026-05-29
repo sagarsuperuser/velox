@@ -1,4 +1,5 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, LogOut, Settings,
@@ -167,7 +168,6 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
-  const [navCounts, setNavCounts] = useState<Record<string, number>>({})
   const { dark, toggle: toggleDark } = useDarkMode()
   const { user, logout, setMode } = useAuth()
   const [modeBusy, setModeBusy] = useState(false)
@@ -215,22 +215,36 @@ export function Layout({ children }: { children: ReactNode }) {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // Load tenant currency once on mount
+  // Tenant currency drives the formatCents/getCurrencySymbol helpers
+  // app-wide. Side-effect on success: push to the module-level
+  // setActiveCurrency so non-React call sites pick it up. React Query
+  // handles the StrictMode dedupe + cache across Layout remounts on
+  // route navigation.
+  const settingsQuery = useQuery({
+    queryKey: ['layout', 'settings'],
+    queryFn: () => api.getSettings(),
+  })
   useEffect(() => {
-    api.getSettings().then(s => {
-      if (s.default_currency) setActiveCurrency(s.default_currency)
-    }).catch(() => { /* ignore */ })
-  }, [])
+    const cur = settingsQuery.data?.default_currency
+    if (cur) setActiveCurrency(cur)
+  }, [settingsQuery.data?.default_currency])
 
-  // Fetch nav badge counts on mount
-  useEffect(() => {
-    api.getAnalyticsOverview().then(ov => {
-      const counts: Record<string, number> = {}
-      if (ov.open_invoices > 0) counts['/invoices'] = ov.open_invoices
-      if (ov.dunning_active > 0) counts['/dunning'] = ov.dunning_active
-      setNavCounts(counts)
-    }).catch(() => {})
-  }, [])
+  // Sidebar nav badges (open invoices count, active dunning count).
+  // Stale data is fine — these are background hints; RQ's
+  // staleWhileRevalidate behavior gives the operator a near-real-time
+  // count without per-mount thrash.
+  const analyticsQuery = useQuery({
+    queryKey: ['layout', 'analytics-overview'],
+    queryFn: () => api.getAnalyticsOverview(),
+  })
+  const navCounts = useMemo<Record<string, number>>(() => {
+    const ov = analyticsQuery.data
+    if (!ov) return {}
+    const counts: Record<string, number> = {}
+    if (ov.open_invoices > 0) counts['/invoices'] = ov.open_invoices
+    if (ov.dunning_active > 0) counts['/dunning'] = ov.dunning_active
+    return counts
+  }, [analyticsQuery.data])
 
   const closeSidebar = () => setSidebarOpen(false)
 

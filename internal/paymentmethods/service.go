@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 
-	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -22,9 +23,11 @@ type StripeAPI interface {
 
 	// CreateSetupCheckoutSession creates a Stripe Checkout Session in
 	// setup mode and returns a hosted URL the customer can redirect to.
+	// successURL and cancelURL are separate so the SPA can render
+	// different copy based on the outcome (?status=success vs cancel).
 	// Used by the default web-v2 portal UI, which redirects rather than
 	// embedding Stripe Elements.
-	CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, returnURL string, metadata map[string]string) (checkoutURL, sessionID string, err error)
+	CreateSetupCheckoutSession(ctx context.Context, stripeCustomerID, successURL, cancelURL string, metadata map[string]string) (checkoutURL, sessionID string, err error)
 
 	// EnsureStripeCustomer returns the existing Stripe customer ID from
 	// customer_payment_setups, or creates one if absent and writes it back
@@ -37,29 +40,92 @@ type StripeAPI interface {
 	// it), we still want to mark the local row detached.
 	DetachPaymentMethod(ctx context.Context, stripePaymentMethodID string) error
 
-	// FetchPaymentMethodCard looks up card metadata (brand/last4/exp) for
-	// a Stripe PM. Used by the webhook handler in P5 when persisting a
-	// newly attached PM.
-	FetchPaymentMethodCard(ctx context.Context, stripePaymentMethodID string) (brand, last4 string, expMonth, expYear int, err error)
+	// SetDefaultPaymentMethod updates the Stripe Customer's
+	// invoice_settings.default_payment_method. Required so any Stripe-side
+	// off-session auto-charge uses the operator's chosen card, not the one
+	// Stripe last had on file. Pre-2026-05-29 SetDefault flipped the local
+	// row only; Stripe's default stayed stale. The adapter looks up the
+	// Stripe Customer ID via its customerLink (same pattern as
+	// EnsureStripeCustomer). Best-effort: returns error if Stripe is
+	// unreachable; caller logs + audits and the operator action still
+	// commits (local-wins, per Lago / Recurly / Chargebee).
+	SetDefaultPaymentMethod(ctx context.Context, tenantID, customerID, stripePaymentMethodID string) error
+
+	// FetchPaymentMethodCard looks up card metadata for a Stripe PM —
+	// brand / last4 / exp / fingerprint. Used by the webhook handler
+	// when persisting a newly attached PM. Fingerprint drives
+	// dedupe-on-attach (see PostgresStore.Upsert).
+	FetchPaymentMethodCard(ctx context.Context, stripePaymentMethodID string) (CardMetadata, error)
 }
 
-// PaymentSetupSummaryWriter updates the 1:1 customer_payment_setups row.
-// We keep it as a denorm of the current default so billing's existing
-// read path (which knows nothing about payment_methods) keeps working.
-type PaymentSetupSummaryWriter interface {
-	UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error)
-	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+// CardMetadata bundles the card facts the Stripe adapter returns at
+// attach time. Fingerprint is the dedupe key — Stripe's stable hash
+// of the card number (CVC + expiry don't affect it). Empty when the
+// PM isn't a card type (legacy / bank account / etc.).
+type CardMetadata struct {
+	Brand       string
+	Last4       string
+	ExpMonth    int
+	ExpYear     int
+	Fingerprint string
 }
+
+// PaymentSetupSummaryWriter — REMOVED. The 1:1 customer_payment_setups
+// summary table was retired in migration 0097; paymentmethods.Service
+// no longer writes any denorm cache. Single source of truth:
+//   - customers.stripe_customer_id (the Stripe Customer mapping)
+//   - payment_methods rows (canonical per-PM, is_default flag tracks
+//     primary, detached_at marks removal for audit)
+//
+// Billing engine reads PaymentReadiness via a thin adapter that
+// queries customers + payment_methods directly. No more dual-write.
 
 type Service struct {
 	store         Store
 	stripe        StripeAPI
-	summary       PaymentSetupSummaryWriter
-	portalBaseURL string // optional; used as return_url fallback when the handler doesn't pass one
+	portalBaseURL string // SPA base URL; setup-session return URL is portalBaseURL + setupCompletePath when caller doesn't pass one
+	auditLogger   AuditWriter
 }
 
-func NewService(store Store, stripe StripeAPI, summary PaymentSetupSummaryWriter) *Service {
-	return &Service{store: store, stripe: stripe, summary: summary}
+// setupCompletePath is the SPA route Stripe Checkout redirects to
+// after a successful (or canceled) setup-session. Public, no auth —
+// the customer landing here got there from an email link, they don't
+// have a portal session. The page reads ?status=success|cancel from
+// the query string for the appropriate copy.
+const setupCompletePath = "/payment-method-added"
+
+// AuditWriter is the narrow audit surface paymentmethods needs.
+// Declared here (not imported from internal/audit) so the package
+// stays decoupled and testable with a fake. Production wires
+// *audit.Logger via SetAuditLogger in router.go.
+type AuditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// NewService — `summary` parameter kept for back-compat with the
+// existing router.go wiring (passes customerStore which used to
+// satisfy PaymentSetupSummaryWriter). Ignored. Remove this parameter
+// once the writer interface is fully retired across all builders.
+func NewService(store Store, stripe StripeAPI, _ any) *Service {
+	return &Service{store: store, stripe: stripe}
+}
+
+// SetPortalBaseURL sets the SPA base URL used to compose Stripe
+// Checkout return URLs. Production wires CUSTOMER_PORTAL_URL via
+// router.go; local dev falls through to http://localhost:5173 when
+// unset. Without this, Stripe redirects the customer to a hardcoded
+// default that may not match the deployment's SPA host.
+func (s *Service) SetPortalBaseURL(u string) {
+	s.portalBaseURL = strings.TrimRight(strings.TrimSpace(u), "/")
+}
+
+// SetAuditLogger wires the audit-log writer. Without it, paymentmethods
+// mutations (attach via webhook, set-default, detach, setup-session
+// creation) succeed silently — operator Activity feed and AuditLog page
+// would miss every card-on-file change. Optional: nil = no audit row
+// written, all other behavior unchanged.
+func (s *Service) SetAuditLogger(a AuditWriter) {
+	s.auditLogger = a
 }
 
 // List returns active PMs for (tenantID, customerID). Ordered default
@@ -100,19 +166,43 @@ func (s *Service) CreateSetupSession(ctx context.Context, tenantID, customerID, 
 	if err != nil {
 		return "", "", fmt.Errorf("ensure stripe customer: %w", err)
 	}
+	// Build the default return URL: portalBaseURL + setupCompletePath
+	// (the public SPA success page). When the SPA base isn't configured
+	// (local dev / tests), fall through to the dev SPA host. The path
+	// must point at a route that EXISTS in the SPA — the legacy
+	// hardcoded "/customer-portal" was a non-existent route, leaving
+	// the customer on a blank page after Stripe Checkout success.
 	if returnURL == "" {
-		returnURL = s.portalBaseURL
+		base := s.portalBaseURL
+		if base == "" {
+			base = "http://localhost:5173"
+		}
+		returnURL = base + setupCompletePath
 	}
-	if returnURL == "" {
-		returnURL = "http://localhost:5173/customer-portal"
-	}
+	// Split success vs. cancel into separate URLs via ?status= so the
+	// landing page can render the right copy without a separate route.
+	// Stripe Checkout calls one of the two URLs depending on outcome.
+	successURL := appendQuery(returnURL, "status=success")
+	cancelURL := appendQuery(returnURL, "status=cancel")
 	metadata := map[string]string{
 		"velox_tenant_id":   tenantID,
 		"velox_customer_id": customerID,
 		"velox_livemode":    livemodeLabel(ctx),
 		"velox_purpose":     "portal_add_payment_method",
 	}
-	return s.stripe.CreateSetupCheckoutSession(ctx, stripeCustomerID, returnURL, metadata)
+	return s.stripe.CreateSetupCheckoutSession(ctx, stripeCustomerID, successURL, cancelURL, metadata)
+}
+
+// appendQuery appends a key=value query fragment to the given URL,
+// using '?' if no query exists or '&' otherwise. Used to add
+// ?status=success / ?status=cancel without pulling net/url for what's
+// a one-token append. We don't need full URL parsing here because
+// the inputs come from operator config + the constant setupCompletePath.
+func appendQuery(rawURL, kv string) string {
+	if strings.Contains(rawURL, "?") {
+		return rawURL + "&" + kv
+	}
+	return rawURL + "?" + kv
 }
 
 // SetDefault flips is_default atomically in payment_methods AND refreshes
@@ -120,10 +210,38 @@ func (s *Service) CreateSetupSession(ctx context.Context, tenantID, customerID, 
 func (s *Service) SetDefault(ctx context.Context, tenantID, customerID, pmID string) (PaymentMethod, error) {
 	pm, err := s.store.SetDefault(ctx, tenantID, customerID, pmID)
 	if err != nil {
-		return PaymentMethod{}, err
+		return pm, err
 	}
-	if err := s.syncSummary(ctx, tenantID, pm); err != nil {
-		return PaymentMethod{}, fmt.Errorf("sync payment setup summary: %w", err)
+
+	// Push to Stripe (2026-05-29). Pre-fix this updated the local DB
+	// only; Stripe Customer's `invoice_settings.default_payment_method`
+	// stayed stale, and any Stripe-side off-session auto-charge picked
+	// whatever Stripe last had — including a PM the operator had just
+	// demoted. Best-effort: local save is source of truth (Lago/Recurly
+	// /Chargebee), Stripe failure logs + writes a stripe_sync_error to
+	// the audit row so ops can spot the divergence and retry.
+	stripeSyncErr := ""
+	if pm.StripePaymentMethodID != "" {
+		if err := s.stripe.SetDefaultPaymentMethod(ctx, tenantID, customerID, pm.StripePaymentMethodID); err != nil {
+			slog.WarnContext(ctx, "failed to sync default payment method to Stripe",
+				"tenant_id", tenantID, "customer_id", customerID,
+				"stripe_payment_method_id", pm.StripePaymentMethodID,
+				"error", err)
+			stripeSyncErr = err.Error()
+		}
+	}
+
+	if s.auditLogger != nil {
+		meta := map[string]any{
+			"action":      "default_changed",
+			"customer_id": customerID,
+			"card_brand":  pm.CardBrand,
+			"card_last4":  pm.CardLast4,
+		}
+		if stripeSyncErr != "" {
+			meta["stripe_sync_error"] = stripeSyncErr
+		}
+		_ = s.auditLogger.Log(ctx, tenantID, "update", "payment_method", pm.ID, pmLabel(pm), meta)
 	}
 	return pm, nil
 }
@@ -154,6 +272,16 @@ func (s *Service) Detach(ctx context.Context, tenantID, customerID, pmID string)
 		return PaymentMethod{}, err
 	}
 
+	if s.auditLogger != nil {
+		_ = s.auditLogger.Log(ctx, tenantID, "delete", "payment_method", detached.ID, pmLabel(detached), map[string]any{
+			"action":      "detached",
+			"customer_id": customerID,
+			"card_brand":  detached.CardBrand,
+			"card_last4":  detached.CardLast4,
+			"was_default": pm.IsDefault,
+		})
+	}
+
 	// If the detached card was the default, promote another PM if one
 	// exists; otherwise clear the summary.
 	if pm.IsDefault {
@@ -166,54 +294,25 @@ func (s *Service) Detach(ctx context.Context, tenantID, customerID, pmID string)
 }
 
 // rebalanceDefault is called after detaching the current default. It
-// promotes the newest active PM, or — if none remain — clears the
-// summary row back to "missing".
+// promotes the newest active PM. With customer_payment_setups retired
+// (migration 0097), there's no denorm cache to clear when the last PM
+// is removed — billing.PaymentReadiness queries payment_methods
+// directly, so an empty result IS the "no PM ready" signal.
 func (s *Service) rebalanceDefault(ctx context.Context, tenantID, customerID string) error {
 	active, err := s.store.List(ctx, tenantID, customerID)
 	if err != nil {
 		return err
 	}
 	if len(active) == 0 {
-		return s.clearSummary(ctx, tenantID, customerID)
+		// No active PMs left — nothing to promote. billing's
+		// PaymentReadiness.ResolveForCharge will return hasDefaultPM=false
+		// on its next read.
+		return nil
 	}
 	// List orders is_default DESC, created_at DESC — but all are now
 	// is_default=false (we just cleared the prior default). Pick [0] (most
 	// recent created_at) as the new default.
-	promoted, err := s.store.SetDefault(ctx, tenantID, customerID, active[0].ID)
-	if err != nil {
-		return err
-	}
-	return s.syncSummary(ctx, tenantID, promoted)
-}
-
-func (s *Service) syncSummary(ctx context.Context, tenantID string, pm PaymentMethod) error {
-	existing, _ := s.summary.GetPaymentSetup(ctx, tenantID, pm.CustomerID)
-	existing.CustomerID = pm.CustomerID
-	existing.TenantID = tenantID
-	existing.SetupStatus = domain.PaymentSetupReady
-	existing.DefaultPaymentMethodPresent = true
-	existing.PaymentMethodType = pm.Type
-	existing.StripePaymentMethodID = pm.StripePaymentMethodID
-	existing.CardBrand = pm.CardBrand
-	existing.CardLast4 = pm.CardLast4
-	existing.CardExpMonth = pm.CardExpMonth
-	existing.CardExpYear = pm.CardExpYear
-	_, err := s.summary.UpsertPaymentSetup(ctx, tenantID, existing)
-	return err
-}
-
-func (s *Service) clearSummary(ctx context.Context, tenantID, customerID string) error {
-	existing, _ := s.summary.GetPaymentSetup(ctx, tenantID, customerID)
-	existing.CustomerID = customerID
-	existing.TenantID = tenantID
-	existing.SetupStatus = domain.PaymentSetupMissing
-	existing.DefaultPaymentMethodPresent = false
-	existing.StripePaymentMethodID = ""
-	existing.CardBrand = ""
-	existing.CardLast4 = ""
-	existing.CardExpMonth = 0
-	existing.CardExpYear = 0
-	_, err := s.summary.UpsertPaymentSetup(ctx, tenantID, existing)
+	_, err = s.store.SetDefault(ctx, tenantID, customerID, active[0].ID)
 	return err
 }
 
@@ -231,7 +330,7 @@ func (s *Service) AttachForWebhook(ctx context.Context, tenantID, customerID, st
 // persist the row here. Called with an RLS ctx already staged to the
 // right tenant+livemode by the webhook handler.
 func (s *Service) AttachFromSetupIntent(ctx context.Context, tenantID, customerID, stripePaymentMethodID string) (PaymentMethod, error) {
-	brand, last4, expMonth, expYear, err := s.stripe.FetchPaymentMethodCard(ctx, stripePaymentMethodID)
+	card, err := s.stripe.FetchPaymentMethodCard(ctx, stripePaymentMethodID)
 	if err != nil {
 		return PaymentMethod{}, fmt.Errorf("fetch card metadata: %w", err)
 	}
@@ -239,20 +338,34 @@ func (s *Service) AttachFromSetupIntent(ctx context.Context, tenantID, customerI
 		CustomerID:            customerID,
 		StripePaymentMethodID: stripePaymentMethodID,
 		Type:                  "card",
-		CardBrand:             brand,
-		CardLast4:             last4,
-		CardExpMonth:          expMonth,
-		CardExpYear:           expYear,
+		CardBrand:             card.Brand,
+		CardLast4:             card.Last4,
+		CardExpMonth:          card.ExpMonth,
+		CardExpYear:           card.ExpYear,
+		CardFingerprint:       card.Fingerprint,
 	})
 	if err != nil {
 		return PaymentMethod{}, err
 	}
-	if pm.IsDefault {
-		if err := s.syncSummary(ctx, tenantID, pm); err != nil {
-			return PaymentMethod{}, fmt.Errorf("sync summary: %w", err)
-		}
+	if s.auditLogger != nil {
+		_ = s.auditLogger.Log(ctx, tenantID, "create", "payment_method", pm.ID, pmLabel(pm), map[string]any{
+			"action":      "attached",
+			"customer_id": customerID,
+			"card_brand":  card.Brand,
+			"card_last4":  card.Last4,
+		})
 	}
 	return pm, nil
+}
+
+// pmLabel renders an operator-friendly resource label for audit_log.
+// "VISA ····4242" reads correctly in the AuditLog table without
+// leaking the full stripe_payment_method_id token.
+func pmLabel(pm PaymentMethod) string {
+	if pm.CardBrand == "" && pm.CardLast4 == "" {
+		return pm.Type
+	}
+	return fmt.Sprintf("%s ····%s", pm.CardBrand, pm.CardLast4)
 }
 
 func livemodeLabel(ctx context.Context) string {

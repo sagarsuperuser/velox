@@ -13,10 +13,11 @@ import (
 type contextKey string
 
 const (
-	tenantIDKey contextKey = "tenant_id"
-	apiKeyIDKey contextKey = "api_key_id"
-	userIDKey   contextKey = "user_id"
-	keyTypeKey  contextKey = "key_type"
+	tenantIDKey       contextKey = "tenant_id"
+	apiKeyIDKey       contextKey = "api_key_id"
+	userIDKey         contextKey = "user_id"
+	keyTypeKey        contextKey = "key_type"
+	customerActorKey  contextKey = "customer_actor_id"
 )
 
 // TestTenantIDKey returns the context key for tenant ID (for use in tests).
@@ -155,6 +156,26 @@ func GetKeyType(ctx context.Context) KeyType {
 // when a session resolves to its parent key's type.
 func WithKeyType(ctx context.Context, kt KeyType) context.Context {
 	return context.WithValue(ctx, keyTypeKey, kt)
+}
+
+// CustomerActorID returns the customer ID a portal-session middleware
+// stamped into ctx, or "" when the request isn't customer-authed.
+// audit.Logger consults this to tag rows with actor_type='customer'
+// when the request originated from the customer-portal surface, so
+// the operator Activity feed renders "by customer" instead of the
+// misleading 'system' fallback.
+func CustomerActorID(ctx context.Context) string {
+	v, _ := ctx.Value(customerActorKey).(string)
+	return v
+}
+
+// WithCustomerActor stamps a customer ID as the request's actor.
+// Called by customerportal.Service.Middleware on every /v1/me/*
+// request so downstream services (audit logger, anything that needs
+// to know who's acting) can resolve the actor without re-importing
+// the customerportal package.
+func WithCustomerActor(ctx context.Context, customerID string) context.Context {
+	return context.WithValue(ctx, customerActorKey, customerID)
 }
 
 // Livemode returns whether the request is operating in live mode. Delegates

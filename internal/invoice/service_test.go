@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 type memStore struct {
@@ -195,6 +197,18 @@ func (m *memStore) MarkPaid(_ context.Context, tenantID, id, stripeID string, pa
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {
 		return domain.Invoice{}, errs.ErrNotFound
+	}
+	// Mirror PostgresStore.MarkPaid's state-machine guard (added
+	// 2026-05-22): reject draft (finalize first) and voided
+	// (terminal); reject tax_status != ok (authoritative amounts).
+	switch inv.Status {
+	case domain.InvoiceFinalized, domain.InvoiceUncollectible, domain.InvoicePaid:
+		// ok
+	default:
+		return domain.Invoice{}, errs.InvalidState("cannot mark invoice paid from status " + string(inv.Status))
+	}
+	if inv.TaxStatus != "" && inv.TaxStatus != domain.InvoiceTaxOK {
+		return domain.Invoice{}, errs.InvalidState("cannot mark invoice paid with tax_status=" + string(inv.TaxStatus))
 	}
 	inv.Status = domain.InvoicePaid
 	inv.PaymentStatus = domain.PaymentSucceeded
@@ -620,6 +634,13 @@ func (m *memNumberer) NextInvoiceNumber(_ context.Context, _ string) (string, er
 	return fmt.Sprintf("VLX-%06d", m.next), nil
 }
 
+// NextInvoiceNumberTx mirrors NextInvoiceNumber for tx-aware callers.
+// The fake ignores the tx since it's in-memory.
+func (m *memNumberer) NextInvoiceNumberTx(_ context.Context, _ *sql.Tx, _ string) (string, error) {
+	m.next++
+	return fmt.Sprintf("VLX-%06d", m.next), nil
+}
+
 func TestCreate(t *testing.T) {
 	svc := NewService(newMemStore(), nil, newMemNumberer())
 	ctx := context.Background()
@@ -776,6 +797,114 @@ func TestFinalizeAndVoid(t *testing.T) {
 	})
 }
 
+// fakeTaxReverser records ReverseTax calls so the void-tax-reverse
+// integration can be asserted at unit-test level without a real
+// provider.
+type fakeTaxReverser struct {
+	calls   []tax.ReversalRequest
+	failErr error
+}
+
+func (f *fakeTaxReverser) ReverseTax(_ context.Context, _ string, req tax.ReversalRequest) (*tax.ReversalResult, error) {
+	f.calls = append(f.calls, req)
+	if f.failErr != nil {
+		return nil, f.failErr
+	}
+	return &tax.ReversalResult{TransactionID: "tax_rev_" + req.Reference}, nil
+}
+
+// TestVoid_ReversesUpstreamTaxTransaction locks in the contract that
+// voiding a finalized-but-unpaid invoice with a committed tax_transaction
+// fires a full-mode upstream reversal. Without this, the authority
+// keeps reporting the tax as collected even though the invoice was
+// annulled — Stripe Tax docs: "you must reverse the corresponding tax
+// transaction to keep your tax records accurate."
+func TestVoid_ReversesUpstreamTaxTransaction(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil, newMemNumberer())
+	rev := &fakeTaxReverser{}
+	svc.SetTaxReverser(rev)
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	// Simulate a committed Stripe tax_transaction on the invoice (the
+	// production path stamps this from billing.Engine.CommitTax).
+	stale := store.invoices[inv.ID]
+	stale.TaxTransactionID = "tx_committed_at_finalize"
+	store.invoices[inv.ID] = stale
+
+	t.Run("reverses tax with full-mode + invoice-scoped Reference", func(t *testing.T) {
+		voided, err := svc.Void(ctx, "t1", inv.ID)
+		if err != nil {
+			t.Fatalf("Void: %v", err)
+		}
+		if voided.Status != domain.InvoiceVoided {
+			t.Errorf("status: got %q want voided", voided.Status)
+		}
+		if len(rev.calls) != 1 {
+			t.Fatalf("ReverseTax calls: got %d want 1", len(rev.calls))
+		}
+		call := rev.calls[0]
+		if call.OriginalTransactionID != "tx_committed_at_finalize" {
+			t.Errorf("OriginalTransactionID: got %q want tx_committed_at_finalize", call.OriginalTransactionID)
+		}
+		if call.Mode != tax.ReversalModeFull {
+			t.Errorf("Mode: got %q want full", call.Mode)
+		}
+		expectedRef := "inv_void_" + inv.ID
+		if call.Reference != expectedRef {
+			t.Errorf("Reference: got %q want %q (stripe idempotency)", call.Reference, expectedRef)
+		}
+	})
+
+	t.Run("upstream failure still voids locally (best-effort)", func(t *testing.T) {
+		inv2, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s2",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		if _, err := svc.Finalize(ctx, "t1", inv2.ID); err != nil {
+			t.Fatalf("finalize: %v", err)
+		}
+		stale2 := store.invoices[inv2.ID]
+		stale2.TaxTransactionID = "tx_committed_at_finalize_2"
+		store.invoices[inv2.ID] = stale2
+		rev.failErr = errors.New("stripe: tax authority unreachable")
+		defer func() { rev.failErr = nil }()
+
+		voided, err := svc.Void(ctx, "t1", inv2.ID)
+		if err != nil {
+			t.Fatalf("Void should not surface upstream tax errors: %v", err)
+		}
+		if voided.Status != domain.InvoiceVoided {
+			t.Errorf("status: got %q want voided (best-effort tax reversal)", voided.Status)
+		}
+	})
+
+	t.Run("no upstream call when invoice has no tax transaction", func(t *testing.T) {
+		// Manual / none provider: TaxTransactionID empty → reversal skipped.
+		inv3, _ := svc.Create(ctx, "t1", CreateInput{
+			CustomerID: "c", SubscriptionID: "s3",
+			BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+		})
+		if _, err := svc.Finalize(ctx, "t1", inv3.ID); err != nil {
+			t.Fatalf("finalize: %v", err)
+		}
+		before := len(rev.calls)
+		if _, err := svc.Void(ctx, "t1", inv3.ID); err != nil {
+			t.Fatalf("Void: %v", err)
+		}
+		if len(rev.calls) != before {
+			t.Errorf("ReverseTax should not be called when TaxTransactionID is empty; got %d new calls", len(rev.calls)-before)
+		}
+	})
+}
+
 func TestRecordPayment(t *testing.T) {
 	svc := NewService(newMemStore(), nil, newMemNumberer())
 	ctx := context.Background()
@@ -847,6 +976,48 @@ type capturedEvent struct {
 func (c *captureEvents) Dispatch(_ context.Context, _, eventType string, payload map[string]any) error {
 	c.events = append(c.events, capturedEvent{eventType: eventType, payload: payload})
 	return nil
+}
+
+// TestMarkUncollectible_ReversesUpstreamTaxTransaction mirrors the
+// void path: finalize commits a tax_transaction; marking the invoice
+// uncollectible must reverse it so the authority's records stop
+// reporting the tax as collected. Stripe Tax docs explicitly mention
+// both void and uncollectible.
+func TestMarkUncollectible_ReversesUpstreamTaxTransaction(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil, newMemNumberer())
+	rev := &fakeTaxReverser{}
+	svc.SetTaxReverser(rev)
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	stale := store.invoices[inv.ID]
+	stale.TaxTransactionID = "tx_committed_at_finalize"
+	store.invoices[inv.ID] = stale
+
+	if _, err := svc.MarkUncollectible(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("MarkUncollectible: %v", err)
+	}
+	if len(rev.calls) != 1 {
+		t.Fatalf("ReverseTax calls: got %d want 1", len(rev.calls))
+	}
+	call := rev.calls[0]
+	if call.OriginalTransactionID != "tx_committed_at_finalize" {
+		t.Errorf("OriginalTransactionID: got %q", call.OriginalTransactionID)
+	}
+	if call.Mode != tax.ReversalModeFull {
+		t.Errorf("Mode: got %q want full", call.Mode)
+	}
+	expectedRef := "inv_uncoll_" + inv.ID
+	if call.Reference != expectedRef {
+		t.Errorf("Reference: got %q want %q (distinct from void Reference to avoid collisions)", call.Reference, expectedRef)
+	}
 }
 
 // TestMarkUncollectible_WritesAuditAndDispatchesEvent locks in the
@@ -985,6 +1156,97 @@ func TestRecordOfflinePayment(t *testing.T) {
 		})
 		if _, err := svc.RecordOfflinePayment(ctx, "t1", inv.ID, ""); err == nil {
 			t.Error("expected error on draft invoice")
+		}
+	})
+}
+
+// TestMarkPaid_StoreGate_RejectsDraftAndTaxPending locks in the
+// 2026-05-22 store-level invariant. The credit-fully-paid path in
+// billOnePeriod (and threshold_scan) previously called MarkPaid on
+// draft / tax-pending invoices, locking the customer at subtotal-only
+// totals. The store-level gate is the canonical guard; the engine
+// caller-level gates are defense-in-depth. This test exercises the
+// store gate via the in-memory MarkPaid (which mirrors PostgresStore's
+// gate).
+func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
+	store := newMemStore()
+	ctx := context.Background()
+
+	now := time.Date(2027, 9, 19, 18, 30, 0, 0, time.UTC)
+
+	t.Run("rejects draft (finalize first)", func(t *testing.T) {
+		// Synthesize a draft invoice with tax_status=ok (so the failure
+		// is purely the draft status gate, not the tax gate).
+		store.invoices["inv_draft"] = domain.Invoice{
+			ID: "inv_draft", TenantID: "t1",
+			Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxOK,
+		}
+		_, err := store.MarkPaid(ctx, "t1", "inv_draft", "", now)
+		if err == nil {
+			t.Error("expected MarkPaid on draft invoice to fail")
+		}
+	})
+
+	t.Run("rejects tax_status=pending on finalized", func(t *testing.T) {
+		// Even a finalized invoice — if tax somehow flipped back to
+		// pending — must not transition to paid. Synthetic since the
+		// natural path keeps these in sync, but the gate is a hard
+		// invariant against future refactors.
+		store.invoices["inv_finalized_tax_pending"] = domain.Invoice{
+			ID: "inv_finalized_tax_pending", TenantID: "t1",
+			Status: domain.InvoiceFinalized, TaxStatus: domain.InvoiceTaxPending,
+		}
+		_, err := store.MarkPaid(ctx, "t1", "inv_finalized_tax_pending", "", now)
+		if err == nil {
+			t.Error("expected MarkPaid with tax_status=pending to fail")
+		}
+	})
+
+	t.Run("rejects voided (terminal)", func(t *testing.T) {
+		store.invoices["inv_voided"] = domain.Invoice{
+			ID: "inv_voided", TenantID: "t1",
+			Status: domain.InvoiceVoided, TaxStatus: domain.InvoiceTaxOK,
+		}
+		_, err := store.MarkPaid(ctx, "t1", "inv_voided", "", now)
+		if err == nil {
+			t.Error("expected MarkPaid on voided invoice to fail")
+		}
+	})
+
+	t.Run("allows finalized + tax_status=ok", func(t *testing.T) {
+		store.invoices["inv_ok"] = domain.Invoice{
+			ID: "inv_ok", TenantID: "t1",
+			Status: domain.InvoiceFinalized, TaxStatus: domain.InvoiceTaxOK,
+			AmountDueCents: 7000,
+		}
+		out, err := store.MarkPaid(ctx, "t1", "inv_ok", "", now)
+		if err != nil {
+			t.Fatalf("MarkPaid: %v", err)
+		}
+		if out.Status != domain.InvoicePaid {
+			t.Errorf("status: got %q, want paid", out.Status)
+		}
+	})
+
+	t.Run("allows uncollectible (Stripe-parity recovery)", func(t *testing.T) {
+		store.invoices["inv_unc"] = domain.Invoice{
+			ID: "inv_unc", TenantID: "t1",
+			Status: domain.InvoiceUncollectible, TaxStatus: domain.InvoiceTaxOK,
+		}
+		_, err := store.MarkPaid(ctx, "t1", "inv_unc", "", now)
+		if err != nil {
+			t.Errorf("MarkPaid on uncollectible should succeed: %v", err)
+		}
+	})
+
+	t.Run("idempotent on already-paid", func(t *testing.T) {
+		store.invoices["inv_paid"] = domain.Invoice{
+			ID: "inv_paid", TenantID: "t1",
+			Status: domain.InvoicePaid, TaxStatus: domain.InvoiceTaxOK,
+		}
+		_, err := store.MarkPaid(ctx, "t1", "inv_paid", "", now)
+		if err != nil {
+			t.Errorf("idempotent re-MarkPaid should succeed: %v", err)
 		}
 	})
 }

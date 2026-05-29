@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -96,6 +97,32 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// AllowKey is the exported variant of allow() for callers that need
+// to enforce a custom-keyed bucket from within a handler (vs. as
+// middleware). Used by paymentmethods.send-setup-email to enforce a
+// per-customer cooldown — prevents double-click double-emails.
+// Returns (remaining, resetAt, allowed); same fail-open / fail-closed
+// semantics as the middleware path.
+func (rl *RateLimiter) AllowKey(ctx context.Context, key string) (int, time.Time, bool) {
+	now := time.Now().UTC()
+	if rl.limiter == nil {
+		if rl.failClosed {
+			return 0, now.Add(rl.limit.Period), false
+		}
+		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
+	}
+	res, err := rl.limiter.Allow(ctx, "rl:"+key, rl.limit)
+	if err != nil {
+		if rl.failClosed {
+			slog.Error("rate_limiter: redis error on AllowKey, failing closed", "error", err, "key", key)
+			return 0, now.Add(rl.limit.Period), false
+		}
+		slog.Warn("rate_limiter: redis error on AllowKey, failing open", "error", err, "key", key)
+		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
+	}
+	return res.Remaining, now.Add(res.ResetAfter), res.Allowed > 0
 }
 
 // allow checks the rate limit for the given key.

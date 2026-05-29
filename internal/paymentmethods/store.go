@@ -42,6 +42,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore { return &PostgresStore{db
 const pmSelectCols = `id, tenant_id, livemode, customer_id, stripe_payment_method_id,
 	type, COALESCE(card_brand,''), COALESCE(card_last4,''),
 	COALESCE(card_exp_month,0), COALESCE(card_exp_year,0),
+	COALESCE(card_fingerprint,''),
 	is_default, detached_at, created_at, updated_at`
 
 func scanPM(row interface {
@@ -49,6 +50,7 @@ func scanPM(row interface {
 }, pm *PaymentMethod) error {
 	return row.Scan(&pm.ID, &pm.TenantID, &pm.Livemode, &pm.CustomerID, &pm.StripePaymentMethodID,
 		&pm.Type, &pm.CardBrand, &pm.CardLast4, &pm.CardExpMonth, &pm.CardExpYear,
+		&pm.CardFingerprint,
 		&pm.IsDefault, &pm.DetachedAt, &pm.CreatedAt, &pm.UpdatedAt)
 }
 
@@ -106,6 +108,17 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, pmID string) (Payment
 // customer's default choice shouldn't flip just because Stripe resent the
 // webhook. If no active default exists for the customer, the new row is
 // promoted to default in the same tx (enforces "first PM is default").
+//
+// Dedupe-by-fingerprint (ADR-0099): when a customer re-runs Add and
+// produces a new pm_xxx with a fingerprint that already exists as an
+// active row for this customer, the old row is detached in the same
+// transaction and the new row inherits its is_default flag. Industry
+// standard — Stripe explicitly recommends this pattern because each
+// Checkout completion mints a fresh PaymentMethod even for the same
+// physical card. Without dedupe, the customer sees "Visa ····4242"
+// twice (or more) and the default-PM semantics drift across the
+// duplicates. Skipped when fingerprint is empty (legacy rows /
+// non-card types) — those keep current behavior.
 func (s *PostgresStore) Upsert(ctx context.Context, tenantID string, pm PaymentMethod) (PaymentMethod, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -113,7 +126,42 @@ func (s *PostgresStore) Upsert(ctx context.Context, tenantID string, pm PaymentM
 	}
 	defer postgres.Rollback(tx)
 
-	// Does this customer already have an active default?
+	// Dedupe-by-fingerprint: detach any active row for this customer
+	// with the same fingerprint. Capture is_default off the detached
+	// row so the new attach can inherit it — otherwise re-adding the
+	// default card would unset its default flag (regression hazard).
+	// Skip when fingerprint is empty (no key to dedupe on).
+	carryDefault := false
+	if pm.CardFingerprint != "" {
+		var oldDefault bool
+		var oldID string
+		switch err := tx.QueryRowContext(ctx, `
+			SELECT id, is_default FROM payment_methods
+			WHERE tenant_id = $1 AND customer_id = $2
+			  AND card_fingerprint = $3
+			  AND detached_at IS NULL
+			  AND stripe_payment_method_id <> $4
+			LIMIT 1`, tenantID, pm.CustomerID, pm.CardFingerprint, pm.StripePaymentMethodID,
+		).Scan(&oldID, &oldDefault); {
+		case err == nil:
+			// Match found — detach it. Same-tx so a concurrent List
+			// never observes both the old and new active.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE payment_methods
+				SET detached_at = now(), is_default = false, updated_at = now()
+				WHERE tenant_id = $1 AND id = $2`, tenantID, oldID); err != nil {
+				return PaymentMethod{}, fmt.Errorf("dedupe-detach: %w", err)
+			}
+			carryDefault = oldDefault
+		case errors.Is(err, sql.ErrNoRows):
+			// No prior row with this fingerprint — clean path.
+		default:
+			return PaymentMethod{}, fmt.Errorf("dedupe lookup: %w", err)
+		}
+	}
+
+	// Does this customer already have an active default after the
+	// dedupe pass? If not, promote the new row.
 	var hasDefault bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -123,26 +171,30 @@ func (s *PostgresStore) Upsert(ctx context.Context, tenantID string, pm PaymentM
 		)`, tenantID, pm.CustomerID).Scan(&hasDefault); err != nil {
 		return PaymentMethod{}, fmt.Errorf("check default: %w", err)
 	}
-	promote := !hasDefault
+	promote := !hasDefault || carryDefault
 
 	var out PaymentMethod
 	if err := scanPM(tx.QueryRowContext(ctx, `
 		INSERT INTO payment_methods
 			(tenant_id, customer_id, stripe_payment_method_id, type,
 			 card_brand, card_last4, card_exp_month, card_exp_year,
+			 card_fingerprint,
 			 is_default, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, NULLIF($5,''), NULLIF($6,''),
-		        NULLIF($7,0), NULLIF($8,0), $9, now(), now())
+		        NULLIF($7,0), NULLIF($8,0), NULLIF($9,''),
+		        $10, now(), now())
 		ON CONFLICT (tenant_id, livemode, stripe_payment_method_id) DO UPDATE
-		SET card_brand     = EXCLUDED.card_brand,
-		    card_last4     = EXCLUDED.card_last4,
-		    card_exp_month = EXCLUDED.card_exp_month,
-		    card_exp_year  = EXCLUDED.card_exp_year,
-		    detached_at    = NULL,
-		    updated_at     = now()
+		SET card_brand       = EXCLUDED.card_brand,
+		    card_last4       = EXCLUDED.card_last4,
+		    card_exp_month   = EXCLUDED.card_exp_month,
+		    card_exp_year    = EXCLUDED.card_exp_year,
+		    card_fingerprint = COALESCE(EXCLUDED.card_fingerprint, payment_methods.card_fingerprint),
+		    detached_at      = NULL,
+		    updated_at       = now()
 		RETURNING `+pmSelectCols,
 		tenantID, pm.CustomerID, pm.StripePaymentMethodID, defaultString(pm.Type, "card"),
 		pm.CardBrand, pm.CardLast4, pm.CardExpMonth, pm.CardExpYear,
+		pm.CardFingerprint,
 		promote), &out); err != nil {
 		return PaymentMethod{}, fmt.Errorf("upsert payment method: %w", err)
 	}

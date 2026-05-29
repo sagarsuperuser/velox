@@ -23,6 +23,14 @@ type CreditLedgerEntry struct {
 	ExpiresAt    *time.Time      `json:"expires_at,omitempty"`
 	Metadata     map[string]any  `json:"metadata,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
+	// ConsumedCents tracks how much of a grant's amount has been
+	// drained by FIFO-attributed usage entries (Orb's credit-block
+	// model). Meaningful only for entry_type='grant'; 0 for usage /
+	// expiry / adjustment. Grant remaining = amount_cents -
+	// consumed_cents. Expiry deducts only the remaining (un-drained)
+	// portion — never the original amount — so an already-consumed
+	// grant expiring is a no-op rather than a balance underflow.
+	ConsumedCents int64 `json:"consumed_cents,omitempty"`
 
 	// SourceSubscriptionID + SourceSubscriptionItemID + SourcePlanChangedAt +
 	// SourceChangeType, when all set, identify this entry as a proration
@@ -35,6 +43,14 @@ type CreditLedgerEntry struct {
 	SourceSubscriptionItemID string         `json:"source_subscription_item_id,omitempty"`
 	SourcePlanChangedAt      *time.Time     `json:"source_plan_changed_at,omitempty"`
 	SourceChangeType         ItemChangeType `json:"source_change_type,omitempty"`
+
+	// SourceCreditNoteID dedups grants created by credit-note Issue().
+	// Set on every grant the CN refund-routing path appends; the
+	// partial unique index idx_credit_ledger_credit_note_dedup
+	// (migration 0093) enforces one grant per (tenant, CN). A retry
+	// after partial-failure of CN Issue() hits the index, store
+	// returns ErrAlreadyExists, service fetches the existing grant.
+	SourceCreditNoteID string `json:"source_credit_note_id,omitempty"`
 }
 
 type CreditBalance struct {

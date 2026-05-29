@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -206,6 +207,16 @@ func parseListFilter(r *http.Request) ListFilter {
 		Limit:      limit,
 		Offset:     offset,
 	}
+	// Cursor takes precedence over offset when both are present —
+	// industry standard (Stripe ignores ?starting_after if ?ending_before
+	// is set rather than mixing them). Malformed cursors silently fall
+	// back to offset (no 400) because cursor is an opt-in upgrade path.
+	if c := q.Get("after"); c != "" {
+		if cur, err := middleware.DecodeCursor(c); err == nil {
+			filter.AfterTimestamp = cur.CreatedAt
+			filter.AfterID = cur.ID
+		}
+	}
 	if v := q.Get("from"); v != "" {
 		if t, err := parseTimestamp(v); err == nil {
 			filter.From = &t
@@ -220,7 +231,8 @@ func parseListFilter(r *http.Request) ListFilter {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	events, total, err := h.svc.List(r.Context(), parseListFilter(r))
+	filter := parseListFilter(r)
+	events, total, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list usage events", "error", err)
@@ -228,6 +240,28 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if events == nil {
 		events = []domain.UsageEvent{}
+	}
+
+	// Cursor path: store fetched limit+1, signaled by len(events) > limit.
+	// Trim the over-fetch + mint the next cursor from the last row.
+	if !filter.AfterTimestamp.IsZero() && filter.AfterID != "" {
+		limit := filter.Limit
+		if limit <= 0 {
+			limit = 100
+		} else if limit > 1000 {
+			limit = 1000
+		}
+		hasMore := len(events) > limit
+		if hasMore {
+			events = events[:limit]
+		}
+		resp := middleware.PageResponse{Data: events, HasMore: hasMore}
+		if hasMore && len(events) > 0 {
+			last := events[len(events)-1]
+			resp.NextCursor = middleware.EncodeCursor(last.ID, last.Timestamp)
+		}
+		respond.JSON(w, r, http.StatusOK, resp)
+		return
 	}
 
 	respond.List(w, r, events, total)

@@ -2,7 +2,9 @@ package customer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/mail"
 	"regexp"
 	"strings"
 
@@ -16,13 +18,16 @@ var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
 // StripeSyncer syncs billing profile data to Stripe when a Stripe customer exists.
 type StripeSyncer interface {
-	SyncBillingProfile(ctx context.Context, stripeCustomerID string, bp domain.CustomerBillingProfile) error
+	SyncBillingProfile(ctx context.Context, stripeCustomerID, customerEmail string, bp domain.CustomerBillingProfile) error
 }
 
-// PaymentSetupReader reads customer payment setup to find Stripe customer ID.
-type PaymentSetupReader interface {
-	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
-}
+// PaymentSetupReader — DEPRECATED. The 1:1 customer_payment_setups
+// summary was retired in migration 0097. The Stripe Customer ID lives
+// on customers.stripe_customer_id (read via store.Get) and PM details
+// live on payment_methods rows. Kept as a no-op interface so existing
+// callers compile during the transition; new code should depend on
+// customer.Service.Get and read cust.StripeCustomerID directly.
+type PaymentSetupReader interface{}
 
 // TestClockChecker validates a test_clock_id at customer-create time
 // (Stripe parity, ADR-027). Narrow shape — Service doesn't need
@@ -267,6 +272,8 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 		return domain.Customer{}, err
 	}
 
+	prevEmail := existing.Email
+
 	if name := strings.TrimSpace(input.DisplayName); name != "" {
 		existing.DisplayName = name
 	}
@@ -283,7 +290,48 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 		existing.DunningPolicyID = strings.TrimSpace(*input.DunningPolicyID)
 	}
 
-	return s.store.Update(ctx, tenantID, existing)
+	updated, err := s.store.Update(ctx, tenantID, existing)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+
+	// Bounce-state reset: if the email value actually changed, any
+	// previously-recorded 'bounced'/'complained' state was tied to the
+	// OLD address and must be cleared so the suppression gate doesn't
+	// silently drop sends to the new untested address. Best-effort —
+	// failure here doesn't fail the update (the bounce flag is
+	// diagnostic data; eventual consistency is acceptable).
+	if existing.Email != prevEmail {
+		if err := s.store.ResetEmailStatus(ctx, tenantID, id); err != nil {
+			slog.WarnContext(ctx, "reset email_status after email change failed",
+				"tenant_id", tenantID, "customer_id", id, "error", err)
+		}
+	}
+
+	// Stripe sync (2026-05-29): propagate email + display_name changes
+	// to the linked Stripe Customer. Pre-fix only UpsertBillingProfile
+	// triggered Stripe sync; customer.Update silently diverged. Best-
+	// effort: local save succeeded, Stripe sync failure logs but doesn't
+	// fail the operator action (matches Lago/Recurly's "local is source
+	// of truth, sync is downstream" model).
+	if s.stripeSyncer != nil && updated.StripeCustomerID != "" {
+		// Pull the billing profile so the full set of Stripe-relevant
+		// fields stay in lockstep. ErrNotFound = no profile yet —
+		// pass an empty BP, SyncBillingProfile gracefully skips the
+		// fields that aren't set.
+		bp, bpErr := s.store.GetBillingProfile(ctx, tenantID, id)
+		if bpErr != nil && !errors.Is(bpErr, errs.ErrNotFound) {
+			slog.WarnContext(ctx, "fetch billing profile for Stripe sync failed",
+				"tenant_id", tenantID, "customer_id", id, "error", bpErr)
+		}
+		if syncErr := s.stripeSyncer.SyncBillingProfile(ctx, updated.StripeCustomerID, updated.Email, bp); syncErr != nil {
+			slog.WarnContext(ctx, "failed to sync customer update to Stripe",
+				"tenant_id", tenantID, "customer_id", id,
+				"stripe_customer_id", updated.StripeCustomerID, "error", syncErr)
+		}
+	}
+
+	return updated, nil
 }
 
 // GetDunningPolicyID returns the customer's assigned dunning_policy_id
@@ -304,11 +352,6 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 		return domain.CustomerBillingProfile{}, errs.Required("customer_id")
 	}
 	ctx = s.bindForCustomer(ctx, tenantID, bp.CustomerID)
-	if email := strings.TrimSpace(bp.Email); email != "" {
-		if err := validateEmail("email", email); err != nil {
-			return domain.CustomerBillingProfile{}, err
-		}
-	}
 	if phone := strings.TrimSpace(bp.Phone); phone != "" {
 		if !phonePattern.MatchString(phone) {
 			return domain.CustomerBillingProfile{}, errs.Invalid("phone", "must be 7-20 characters and contain only digits, spaces, +, -, (, )")
@@ -343,13 +386,21 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 		return result, err
 	}
 
-	// Sync to Stripe if a Stripe customer exists
-	if s.stripeSyncer != nil && s.paymentSetups != nil {
-		ps, psErr := s.paymentSetups.GetPaymentSetup(ctx, tenantID, bp.CustomerID)
-		if psErr == nil && ps.StripeCustomerID != "" {
-			if syncErr := s.stripeSyncer.SyncBillingProfile(ctx, ps.StripeCustomerID, result); syncErr != nil {
+	// Note: billing-profile.email was removed in migration 0100.
+	// customers.email is now the single canonical recipient (Phase 1 of
+	// the dual-email collapse). The prior BP→customer sync hack is
+	// obsolete. Phase 2 (multi-recipient via customer_email_contacts
+	// table) will be additive when a DP requests it.
+
+	// Sync to Stripe if a Stripe customer exists. Reads from the
+	// canonical mapping on customers.stripe_customer_id (migration
+	// 0096); the legacy customer_payment_setups summary was retired
+	// in 0097.
+	if s.stripeSyncer != nil {
+		if cust, getErr := s.store.Get(ctx, tenantID, bp.CustomerID); getErr == nil && cust.StripeCustomerID != "" {
+			if syncErr := s.stripeSyncer.SyncBillingProfile(ctx, cust.StripeCustomerID, cust.Email, result); syncErr != nil {
 				slog.Warn("failed to sync billing profile to Stripe",
-					"customer_id", bp.CustomerID, "stripe_customer_id", ps.StripeCustomerID, "error", syncErr)
+					"customer_id", bp.CustomerID, "stripe_customer_id", cust.StripeCustomerID, "error", syncErr)
 				// Non-fatal: local save succeeded, Stripe sync is best-effort
 			}
 		}
@@ -386,12 +437,22 @@ func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID st
 	return s.store.GetBillingProfile(ctx, tenantID, customerID)
 }
 
+// validateEmail accepts only well-formed RFC 5322 addresses via the
+// Go stdlib parser, plus a hard requirement that the domain contains
+// at least one dot. ParseAddress alone allows local-only addresses
+// like `foo@bar` (no TLD) — fine in RFC terms, useless for actual
+// SMTP delivery, so we still gate on the dot. Tier-1 syntax check;
+// tier-6 (bounce-driven suppression) catches what survives.
 func validateEmail(field, email string) error {
-	at := strings.Index(email, "@")
-	if at < 1 {
-		return errs.Invalid(field, "invalid email: must contain @")
+	addr, err := mail.ParseAddress(email)
+	if err != nil {
+		return errs.Invalid(field, "invalid email")
 	}
-	domainPart := email[at+1:]
+	at := strings.LastIndex(addr.Address, "@")
+	if at < 0 {
+		return errs.Invalid(field, "invalid email")
+	}
+	domainPart := addr.Address[at+1:]
 	if !strings.Contains(domainPart, ".") || strings.HasSuffix(domainPart, ".") {
 		return errs.Invalid(field, "invalid email: domain must contain a dot")
 	}

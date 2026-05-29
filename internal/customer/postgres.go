@@ -88,9 +88,6 @@ func (s *PostgresStore) encryptBillingProfile(bp domain.CustomerBillingProfile) 
 	if bp.LegalName, err = s.enc.Encrypt(bp.LegalName); err != nil {
 		return bp, fmt.Errorf("encrypt billing legal_name: %w", err)
 	}
-	if bp.Email, err = s.enc.Encrypt(bp.Email); err != nil {
-		return bp, fmt.Errorf("encrypt billing email: %w", err)
-	}
 	if bp.Phone, err = s.enc.Encrypt(bp.Phone); err != nil {
 		return bp, fmt.Errorf("encrypt billing phone: %w", err)
 	}
@@ -108,9 +105,6 @@ func (s *PostgresStore) decryptBillingProfile(bp domain.CustomerBillingProfile) 
 	var err error
 	if bp.LegalName, err = s.enc.Decrypt(bp.LegalName); err != nil {
 		return bp, fmt.Errorf("decrypt billing legal_name: %w", err)
-	}
-	if bp.Email, err = s.enc.Decrypt(bp.Email); err != nil {
-		return bp, fmt.Errorf("decrypt billing email: %w", err)
 	}
 	if bp.Phone, err = s.enc.Decrypt(bp.Phone); err != nil {
 		return bp, fmt.Errorf("decrypt billing phone: %w", err)
@@ -176,6 +170,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
 			COALESCE(dunning_policy_id, ''),
+			COALESCE(stripe_customer_id, ''),
 			created_at, updated_at
 		FROM customers WHERE id = $1
 	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
@@ -183,6 +178,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 		&c.CostDashboardToken,
 		&c.TestClockID,
 		&c.DunningPolicyID,
+		&c.StripeCustomerID,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
@@ -192,6 +188,36 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 		return domain.Customer{}, err
 	}
 	return s.decryptCustomer(c)
+}
+
+// SetStripeCustomerID writes (or backfills) the Stripe Customer ID
+// against this Velox customer. Idempotent via the partial unique
+// index (migration 0096) — a re-write of the same value is a no-op
+// and a write of a different value to a row that already has one
+// returns a unique-violation error so callers can read the existing
+// value rather than blow it away.
+//
+// Single writer for customers.stripe_customer_id since the
+// customer_payment_setups summary table was retired (migration
+// 0097). Called by paymentmethods.StripeAdapter.EnsureStripeCustomer
+// on the lazy-create path and by the legacy /v1/checkout/setup
+// operator flow on initial bootstrap.
+func (s *PostgresStore) SetStripeCustomerID(ctx context.Context, tenantID, customerID, stripeCustomerID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE customers
+		SET stripe_customer_id = $1, updated_at = $2
+		WHERE id = $3 AND tenant_id = $4
+	`, stripeCustomerID, clock.Now(ctx), customerID, tenantID)
+	if err != nil {
+		return fmt.Errorf("set stripe_customer_id: %w", err)
+	}
+	return tx.Commit()
 }
 
 // SetCostDashboardToken writes (or rotates) the cost-dashboard public
@@ -319,8 +345,13 @@ func (s *PostgresStore) FindByEmailBlindIndex(ctx context.Context, blind string,
 	if blind == "" {
 		return nil, nil
 	}
-	if limit <= 0 || limit > 50 {
+	// Default 10 for unset/invalid; clamp to 50 when over-cap. Was
+	// silently truncating to 10 on >50 asks — see invoice/postgres.go
+	// for the rationale (no-silent-fallbacks principle, 2026-05-28).
+	if limit <= 0 {
 		limit = 10
+	} else if limit > 50 {
+		limit = 50
 	}
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
@@ -361,9 +392,13 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	}
 	defer postgres.Rollback(tx)
 
+	// Default 50 for unset/invalid; clamp to 100 when over-cap. See
+	// invoice/postgres.go for the no-silent-fallbacks rationale.
 	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	where, args := buildCustomerWhere(filter)
@@ -488,6 +523,35 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 	return c, nil
 }
 
+// ResetEmailStatus clears any prior bounce/complain state on the
+// customer. Called by the service layer when the email value changes
+// (operator edit, portal self-edit, billing-profile email change that
+// syncs down) — without this reset, a bounced flag on the OLD address
+// would silently suppress sends to a brand-new untested address.
+//
+// Sets email_status to 'unknown' (not 'ok') because we don't actually
+// know the new address works yet; the next successful dispatch is
+// what flips it to 'ok' (future change). Idempotent: re-resetting an
+// already-unknown row is a no-op write.
+func (s *PostgresStore) ResetEmailStatus(ctx context.Context, tenantID, customerID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE customers
+		SET email_status = 'unknown',
+		    email_bounce_reason = NULL,
+		    email_last_bounced_at = NULL,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, customerID); err != nil {
+		return fmt.Errorf("reset email status: %w", err)
+	}
+	return tx.Commit()
+}
+
 // MarkEmailBounced flips email_status to 'bounced' and records the
 // timestamp + free-text reason. Accepts customerID (not email) to avoid
 // routing a raw email string through the store — the caller holds the
@@ -536,13 +600,13 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 		status = "standard"
 	}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customer_billing_profiles (customer_id, tenant_id, legal_name, email, phone,
+		INSERT INTO customer_billing_profiles (customer_id, tenant_id, legal_name, phone,
 			address_line1, address_line2, city, state, postal_code, country, currency,
 			tax_status, tax_exempt_reason, tax_id, tax_id_type,
 			profile_status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
 		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
-			legal_name = EXCLUDED.legal_name, email = EXCLUDED.email, phone = EXCLUDED.phone,
+			legal_name = EXCLUDED.legal_name, phone = EXCLUDED.phone,
 			address_line1 = EXCLUDED.address_line1, address_line2 = EXCLUDED.address_line2,
 			city = EXCLUDED.city, state = EXCLUDED.state, postal_code = EXCLUDED.postal_code,
 			country = EXCLUDED.country, currency = EXCLUDED.currency,
@@ -550,13 +614,13 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 			tax_exempt_reason = EXCLUDED.tax_exempt_reason,
 			tax_id = EXCLUDED.tax_id, tax_id_type = EXCLUDED.tax_id_type,
 			profile_status = EXCLUDED.profile_status, updated_at = EXCLUDED.updated_at
-		RETURNING customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
+		RETURNING customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
 			tax_status, COALESCE(tax_exempt_reason,''),
 			COALESCE(tax_id,''), COALESCE(tax_id_type,''),
 			profile_status, created_at, updated_at
-	`, bp.CustomerID, tenantID, postgres.NullableString(enc.LegalName), postgres.NullableString(enc.Email),
+	`, bp.CustomerID, tenantID, postgres.NullableString(enc.LegalName),
 		postgres.NullableString(enc.Phone), postgres.NullableString(bp.AddressLine1),
 		postgres.NullableString(bp.AddressLine2), postgres.NullableString(bp.City),
 		postgres.NullableString(bp.State), postgres.NullableString(bp.PostalCode),
@@ -564,7 +628,7 @@ func (s *PostgresStore) UpsertBillingProfile(ctx context.Context, tenantID strin
 		status, bp.TaxExemptReason, enc.TaxID, bp.TaxIDType,
 		bp.ProfileStatus, now,
 	).Scan(
-		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
+		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
 		&bp.Country, &bp.Currency, &bp.TaxStatus, &bp.TaxExemptReason,
 		&bp.TaxID, &bp.TaxIDType,
@@ -594,7 +658,7 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 
 	var bp domain.CustomerBillingProfile
 	err = tx.QueryRowContext(ctx, `
-		SELECT customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(email,''), COALESCE(phone,''),
+		SELECT customer_id, tenant_id, COALESCE(legal_name,''), COALESCE(phone,''),
 			COALESCE(address_line1,''), COALESCE(address_line2,''), COALESCE(city,''), COALESCE(state,''),
 			COALESCE(postal_code,''), COALESCE(country,''), COALESCE(currency,''),
 			tax_status, COALESCE(tax_exempt_reason,''),
@@ -602,7 +666,7 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 			profile_status, created_at, updated_at
 		FROM customer_billing_profiles WHERE customer_id = $1
 	`, customerID).Scan(
-		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Email, &bp.Phone,
+		&bp.CustomerID, &bp.TenantID, &bp.LegalName, &bp.Phone,
 		&bp.AddressLine1, &bp.AddressLine2, &bp.City, &bp.State, &bp.PostalCode,
 		&bp.Country, &bp.Currency, &bp.TaxStatus, &bp.TaxExemptReason,
 		&bp.TaxID, &bp.TaxIDType,
@@ -617,88 +681,10 @@ func (s *PostgresStore) GetBillingProfile(ctx context.Context, tenantID, custome
 	return s.decryptBillingProfile(bp)
 }
 
-func (s *PostgresStore) UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CustomerPaymentSetup{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	now := clock.Now(ctx)
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customer_payment_setups (customer_id, tenant_id, setup_status,
-			default_payment_method_present, payment_method_type,
-			stripe_customer_id, stripe_payment_method_id,
-			card_brand, card_last4, card_exp_month, card_exp_year,
-			last_verified_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
-		ON CONFLICT (tenant_id, customer_id) DO UPDATE SET
-			setup_status = EXCLUDED.setup_status,
-			default_payment_method_present = EXCLUDED.default_payment_method_present,
-			payment_method_type = EXCLUDED.payment_method_type,
-			stripe_customer_id = EXCLUDED.stripe_customer_id,
-			stripe_payment_method_id = EXCLUDED.stripe_payment_method_id,
-			card_brand = EXCLUDED.card_brand,
-			card_last4 = EXCLUDED.card_last4,
-			card_exp_month = EXCLUDED.card_exp_month,
-			card_exp_year = EXCLUDED.card_exp_year,
-			last_verified_at = EXCLUDED.last_verified_at,
-			updated_at = EXCLUDED.updated_at
-		RETURNING customer_id, tenant_id, setup_status, default_payment_method_present,
-			COALESCE(payment_method_type,''), COALESCE(stripe_customer_id,''),
-			COALESCE(stripe_payment_method_id,''),
-			COALESCE(card_brand,''), COALESCE(card_last4,''),
-			COALESCE(card_exp_month, 0), COALESCE(card_exp_year, 0),
-			last_verified_at, created_at, updated_at
-	`, ps.CustomerID, tenantID, ps.SetupStatus, ps.DefaultPaymentMethodPresent,
-		postgres.NullableString(ps.PaymentMethodType), postgres.NullableString(ps.StripeCustomerID),
-		postgres.NullableString(ps.StripePaymentMethodID),
-		postgres.NullableString(ps.CardBrand), postgres.NullableString(ps.CardLast4),
-		ps.CardExpMonth, ps.CardExpYear,
-		postgres.NullableTime(ps.LastVerifiedAt), now,
-	).Scan(
-		&ps.CustomerID, &ps.TenantID, &ps.SetupStatus, &ps.DefaultPaymentMethodPresent,
-		&ps.PaymentMethodType, &ps.StripeCustomerID, &ps.StripePaymentMethodID,
-		&ps.CardBrand, &ps.CardLast4, &ps.CardExpMonth, &ps.CardExpYear,
-		&ps.LastVerifiedAt, &ps.CreatedAt, &ps.UpdatedAt,
-	)
-	if err != nil {
-		return domain.CustomerPaymentSetup{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return domain.CustomerPaymentSetup{}, err
-	}
-	return ps, nil
-}
-
-func (s *PostgresStore) GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CustomerPaymentSetup{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	var ps domain.CustomerPaymentSetup
-	err = tx.QueryRowContext(ctx, `
-		SELECT customer_id, tenant_id, setup_status, default_payment_method_present,
-			COALESCE(payment_method_type,''), COALESCE(stripe_customer_id,''),
-			COALESCE(stripe_payment_method_id,''),
-			COALESCE(card_brand,''), COALESCE(card_last4,''),
-			COALESCE(card_exp_month, 0), COALESCE(card_exp_year, 0),
-			last_verified_at, created_at, updated_at
-		FROM customer_payment_setups WHERE customer_id = $1
-	`, customerID).Scan(
-		&ps.CustomerID, &ps.TenantID, &ps.SetupStatus, &ps.DefaultPaymentMethodPresent,
-		&ps.PaymentMethodType, &ps.StripeCustomerID, &ps.StripePaymentMethodID,
-		&ps.CardBrand, &ps.CardLast4, &ps.CardExpMonth, &ps.CardExpYear,
-		&ps.LastVerifiedAt, &ps.CreatedAt, &ps.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return domain.CustomerPaymentSetup{}, errs.ErrNotFound
-	}
-	return ps, err
-}
+// UpsertPaymentSetup / GetPaymentSetup REMOVED. The customer_payment_setups
+// table was dropped in migration 0097; callers that need the wire shape
+// use compositePaymentSetupStore (internal/api/adapters.go) which composes
+// the response from canonical sources (customers + payment_methods).
 
 // customerOrderBy validates sort + dir against a closed allow-list
 // and adds a deterministic id tie-break matching the primary

@@ -242,15 +242,74 @@ func renderPaymentFailedHTML(customerName, invoiceNumber, reason, hostedURL stri
 	return subject, b.String(), ctaURL, ctaLabel
 }
 
+// renderPaymentUpdateRequestHTML is the invoice-context thin wrapper
+// retained for back-compat with the SendPaymentSetupRequest call
+// site. Delegates to the unified renderPaymentSetupLinkHTML so the
+// template stays single-source.
 func renderPaymentUpdateRequestHTML(customerName, invoiceNumber, amountDue, updateURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
-	subject = "Action required — update payment for invoice " + invoiceNumber
+	return renderPaymentSetupLinkHTML(paymentSetupLinkContext{
+		CustomerName:   customerName,
+		SetupURL:       updateURL,
+		InvoiceNumber:  invoiceNumber,
+		AmountDueLabel: amountDue,
+	})
+}
+
+// paymentSetupLinkContext is the unified shape for both
+// operator-initiated and engine-fired "add a payment method" emails.
+// Invoice fields are optional: when InvoiceNumber is empty the
+// template renders the generic operator-initiated copy; when set
+// it embeds invoice context ("for invoice X — $Y") so the customer
+// reads exactly why they need to add a card.
+type paymentSetupLinkContext struct {
+	CustomerName   string
+	OperatorNote   string // optional free-form operator note
+	SetupURL       string
+	InvoiceNumber  string // optional — engine-fired no-PM-at-finalize path
+	AmountDueLabel string // formatted ($X.XX); empty when InvoiceNumber empty
+}
+
+// renderPaymentSetupLinkHTML is the single template used by every
+// "add a payment method" email send (operator-initiated +
+// engine-fired no-PM-at-finalize). Replaces the previous two-
+// template split (renderPaymentUpdateRequestHTML +
+// renderPaymentSetupLinkHTML) so subject + body stay consistent
+// across send paths. Industry parity: Stripe "Send Payment Method",
+// Chargebee "Request Payment Method" — both use one template
+// internally with optional invoice context.
+func renderPaymentSetupLinkHTML(ctx paymentSetupLinkContext) (subject, contentHTML, ctaURL, ctaLabel string) {
+	hasInvoice := ctx.InvoiceNumber != ""
+	if hasInvoice {
+		subject = "Action required — update payment for invoice " + ctx.InvoiceNumber
+	} else {
+		subject = "Add a payment method"
+	}
 	var b strings.Builder
-	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">Update your payment method</h1>`)
-	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(customerName) + `,</p>`)
-	b.WriteString(`<p style="margin:0 0 20px;color:#4b5563;">We couldn't process payment for invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> (<strong style="color:#111827;">` + escape(amountDue) + `</strong>).</p>`)
-	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Use the secure link below to add or replace your payment method. The link expires in 24 hours.</p>`)
-	ctaURL = updateURL
-	ctaLabel = "Update payment method"
+	heading := "Add a payment method"
+	if hasInvoice {
+		heading = "Update your payment method"
+	}
+	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">` + escape(heading) + `</h1>`)
+	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(ctx.CustomerName) + `,</p>`)
+	switch {
+	case ctx.OperatorNote != "":
+		// Operator's custom note renders verbatim — they may have
+		// added billing context ("your card on file expired") that
+		// the template shouldn't try to autocompose.
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">` + escape(ctx.OperatorNote) + `</p>`)
+	case hasInvoice:
+		b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">We couldn't process payment for invoice <strong style="color:#111827;">` + escape(ctx.InvoiceNumber) + `</strong> (<strong style="color:#111827;">` + escape(ctx.AmountDueLabel) + `</strong>).</p>`)
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Use the secure link below to add or replace your payment method.</p>`)
+	default:
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Please add a payment method on file so we can process your billing. Use the secure link below — your card details go directly to our payment processor and never touch our servers.</p>`)
+	}
+	b.WriteString(`<p style="margin:0 0 16px;color:#6b7280;font-size:13px;">The link expires in 24 hours and can only be used once.</p>`)
+	ctaURL = ctx.SetupURL
+	if hasInvoice {
+		ctaLabel = "Update payment method"
+	} else {
+		ctaLabel = "Add payment method"
+	}
 	return subject, b.String(), ctaURL, ctaLabel
 }
 

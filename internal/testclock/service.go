@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // envInjectCatchupFailure is the manual-test injection knob — see
@@ -504,6 +505,31 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 		// isolation; retry-advance picks up wherever this left off).
 		var runErrs []error
 
+		// Read frozen_time ONCE and bind it to ctx via
+		// clock.WithEffectiveNow. Every downstream `clock.Now(ctx)` —
+		// including store-level fallbacks in AppendEntry, invoice
+		// create timestamps, etc. — inherits the simulated time.
+		// Without this binding, helpers that fall back to
+		// clock.Now(ctx) land at wall-clock and stamp rows with
+		// today instead of the simulated instant the fact occurred
+		// (caught 2026-05-22 against credit-expiry — expiry rows
+		// landed at wall-clock today despite catchup running at
+		// sim time).
+		//
+		// Concurrent advance can't race because status='advancing'
+		// is the gate the operator's request hit before enqueueing.
+		var frozen time.Time
+		clk, clkErr := s.store.Get(ctx, job.TenantID, job.ClockID)
+		if clkErr != nil {
+			runErrs = append(runErrs, fmt.Errorf("read clock for catchup: %w", clkErr))
+			// Without frozen_time we can't bind ctx; downstream
+			// phases that need it skip via their own guards.
+		} else {
+			frozen = clk.FrozenTime
+			ctx = clock.WithEffectiveNow(ctx, frozen)
+		}
+		trialExpiryFrozen := frozen
+
 		// Phase 0.5 (Bug #8): flip trialing subs to active at
 		// trial_end_at when sim time has elapsed past it, BEFORE
 		// Phase 1 reads the sub list for cycle billing. Without
@@ -516,21 +542,9 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 		// Also fires BillOnCreate per activated sub so in_advance
 		// items' first paid period is covered at the activation
 		// instant (Bug #6 carry-through).
-		//
-		// Need frozen_time — read the clock now (the dunning /
-		// credit phases below also read it, but we need it earlier).
-		// Concurrent advance can't race because status='advancing'
-		// is the gate the operator's request hit before enqueueing.
-		var trialExpiryFrozen time.Time
-		if s.trialExpirer != nil {
-			clk, clkErr := s.store.Get(ctx, job.TenantID, job.ClockID)
-			if clkErr != nil {
-				runErrs = append(runErrs, fmt.Errorf("read clock for trial-expiry phase: %w", clkErr))
-			} else {
-				trialExpiryFrozen = clk.FrozenTime
-				_, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
-				runErrs = append(runErrs, trialErrs...)
-			}
+		if s.trialExpirer != nil && !trialExpiryFrozen.IsZero() {
+			_, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			runErrs = append(runErrs, trialErrs...)
 		}
 
 		// Phase 0.7: auto-resume any sub whose
@@ -578,20 +592,11 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 		_, chargeErrs := s.billing.RetryPendingChargesForClock(ctx, job.TenantID, job.ClockID, 100)
 		runErrs = append(runErrs, chargeErrs...)
 
-		// Phases 4 and 5 both need frozen_time — read the clock once.
-		// (A concurrent advance can't fire because status='advancing'
-		// is the gate the operator's request hit before enqueuing.)
-		var frozen time.Time
-		needFrozen := s.creditExpirer != nil || s.dunning != nil
-		if needFrozen {
-			clk, clkErr := s.store.Get(ctx, job.TenantID, job.ClockID)
-			if clkErr != nil {
-				runErrs = append(runErrs, fmt.Errorf("read clock for time-anchored phases: %w", clkErr))
-				needFrozen = false
-			} else {
-				frozen = clk.FrozenTime
-			}
-		}
+		// Phases 4 and 5 both need frozen_time — already read once at
+		// the top of the catchup block and bound to ctx via
+		// clock.WithEffectiveNow above; `frozen` is the same value
+		// for the whole job, so we reuse it here rather than re-reading.
+		needFrozen := (s.creditExpirer != nil || s.dunning != nil) && !frozen.IsZero()
 
 		// Phase 4 (ADR-029): credit expiry for grants belonging to
 		// customers pinned to this clock. expires_at compared against

@@ -52,7 +52,19 @@ type ListFilter struct {
 	From       *time.Time
 	To         *time.Time
 	Limit      int
-	Offset     int
+	// Offset-based pagination (legacy path). Mutually exclusive with
+	// AfterTimestamp+AfterID — the cursor path takes precedence when
+	// both are provided.
+	Offset int
+	// Cursor-based pagination (2026-05-29). Seek-method query:
+	// WHERE (timestamp, id) < (AfterTimestamp, AfterID). Both must
+	// be set together; the handler rejects partial cursor sets.
+	// Stable across concurrent inserts at the table's head — offset
+	// pagination page-skewed reliably on usage_events whenever a
+	// cycle close fired between operator pages (per-API-call write
+	// volume = highest of any Velox table).
+	AfterTimestamp time.Time
+	AfterID        string
 }
 
 // Aggregate is the response shape of GET /v1/usage-events/aggregate. It

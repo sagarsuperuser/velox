@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -102,6 +105,42 @@ func (s *PostgresStore) Record(ctx context.Context, tenantID, invoiceID string, 
 		return "", fmt.Errorf("tax: commit tx: %w", err)
 	}
 	return id, nil
+}
+
+// LookupCalculationCreatedAt returns the created_at of the
+// tax_calculations row that matches (tenant, invoice, provider_ref).
+// When the same invoice has been retried (RetryTaxForInvoice writes a
+// new row with a fresh provider_ref), the lookup still uniquely
+// resolves because each retry uses a different upstream calc id —
+// the provider_ref filter pins to the calc whose age is being checked.
+// Returns errs.ErrNotFound when no row matches; CommitTax interprets
+// that as "no audit row, skip the guard" (manual/none provider rows
+// can have empty provider_ref, in which case the guard is meaningless
+// anyway since manual/none Commits are no-ops).
+func (s *PostgresStore) LookupCalculationCreatedAt(ctx context.Context, tenantID, invoiceID, providerRef string) (time.Time, error) {
+	if providerRef == "" {
+		return time.Time{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("tax: begin tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	var createdAt time.Time
+	err = tx.QueryRowContext(ctx, `
+		SELECT created_at FROM tax_calculations
+		WHERE tenant_id = $1 AND invoice_id = $2 AND provider_ref = $3
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, tenantID, invoiceID, providerRef).Scan(&createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("tax: lookup calc created_at: %w", err)
+	}
+	return createdAt, nil
 }
 
 // RecordFromResult is a convenience that derives the CalculationRecord from a

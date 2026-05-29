@@ -61,9 +61,17 @@ type ReversalRequest struct {
 	// by the earlier Commit (Stripe: tx_xxx). Required.
 	OriginalTransactionID string
 
-	// CreditNoteID is used to build a unique upstream reference for the
-	// reversal so retries are idempotent. Stripe requires the reference
-	// be globally unique across all tax_transactions in the account.
+	// Reference is the caller-supplied unique identifier for this
+	// reversal. Stripe requires the reference be globally unique
+	// across all tax_transactions in the account, so callers MUST
+	// supply a value that uniquely identifies the logical reversal
+	// (CN id for credit-note reversals, "inv_void_<id>" for invoice
+	// void reversals). Retries with the same Reference converge.
+	// Falls back to CreditNoteID when empty for back-compat.
+	Reference string
+
+	// CreditNoteID — back-compat field; populated by the credit-note
+	// path. New callers should set Reference directly.
 	CreditNoteID string
 
 	// InvoiceID is for log/audit context only — the reversal targets the

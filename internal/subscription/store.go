@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -188,16 +189,27 @@ type Store interface {
 	// plan_id) prevents a second item with the same plan; the constraint
 	// violation surfaces as errs.ErrAlreadyExists.
 	AddItem(ctx context.Context, tenantID string, item domain.SubscriptionItem) (domain.SubscriptionItem, error)
+	// AddItemTx is the in-transaction variant used by the handler's
+	// atomic AddItem-with-proration flow — the caller owns the tx and
+	// composes the item insert with downstream proration writes so a
+	// failure on either side rolls back both. ADR-030 atomic-proration
+	// follow-through (2026-05-29).
+	AddItemTx(ctx context.Context, tx *sql.Tx, tenantID string, item domain.SubscriptionItem) (domain.SubscriptionItem, error)
 
 	// UpdateItemQuantity mutates only the quantity — plan and pending-change
 	// fields are left untouched. Used for quantity-only PATCH. Returns the
 	// updated item.
 	UpdateItemQuantity(ctx context.Context, tenantID, itemID string, quantity int64) (domain.SubscriptionItem, error)
+	// UpdateItemQuantityTx is the in-transaction variant — same atomicity
+	// rationale as AddItemTx. ADR-030 atomic-proration follow-through.
+	UpdateItemQuantityTx(ctx context.Context, tx *sql.Tx, tenantID, itemID string, quantity int64) (domain.SubscriptionItem, error)
 
 	// ApplyItemPlanImmediately swaps plan_id on the item and stamps
 	// plan_changed_at. Used for immediate plan changes. Clears any pending
 	// change since the caller just superseded it.
 	ApplyItemPlanImmediately(ctx context.Context, tenantID, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error)
+	// ApplyItemPlanImmediatelyTx is the in-transaction variant.
+	ApplyItemPlanImmediatelyTx(ctx context.Context, tx *sql.Tx, tenantID, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error)
 
 	// SetItemPendingPlan schedules a plan change on an item.
 	SetItemPendingPlan(ctx context.Context, tenantID, itemID, pendingPlanID string, effectiveAt time.Time) (domain.SubscriptionItem, error)
@@ -220,6 +232,9 @@ type Store interface {
 	// of the last item would leave a subscription with no priced lines,
 	// which is not a valid state).
 	RemoveItem(ctx context.Context, tenantID, itemID string) error
+	// RemoveItemTx is the in-transaction variant — same atomicity
+	// rationale as AddItemTx.
+	RemoveItemTx(ctx context.Context, tx *sql.Tx, tenantID, itemID string) error
 }
 
 type ListFilter struct {

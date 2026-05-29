@@ -22,14 +22,26 @@ type Store interface {
 	UpsertBillingProfile(ctx context.Context, tenantID string, bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error)
 	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
 
-	UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error)
-	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
+	// SetStripeCustomerID writes the canonical Stripe Customer mapping
+	// onto the customers row (migration 0096). Replaces the older
+	// UpsertPaymentSetup-on-store path that doubled as a 1:1 summary
+	// cache. Card details and default-PM flag now live on
+	// payment_methods rows, written by paymentmethods.Service.
+	SetStripeCustomerID(ctx context.Context, tenantID, customerID, stripeCustomerID string) error
 
 	// MarkEmailBounced records a permanent delivery failure for a customer.
 	// Sender calls this via a narrow interface when SMTP returns a 5xx; the
 	// same path is later reused by provider webhooks (SES/SendGrid) when
 	// wired. Idempotent — repeated calls just refresh the timestamp.
 	MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error
+
+	// ResetEmailStatus clears any prior bounce/complain flag on the
+	// customer — called by the service layer when the email value
+	// changes (operator edit, portal self-edit, billing-profile email
+	// change). Without this reset, a bounced flag on the OLD address
+	// silently suppresses sends to a brand-new untested address via
+	// the email.RecipientSuppressionChecker gate. Idempotent.
+	ResetEmailStatus(ctx context.Context, tenantID, customerID string) error
 
 	// SetCostDashboardToken writes (or rotates) the public cost-dashboard
 	// token on a customer row. Old tokens are discarded immediately —

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
@@ -105,9 +106,28 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 		return err
 	}
 
-	// One link per (tenant, customer). We continue past per-match failures
-	// on purpose: one tenant's broken delivery must not starve another
-	// tenant's legitimate customer of their link.
+	// Industry parity (Stripe customer-portal docs verbatim: "selects
+	// the most recently created customer that has both that email and
+	// an active subscription"): when multiple customers share the
+	// lookup email WITHIN a tenant, silently disambiguate to the
+	// most-recently-created one and send ONE link. Velox is multi-
+	// tenant, so we keep cross-tenant fan-out — a person who is
+	// legitimately a customer of two different merchants still gets
+	// one link per merchant. The dedupe happens within each tenant.
+	//
+	// Customer IDs are xid-based (postgres.NewID), so a string
+	// descending sort is equivalent to created_at descending. No need
+	// to widen the CustomerMatch struct or do a separate fetch.
+	//
+	// Pre-fix (caught 2026-05-25): all matches got their own email,
+	// so a tenant with two customers sharing an email sent two
+	// magic-link emails for one /magic-link request — confusing
+	// recipients and out of step with Stripe + Chargebee shape.
+	dispatch := pickOnePerTenant(matches)
+
+	// We continue past per-match failures on purpose: one tenant's
+	// broken delivery must not starve another tenant's legitimate
+	// customer of their link.
 	//
 	// Each match carries its own livemode — pin it on ctx before downstream
 	// reads. Without this, the per-match Mint and DeliverMagicLink open
@@ -116,7 +136,7 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 	// a misleading "not found" — even though FindByEmailBlindIndex
 	// (TxBypass) just returned the row a few lines earlier. ADR-027 +
 	// the ctx-attribute audit pattern from the test-clock catchup work.
-	for _, m := range matches {
+	for _, m := range dispatch {
 		matchCtx := postgres.WithLivemode(ctx, m.Livemode)
 		mint, err := s.magic.Mint(matchCtx, m.TenantID, m.CustomerID)
 		if err != nil {
@@ -131,6 +151,39 @@ func (s *MagicLinkRequestService) RequestByEmail(ctx context.Context, email stri
 		}
 	}
 	return nil
+}
+
+// pickOnePerTenant collapses multiple CustomerMatch rows that share a
+// tenant down to one — the most-recently-created customer per tenant.
+// Cross-tenant matches are preserved (one link per tenant). Stable
+// across calls: the same input always selects the same head.
+//
+// Selection: customer_id descending (xid-based ids are time-sortable,
+// so this is created_at desc without needing the column).
+func pickOnePerTenant(matches []CustomerMatch) []CustomerMatch {
+	if len(matches) <= 1 {
+		return matches
+	}
+	// Sort: TenantID asc (group), then CustomerID desc (newest first
+	// within tenant). Take the first row from each tenant group.
+	sorted := make([]CustomerMatch, len(matches))
+	copy(sorted, matches)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].TenantID != sorted[j].TenantID {
+			return sorted[i].TenantID < sorted[j].TenantID
+		}
+		return sorted[i].CustomerID > sorted[j].CustomerID
+	})
+	out := make([]CustomerMatch, 0, len(sorted))
+	var lastTenant string
+	for _, m := range sorted {
+		if m.TenantID == lastTenant {
+			continue
+		}
+		out = append(out, m)
+		lastTenant = m.TenantID
+	}
+	return out
 }
 
 // MagicLinkEmailSender is the narrow email surface the delivery needs.

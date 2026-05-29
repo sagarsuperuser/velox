@@ -87,15 +87,12 @@ func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 	stripe := &loopFakeStripe{customerID: "cus_stripe_loop"}
 	svc := paymentmethods.NewService(pmStore, stripe, custStore)
 
-	// Seed the summary row with a Stripe customer ID so EnsureStripeCustomer
-	// can short-circuit (the real adapter would have lazily created one).
-	if _, err := custStore.UpsertPaymentSetup(ctx, tenantID, domain.CustomerPaymentSetup{
-		CustomerID:       cust.ID,
-		TenantID:         tenantID,
-		SetupStatus:      domain.PaymentSetupPending,
-		StripeCustomerID: "cus_stripe_loop",
-	}); err != nil {
-		t.Fatalf("seed payment setup: %v", err)
+	// Seed the canonical Stripe Customer mapping (customers.stripe_customer_id)
+	// so EnsureStripeCustomer can short-circuit. Replaces the old
+	// customer_payment_setups summary seed (migration 0097 dropped the
+	// table).
+	if err := custStore.SetStripeCustomerID(ctx, tenantID, cust.ID, "cus_stripe_loop"); err != nil {
+		t.Fatalf("seed stripe_customer_id: %v", err)
 	}
 
 	// 4. List empty.
@@ -128,16 +125,10 @@ func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 		t.Fatalf("first PM must be default, got is_default=false")
 	}
 
-	// Summary row should now reflect the default card.
-	summary, err := custStore.GetPaymentSetup(ctx, tenantID, cust.ID)
-	if err != nil {
-		t.Fatalf("get summary after first attach: %v", err)
-	}
-	if summary.StripePaymentMethodID != "pm_loop_first" {
-		t.Fatalf("summary pm mismatch: got %q want pm_loop_first", summary.StripePaymentMethodID)
-	}
-	if summary.SetupStatus != domain.PaymentSetupReady {
-		t.Fatalf("summary status: got %q want ready", summary.SetupStatus)
+	// Canonical state: payment_methods row exists with is_default=true.
+	// Summary table was retired; List filters detached_at IS NULL.
+	if pm1.StripePaymentMethodID != "pm_loop_first" {
+		t.Fatalf("attached PM mismatch: got %q want pm_loop_first", pm1.StripePaymentMethodID)
 	}
 
 	// 7. List returns exactly one PM.
@@ -173,12 +164,8 @@ func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 	if !promoted.IsDefault {
 		t.Fatalf("promoted PM should be default")
 	}
-	summary, err = custStore.GetPaymentSetup(ctx, tenantID, cust.ID)
-	if err != nil {
-		t.Fatalf("get summary after set-default: %v", err)
-	}
-	if summary.StripePaymentMethodID != "pm_loop_second" {
-		t.Fatalf("summary should track new default; got %q", summary.StripePaymentMethodID)
+	if promoted.StripePaymentMethodID != "pm_loop_second" {
+		t.Fatalf("promoted should be pm_loop_second; got %q", promoted.StripePaymentMethodID)
 	}
 
 	// 10. Detach current default — the older PM auto-promotes.
@@ -195,13 +182,8 @@ func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 	if len(pms) != 1 || pms[0].ID != pm1.ID || !pms[0].IsDefault {
 		t.Fatalf("expected pm1 to be sole, default-promoted PM; got %+v", pms)
 	}
-	summary, err = custStore.GetPaymentSetup(ctx, tenantID, cust.ID)
-	if err != nil {
-		t.Fatalf("get summary after promote-on-detach: %v", err)
-	}
-	if summary.StripePaymentMethodID != "pm_loop_first" {
-		t.Fatalf("summary should reflect auto-promoted pm1; got %q", summary.StripePaymentMethodID)
-	}
+	// Canonical state assertion lives on the List output above —
+	// pm1 promoted, is_default=true. No more summary to check.
 
 	// 11. Detach the last PM — summary should clear back to missing.
 	if _, err := svc.Detach(ctx, tenantID, cust.ID, pm1.ID); err != nil {
@@ -214,19 +196,119 @@ func TestFullLoop_PortalCustomer_E2E(t *testing.T) {
 	if len(pms) != 0 {
 		t.Fatalf("expected 0 PMs after final detach, got %d", len(pms))
 	}
-	summary, err = custStore.GetPaymentSetup(ctx, tenantID, cust.ID)
+	// All PMs detached → List returns 0 (canonical state). No more
+	// summary row to check; billing.PaymentReadiness reads the same
+	// canonical source and will return hasDefaultPM=false here.
+}
+
+// TestAttach_DedupesByFingerprint exercises the migration-0099
+// dedupe-by-fingerprint behavior. Stripe mints a fresh PaymentMethod
+// every time a customer completes Checkout, even for the same card
+// number — without dedupe the portal renders Visa-4242 twice. The
+// store collapses these on attach using card.fingerprint as the
+// dedupe key.
+//
+// Scenario:
+//  1. Attach pm_first (fingerprint=fp_A) → becomes default.
+//  2. Re-attach pm_second with SAME fingerprint fp_A → old row is
+//     detached, new row inherits is_default=true. List returns 1.
+//  3. Attach pm_third with DIFFERENT fingerprint fp_B → 2 rows, the
+//     existing one stays default, the new one is non-default.
+func TestAttach_DedupesByFingerprint(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 20*time.Second)
+	defer cancel()
+
+	tenantID := testutil.CreateTestTenant(t, db, "dedupe-test")
+	custStore := customer.NewPostgresStore(db)
+	cust, err := custStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_dedupe", DisplayName: "Dedupe Co", Email: "x@dedupe.test",
+	})
 	if err != nil {
-		t.Fatalf("get summary after final detach: %v", err)
+		t.Fatalf("create customer: %v", err)
 	}
-	if summary.SetupStatus != domain.PaymentSetupMissing {
-		t.Fatalf("summary status should be missing after all PMs detached; got %q", summary.SetupStatus)
+
+	pmStore := paymentmethods.NewPostgresStore(db)
+	stripe := &dedupeFakeStripe{}
+	svc := paymentmethods.NewService(pmStore, stripe, custStore)
+	if err := custStore.SetStripeCustomerID(ctx, tenantID, cust.ID, "cus_stripe_dedupe"); err != nil {
+		t.Fatalf("seed stripe customer: %v", err)
 	}
-	if summary.DefaultPaymentMethodPresent {
-		t.Fatalf("summary default_present should be false after all PMs detached")
+
+	// 1. First attach — pm_first, fingerprint fp_A.
+	stripe.next = paymentmethods.CardMetadata{Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030, Fingerprint: "fp_A"}
+	pm1, err := svc.AttachFromSetupIntent(ctx, tenantID, cust.ID, "pm_first")
+	if err != nil {
+		t.Fatalf("attach first: %v", err)
 	}
-	if summary.StripePaymentMethodID != "" {
-		t.Fatalf("summary stripe pm should be cleared; got %q", summary.StripePaymentMethodID)
+	if !pm1.IsDefault {
+		t.Fatalf("first PM must be default")
 	}
+
+	// 2. Re-attach same card under a NEW Stripe PM id but SAME
+	// fingerprint — Stripe-realistic for "customer clicked Add again
+	// with the same card". Should dedupe: pm_first detached, pm_second
+	// inherits is_default=true. List size stays at 1.
+	stripe.next = paymentmethods.CardMetadata{Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030, Fingerprint: "fp_A"}
+	pm2, err := svc.AttachFromSetupIntent(ctx, tenantID, cust.ID, "pm_second")
+	if err != nil {
+		t.Fatalf("attach second (dedupe): %v", err)
+	}
+	if !pm2.IsDefault {
+		t.Fatalf("re-attached PM must inherit is_default=true from the detached duplicate; got false")
+	}
+	pms, err := svc.List(ctx, tenantID, cust.ID)
+	if err != nil {
+		t.Fatalf("list after dedupe: %v", err)
+	}
+	if len(pms) != 1 {
+		t.Fatalf("dedupe should leave exactly 1 active PM; got %d", len(pms))
+	}
+	if pms[0].StripePaymentMethodID != "pm_second" {
+		t.Fatalf("active PM should be pm_second; got %q", pms[0].StripePaymentMethodID)
+	}
+
+	// 3. Attach a genuinely different card — different fingerprint.
+	// No dedupe should fire. Existing pm_second stays default;
+	// pm_third is the second non-default row.
+	stripe.next = paymentmethods.CardMetadata{Brand: "mastercard", Last4: "5555", ExpMonth: 6, ExpYear: 2031, Fingerprint: "fp_B"}
+	pm3, err := svc.AttachFromSetupIntent(ctx, tenantID, cust.ID, "pm_third")
+	if err != nil {
+		t.Fatalf("attach third (different card): %v", err)
+	}
+	if pm3.IsDefault {
+		t.Fatalf("third PM (different card) must NOT steal default; existing default wins")
+	}
+	pms, err = svc.List(ctx, tenantID, cust.ID)
+	if err != nil {
+		t.Fatalf("list after third attach: %v", err)
+	}
+	if len(pms) != 2 {
+		t.Fatalf("different-card attach should add a row; got %d active", len(pms))
+	}
+}
+
+// dedupeFakeStripe lets the test inject different CardMetadata per
+// AttachFromSetupIntent call by mutating .next between calls.
+type dedupeFakeStripe struct {
+	next paymentmethods.CardMetadata
+}
+
+func (f *dedupeFakeStripe) EnsureStripeCustomer(_ context.Context, _, _ string) (string, error) {
+	return "cus_stripe_dedupe", nil
+}
+func (f *dedupeFakeStripe) CreateSetupIntent(_ context.Context, _ string, _ map[string]string) (string, string, error) {
+	return "seti_secret_dedupe", "seti_dedupe", nil
+}
+func (f *dedupeFakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _, _ string, _ map[string]string) (string, string, error) {
+	return "https://checkout.stripe.com/dedupe", "cs_dedupe", nil
+}
+func (f *dedupeFakeStripe) DetachPaymentMethod(_ context.Context, _ string) error { return nil }
+func (f *dedupeFakeStripe) FetchPaymentMethodCard(_ context.Context, _ string) (paymentmethods.CardMetadata, error) {
+	return f.next, nil
+}
+func (f *dedupeFakeStripe) SetDefaultPaymentMethod(_ context.Context, _, _, _ string) error {
+	return nil
 }
 
 // loopFakeStripe satisfies paymentmethods.StripeAPI for the integration
@@ -246,7 +328,7 @@ func (f *loopFakeStripe) CreateSetupIntent(_ context.Context, _ string, _ map[st
 	f.setupIntentCalls++
 	return "seti_secret_loop", "seti_loop", nil
 }
-func (f *loopFakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _ string, _ map[string]string) (string, string, error) {
+func (f *loopFakeStripe) CreateSetupCheckoutSession(_ context.Context, _, _, _ string, _ map[string]string) (string, string, error) {
 	f.setupSessionCalls++
 	return "https://checkout.stripe.com/loop", "cs_loop", nil
 }
@@ -254,15 +336,19 @@ func (f *loopFakeStripe) DetachPaymentMethod(_ context.Context, _ string) error 
 	f.detachCalls++
 	return nil
 }
-func (f *loopFakeStripe) FetchPaymentMethodCard(_ context.Context, pmID string) (string, string, int, int, error) {
-	// Yield distinct-but-deterministic metadata per PM so the summary row
-	// can be inspected for correctness.
+func (f *loopFakeStripe) FetchPaymentMethodCard(_ context.Context, pmID string) (paymentmethods.CardMetadata, error) {
+	// Yield distinct-but-deterministic metadata per PM. Each loop
+	// PM gets a distinct fingerprint so the integration test
+	// exercises the no-dedupe path (different physical cards).
 	switch pmID {
 	case "pm_loop_first":
-		return "visa", "4242", 12, 2030, nil
+		return paymentmethods.CardMetadata{Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030, Fingerprint: "fp_loop_first"}, nil
 	case "pm_loop_second":
-		return "mastercard", "5555", 6, 2031, nil
+		return paymentmethods.CardMetadata{Brand: "mastercard", Last4: "5555", ExpMonth: 6, ExpYear: 2031, Fingerprint: "fp_loop_second"}, nil
 	default:
-		return "visa", "0000", 1, 2030, nil
+		return paymentmethods.CardMetadata{Brand: "visa", Last4: "0000", ExpMonth: 1, ExpYear: 2030, Fingerprint: "fp_loop_default"}, nil
 	}
+}
+func (f *loopFakeStripe) SetDefaultPaymentMethod(_ context.Context, _, _, _ string) error {
+	return nil
 }

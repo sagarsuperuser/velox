@@ -24,10 +24,19 @@ type PaymentMethod struct {
 	CardLast4             string
 	CardExpMonth          int
 	CardExpYear           int
-	IsDefault             bool
-	DetachedAt            *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// CardFingerprint is Stripe's stable hash of the card number
+	// (CVC + expiry don't affect it). Same physical card → same
+	// fingerprint across re-tokenizations. Used by Upsert to dedupe:
+	// if a customer re-runs Add and produces a PM with the same
+	// fingerprint as an existing active row, the old row is detached
+	// and the new one inherits its is_default flag. Empty for legacy
+	// rows attached before the fingerprint plumbing existed (will
+	// re-collapse the next time the customer re-attaches the card).
+	CardFingerprint string
+	IsDefault       bool
+	DetachedAt      *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // IsActive — convenience for "attached and usable".
