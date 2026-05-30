@@ -1,12 +1,26 @@
 # Velox Phase B Roadmap — AI-native primitives
 
-**Status:** Draft (2026-05-30)
+**Status:** Deferred (2026-05-30) — Phase B is on hold pending
+completion of the MANUAL_TEST.md sweep. The operator is running
+through every FLOW in the manual test doc end-to-end to surface
+regressions and stale assertions before opening any new build
+track. Resume B1 design pass after the manual sweep closes.
+
 **Context:** Phase A1 (coupons cut, ADR-039) shipped. Phase B
 implements the AI-native primitives that close the gap between Velox
 and the AI-native peer set (Orb / Metronome / Lago / Stripe Token
 Billing). Each B-item is sized for its own design + ship session;
 this doc captures sequencing so the next session has a clean starting
 point.
+
+**Demo-leverage ranking** (for when Phase B resumes):
+1. B1 — LLM provider cost-table ingestion (highest; flips pitch
+   from "generic usage billing" to "AI-native billing")
+2. B2 — Embeddable cost dashboard + JWT (closing emotional beat;
+   verify existing React component first)
+3. B3 (auto-recharge half) — closing demo beat; defer commits-
+   and-draw-down until enterprise DP names it
+4. B4 — Price-book versioning — nice-to-have, not load-bearing
 
 ## Sequencing rationale
 

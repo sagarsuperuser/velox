@@ -227,32 +227,28 @@ func serve() {
 		recoveryCancel()
 	}
 
-	// Outbox dispatcher: drains webhook_outbox → Service.Dispatch. Only runs
-	// when the outbox producer path is enabled (VELOX_WEBHOOK_OUTBOX_ENABLED
-	// is unset or "true"); when legacy direct-dispatch is selected, rows are
-	// never enqueued so the worker would poll against an empty table forever.
-	if server.OutboxEnabled {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			dispatcher := webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{})
-			dispatcher.SetLocker(server.OutboxStore)
-			dispatcher.Start(ctx)
-		}()
-	}
+	// Outbox dispatchers (always-on per ADR-040). Webhook outbox drains
+	// webhook_outbox → Service.Dispatch; email outbox drains email_outbox
+	// → *email.Sender. The dispatchers gate each tick on a cluster-wide
+	// advisory lock (postgres.LockKeyWebhookDispatcher / LockKeyEmailDispatcher)
+	// so multi-replica deploys stay safe — only one replica drains at a
+	// time. Operators who need to pause delivery can hold the lock from
+	// an external psql session; restart isn't required.
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		dispatcher := webhook.NewDispatcher(server.OutboxStore, server.WebhookOutSvc, webhook.DispatcherConfig{})
+		dispatcher.SetLocker(server.OutboxStore)
+		dispatcher.Start(ctx)
+	}()
 
-	// Email dispatcher: drains email_outbox → *email.Sender. Mirrors the
-	// webhook outbox worker. Only runs when the email outbox producer path
-	// is enabled (VELOX_EMAIL_OUTBOX_ENABLED is unset or "true").
-	if server.EmailOutboxEnabled {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			dispatcher := email.NewDispatcher(server.EmailOutboxStore, server.EmailSender, email.DispatcherConfig{})
-			dispatcher.SetLocker(server.EmailOutboxStore)
-			dispatcher.Start(ctx)
-		}()
-	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		dispatcher := email.NewDispatcher(server.EmailOutboxStore, server.EmailSender, email.DispatcherConfig{})
+		dispatcher.SetLocker(server.EmailOutboxStore)
+		dispatcher.Start(ctx)
+	}()
 
 	go func() {
 		slog.Info("listening", "addr", srv.Addr)

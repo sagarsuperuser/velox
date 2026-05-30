@@ -252,8 +252,8 @@ func TestEmailOutbox_ProcessBatch_DLQ(t *testing.T) {
 // TestEmailOutbox_OutboxSender_RoundTrip is the end-to-end producer → row →
 // dispatcher check: OutboxSender persists an invoice email, then the
 // dispatcher's handler drains it and the matching Send* method is called
-// with the expected arguments. This is the contract the refactored router
-// relies on when VELOX_EMAIL_OUTBOX_ENABLED is true.
+// with the expected arguments. This is the always-on production contract
+// per ADR-040 — no env flag, no direct-SMTP fallback.
 func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)

@@ -640,15 +640,13 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	// send, but it also voided every retry guarantee: a transient
 	// failure (Postmark 5xx, SMTP timeout) silently dropped the
 	// receipt because nothing observed the error past the goroutine's
-	// log line. With the outbox path (s.emailReceipt is *OutboxSender
-	// in production), SendPaymentReceipt is a fast DB INSERT — there's
-	// no slow SMTP to detach from, and the dispatcher's retry loop
-	// owns delivery + backoff. Direct-SMTP fallback is operator-opt-in
-	// (VELOX_EMAIL_OUTBOX_ENABLED=false) and already flagged as a
-	// retry-less mode in the router boot WARN. Failure here logs but
-	// doesn't fail the webhook — the payment already committed, and
-	// returning an error would make Stripe retry the whole event
-	// (re-firing MarkPaid + double-firing the customer-facing event).
+	// log line. s.emailReceipt is always *OutboxSender now (ADR-040
+	// cut the direct-SMTP-from-producer path), so SendPaymentReceipt
+	// is a fast DB INSERT and the dispatcher's retry loop owns delivery
+	// + backoff. Failure here logs but doesn't fail the webhook — the
+	// payment already committed, and returning an error would make
+	// Stripe retry the whole event (re-firing MarkPaid + double-firing
+	// the customer-facing event).
 	if s.emailReceipt != nil && s.customerEmail != nil {
 		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 		if err != nil || email == "" {
