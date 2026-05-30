@@ -463,67 +463,50 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceFinalized, inv)
 
-	// Send invoice email with PDF asynchronously.
-	//
-	// Bounded context (60s): if PDF render, DB reads, or SMTP send hangs,
-	// the goroutine gives up and logs rather than leaking forever. The
-	// invoice is already finalized — customers can still download the PDF
-	// from the portal if email fails.
-	//
-	// context.WithoutCancel detaches from the request context so the email
-	// job survives the HTTP handler returning.
-	{
-		emailCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 60*time.Second)
-		go func() {
-			defer cancel()
-			cust, err := h.customers.Get(emailCtx, tenantID, inv.CustomerID)
-			if err != nil || cust.Email == "" {
-				slog.WarnContext(emailCtx, "skip invoice email — cannot resolve customer email",
-					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-				return
+	// Send invoice email with PDF — inline. Pre-2026-05-30 this ran in a
+	// detached goroutine bounded to 60s. The pattern existed to keep the
+	// HTTP response fast (PDF render is ~1-3s CPU-bound), but it voided
+	// the outbox retry guarantee identically to the receipt-email
+	// goroutine fixed earlier in this audit: a failed enqueue, render,
+	// or SMTP send disappeared past the goroutine's log line. With the
+	// always-on outbox path (ADR-040), SendInvoice is a fast DB INSERT
+	// once the PDF is rendered; the dispatcher owns delivery + retry.
+	// Operator finalize is interactive (one click → 200), so the ~2s
+	// render latency is acceptable in exchange for observable enqueue
+	// failure. If render or enqueue fails, log WARN — the invoice is
+	// already durably finalized, customers can fetch the PDF from the
+	// portal, and the operator gets a signal via the error log instead
+	// of silent loss.
+	cust, custErr := h.customers.Get(r.Context(), tenantID, inv.CustomerID)
+	if custErr != nil || cust.Email == "" {
+		slog.WarnContext(r.Context(), "skip invoice email — cannot resolve customer email",
+			"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", custErr)
+	} else {
+		email := cust.Email
+		name := cust.DisplayName
+		// customers.email is the single canonical recipient (Phase 1
+		// of the dual-email collapse, migration 0100). LegalName
+		// fallback to BP stays — that's a document-display field,
+		// not a send target.
+		if bp, err := h.customers.GetBillingProfile(r.Context(), tenantID, inv.CustomerID); err == nil {
+			if bp.LegalName != "" {
+				name = bp.LegalName
 			}
-			email := cust.Email
-			name := cust.DisplayName
-			// customers.email is the single canonical recipient (Phase 1
-			// of the dual-email collapse, migration 0100). LegalName
-			// fallback to BP stays — that's a document-display field,
-			// not a send target.
-			if bp, err := h.customers.GetBillingProfile(emailCtx, tenantID, inv.CustomerID); err == nil {
-				if bp.LegalName != "" {
-					name = bp.LegalName
-				}
-			}
-			_, items, err := h.svc.GetWithLineItems(emailCtx, tenantID, inv.ID)
-			if err != nil {
-				slog.WarnContext(emailCtx, "skip invoice email — cannot fetch line items",
-					"invoice_id", inv.ID, "error", err)
-				return
-			}
-			// RenderPDF is CPU-bound and not ctx-aware. Check ctx before+after
-			// so we don't waste a render when the deadline already passed, and
-			// so we don't send a stale email if it did.
-			if err := emailCtx.Err(); err != nil {
-				slog.WarnContext(emailCtx, "skip invoice email — deadline reached before PDF render",
-					"invoice_id", inv.ID, "error", err)
-				return
-			}
+		}
+		if _, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, inv.ID); err != nil {
+			slog.WarnContext(r.Context(), "skip invoice email — cannot fetch line items",
+				"invoice_id", inv.ID, "error", err)
+		} else {
 			bt := BillToInfo{Name: name, Email: email}
-			pdfBytes, err := RenderPDF(emailCtx, inv, items, bt, nil, CompanyInfo{})
+			pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, nil, CompanyInfo{})
 			if err != nil {
-				slog.WarnContext(emailCtx, "skip invoice email — PDF render failed",
+				slog.WarnContext(r.Context(), "skip invoice email — PDF render failed",
 					"invoice_id", inv.ID, "error", err)
-				return
-			}
-			if err := emailCtx.Err(); err != nil {
-				slog.WarnContext(emailCtx, "skip invoice email — deadline reached after PDF render",
-					"invoice_id", inv.ID, "error", err)
-				return
-			}
-			if err := h.emailSender.SendInvoice(emailCtx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
-				slog.ErrorContext(emailCtx, "failed to send invoice email",
+			} else if err := h.emailSender.SendInvoice(r.Context(), tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
+				slog.ErrorContext(r.Context(), "failed to enqueue invoice email",
 					"invoice_id", inv.ID, "email", email, "error", err)
 			}
-		}()
+		}
 	}
 
 	// Auto-charge: if customer has a payment method, create PaymentIntent
