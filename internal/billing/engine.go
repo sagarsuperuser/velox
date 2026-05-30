@@ -2251,10 +2251,22 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// Skip during pause_collection — credits should not be consumed against a
 	// draft invoice that may never be finalized; the credit will apply when
 	// collection resumes and the invoice transitions out of draft.
+	//
+	// Pre-fix bug (caught 2026-05-30 design-debt audit): a DB blip in
+	// ApplyToInvoiceAt would log + continue, then the auto-charge block
+	// below would charge Stripe the FULL pre-credit total — silently
+	// overcharging the customer by the credit balance amount. Fix:
+	// flag the invoice for scheduler retry and skip the downstream
+	// MarkPaid + auto-charge blocks so the next RetryPendingCharges
+	// tick can re-apply credits atomically with the charge.
+	creditApplyOK := true
 	if e.credits != nil && totalWithTax > 0 && !collectionPaused {
 		credited, err := e.credits.ApplyToInvoiceAt(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, now, inv.InvoiceNumber)
 		if err != nil {
-			slog.Warn("failed to apply credits", "invoice_id", inv.ID, "error", err)
+			slog.Warn("failed to apply credits — flagging for retry; auto-charge skipped to avoid overcharge",
+				"invoice_id", inv.ID, "error", err)
+			creditApplyOK = false
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 		} else if credited > 0 {
 			slog.Info("credits applied to invoice",
 				"invoice_id", inv.ID,
@@ -2278,7 +2290,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// to paid. The customer was charged subtotal-only (tax_amount=0)
 	// and tax retry blocked forever (retry requires status='draft',
 	// but status was 'paid'). Customer DEMO-000906 demonstrated.
-	if totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
+	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			// Reuse the sub-scoped `now` so fully-credit-paid invoices on a
@@ -2306,7 +2318,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// charging it would be a state-violation; dunning is also off the table
 	// because finalize hasn't happened. This is the Stripe-parity behavior:
 	// pause_collection neuters the financial side without touching the cycle.
-	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
+	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
 		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
 		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
 
