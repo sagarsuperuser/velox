@@ -24,7 +24,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/customerportal"
-	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/feature"
@@ -82,14 +81,12 @@ type Server struct {
 
 	// Exported for main.go to wire the billing scheduler + dunning
 	BillingEngine      *billing.Engine
-	DunningSvc         *dunning.Service
-	SettingsStore      *tenant.SettingsStore
-	WebhookOutSvc      *webhook.Service
-	OutboxStore        *webhook.OutboxStore
-	OutboxEnabled      bool
-	EmailOutboxStore   *email.OutboxStore
-	EmailOutboxEnabled bool
-	EmailSender        *email.Sender
+	DunningSvc       *dunning.Service
+	SettingsStore    *tenant.SettingsStore
+	WebhookOutSvc    *webhook.Service
+	OutboxStore      *webhook.OutboxStore
+	EmailOutboxStore *email.OutboxStore
+	EmailSender      *email.Sender
 	CreditSvc          *credit.Service
 	InvoiceSvc         *invoice.Service
 	SubscriptionSvc    *subscription.Service
@@ -239,21 +236,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	webhookOutSvc := webhook.NewService(webhookOutStore, nil)
 	webhookOutH := webhook.NewHandler(webhookOutSvc)
 
-	// Transactional outbox for outbound events (RES-1). When enabled, producers
-	// persist an event intent to webhook_outbox before returning; a background
-	// Dispatcher drains the queue and calls Service.Dispatch for each row.
-	// Crashes between business-op commit and event emission can no longer
-	// silently lose events. Disable via VELOX_WEBHOOK_OUTBOX_ENABLED=false for
-	// emergency rollback to the legacy direct-dispatch path.
+	// Transactional outbox for outbound events (RES-1). Producers persist an
+	// event intent to webhook_outbox inside the business-op transaction; the
+	// dispatcher worker (cmd/velox/main.go) drains the queue and calls
+	// Service.Dispatch for each row. Always-on per ADR-040 — the legacy
+	// direct-dispatch fallback (VELOX_WEBHOOK_OUTBOX_ENABLED=false) was cut
+	// 2026-05-30 since it voided every retry guarantee and was unreachable
+	// by any operator pressure.
 	outboxStore := webhook.NewOutboxStore(db)
-	outboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_WEBHOOK_OUTBOX_ENABLED"))) != "false"
-	var eventDispatcher domain.EventDispatcher = webhookOutSvc
-	if outboxEnabled {
-		eventDispatcher = webhook.NewOutboxDispatcher(outboxStore)
-		slog.Info("webhook outbox enabled — producers will enqueue events via webhook_outbox")
-	} else {
-		slog.Warn("webhook outbox DISABLED — using legacy direct-dispatch path (set VELOX_WEBHOOK_OUTBOX_ENABLED=true to re-enable)")
-	}
+	eventDispatcher := webhook.NewOutboxDispatcher(outboxStore)
 	subH.SetEventDispatcher(eventDispatcher)
 	// Trial-expiry phases (catchup orchestrator + wall-clock cron)
 	// fire subscription.trial_ended via the subscription Service —
@@ -418,12 +409,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 
-	// Email sender. When the email outbox is enabled (default), producers
-	// enqueue into email_outbox via OutboxSender instead of calling SMTP
-	// directly; a background Dispatcher drains the queue. This makes email
-	// delivery durable across crashes and transient SMTP failures, and gives
-	// operators a DLQ to inspect. Set VELOX_EMAIL_OUTBOX_ENABLED=false to
-	// fall back to the direct-SMTP path for emergency rollback.
+	// Email sender. Producers always enqueue into email_outbox via
+	// OutboxSender; the dispatcher worker (cmd/velox/main.go) drains the
+	// queue and invokes the direct *email.Sender below for the actual
+	// SMTP round-trip. This makes email delivery durable across crashes
+	// and transient SMTP failures, and gives operators a DLQ to inspect.
+	// The legacy direct-SMTP-from-producer path (VELOX_EMAIL_OUTBOX_ENABLED
+	// =false) was cut 2026-05-30 per ADR-040 — same shape as the webhook
+	// outbox cut above.
 	emailSender := email.NewSender()
 	// Wire tenant settings so customer-facing emails pull per-tenant
 	// branding (logo, brand color, company name, support URL). Cold-start
@@ -472,51 +465,25 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// signal that replaces the prior client-side timestamp-vs-wall-
 	// clock heuristic.
 	invoiceH.SetSubscriptionClockReader(subStore)
-	emailOutboxEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("VELOX_EMAIL_OUTBOX_ENABLED"))) != "false"
-
-	// Any one of the seven domain email interfaces; all are satisfied
-	// by both *email.Sender and *email.OutboxSender, so we pick once
-	// and wire the same value everywhere. passwordResetEmail is the
-	// shared concrete reference we'll wrap via an adapter to satisfy
-	// user.EmailSender's narrower 2-arg signature.
+	// One OutboxSender wired everywhere. The seven typed interface vars
+	// below are the per-domain views that satisfy each consumer's narrow
+	// surface; concretely they're all the same OutboxSender instance.
+	// emailOutboxSenderRef is the shared reference the blinder-wiring
+	// block further below attaches the suppression-checker to.
+	outboxSender := email.NewOutboxSender(emailOutboxStore)
+	emailOutboxSenderRef := outboxSender
 	var (
-		invoiceEmail       invoice.EmailSender
-		dunningEmail       dunning.EmailNotifier
-		receiptEmail       payment.EmailReceipt
-		paymentSetupEmail  paymentSetupEmailSender    // finalize-no-PM trigger
-		paymentFailedEmail payment.EmailPaymentFailed // post-decline trigger (same shape as dunning)
-		magicLinkEmail     customerportal.MagicLinkEmailSender
+		invoiceEmail       invoice.EmailSender                = outboxSender
+		dunningEmail       dunning.EmailNotifier              = outboxSender
+		receiptEmail       payment.EmailReceipt               = outboxSender
+		paymentSetupEmail  paymentSetupEmailSender            = outboxSender
+		paymentFailedEmail payment.EmailPaymentFailed         = outboxSender
+		magicLinkEmail     customerportal.MagicLinkEmailSender = outboxSender
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
-		}
-		// setupLinkEmail is the operator-initiated "Send setup email"
-		// path on CustomerDetail. Routed through the outbox just like
-		// every other email producer — operator gets a queued
-		// confirmation, retries + DLQ kick in on SMTP failure. Direct
-		// SMTP only when the outbox feature flag is off.
-		setupLinkEmail paymentmethods.SetupLinkEmailer
+		} = outboxSender
+		setupLinkEmail paymentmethods.SetupLinkEmailer = outboxSender
 	)
-	// emailOutboxSenderRef captures the OutboxSender at the outer scope
-	// so the blinder-wiring block further below can attach the
-	// suppression-checker to it. nil when the feature flag is off.
-	var emailOutboxSenderRef *email.OutboxSender
-	if emailOutboxEnabled {
-		outboxSender := email.NewOutboxSender(emailOutboxStore)
-		emailOutboxSenderRef = outboxSender
-		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = outboxSender, outboxSender, outboxSender, outboxSender
-		paymentSetupEmail = outboxSender
-		paymentFailedEmail = outboxSender
-		passwordResetEmail = outboxSender
-		setupLinkEmail = outboxSender
-		slog.Info("email outbox enabled — producers will enqueue emails via email_outbox")
-	} else {
-		invoiceEmail, dunningEmail, receiptEmail, magicLinkEmail = emailSender, emailSender, emailSender, emailSender
-		paymentSetupEmail = emailSender
-		paymentFailedEmail = emailSender
-		passwordResetEmail = emailSender
-		setupLinkEmail = emailSender
-		slog.Warn("email outbox DISABLED — using direct-SMTP path (set VELOX_EMAIL_OUTBOX_ENABLED=true to re-enable)")
-	}
 	invoiceH.SetEmailSender(invoiceEmail)
 	customerEmailAdapter := &customerEmailFetcherAdapter{store: customerStore}
 	dunningSvc.SetEmailNotifier(dunningEmail)
@@ -935,15 +902,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	s := &Server{
-		BillingEngine:      engine,
-		DunningSvc:         dunningSvc,
-		SettingsStore:      settingsStore,
-		WebhookOutSvc:      webhookOutSvc,
-		OutboxStore:        outboxStore,
-		OutboxEnabled:      outboxEnabled,
-		EmailOutboxStore:   emailOutboxStore,
-		EmailOutboxEnabled: emailOutboxEnabled,
-		EmailSender:        emailSender,
+		BillingEngine:    engine,
+		DunningSvc:       dunningSvc,
+		SettingsStore:    settingsStore,
+		WebhookOutSvc:    webhookOutSvc,
+		OutboxStore:      outboxStore,
+		EmailOutboxStore: emailOutboxStore,
+		EmailSender:      emailSender,
 		CreditSvc:          creditSvc,
 		InvoiceSvc:         invoiceSvc,
 		SubscriptionSvc:    subSvc,
