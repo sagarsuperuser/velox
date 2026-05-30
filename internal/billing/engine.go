@@ -3228,14 +3228,23 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	// credit when in doubt" matches feedback_billing_accuracy.
 	if e.invoices != nil {
 		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
-		if lookupErr != nil {
-			slog.WarnContext(ctx, "cancel proration: source in_advance invoice not found; skipping credit grant",
+		if errors.Is(lookupErr, errs.ErrNotFound) {
+			// Legitimate "no in_advance base invoice for this period" —
+			// the customer was never billed for the period (e.g. trial
+			// period being canceled). No refund credit to grant; skip
+			// cleanly.
+			slog.InfoContext(ctx, "cancel proration: no in_advance invoice for period; no credit to grant",
 				"subscription_id", sub.ID,
 				"customer_id", sub.CustomerID,
 				"period_start", periodStart,
-				"error", lookupErr,
 			)
 			return 0, nil
+		}
+		if lookupErr != nil {
+			// Real lookup error (DB blip, etc.) — fail loud rather than
+			// silently shortchange the customer (2026-05-30 design-debt
+			// audit Tier 1 #6).
+			return 0, fmt.Errorf("cancel proration: lookup source invoice: %w", lookupErr)
 		}
 		if src.PaymentStatus != domain.PaymentSucceeded {
 			slog.InfoContext(ctx, "cancel proration: source in_advance invoice not paid; skipping credit grant",
@@ -3354,14 +3363,21 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 
 	if e.invoices != nil {
 		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
-		if lookupErr != nil {
-			slog.WarnContext(ctx, "plan-swap refund: source in_advance invoice not found; skipping credit grant",
+		if errors.Is(lookupErr, errs.ErrNotFound) {
+			// Legitimate "no in_advance base invoice for this period" —
+			// the customer was never billed for the period. Skip cleanly.
+			slog.InfoContext(ctx, "plan-swap refund: no in_advance invoice for period; no credit to grant",
 				"subscription_id", sub.ID,
 				"customer_id", sub.CustomerID,
 				"period_start", periodStart,
-				"error", lookupErr,
 			)
 			return 0, nil
+		}
+		if lookupErr != nil {
+			// Real lookup error (DB blip, etc.) — fail loud rather than
+			// silently shortchange the customer (2026-05-30 design-debt
+			// audit Tier 1 #6).
+			return 0, fmt.Errorf("plan-swap refund: lookup source invoice: %w", lookupErr)
 		}
 		if src.PaymentStatus != domain.PaymentSucceeded {
 			slog.InfoContext(ctx, "plan-swap refund: source in_advance invoice not paid; skipping credit grant",
