@@ -151,19 +151,17 @@ type Request struct {
 
 	// OnFailure selects the provider's behaviour when a transient error
 	// prevents a real calculation (Stripe API outage, missing credentials,
-	// missing customer country). "block" makes the provider return the error
-	// unchanged so the engine can defer the invoice for later retry.
-	// "fallback_manual" (or empty, for backwards compatibility) keeps the
-	// legacy behaviour of silently substituting the configured manual rate.
+	// missing customer country). Post-ADR-041 only "block" is valid — the
+	// provider returns the error unchanged so the engine can defer the
+	// invoice to tax_status=pending for TaxRetrier to pick up. The legacy
+	// "fallback_manual" value is removed; existing tenants are migrated
+	// to "block" by the 0103 migration. The field is retained on Request
+	// for forward-compat (e.g. future defer_with_delay shapes).
 	OnFailure string
 }
 
-// Failure-policy values copied onto Request.OnFailure. Kept as constants so
-// callers don't misspell the string literals.
-const (
-	OnFailureBlock          = "block"
-	OnFailureFallbackManual = "fallback_manual"
-)
+// OnFailureBlock is the only valid OnFailure value post-ADR-041.
+const OnFailureBlock = "block"
 
 // RequestLine is one line item passed to the provider for taxation.
 type RequestLine struct {

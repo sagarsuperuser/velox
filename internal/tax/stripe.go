@@ -17,13 +17,12 @@ import (
 
 // stripeTaxOutcomes counts non-happy-path outcomes from StripeTaxProvider
 // by outcome class and reason. Operators alert on it to catch Stripe Tax
-// becoming silently unusable — either the legacy fallback path ("fallback")
-// or the new defer path ("deferred") triggered by the block-and-retry
-// policy on the tenant.
+// becoming unusable — the engine defers the invoice to tax_status=pending
+// and the TaxRetrier reconciler picks it up on the next tick.
 //
 // Labels:
 //
-//	outcome ∈ {fallback, deferred}
+//	outcome ∈ {deferred}            (post-ADR-041; legacy "fallback" cut 2026-05-30)
 //	reason  ∈ {no_country, no_client_for_mode, api_error}
 //
 // Happy-path calculations (successful Stripe Tax calls, exempt, reverse-charge)
@@ -33,7 +32,7 @@ var stripeTaxOutcomes *prometheus.CounterVec
 func init() {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "velox_tax_outcome_total",
-		Help: "Count of non-happy Stripe tax outcomes, by outcome (fallback|deferred) and reason.",
+		Help: "Count of non-happy Stripe tax outcomes, by outcome (deferred) and reason.",
 	}, []string{"outcome", "reason"})
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
@@ -60,25 +59,26 @@ type StripeClientResolver interface {
 // makes the tax decision durable upstream (calculations expire in 24 hours,
 // transactions are permanent and show up in Stripe's tax reporting).
 //
-// On any Stripe API error Calculate falls back to the injected ManualProvider
-// so billing is never blocked by a third-party outage. The fallback is
-// recorded in the prometheus counter above so the drift is observable.
+// On any Stripe API error Calculate returns the error so the engine can
+// defer the invoice to tax_status=pending; the TaxRetrier reconciler picks
+// it up on the next scheduler tick. The legacy "fallback to ManualProvider"
+// branch was cut 2026-05-30 per ADR-041 (it silently substituted zero tax
+// when no manual rate matched the jurisdiction, overriding operator intent).
 //
 // Multi-tenant: the Stripe client is resolved per ctx, so each tenant's
 // calculation and commit hit their own Stripe account. A calculation itself
 // doesn't mutate external state, but a tax_transaction does, so routing to
 // the correct account matters.
 type StripeTaxProvider struct {
-	clients  StripeClientResolver
-	fallback *ManualProvider
+	clients StripeClientResolver
 }
 
-// NewStripeTaxProvider wires a per-tenant Stripe client resolver and a
-// ManualProvider fallback. A nil resolver or a resolver that returns nil
-// for a given ctx causes Calculate to fall back to Manual — billing never
-// blocks on Stripe being absent.
-func NewStripeTaxProvider(clients StripeClientResolver, fallback *ManualProvider) *StripeTaxProvider {
-	return &StripeTaxProvider{clients: clients, fallback: fallback}
+// NewStripeTaxProvider wires a per-tenant Stripe client resolver. A nil
+// resolver or a resolver that returns nil for a given ctx causes Calculate
+// to defer the invoice — operator gets an actionable signal via the
+// invoice's Attention banner instead of a silent zero-tax invoice.
+func NewStripeTaxProvider(clients StripeClientResolver) *StripeTaxProvider {
+	return &StripeTaxProvider{clients: clients}
 }
 
 func (*StripeTaxProvider) Name() string { return "stripe_tax" }
@@ -143,27 +143,24 @@ func (p *StripeTaxProvider) Calculate(ctx context.Context, req Request) (*Result
 	return result, nil
 }
 
-// handleFailure applies the tenant's configured failure policy. When
-// OnFailure == "block" the error propagates so the engine can defer the
-// invoice to tax_status=pending and schedule a retry. Otherwise (the
-// legacy fallback_manual / empty policy) the internal ManualProvider
-// produces a result transparently — callers opted into availability over
-// jurisdictional accuracy.
-func (p *StripeTaxProvider) handleFailure(ctx context.Context, req Request, reason string, failErr error) (*Result, error) {
-	if req.OnFailure == OnFailureBlock {
-		slog.Warn("stripe tax failed, deferring per block policy",
-			"reason", reason, "error", failErr,
-			"livemode", postgres.Livemode(ctx),
-		)
-		stripeTaxOutcomes.WithLabelValues("deferred", reason).Inc()
-		return nil, failErr
-	}
-	slog.Warn("stripe tax failed, falling back to manual",
+// handleFailure defers the invoice for retry when Stripe Tax can't
+// produce a real calculation. The engine routes the returned error
+// into tax_status=pending so the TaxRetrier reconciler picks it up
+// on the next scheduler tick. Per ADR-041 (2026-05-30) this is the
+// only behavior — the legacy "fallback to ManualProvider" branch
+// was cut because it silently produced zero tax when no manual rate
+// matched the customer's jurisdiction, overriding the operator's
+// intent (charge SOME tax) with a wrong answer (charge zero).
+// Operators who genuinely want manual-rate billing set
+// tax_provider=manual at the tenant level; mixed Stripe+manual is no
+// longer expressible.
+func (p *StripeTaxProvider) handleFailure(ctx context.Context, _ Request, reason string, failErr error) (*Result, error) {
+	slog.Warn("stripe tax failed, deferring invoice for retry",
 		"reason", reason, "error", failErr,
 		"livemode", postgres.Livemode(ctx),
 	)
-	stripeTaxOutcomes.WithLabelValues("fallback", reason).Inc()
-	return p.fallback.Calculate(ctx, req)
+	stripeTaxOutcomes.WithLabelValues("deferred", reason).Inc()
+	return nil, failErr
 }
 
 // Commit creates a tax_transaction from an earlier calculation. Called at
