@@ -420,8 +420,9 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// an ambiguous result.
 		if !pe.Unknown && s.dunning != nil {
 			failureAt := simulatedFailureAt(inv)
-			if _, derr := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID, failureAt); derr != nil {
-				slog.Warn("inline StartDunning after known-failed charge", "invoice_id", inv.ID, "error", derr)
+			if derr := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); derr != nil {
+				slog.Error("inline StartDunning after known-failed charge — dunning will NOT auto-retry; operator must start manually from invoice attention banner",
+					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", derr)
 			}
 		}
 
@@ -466,6 +467,42 @@ const piPurposeDunningRetry = "dunning_retry"
 // time." Manual invoices with no period fields fall back to IssuedAt,
 // and ultimately to time.Now() — both wall-clock-equivalent in
 // production.
+// startDunningWithRetry calls StartDunning with bounded inline retry to
+// absorb transient blips (DB connection hiccup, brief contention) without
+// silently losing the dunning start. StartDunning is idempotent by
+// invoice (migration 0085 UNIQUE on dunning_runs), so the retry is safe
+// — a successful first attempt followed by a slow concurrent caller
+// resolves to the existing row, not a duplicate.
+//
+// Three attempts with 100ms / 500ms backoff covers the typical transient
+// case. Persistent failure (Stripe outage, DB unavailable for seconds)
+// surfaces as the returned error; caller upgrades the slog level to
+// ERROR so operators have an alertable signal, and the operator path
+// (start dunning manually from the invoice attention banner) stays
+// available as the last resort.
+//
+// 2026-05-30 design-debt audit (Tier 1 #5) replaced two log-and-swallow
+// sites here and at the inline charge-failure path with this retry.
+func startDunningWithRetry(ctx context.Context, dunning DunningStarter, tenantID, invoiceID, customerID string, failureAt time.Time) error {
+	delays := []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond}
+	var lastErr error
+	for i, d := range delays {
+		if d > 0 {
+			select {
+			case <-time.After(d):
+			case <-ctx.Done():
+				return fmt.Errorf("ctx canceled during StartDunning retry (attempt %d): %w", i+1, ctx.Err())
+			}
+		}
+		if _, err := dunning.StartDunning(ctx, tenantID, invoiceID, customerID, failureAt); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("StartDunning failed after %d attempts: %w", len(delays), lastErr)
+}
+
 func simulatedFailureAt(inv domain.Invoice) time.Time {
 	failureAt := time.Now()
 	if inv.IssuedAt != nil {
@@ -724,12 +761,9 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 	// wall-clock-equivalent in production.
 	if s.dunning != nil {
 		failureAt := simulatedFailureAt(inv)
-		if _, err := s.dunning.StartDunning(ctx, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
-			slog.Warn("failed to start dunning",
-				"invoice_id", inv.ID,
-				"error", err,
-			)
-			// Non-fatal: invoice is already marked failed, dunning can be started manually
+		if err := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
+			slog.Error("payment_intent.payment_failed StartDunning failed after retries — dunning will NOT auto-retry; operator must start manually from invoice attention banner",
+				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 		} else {
 			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
 		}
