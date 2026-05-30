@@ -1717,13 +1717,16 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// emitted as one line per segment at the segment's own plan + qty
 	// rate × duration fraction. No mid-period changes → segments collapse
 	// to a single full-period line (same as pre-segment-aware behavior).
-	// Read failure falls back to single-line billing — slight
-	// imprecision on mid-period changes vs hard-failing the cycle.
-	itemChanges, changesErr := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
-	if changesErr != nil {
-		slog.WarnContext(ctx, "list item changes failed; falling back to single-line cycle close billing",
-			"subscription_id", sub.ID, "error", changesErr)
-		itemChanges = nil
+	//
+	// Failure here propagates to the per-sub error handler. Pre-fix
+	// (2026-05-30 design-debt audit): read failure silently fell back
+	// to single-line billing, mis-billing any sub that had a mid-period
+	// plan or quantity change with no signal to the operator. Per
+	// feedback_no_silent_fallbacks, fail loud — the engine already
+	// continues to the next sub when this one errors.
+	itemChanges, err := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
+	if err != nil {
+		return false, fmt.Errorf("list item changes: %w", err)
 	}
 	changesByItem := map[string][]domain.SubscriptionItemChange{}
 	for _, c := range itemChanges {
@@ -1732,6 +1735,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// Hydrate any plans referenced only in the change log (items removed
 	// mid-period, or pre-swap plans not present on current items). Plans
 	// already loaded for current items are skipped.
+	//
+	// Failure here propagates as above. Pre-fix the segment under a
+	// failed plan lookup would be silently dropped from the invoice,
+	// undercharging the customer; per feedback_no_silent_fallbacks the
+	// engine fails the sub's cycle rather than guess.
 	for _, c := range itemChanges {
 		for _, pid := range []string{c.FromPlanID, c.ToPlanID} {
 			if pid == "" {
@@ -1742,9 +1750,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			}
 			pl, err := e.pricing.GetPlan(ctx, sub.TenantID, pid)
 			if err != nil {
-				slog.WarnContext(ctx, "segment plan lookup failed; segment under that plan will be skipped",
-					"subscription_id", sub.ID, "plan_id", pid, "error", err)
-				continue
+				return false, fmt.Errorf("get segment plan %s: %w", pid, err)
 			}
 			plans[pid] = pl
 		}
