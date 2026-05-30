@@ -275,17 +275,18 @@ func TestResolver_Routing(t *testing.T) {
 		}
 	})
 
-	t.Run("stripe_tax_without_clients_falls_back_to_manual", func(t *testing.T) {
-		// Local dev without Stripe credentials still needs billing to work.
+	t.Run("stripe_tax_without_clients_errors_post_ADR_041", func(t *testing.T) {
+		// Pre-ADR-041 behavior: silently fall back to manual provider.
+		// Post-ADR-041 behavior: fail loud so the operator sees that
+		// tax_provider=stripe_tax was set without wiring Stripe — they
+		// should explicitly choose tax_provider=manual if that's what
+		// they want, instead of getting it by accident through a fallback.
 		r := NewResolver(nil)
-		p, err := r.Resolve(context.Background(), domain.TenantSettings{
+		_, err := r.Resolve(context.Background(), domain.TenantSettings{
 			TaxProvider: "stripe_tax", TaxRateBP: 500, TaxName: "Sales Tax",
 		})
-		if err != nil {
-			t.Fatalf("Resolve: %v", err)
-		}
-		if p.Name() != "manual" {
-			t.Errorf("Name = %q, want manual (fallback)", p.Name())
+		if err == nil {
+			t.Fatal("Resolve: expected error when stripe_tax selected without wired client")
 		}
 	})
 }

@@ -2,6 +2,7 @@ package tax
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -23,19 +24,21 @@ func NewResolver(stripeClients StripeClientResolver) *Resolver {
 	return &Resolver{stripe: stripeClients}
 }
 
-// Resolve picks the right Provider for the tenant. Always safe: unknown or
-// empty provider string falls through to NoneProvider so a mis-seeded
-// tenant can't take billing offline.
+// Resolve picks the right Provider for the tenant. Unknown or empty
+// provider string falls through to NoneProvider so a mis-seeded tenant
+// can't take billing offline. tax_provider=stripe_tax without a wired
+// Stripe client now defers the invoice (per ADR-041) instead of silently
+// substituting manual; operators wanting manual must explicitly select
+// tax_provider=manual at the tenant level.
 func (r *Resolver) Resolve(_ context.Context, ts domain.TenantSettings) (Provider, error) {
-	manual := NewManualProvider(ts.TaxRateBP, ts.TaxName)
 	switch ts.TaxProvider {
 	case "stripe_tax":
 		if r.stripe == nil {
-			return manual, nil
+			return nil, fmt.Errorf("tax_provider=stripe_tax but no Stripe client wired — set tax_provider=manual or configure Stripe")
 		}
-		return NewStripeTaxProvider(r.stripe, manual), nil
+		return NewStripeTaxProvider(r.stripe), nil
 	case "manual":
-		return manual, nil
+		return NewManualProvider(ts.TaxRateBP, ts.TaxName), nil
 	case "none", "":
 		return NewNoneProvider(), nil
 	default:

@@ -60,7 +60,11 @@ type TenantSettings struct {
 	// providers (e.g. 'stripe_tax') will be added once their integrations are
 	// end-to-end verified.
 	TaxProvider string `json:"tax_provider"`
-	// TaxOnFailure controls what the engine does when the configured provider
+	// TaxOnFailure is "block" (ADR-041 removed "fallback_manual"). Retained
+	// for forward-compat. Defers invoice to tax_status=pending on provider
+	// failure; TaxRetrier reconciler picks it up on the next tick.
+	// Older context (pre-ADR-041) follows:
+	// Old purpose: controls what the engine does when the configured provider
 	// fails transiently. 'block' (default) defers the invoice to
 	// tax_status=pending and lets a retry worker try again — the safe choice
 	// for jurisdictions where the manual flat rate would be wrong.
