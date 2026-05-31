@@ -2160,7 +2160,14 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// Coupons removed 2026-05-29 (Phase A1). Discount stays at zero;
 	// AI-native discount intent flows through the credit ledger.
 	var discountCents int64
-	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	if err != nil {
+		// A tax failure must abort before invoice create/finalize and
+		// before the cycle advances — otherwise a transient DB blip would
+		// finalize a $0 invoice and burn the period. Returning the error
+		// leaves the sub untouched so the next tick retries.
+		return false, fmt.Errorf("apply tax: %w", err)
+	}
 	// In tax-inclusive mode the engine back-calculates net subtotal/discount
 	// from the gross inputs; in exclusive mode these pass through unchanged,
 	// so the caller always reads the authoritative values off the result.
