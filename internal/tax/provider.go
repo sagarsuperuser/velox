@@ -186,9 +186,8 @@ type Result struct {
 	CalculationID string
 
 	// Aggregate totals.
-	TotalTaxCents   int64
-	EffectiveRateBP int64   // Basis points (1850 = 18.50%). Deprecated by ADR-042; kept for backward compat.
-	EffectiveRate   float64 // Precise percent rate (4-decimal precision). 8.875 = 8.875%. ADR-042.
+	TotalTaxCents int64
+	EffectiveRate float64 // Percent rate (4-decimal precision). 8.875 = 8.875%. ADR-042/043.
 
 	// Primary tax label and jurisdiction, displayed on the aggregate tax
 	// row of the invoice. When the calculation produces multiple
@@ -228,8 +227,7 @@ type ResultLine struct {
 	// gross amount with tax carved out so subtotal + tax == gross total.
 	NetAmountCents int64
 	TaxAmountCents int64
-	TaxRateBP      int64   // Deprecated by ADR-042.
-	TaxRate        float64 // Precise percent rate (4-decimal precision). ADR-042.
+	TaxRate        float64 // Percent rate (4-decimal precision). ADR-042/043.
 	TaxName        string
 	Jurisdiction   string // e.g. "US-CA", "IN-MH"
 	TaxCode        string
@@ -251,7 +249,7 @@ type ResultLine struct {
 type Breakdown struct {
 	Jurisdiction string
 	Name         string
-	RateBP       int64
+	Rate         float64 // Percent rate (4-decimal precision). ADR-042/043.
 	AmountCents  int64
 }
 

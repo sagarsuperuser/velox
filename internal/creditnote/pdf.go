@@ -67,9 +67,10 @@ type OriginalInvoiceInfo struct {
 	// Sales Tax, ...). Preserved on the CN so the two documents read
 	// as a pair.
 	TaxName string
-	// TaxRateBP is the invoice's aggregate tax rate in basis points.
-	// Shown parenthetically next to the tax label ("VAT (20%)").
-	TaxRateBP int64
+	// TaxRate is the invoice's aggregate tax rate in percent (4-decimal
+	// precision). Shown parenthetically next to the tax label ("VAT (20%)").
+	// ADR-042/043.
+	TaxRate float64
 	// ReverseCharge / ExemptReason surface the invoice's tax treatment
 	// so the CN carries the same compliance legend. A CN issued
 	// against a reverse-charge invoice must itself display the
@@ -389,8 +390,8 @@ func RenderPDF(
 		if orig.TaxName != "" {
 			taxLabel = orig.TaxName
 		}
-		if orig.TaxRateBP > 0 {
-			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, float64(orig.TaxRateBP)/100)
+		if orig.TaxRate > 0 {
+			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, orig.TaxRate)
 		}
 		if orig.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, orig.TaxCountry)

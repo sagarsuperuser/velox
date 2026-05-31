@@ -25,7 +25,7 @@ type taxSettings struct {
 func (s *taxSettings) Get(_ context.Context, _ string) (domain.TenantSettings, error) {
 	return domain.TenantSettings{
 		TaxProvider:           s.provider,
-		TaxRateBP:             s.rateBP,
+		TaxRate:               float64(s.rateBP) / 100, // legacy fixture: rateBP is still int64 — convert to percent for the new field
 		TaxName:               s.name,
 		TaxInclusive:          s.inclusive,
 		DefaultProductTaxCode: s.taxCode,
@@ -60,7 +60,7 @@ func (f resolverFunc) Resolve(ctx context.Context, ts domain.TenantSettings) (ta
 // manualResolver wires a ManualProvider with the settings' rate/name.
 func manualResolver() TaxProviderResolver {
 	return resolverFunc(func(_ context.Context, ts domain.TenantSettings) (tax.Provider, error) {
-		return tax.NewManualProvider(ts.TaxRateBP, ts.TaxName), nil
+		return tax.NewManualProvider(ts.TaxRate, ts.TaxName), nil
 	})
 }
 
@@ -114,16 +114,16 @@ func TestApplyTaxToLineItems_ManualFlatRate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if r.TaxAmountCents != 1850 {
-		t.Errorf("got tax %d, want 1850", r.TaxAmountCents)
+		t.Errorf("got tax %d, want 18.50", r.TaxAmountCents)
 	}
-	if r.TaxRateBP != 1850 || r.TaxName != "VAT" {
-		t.Errorf("got rate=%d name=%q, want 1850 VAT", r.TaxRateBP, r.TaxName)
+	if r.TaxRate != 18.50 || r.TaxName != "VAT" {
+		t.Errorf("got rate=%g name=%q, want 18.50 VAT", r.TaxRate, r.TaxName)
 	}
 	if r.TaxProvider != "manual" {
 		t.Errorf("got provider %q, want manual", r.TaxProvider)
 	}
 	if lineItems[0].TaxAmountCents != 1850 || lineItems[0].TotalAmountCents != 11850 {
-		t.Errorf("line: tax=%d total=%d, want 1850 and 11850",
+		t.Errorf("line: tax=%d total=%d, want 18.50 and 11850",
 			lineItems[0].TaxAmountCents, lineItems[0].TotalAmountCents)
 	}
 }
@@ -226,17 +226,17 @@ func TestApplyTaxToLineItems_ProportionalDiscountDistribution(t *testing.T) {
 
 func TestApplyTaxToLineItems_ProviderResultMapped(t *testing.T) {
 	// A provider that returns jurisdictional breakdown data — verify the
-	// engine stamps per-line Jurisdiction/TaxCode/TaxRateBP back onto line
+	// engine stamps per-line Jurisdiction/TaxCode/TaxRate back onto line
 	// items without extra arithmetic.
 	provider := &stubProvider{result: &tax.Result{
 		Provider:        "stripe_tax",
 		CalculationID:   "taxcalc_test_123",
 		TotalTaxCents:   2000,
-		EffectiveRateBP: 2000,
+		EffectiveRate: 20.00,
 		TaxName:         "GST",
 		TaxCountry:      "AU",
 		Lines: []tax.ResultLine{
-			{Ref: "line_0", NetAmountCents: 10000, TaxAmountCents: 2000, TaxRateBP: 2000, TaxName: "GST", Jurisdiction: "AU", TaxCode: "txcd_10103001"},
+			{Ref: "line_0", NetAmountCents: 10000, TaxAmountCents: 2000, TaxRate:      20.00, TaxName: "GST", Jurisdiction: "AU", TaxCode: "txcd_10103001"},
 		},
 	}}
 	e := &Engine{

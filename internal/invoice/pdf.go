@@ -496,8 +496,8 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		if inv.TaxName != "" {
 			taxLabel = inv.TaxName
 		}
-		if inv.TaxRateBP > 0 {
-			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, float64(inv.TaxRateBP)/100)
+		if inv.TaxRate > 0 {
+			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, inv.TaxRate)
 		}
 		if inv.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, inv.TaxCountry)
@@ -824,7 +824,7 @@ type jurisdictionTaxRow struct {
 func aggregateTaxByJurisdiction(lineItems []domain.InvoiceLineItem) []jurisdictionTaxRow {
 	type key struct {
 		jurisdiction string
-		rateBP       int64
+		rate         float64
 	}
 	agg := make(map[key]int64)
 	order := make([]key, 0)
@@ -832,7 +832,7 @@ func aggregateTaxByJurisdiction(lineItems []domain.InvoiceLineItem) []jurisdicti
 		if li.TaxAmountCents == 0 || li.TaxJurisdiction == "" {
 			continue
 		}
-		k := key{jurisdiction: li.TaxJurisdiction, rateBP: li.TaxRateBP}
+		k := key{jurisdiction: li.TaxJurisdiction, rate: li.TaxRate}
 		if _, seen := agg[k]; !seen {
 			order = append(order, k)
 		}
@@ -841,8 +841,8 @@ func aggregateTaxByJurisdiction(lineItems []domain.InvoiceLineItem) []jurisdicti
 	rows := make([]jurisdictionTaxRow, 0, len(order))
 	for _, k := range order {
 		label := k.jurisdiction
-		if k.rateBP > 0 {
-			label = fmt.Sprintf("%s (%.4g%%)", label, float64(k.rateBP)/100)
+		if k.rate > 0 {
+			label = fmt.Sprintf("%s (%.4g%%)", label, k.rate)
 		}
 		rows = append(rows, jurisdictionTaxRow{label: label, amount: agg[k]})
 	}

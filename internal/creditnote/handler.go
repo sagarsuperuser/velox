@@ -279,7 +279,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 				Currency:      inv.Currency,
 				TaxCountry:    inv.TaxCountry,
 				TaxName:       inv.TaxName,
-				TaxRateBP:     inv.TaxRateBP,
+				TaxRate:       inv.TaxRate,
 				ReverseCharge: inv.TaxReverseCharge,
 				ExemptReason:  inv.TaxExemptReason,
 			}

@@ -52,8 +52,8 @@ type TenantSettings struct {
 	Timezone        string `json:"timezone"`
 	InvoicePrefix   string `json:"invoice_prefix"`
 	NetPaymentTerms int    `json:"net_payment_terms"`
-	TaxRateBP       int64  `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
-	TaxName         string `json:"tax_name,omitempty"`
+	TaxRate         float64 `json:"tax_rate"` // Percent rate (4-decimal precision via NUMERIC(7,4)). 7.25 = 7.25%. ADR-042/043.
+	TaxName         string  `json:"tax_name,omitempty"`
 	TaxInclusive    bool   `json:"tax_inclusive"`
 	// TaxProvider selects the backend used to compute tax. 'none' skips tax
 	// entirely; 'manual' uses the flat tenant-level rate below. Future

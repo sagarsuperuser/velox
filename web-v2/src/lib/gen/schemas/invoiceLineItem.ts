@@ -24,7 +24,7 @@ export interface InvoiceLineItem {
   quantity: number;
   unit_amount_cents: number;
   amount_cents: number;
-  tax_rate_bp: number;
+  tax_rate: number;
   tax_amount_cents: number;
   tax_jurisdiction?: string;
   tax_code?: string;

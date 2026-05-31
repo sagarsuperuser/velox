@@ -755,7 +755,7 @@ func (m *mockInvoices) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceI
 		}
 		if updated, ok := byID[existing.ID]; ok {
 			m.lineItems[i].AmountCents = updated.AmountCents
-			m.lineItems[i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[i].TaxRate = updated.TaxRate
 			m.lineItems[i].TaxAmountCents = updated.TaxAmountCents
 			m.lineItems[i].TotalAmountCents = updated.TotalAmountCents
 		}
@@ -763,7 +763,7 @@ func (m *mockInvoices) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceI
 	inv.SubtotalCents = update.SubtotalCents
 	inv.DiscountCents = update.DiscountCents
 	inv.TaxAmountCents = update.TaxAmountCents
-	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxRate = update.TaxRate
 	inv.TaxName = update.TaxName
 	inv.TaxCountry = update.TaxCountry
 	inv.TaxID = update.TaxID
@@ -811,13 +811,13 @@ func (m *mockInvoices) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID st
 			continue
 		}
 		if updated, ok := byID[existing.ID]; ok {
-			m.lineItems[i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[i].TaxRate = updated.TaxRate
 			m.lineItems[i].TaxAmountCents = updated.TaxAmountCents
 			m.lineItems[i].TotalAmountCents = updated.TotalAmountCents
 		}
 	}
 	inv.TaxAmountCents = update.TaxAmountCents
-	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxRate = update.TaxRate
 	inv.TaxName = update.TaxName
 	inv.TaxCountry = update.TaxCountry
 	inv.TaxID = update.TaxID

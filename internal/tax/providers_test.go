@@ -69,7 +69,7 @@ func TestNoneProvider(t *testing.T) {
 // jurisdiction-level total. Also checks the Breakdown row the PDF relies on
 // for the aggregate tax label.
 func TestManualProvider_Exclusive(t *testing.T) {
-	p := NewManualProvider(1800, "GST") // 18%
+	p := NewManualProvider(18.00, "GST") // 18%
 
 	req := Request{
 		Currency: "INR",
@@ -89,8 +89,8 @@ func TestManualProvider_Exclusive(t *testing.T) {
 	if res.TotalTaxCents != wantTotal {
 		t.Errorf("TotalTaxCents = %d, want %d", res.TotalTaxCents, wantTotal)
 	}
-	if res.EffectiveRateBP != 1800 {
-		t.Errorf("EffectiveRateBP = %d, want 1800", res.EffectiveRateBP)
+	if res.EffectiveRate != 18.00 {
+		t.Errorf("EffectiveRate = %g, want 1800", res.EffectiveRate)
 	}
 	if res.TaxName != "GST" {
 		t.Errorf("TaxName = %q, want GST", res.TaxName)
@@ -111,7 +111,7 @@ func TestManualProvider_Exclusive(t *testing.T) {
 // TestManualProvider_Inclusive verifies gross → net carve-out: the engine's
 // subtotal invariant depends on sum(Net) + tax == sum(original gross).
 func TestManualProvider_Inclusive(t *testing.T) {
-	p := NewManualProvider(2000, "VAT") // 20%
+	p := NewManualProvider(20.00, "VAT") // 20%
 
 	req := Request{
 		TaxInclusive: true,
@@ -157,7 +157,7 @@ func TestManualProvider_ZeroRate(t *testing.T) {
 // with no error — the credit note flow should treat that as a no-op
 // without special-casing provider names.
 func TestManualProvider_ReverseIsNoOp(t *testing.T) {
-	p := NewManualProvider(1800, "GST")
+	p := NewManualProvider(18.00, "GST")
 
 	rev, err := p.Reverse(context.Background(), ReversalRequest{
 		OriginalTransactionID: "tx_xxx", CreditNoteID: "cn_1",
@@ -176,7 +176,7 @@ func TestManualProvider_ReverseIsNoOp(t *testing.T) {
 // audit snapshot. Reverse-charge takes the same path but sets ReverseCharge
 // instead of Exempt so the PDF can render the legally required legend.
 func TestManualProvider_ExemptStatuses(t *testing.T) {
-	p := NewManualProvider(1800, "GST")
+	p := NewManualProvider(18.00, "GST")
 
 	t.Run("exempt", func(t *testing.T) {
 		req := Request{
@@ -241,7 +241,7 @@ func TestResolver_Routing(t *testing.T) {
 	t.Run("manual", func(t *testing.T) {
 		r := NewResolver(nil)
 		p, err := r.Resolve(context.Background(), domain.TenantSettings{
-			TaxProvider: "manual", TaxRateBP: 1800, TaxName: "GST",
+			TaxProvider: "manual", TaxRate:      18.00, TaxName: "GST",
 		})
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -283,7 +283,7 @@ func TestResolver_Routing(t *testing.T) {
 		// they want, instead of getting it by accident through a fallback.
 		r := NewResolver(nil)
 		_, err := r.Resolve(context.Background(), domain.TenantSettings{
-			TaxProvider: "stripe_tax", TaxRateBP: 500, TaxName: "Sales Tax",
+			TaxProvider: "stripe_tax", TaxRate:      5.00, TaxName: "Sales Tax",
 		})
 		if err == nil {
 			t.Fatal("Resolve: expected error when stripe_tax selected without wired client")

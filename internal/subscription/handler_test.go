@@ -395,7 +395,7 @@ func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _
 	}
 	// Mutate line items like the real engine: split invoice tax into first line.
 	if len(lineItems) > 0 && m.result.TaxAmountCents > 0 {
-		lineItems[0].TaxRateBP = m.result.TaxRateBP
+		lineItems[0].TaxRate = m.result.TaxRate
 		lineItems[0].TaxAmountCents = m.result.TaxAmountCents
 		lineItems[0].TotalAmountCents = lineItems[0].AmountCents + m.result.TaxAmountCents
 	}
@@ -425,7 +425,7 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
 			TaxAmountCents: 185,
-			TaxRateBP:      1850,
+			TaxRate:      18.50,
 			TaxName:        "VAT",
 			TaxCountry:     "GB",
 		},
@@ -455,8 +455,8 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	if inv.TaxAmountCents != 185 {
 		t.Errorf("invoice TaxAmountCents = %d, want 185", inv.TaxAmountCents)
 	}
-	if inv.TaxRateBP != 1850 {
-		t.Errorf("invoice TaxRateBP = %d, want 1850", inv.TaxRateBP)
+	if inv.TaxRate != 18.50 {
+		t.Errorf("invoice TaxRate = %g, want 18.50", inv.TaxRate)
 	}
 	if inv.TaxName != "VAT" {
 		t.Errorf("invoice TaxName = %q, want VAT", inv.TaxName)

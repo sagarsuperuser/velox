@@ -73,7 +73,7 @@ type ProrationCreditGranter interface {
 // billing.TaxApplication so subscription package doesn't import billing.
 type ProrationTaxResult struct {
 	TaxAmountCents int64
-	TaxRateBP      int64
+	TaxRate        float64 // ADR-042/043: percent rate (4-decimal precision).
 	TaxName        string
 	TaxCountry     string
 	TaxID          string
@@ -1627,7 +1627,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			Currency:           effectivePlan.Currency,
 			SubtotalCents:      taxResult.SubtotalCents,
 			DiscountCents:      taxResult.DiscountCents,
-			TaxRateBP:          taxResult.TaxRateBP,
+			TaxRate:            taxResult.TaxRate,
 			TaxName:            taxResult.TaxName,
 			TaxCountry:         taxResult.TaxCountry,
 			TaxID:              taxResult.TaxID,
