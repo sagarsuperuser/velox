@@ -844,17 +844,19 @@ export default function InvoiceDetailPage() {
                             </Badge>
                           )}
                         </div>
-                        {/* ADR-031: when a line covers a different period than the
-                            invoice (in_advance base bills the upcoming period
-                            while usage covers the elapsed one), surface the
-                            line's own period as a sub-line. */}
+                        {/* ADR-031: surface the line's own period when it
+                            differs from the invoice header. Period mismatch
+                            has multiple causes (in_advance base on a mixed
+                            invoice, partial cycle from mid-period activation,
+                            segment-aware billing under plan changes) — the
+                            explicit dates convey what the line covers without
+                            us guessing the cause. */}
                         {item.billing_period_start && item.billing_period_end && (
                           item.billing_period_start !== invoice.billing_period_start ||
                           item.billing_period_end !== invoice.billing_period_end
                         ) && (
                           <div className="text-xs text-muted-foreground mt-0.5">
                             Covers {formatDate(item.billing_period_start)} – {formatDate(item.billing_period_end)}
-                            {' '}<span className="text-[10px] opacity-70">(in advance)</span>
                           </div>
                         )}
                       </TableCell>
