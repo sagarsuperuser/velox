@@ -210,10 +210,16 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			"tenant_id", lookup.TenantID,
 			"error", err,
 		)
-		// Return 200 anyway — Stripe will retry on 5xx and we don't want infinite retries
-		// for events we can't process (e.g., missing invoice). Log the error server-side;
-		// don't echo raw error text to the caller (may leak internal details).
-		respond.JSON(w, r, http.StatusOK, map[string]string{"status": "error_logged"})
+		// A returned error is transient by construction: HandleWebhook
+		// already ack's (returns nil) any event it can't ever process —
+		// e.g. one referencing an invoice not in our DB — after recording
+		// it for audit. So the only errors that reach here are retryable
+		// (DB write failure, contention, downstream timeout), and crucially
+		// NO dedup row was persisted for them. Respond 5xx so Stripe
+		// redelivers and the handler re-runs; returning 200 here would let
+		// a transient blip silently drop the event forever. Don't echo the
+		// raw error to Stripe (may leak internal details).
+		respond.InternalError(w, r)
 		return
 	}
 
