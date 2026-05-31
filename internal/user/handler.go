@@ -266,10 +266,14 @@ func (h *Handler) checkPasswordResetToken(w http.ResponseWriter, r *http.Request
 }
 
 // confirmPasswordReset validates the reset token, applies the new
-// password, and revokes any active sessions for the user (forces a
-// fresh login). Surface the password-validation error inline (e.g.
-// "must be at least 12 characters") so the dashboard can highlight
-// the field; collapse token failures into a single 422.
+// password, and revokes every active session for the user (forces a
+// fresh login). Revoking matters for the threat the reset is most
+// often run against: a thief who already has a live velox_session
+// cookie. Without the fan-out revoke the stolen cookie would ride out
+// its 7-day TTL even after the operator resets. Surface the
+// password-validation error inline (e.g. "must be at least 12
+// characters") so the dashboard can highlight the field; collapse
+// token failures into a single 422.
 func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 	var req confirmResetReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -285,13 +289,24 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := h.users.ConsumeResetToken(r.Context(), req.Token, req.Password)
+	u, err := h.users.ConsumeResetToken(r.Context(), req.Token, req.Password)
 	if err != nil {
 		// errs.Invalid (password validation) and errs.NotFound (token
 		// invalid/expired/used) both map cleanly; let respond.FromError
 		// do the routing.
 		respond.FromError(w, r, err, "password_reset")
 		return
+	}
+
+	// Revoke any sessions minted before the reset — including one a
+	// thief opened from a stolen cookie, which is exactly the case the
+	// operator is resetting to shut down. Failure here is logged but
+	// not surfaced: the password is already changed, so the reset
+	// succeeded; we don't want a transient session-store error to make
+	// the operator think it didn't.
+	if revokeErr := h.sessions.RevokeAllForUser(r.Context(), u.ID); revokeErr != nil {
+		slog.Error("session: revoke-all-for-user after password reset failed",
+			"user_id", u.ID, "err", revokeErr)
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{
