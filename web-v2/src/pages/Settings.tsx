@@ -732,20 +732,20 @@ export default function SettingsPage() {
                         className="shrink-0 mt-0.5"
                       />
                     </div>
-                    {form.tax_rate_bp > 0 && (
+                    {form.tax_rate > 0 && (
                       <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 rounded-lg">
                         <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
                           <AlertCircle size={14} className="shrink-0 mt-0.5" />
                           {form.tax_inclusive ? (
                             <span>
                               Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {form.tax_rate.toFixed(2)}%.
-                              Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate_bp)), form.default_currency || 'USD')}</strong>.
+                              Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate * 100)), form.default_currency || 'USD')}</strong>.
                               Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
                             </span>
                           ) : (
                             <span>
                               Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                              {form.tax_rate.toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
+                              {form.tax_rate.toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * (form.tax_rate * 100) / 10000), form.default_currency || 'USD')}</strong> total.
                             </span>
                           )}
                         </p>

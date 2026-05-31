@@ -50,6 +50,31 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 import { Plus, Trash2, Loader2, Package, Gauge, Calculator } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
+// Static option sets for the pricing selects. Each is the single source of
+// truth for BOTH the dropdown <SelectItem>s AND the Base UI `items` prop.
+// Base UI's <SelectValue> renders the raw value in the trigger unless `items`
+// maps value→label — the app-wide cause of "trigger shows the code, dropdown
+// shows the name".
+const PRICING_MODE_OPTIONS = [
+  { value: 'flat', label: 'Flat Rate' },
+  { value: 'graduated', label: 'Graduated Tiers' },
+  { value: 'package', label: 'Package' },
+]
+const AGGREGATION_OPTIONS = [
+  { value: 'sum', label: 'Sum' },
+  { value: 'count', label: 'Count' },
+  { value: 'max', label: 'Maximum' },
+  { value: 'last', label: 'Latest Value' },
+]
+const INTERVAL_OPTIONS = [
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+]
+const BILL_TIMING_OPTIONS = [
+  { value: 'in_arrears', label: 'At end of period (usage-first)' },
+  { value: 'in_advance', label: 'At start of period (platform fee + usage)' },
+]
+
 function badgeVariant(val: string): 'success' | 'info' | 'secondary' | 'outline' {
   switch (val) {
     case 'active': return 'success'
@@ -397,14 +422,14 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Pricing Model</Label>
-              <Select value={mode} onValueChange={(v) => setMode(v ?? '')}>
+              <Select items={PRICING_MODE_OPTIONS} value={mode} onValueChange={(v) => setMode(v ?? '')}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="flat">Flat Rate</SelectItem>
-                  <SelectItem value="graduated">Graduated Tiers</SelectItem>
-                  <SelectItem value="package">Package</SelectItem>
+                  {PRICING_MODE_OPTIONS.map(o => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -551,15 +576,14 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
             </div>
             <div>
               <Label>Aggregation</Label>
-              <Select value={form.aggregation} onValueChange={v => setForm(f => ({ ...f, aggregation: v ?? '' }))}>
+              <Select items={AGGREGATION_OPTIONS} value={form.aggregation} onValueChange={v => setForm(f => ({ ...f, aggregation: v ?? '' }))}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="sum">Sum</SelectItem>
-                  <SelectItem value="count">Count</SelectItem>
-                  <SelectItem value="max">Maximum</SelectItem>
-                  <SelectItem value="last">Latest Value</SelectItem>
+                  {AGGREGATION_OPTIONS.map(o => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">{aggregationDescriptions[form.aggregation]}</p>
@@ -568,14 +592,13 @@ function CreateMeterDialog({ onClose, onCreated, rules }: { onClose: () => void;
           {rules.length > 0 && (
             <div>
               <Label>Rating Rule</Label>
-              <Select value={form.rating_rule_version_id} onValueChange={v => setForm(f => ({ ...f, rating_rule_version_id: v ?? '' }))}>
+              <Select
+                items={rules.map(r => ({ value: r.id, label: `${r.name} (${r.mode})` }))}
+                value={form.rating_rule_version_id}
+                onValueChange={v => setForm(f => ({ ...f, rating_rule_version_id: v ?? '' }))}
+              >
                 <SelectTrigger className="w-full mt-1">
-                  <SelectValue placeholder="None (assign later)">
-                    {(value: string) => {
-                      const rule = rules.find(r => r.id === value)
-                      return rule ? `${rule.name} (${rule.mode})` : value
-                    }}
-                  </SelectValue>
+                  <SelectValue placeholder="None (assign later)" />
                 </SelectTrigger>
                 <SelectContent>
                   {rules.map(r => (
@@ -652,13 +675,14 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Billing Interval</Label>
-              <Select value={interval} onValueChange={(v) => setInterval(v ?? '')}>
+              <Select items={INTERVAL_OPTIONS} value={interval} onValueChange={(v) => setInterval(v ?? '')}>
                 <SelectTrigger className="w-full mt-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="monthly">Monthly</SelectItem>
-                  <SelectItem value="yearly">Yearly</SelectItem>
+                  {INTERVAL_OPTIONS.map(o => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -671,13 +695,14 @@ function CreatePlanDialog({ onClose, onCreated, meters }: { onClose: () => void;
           </div>
           <div>
             <Label>Base fee billed</Label>
-            <Select value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
+            <Select items={BILL_TIMING_OPTIONS} value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
               <SelectTrigger className="w-full mt-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="in_arrears">At end of period (usage-first)</SelectItem>
-                <SelectItem value="in_advance">At start of period (platform fee + usage)</SelectItem>
+                {BILL_TIMING_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground mt-1">

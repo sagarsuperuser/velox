@@ -1464,15 +1464,18 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
           </div>
           <div className="space-y-2">
             <Label>Type</Label>
-            <Select value={lineType} onValueChange={(v) => setLineType(v ?? '')}>
+            {/* items maps value→label so <SelectValue> renders the label,
+                not the raw code (Base UI). Reuses the existing
+                LINE_TYPE_LABELS record as the single source of truth. */}
+            <Select items={LINE_TYPE_LABELS} value={lineType} onValueChange={(v) => setLineType(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="add_on">Add-On</SelectItem>
-                <SelectItem value="base_fee">Base Fee</SelectItem>
-                <SelectItem value="usage">Usage</SelectItem>
-                <SelectItem value="discount">Discount</SelectItem>
+                <SelectItem value="add_on">{LINE_TYPE_LABELS.add_on}</SelectItem>
+                <SelectItem value="base_fee">{LINE_TYPE_LABELS.base_fee}</SelectItem>
+                <SelectItem value="usage">{LINE_TYPE_LABELS.usage}</SelectItem>
+                <SelectItem value="discount">{LINE_TYPE_LABELS.discount}</SelectItem>
               </SelectContent>
             </Select>
           </div>
