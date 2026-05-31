@@ -696,9 +696,9 @@ export default function SettingsPage() {
                       <div>
                         <Label>Tax rate</Label>
                         <div className="relative mt-1">
-                          <Input type="number" step="0.01" min={0} max={100}
+                          <Input type="number" step="0.0001" min={0} max={100}
                             value={form.tax_rate}
-                            onChange={e => setValue('tax_rate', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
+                            onChange={e => setValue('tax_rate', parseFloat(e.target.value || '0'), { shouldDirty: true })}
                             className="pr-8" placeholder="0" />
                           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
                         </div>
@@ -708,13 +708,13 @@ export default function SettingsPage() {
                             <button
                               type="button"
                               className="underline underline-offset-2 hover:text-foreground"
-                              onClick={() => setValue('tax_rate', Math.round(typicalRate * 100), { shouldDirty: true })}
+                              onClick={() => setValue('tax_rate', typicalRate, { shouldDirty: true })}
                             >
                               use {typicalRate}%
                             </button>
                           </p>
                         ) : (
-                          <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax</p>
+                          <p className="text-xs text-muted-foreground mt-1">Set to 0 to disable tax. Accepts up to 4 decimal places (e.g. 8.8750).</p>
                         )}
                       </div>
                     </div>
