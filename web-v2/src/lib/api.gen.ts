@@ -2099,7 +2099,7 @@ export interface components {
         ItemChangeType: "plan" | "quantity" | "add" | "remove";
         /**
          * @description A Velox invoice. Returned from create, finalize, void, list, get,
-         *     apply-coupon, rotate-public-token, and collect-payment endpoints.
+         *     rotate-public-token, and collect-payment endpoints.
          */
         Invoice: {
             /** @example vlx_inv_42014438d82ddf33 */
@@ -2126,8 +2126,8 @@ export interface components {
             /** Format: int64 */
             tax_amount_cents: number;
             /**
-             * Format: int64
-             * @description Tax rate in basis points (1850 = 18.50%).
+             * Format: double
+             * @description Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
              */
             tax_rate: number;
             tax_name?: string;
@@ -2238,7 +2238,10 @@ export interface components {
             unit_amount_cents: number;
             /** Format: int64 */
             amount_cents: number;
-            /** Format: int64 */
+            /**
+             * Format: double
+             * @description Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
+             */
             tax_rate: number;
             /** Format: int64 */
             tax_amount_cents: number;
