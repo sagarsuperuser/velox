@@ -27,7 +27,7 @@ interface HostedInvoicePayload {
     subtotal_cents: number
     discount_cents: number
     tax_amount_cents: number
-    tax_rate_bp: number
+    tax_rate: number // ADR-042/043: percent rate (7.25 = 7.25%), 4-decimal precision
     tax_name?: string
     tax_reverse_charge?: boolean
     total_amount_cents: number
@@ -420,9 +420,9 @@ export default function HostedInvoicePage() {
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">
                       {invoice.tax_name || 'Tax'}
-                      {invoice.tax_rate_bp > 0 && (
+                      {invoice.tax_rate > 0 && (
                         <span className="ml-1 text-xs">
-                          ({(invoice.tax_rate_bp / 100).toFixed(2)}%)
+                          ({invoice.tax_rate.toFixed(2)}%)
                         </span>
                       )}
                     </dt>

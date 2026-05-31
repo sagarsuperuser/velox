@@ -363,7 +363,7 @@ components:
         - subtotal_cents
         - discount_cents
         - tax_amount_cents
-        - tax_rate_bp
+        - tax_rate
         - total_amount_cents
         - amount_due_cents
         - amount_paid_cents
@@ -408,10 +408,10 @@ components:
         tax_amount_cents:
           type: integer
           format: int64
-        tax_rate_bp:
-          type: integer
-          format: int64
-          description: Tax rate in basis points (1850 = 18.50%).
+        tax_rate:
+          type: number
+          format: double
+          description: Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
         tax_name:
           type: string
         tax_country:
@@ -553,7 +553,7 @@ components:
         - quantity
         - unit_amount_cents
         - amount_cents
-        - tax_rate_bp
+        - tax_rate
         - tax_amount_cents
         - total_amount_cents
         - currency
@@ -581,9 +581,10 @@ components:
         amount_cents:
           type: integer
           format: int64
-        tax_rate_bp:
-          type: integer
-          format: int64
+        tax_rate:
+          type: number
+          format: double
+          description: Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
         tax_amount_cents:
           type: integer
           format: int64

@@ -688,7 +688,7 @@ type Error struct {
 type ErrorErrorType string
 
 // Invoice A Velox invoice. Returned from create, finalize, void, list, get,
-// apply-coupon, rotate-public-token, and collect-payment endpoints.
+// rotate-public-token, and collect-payment endpoints.
 type Invoice struct {
 	AmountDueCents  int64 `json:"amount_due_cents"`
 	AmountPaidCents int64 `json:"amount_paid_cents"`
@@ -784,10 +784,10 @@ type Invoice struct {
 	// calculation (e.g. `stripe`, `none`, `manual`).
 	TaxProvider string `json:"tax_provider,omitempty"`
 
-	// TaxRateBp Tax rate in basis points (1850 = 18.50%).
-	TaxRateBp        int64 `json:"tax_rate_bp"`
-	TaxRetryCount    int   `json:"tax_retry_count,omitempty"`
-	TaxReverseCharge bool  `json:"tax_reverse_charge,omitempty"`
+	// TaxRate Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
+	TaxRate          float64 `json:"tax_rate"`
+	TaxRetryCount    int     `json:"tax_retry_count,omitempty"`
+	TaxReverseCharge bool    `json:"tax_reverse_charge,omitempty"`
 
 	// TaxStatus Whether tax has been successfully calculated. Happy path is `ok`.
 	// `pending` means a transient calculation failure is awaiting retry;
@@ -834,7 +834,9 @@ type InvoiceLineItem struct {
 	TaxAmountCents      int64                  `json:"tax_amount_cents"`
 	TaxCode             string                 `json:"tax_code,omitempty"`
 	TaxJurisdiction     string                 `json:"tax_jurisdiction,omitempty"`
-	TaxRateBp           int64                  `json:"tax_rate_bp"`
+
+	// TaxRate Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
+	TaxRate float64 `json:"tax_rate"`
 
 	// TaxReason Stripe-canonical structured `taxability_reason`
 	// (`standard_rated`, `reverse_charge`, `not_collecting`,
@@ -873,7 +875,7 @@ type InvoiceTaxStatus string
 // the two arrays independently.
 type InvoiceWithLineItems struct {
 	// Invoice A Velox invoice. Returned from create, finalize, void, list, get,
-	// apply-coupon, rotate-public-token, and collect-payment endpoints.
+	// rotate-public-token, and collect-payment endpoints.
 	Invoice   Invoice           `json:"invoice"`
 	LineItems []InvoiceLineItem `json:"line_items"`
 }

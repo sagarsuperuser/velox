@@ -891,7 +891,7 @@ export default function InvoiceDetailPage() {
               {invoice.tax_amount_cents > 0 && (
                 <>
                   <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
-                    <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate_bp > 0 ? ` (${(invoice.tax_rate_bp / 100).toFixed(2)}%)` : ''}</span>
+                    <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate > 0 ? ` (${invoice.tax_rate.toFixed(2)}%)` : ''}</span>
                     <span className="font-mono tabular-nums">{formatCents(invoice.tax_amount_cents, invoice.currency)}</span>
                   </div>
                   {(() => {
