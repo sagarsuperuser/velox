@@ -16,8 +16,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
-	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
@@ -1145,9 +1145,26 @@ func (e *Engine) RunCycleForClock(ctx context.Context, tenantID, clockID string,
 	var errs []error
 
 	// Outer loop only matters if a clock has more than batchSize
-	// attached subs (rare). Each pass fetches a fresh batch with
-	// SKIP LOCKED; subs whose catchup completes in the inner
-	// per-sub period loop fall off the next pass.
+	// attached subs (rare). Each pass fetches a fresh batch; subs
+	// whose catchup completes in the inner per-sub period loop advance
+	// past the clock and fall off the next pass.
+	//
+	// Termination guard (best-practice hardening, 2026-05-31):
+	// GetDueBillingForClock returns subs whose next_billing_at <=
+	// frozen_time. A sub that FAILS to bill never advances
+	// next_billing_at, so it stays "due" and is re-fetched on every
+	// pass — an infinite outer loop. We attempt each sub at most once
+	// per call: once it errors it's excluded from further passes via
+	// `failed`. When every due sub has already failed this call, no
+	// progress is possible — break and let the worker mark the clock
+	// internal_failure (the operator's "Retry advance" resumes once
+	// the cause is fixed). Pre-fix, a single persistently-failing sub
+	// (e.g. a malformed INSERT, a constraint violation) spun this loop
+	// at ~30/sec, pegging CPU and flooding tax_calculations with
+	// orphan rows — and because RunCycleForClock never returned, the
+	// worker never reached MarkFailed, so the clock stayed 'advancing'
+	// and was re-enqueued on every boot.
+	failed := make(map[string]bool)
 	for {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, fmt.Errorf("clock catchup ctx done: %w", err))
@@ -1163,7 +1180,24 @@ func (e *Engine) RunCycleForClock(ctx context.Context, tenantID, clockID string,
 			break
 		}
 
+		// No-progress break: if every due sub has already been
+		// attempted-and-failed this call, re-fetching returns the same
+		// stuck set forever. Stop.
+		progressable := false
 		for _, sub := range due {
+			if !failed[sub.ID] {
+				progressable = true
+				break
+			}
+		}
+		if !progressable {
+			break
+		}
+
+		for _, sub := range due {
+			if failed[sub.ID] {
+				continue // already attempted + failed this call
+			}
 			n, err := e.billSubscription(ctx, sub)
 			if err != nil {
 				slog.Error("bill subscription failed (clock-catchup)",
@@ -1173,6 +1207,7 @@ func (e *Engine) RunCycleForClock(ctx context.Context, tenantID, clockID string,
 					"error", err,
 				)
 				errs = append(errs, fmt.Errorf("subscription %s: %w", sub.ID, err))
+				failed[sub.ID] = true
 			}
 			generated += n
 		}
@@ -2562,10 +2597,10 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	}
 
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
-		TenantID:           sub.TenantID,
-		CustomerID:         sub.CustomerID,
-		SubscriptionID:     sub.ID,
-		InvoiceNumber:      invoiceNumber,
+		TenantID:       sub.TenantID,
+		CustomerID:     sub.CustomerID,
+		SubscriptionID: sub.ID,
+		InvoiceNumber:  invoiceNumber,
 		// Tax-deferred + pause-collection gate (matches billOnePeriod).
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
@@ -2676,13 +2711,13 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 //   - Period: [current_period_start, canceled_at] — the elapsed
 //     portion of the just-canceled cycle.
 //   - Lines:
-//     • in_arrears base items: prorated by `elapsed / full_cycle`.
-//     • in_advance base items: skipped (already paid up-front; the
-//       refund of the unused portion is BillOnCancel's job — credit
-//       grant to balance).
-//     • Usage: aggregated for [periodStart, canceled_at] across every
-//       meter referenced by every item. Same shape as a normal cycle
-//       invoice's usage section, just with a truncated period_end.
+//   - in_arrears base items: prorated by `elapsed / full_cycle`.
+//   - in_advance base items: skipped (already paid up-front; the
+//     refund of the unused portion is BillOnCancel's job — credit
+//     grant to balance).
+//   - Usage: aggregated for [periodStart, canceled_at] across every
+//     meter referenced by every item. Same shape as a normal cycle
+//     invoice's usage section, just with a truncated period_end.
 //   - billing_reason = subscription_cancel (distinguishes from the
 //     normal subscription_cycle invoice and from subscription_create).
 //
@@ -3015,10 +3050,10 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	}
 
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
-		TenantID:           sub.TenantID,
-		CustomerID:         sub.CustomerID,
-		SubscriptionID:     sub.ID,
-		InvoiceNumber:      invoiceNumber,
+		TenantID:       sub.TenantID,
+		CustomerID:     sub.CustomerID,
+		SubscriptionID: sub.ID,
+		InvoiceNumber:  invoiceNumber,
 		// Tax-deferred + pause-collection gate (matches billOnePeriod).
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
@@ -3110,7 +3145,6 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	)
 	return inv, nil
 }
-
 
 // BillOnCancel emits the cancel proration credit for an in_advance
 // subscription that was canceled before its current period closed
