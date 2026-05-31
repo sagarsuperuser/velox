@@ -17,7 +17,7 @@ import type { ItemChangeType } from './itemChangeType';
 
 /**
  * A Velox invoice. Returned from create, finalize, void, list, get,
-apply-coupon, rotate-public-token, and collect-payment endpoints.
+rotate-public-token, and collect-payment endpoints.
 
  */
 export interface Invoice {
@@ -38,7 +38,7 @@ export interface Invoice {
   subtotal_cents: number;
   discount_cents: number;
   tax_amount_cents: number;
-  /** Tax rate in basis points (1850 = 18.50%). */
+  /** Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043. */
   tax_rate: number;
   tax_name?: string;
   tax_country?: string;

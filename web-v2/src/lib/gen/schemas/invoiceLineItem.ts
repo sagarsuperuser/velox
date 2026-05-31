@@ -24,6 +24,7 @@ export interface InvoiceLineItem {
   quantity: number;
   unit_amount_cents: number;
   amount_cents: number;
+  /** Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043. */
   tax_rate: number;
   tax_amount_cents: number;
   tax_jurisdiction?: string;
