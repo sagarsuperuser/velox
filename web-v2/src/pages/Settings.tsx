@@ -68,7 +68,7 @@ const settingsSchema = z.object({
     .regex(/^[A-Z0-9-]*$/, 'Letters, numbers, and hyphens only'),
   net_payment_terms: z.number().min(0).max(365),
   tax_provider: z.enum(['none', 'manual', 'stripe_tax']),
-  tax_rate_bp: z.number().min(0).max(10000),
+  tax_rate: z.number().min(0).max(100),
   tax_name: z.string().max(50, 'Must be at most 50 characters'),
   tax_inclusive: z.boolean(),
   default_product_tax_code: z.string()
@@ -148,7 +148,7 @@ export default function SettingsPage() {
       company_city: '', company_state: '', company_postal_code: '', company_country: '',
       logo_url: '', brand_color: '', tax_id: '', support_url: '', invoice_footer: '',
       invoice_prefix: '', net_payment_terms: 0,
-      tax_provider: 'manual', tax_rate_bp: 0, tax_name: '', tax_inclusive: false,
+      tax_provider: 'manual', tax_rate: 0, tax_name: '', tax_inclusive: false,
       default_product_tax_code: '',
       default_currency: '', timezone: '',
     },
@@ -183,7 +183,7 @@ export default function SettingsPage() {
         tax_id: s.tax_id || '', support_url: s.support_url || '', invoice_footer: s.invoice_footer || '',
         invoice_prefix: s.invoice_prefix || '', net_payment_terms: s.net_payment_terms || 0,
         tax_provider: (s.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
-        tax_rate_bp: s.tax_rate_bp || 0, tax_name: s.tax_name || '', tax_inclusive: s.tax_inclusive || false,
+        tax_rate: s.tax_rate || 0, tax_name: s.tax_name || '', tax_inclusive: s.tax_inclusive || false,
         default_product_tax_code: s.default_product_tax_code || '',
         default_currency: s.default_currency || '', timezone: s.timezone ? normalizeTimezone(s.timezone) : '',
       }
@@ -212,7 +212,7 @@ export default function SettingsPage() {
         tax_id: updated.tax_id || '', support_url: updated.support_url || '', invoice_footer: updated.invoice_footer || '',
         invoice_prefix: updated.invoice_prefix || '', net_payment_terms: updated.net_payment_terms || 0,
         tax_provider: (updated.tax_provider as 'none' | 'manual' | 'stripe_tax') || 'manual',
-        tax_rate_bp: updated.tax_rate_bp || 0, tax_name: updated.tax_name || '', tax_inclusive: updated.tax_inclusive || false,
+        tax_rate: updated.tax_rate || 0, tax_name: updated.tax_name || '', tax_inclusive: updated.tax_inclusive || false,
         default_product_tax_code: updated.default_product_tax_code || '',
         default_currency: updated.default_currency || '', timezone: updated.timezone ? normalizeTimezone(updated.timezone) : '',
       }
@@ -233,7 +233,7 @@ export default function SettingsPage() {
         'company_state', 'company_postal_code', 'company_country',
         'logo_url', 'brand_color',
         'tax_id', 'support_url', 'invoice_footer',
-        'invoice_prefix', 'net_payment_terms', 'tax_provider', 'tax_rate_bp', 'tax_name', 'tax_inclusive',
+        'invoice_prefix', 'net_payment_terms', 'tax_provider', 'tax_rate', 'tax_name', 'tax_inclusive',
         'default_product_tax_code', 'default_currency', 'timezone',
       ], { toastTitle: 'Failed to save settings' })
     } finally { setSaving(false) }
@@ -697,18 +697,18 @@ export default function SettingsPage() {
                         <Label>Tax rate</Label>
                         <div className="relative mt-1">
                           <Input type="number" step="0.01" min={0} max={100}
-                            value={form.tax_rate_bp / 100}
-                            onChange={e => setValue('tax_rate_bp', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
+                            value={form.tax_rate}
+                            onChange={e => setValue('tax_rate', Math.round(parseFloat(e.target.value || '0') * 100), { shouldDirty: true })}
                             className="pr-8" placeholder="0" />
                           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
                         </div>
-                        {typicalRate !== undefined && Math.abs((form.tax_rate_bp / 100) - typicalRate) > 0.01 ? (
+                        {typicalRate !== undefined && Math.abs(form.tax_rate - typicalRate) > 0.01 ? (
                           <p className="text-xs text-muted-foreground mt-1">
                             Typical in {COUNTRY_NAME[form.company_country] || form.company_country}:{' '}
                             <button
                               type="button"
                               className="underline underline-offset-2 hover:text-foreground"
-                              onClick={() => setValue('tax_rate_bp', Math.round(typicalRate * 100), { shouldDirty: true })}
+                              onClick={() => setValue('tax_rate', Math.round(typicalRate * 100), { shouldDirty: true })}
                             >
                               use {typicalRate}%
                             </button>
@@ -738,14 +738,14 @@ export default function SettingsPage() {
                           <AlertCircle size={14} className="shrink-0 mt-0.5" />
                           {form.tax_inclusive ? (
                             <span>
-                              Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {(form.tax_rate_bp / 100).toFixed(2)}%.
+                              Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {form.tax_rate.toFixed(2)}%.
                               Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate_bp)), form.default_currency || 'USD')}</strong>.
                               Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
                             </span>
                           ) : (
                             <span>
                               Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                              {(form.tax_rate_bp / 100).toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
+                              {form.tax_rate.toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * form.tax_rate_bp / 10000), form.default_currency || 'USD')}</strong> total.
                             </span>
                           )}
                         </p>

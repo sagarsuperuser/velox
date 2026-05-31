@@ -38,7 +38,7 @@ func (r *Resolver) Resolve(_ context.Context, ts domain.TenantSettings) (Provide
 		}
 		return NewStripeTaxProvider(r.stripe), nil
 	case "manual":
-		return NewManualProvider(ts.TaxRateBP, ts.TaxName), nil
+		return NewManualProvider(ts.TaxRate, ts.TaxName), nil
 	case "none", "":
 		return NewNoneProvider(), nil
 	default:

@@ -39,7 +39,7 @@ export interface Invoice {
   discount_cents: number;
   tax_amount_cents: number;
   /** Tax rate in basis points (1850 = 18.50%). */
-  tax_rate_bp: number;
+  tax_rate: number;
   tax_name?: string;
   tax_country?: string;
   tax_id?: string;

@@ -35,13 +35,13 @@ func TestPostgresStore_Record(t *testing.T) {
 		Provider:        "stripe_tax",
 		CalculationID:   "calc_test_abc",
 		TotalTaxCents:   725,
-		EffectiveRateBP: 725,
+		EffectiveRate: 7.25,
 		TaxName:         "Sales Tax",
 		Lines: []tax.ResultLine{{
 			Ref:            "line_0",
 			NetAmountCents: 10000,
 			TaxAmountCents: 725,
-			TaxRateBP:      725,
+			TaxRate:      7.25,
 			Jurisdiction:   "US-CA",
 		}},
 	}

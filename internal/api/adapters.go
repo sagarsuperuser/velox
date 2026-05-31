@@ -663,7 +663,7 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 	}
 	return subscription.ProrationTaxResult{
 		TaxAmountCents: r.TaxAmountCents,
-		TaxRateBP:      r.TaxRateBP,
+		TaxRate:        r.TaxRate,
 		TaxName:        r.TaxName,
 		TaxCountry:     r.TaxCountry,
 		TaxID:          r.TaxID,

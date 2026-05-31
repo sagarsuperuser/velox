@@ -257,7 +257,7 @@ func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 				lineTax := computeLineTaxBP(amt, tt.rateBP)
 				lineItems[i] = domain.InvoiceLineItem{
 					AmountCents:      amt,
-					TaxRateBP:        tt.rateBP,
+					TaxRate:          float64(tt.rateBP) / 100,
 					TaxAmountCents:   lineTax,
 					TotalAmountCents: amt + lineTax,
 				}

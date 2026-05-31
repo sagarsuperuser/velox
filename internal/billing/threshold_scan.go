@@ -374,7 +374,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		Currency:           invoiceCurrency,
 		SubtotalCents:      taxApp.SubtotalCents,
 		DiscountCents:      taxApp.DiscountCents,
-		TaxRateBP:          taxApp.TaxRateBP,
+		TaxRate:            taxApp.TaxRate,
 		TaxName:            taxApp.TaxName,
 		TaxCountry:         taxApp.TaxCountry,
 		TaxID:              taxApp.TaxID,

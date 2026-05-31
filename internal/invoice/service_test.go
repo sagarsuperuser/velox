@@ -333,7 +333,7 @@ func (m *memStore) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceID st
 	for i, existing := range m.lineItems[invoiceID] {
 		if updated, ok := byID[existing.ID]; ok {
 			m.lineItems[invoiceID][i].AmountCents = updated.AmountCents
-			m.lineItems[invoiceID][i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[invoiceID][i].TaxRate = updated.TaxRate
 			m.lineItems[invoiceID][i].TaxAmountCents = updated.TaxAmountCents
 			m.lineItems[invoiceID][i].TotalAmountCents = updated.TotalAmountCents
 		}
@@ -341,7 +341,7 @@ func (m *memStore) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceID st
 	inv.SubtotalCents = update.SubtotalCents
 	inv.DiscountCents = update.DiscountCents
 	inv.TaxAmountCents = update.TaxAmountCents
-	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxRate = update.TaxRate
 	inv.TaxName = update.TaxName
 	inv.TaxCountry = update.TaxCountry
 	inv.TaxID = update.TaxID
@@ -380,13 +380,13 @@ func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string
 	}
 	for i, existing := range m.lineItems[invoiceID] {
 		if updated, ok := byID[existing.ID]; ok {
-			m.lineItems[invoiceID][i].TaxRateBP = updated.TaxRateBP
+			m.lineItems[invoiceID][i].TaxRate = updated.TaxRate
 			m.lineItems[invoiceID][i].TaxAmountCents = updated.TaxAmountCents
 			m.lineItems[invoiceID][i].TotalAmountCents = updated.TotalAmountCents
 		}
 	}
 	inv.TaxAmountCents = update.TaxAmountCents
-	inv.TaxRateBP = update.TaxRateBP
+	inv.TaxRate = update.TaxRate
 	inv.TaxName = update.TaxName
 	inv.TaxCountry = update.TaxCountry
 	inv.TaxID = update.TaxID

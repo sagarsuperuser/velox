@@ -158,7 +158,7 @@ type viewInvoice struct {
 	SubtotalCents       int64      `json:"subtotal_cents"`
 	DiscountCents       int64      `json:"discount_cents"`
 	TaxAmountCents      int64      `json:"tax_amount_cents"`
-	TaxRateBP           int64      `json:"tax_rate_bp"`
+	TaxRate             float64    `json:"tax_rate"` // ADR-042/043: percent rate (4-decimal precision).
 	TaxName             string     `json:"tax_name,omitempty"`
 	TaxReverseCharge    bool       `json:"tax_reverse_charge,omitempty"`
 	TotalAmountCents    int64      `json:"total_amount_cents"`
@@ -489,7 +489,7 @@ func toViewInvoice(inv domain.Invoice) viewInvoice {
 		SubtotalCents:       inv.SubtotalCents,
 		DiscountCents:       inv.DiscountCents,
 		TaxAmountCents:      inv.TaxAmountCents,
-		TaxRateBP:           inv.TaxRateBP,
+		TaxRate:             inv.TaxRate,
 		TaxName:             inv.TaxName,
 		TaxReverseCharge:    inv.TaxReverseCharge,
 		TotalAmountCents:    inv.TotalAmountCents,

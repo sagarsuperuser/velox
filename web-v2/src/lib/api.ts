@@ -711,7 +711,7 @@ export interface Invoice {
   subtotal_cents: number
   discount_cents: number
   tax_amount_cents: number
-  tax_rate_bp: number
+  tax_rate: number
   tax_name: string
   tax_country?: string
   tax_id?: string
@@ -811,7 +811,7 @@ export interface LineItem {
   amount_cents: number
   total_amount_cents: number
   tax_amount_cents?: number
-  tax_rate_bp?: number
+  tax_rate?: number
   tax_jurisdiction?: string
   tax_code?: string
   // tax_reason is the Stripe-canonical structured taxability_reason
@@ -1182,7 +1182,7 @@ export interface TenantSettings {
   invoice_prefix: string
   net_payment_terms: number
   tax_provider: 'none' | 'manual' | 'stripe_tax'
-  tax_rate_bp: number
+  tax_rate: number
   tax_name: string
   tax_inclusive: boolean
   default_product_tax_code: string

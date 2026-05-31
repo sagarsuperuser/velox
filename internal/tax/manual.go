@@ -2,6 +2,7 @@ package tax
 
 import (
 	"context"
+	"math"
 
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
@@ -25,14 +26,26 @@ import (
 // tenant configured" — inferring cross-border zero-rating silently
 // produces wrong invoices under OSS/OIDAR and in most US sales-tax regimes.
 type ManualProvider struct {
-	rateBP  int64
+	rate    float64 // Percent rate (4-decimal precision). ADR-042/043.
+	ratePPM int64   // Same rate scaled to parts-per-million (1 ppm = 0.0001%) for integer math without precision loss.
 	taxName string
 }
 
-// NewManualProvider returns a provider that applies rateBP uniformly.
+// NewManualProvider returns a provider that applies rate uniformly.
+// rate is in percent (4-decimal precision; e.g. 8.875 for NYC).
 // taxName is the label shown on the invoice tax row ("VAT", "Sales Tax", …).
-func NewManualProvider(rateBP int64, taxName string) *ManualProvider {
-	return &ManualProvider{rateBP: rateBP, taxName: taxName}
+// ADR-042/043: switched from integer basis-points to NUMERIC(7,4) percent.
+// The provider stores BOTH the float (for ResultLine.TaxRate display) and
+// the integer ppm scaling (for line-tax math without float drift).
+func NewManualProvider(rate float64, taxName string) *ManualProvider {
+	if rate < 0 {
+		rate = 0
+	}
+	return &ManualProvider{
+		rate:    rate,
+		ratePPM: int64(math.Round(rate * 10000)), // 8.875% → 88750 ppm
+		taxName: taxName,
+	}
 }
 
 func (*ManualProvider) Name() string { return "manual" }
@@ -46,7 +59,7 @@ func (m *ManualProvider) Calculate(_ context.Context, req Request) (*Result, err
 	}
 
 	lines := make([]ResultLine, len(req.LineItems))
-	if m.rateBP <= 0 || len(req.LineItems) == 0 {
+	if m.ratePPM <= 0 || len(req.LineItems) == 0 {
 		for i, li := range req.LineItems {
 			lines[i] = ResultLine{Ref: li.Ref, NetAmountCents: li.AmountCents}
 		}
@@ -76,7 +89,10 @@ func (m *ManualProvider) calculateExclusive(req Request, lines []ResultLine, sub
 		return &Result{Provider: "manual", Lines: lines}
 	}
 
-	totalTax := money.RoundHalfToEven(taxableBase*m.rateBP, 10000)
+	// Integer math via parts-per-million (1 ppm = 0.0001%). 8.875%
+	// = 88750 ppm; tax = base × ppm / 1_000_000. Preserves 4-decimal
+	// precision without float drift.
+	totalTax := money.RoundHalfToEven(taxableBase*m.ratePPM, 1_000_000)
 
 	var (
 		lineTaxSum      int64
@@ -91,14 +107,13 @@ func (m *ManualProvider) calculateExclusive(req Request, lines []ResultLine, sub
 			discountApplied += linePortion
 		}
 		lineBase := max(li.AmountCents-linePortion, 0)
-		lineTax := money.RoundHalfToEven(lineBase*m.rateBP, 10000)
+		lineTax := money.RoundHalfToEven(lineBase*m.ratePPM, 1_000_000)
 
 		lines[i] = ResultLine{
 			Ref:            li.Ref,
 			NetAmountCents: li.AmountCents,
 			TaxAmountCents: lineTax,
-			TaxRateBP:      m.rateBP,
-			TaxRate:        float64(m.rateBP) / 100, // ADR-042: bp → precise percent (manual provider preserves precision via NUMERIC storage from tenant_settings)
+			TaxRate:        m.rate, // ADR-042/043
 			TaxName:        m.taxName,
 		}
 		lineTaxSum += lineTax
@@ -128,8 +143,10 @@ func (m *ManualProvider) calculateInclusive(req Request, lines []ResultLine, sub
 		return &Result{Provider: "manual", Lines: lines}
 	}
 
-	denom := int64(10000 + m.rateBP)
-	totalTax := taxableGross - money.RoundHalfToEven(taxableGross*10000, denom)
+	// Inclusive math: gross = net × (1 + rate). With rate in ppm
+	// scaled to 1_000_000-base, denom = 1_000_000 + ratePPM.
+	denom := int64(1_000_000 + m.ratePPM)
+	totalTax := taxableGross - money.RoundHalfToEven(taxableGross*1_000_000, denom)
 
 	var (
 		lineTaxSum      int64
@@ -144,19 +161,18 @@ func (m *ManualProvider) calculateInclusive(req Request, lines []ResultLine, sub
 			discountApplied += linePortion
 		}
 		lineGrossBase := max(li.AmountCents-linePortion, 0)
-		lineNetBase := money.RoundHalfToEven(lineGrossBase*10000, denom)
+		lineNetBase := money.RoundHalfToEven(lineGrossBase*1_000_000, denom)
 		lineTax := lineGrossBase - lineNetBase
 		// Full-line (undiscounted) net for NetAmountCents so the engine's
 		// stored subtotal is undiscounted-net and DiscountCents is net-units,
 		// matching what the invoice shows.
-		lineNetUndisc := money.RoundHalfToEven(li.AmountCents*10000, denom)
+		lineNetUndisc := money.RoundHalfToEven(li.AmountCents*1_000_000, denom)
 
 		lines[i] = ResultLine{
 			Ref:            li.Ref,
 			NetAmountCents: lineNetUndisc,
 			TaxAmountCents: lineTax,
-			TaxRateBP:      m.rateBP,
-			TaxRate:        float64(m.rateBP) / 100, // ADR-042
+			TaxRate:        m.rate, // ADR-042/043
 			TaxName:        m.taxName,
 		}
 		lineTaxSum += lineTax
@@ -171,15 +187,14 @@ func (m *ManualProvider) calculateInclusive(req Request, lines []ResultLine, sub
 
 func (m *ManualProvider) wrap(totalTax int64, lines []ResultLine) *Result {
 	return &Result{
-		Provider:        "manual",
-		TotalTaxCents:   totalTax,
-		EffectiveRateBP: m.rateBP,
-		EffectiveRate:   float64(m.rateBP) / 100, // ADR-042
-		TaxName:         m.taxName,
-		Lines:           lines,
+		Provider:      "manual",
+		TotalTaxCents: totalTax,
+		EffectiveRate: m.rate, // ADR-042/043
+		TaxName:       m.taxName,
+		Lines:         lines,
 		Breakdowns: []Breakdown{{
 			Name:        m.taxName,
-			RateBP:      m.rateBP,
+			Rate:        m.rate,
 			AmountCents: totalTax,
 		}},
 	}

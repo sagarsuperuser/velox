@@ -2129,7 +2129,7 @@ export interface components {
              * Format: int64
              * @description Tax rate in basis points (1850 = 18.50%).
              */
-            tax_rate_bp: number;
+            tax_rate: number;
             tax_name?: string;
             tax_country?: string;
             tax_id?: string;
@@ -2239,7 +2239,7 @@ export interface components {
             /** Format: int64 */
             amount_cents: number;
             /** Format: int64 */
-            tax_rate_bp: number;
+            tax_rate: number;
             /** Format: int64 */
             tax_amount_cents: number;
             tax_jurisdiction?: string;
