@@ -6,7 +6,6 @@ import { api, formatCents, formatDateTime } from '@/lib/api'
 import type { MeterPricingRule, MeterAggregationMode, RatingRule } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
-import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -542,18 +541,16 @@ function CreatePricingRuleDialog({
                       for the same swap. */}
                   {dimensions.length === 1 ? (
                     <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-block shrink-0 cursor-not-allowed">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-9 w-9 text-muted-foreground"
-                            disabled
-                            aria-label="Remove dimension"
-                          >
-                            <Trash2 size={14} />
-                          </Button>
-                        </span>
+                      <TooltipTrigger render={<span className="inline-block shrink-0 cursor-not-allowed" />}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 text-muted-foreground"
+                          disabled
+                          aria-label="Remove dimension"
+                        >
+                          <Trash2 size={14} />
+                        </Button>
                       </TooltipTrigger>
                       <TooltipContent>A meter requires at least one dimension.</TooltipContent>
                     </Tooltip>

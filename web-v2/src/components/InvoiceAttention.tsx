@@ -1,17 +1,14 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { toast } from 'sonner'
 import { AlertTriangle, AlertCircle, Info, ExternalLink, Calendar } from 'lucide-react'
-import { api, formatCents, getCurrencySymbol, type Invoice } from '@/lib/api'
+import { api, formatCents, type Invoice } from '@/lib/api'
 import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import type {
-  InvoiceAttention as Attention,
   AttentionAction,
   AttentionSeverity,
 } from '@/lib/api'
 import { formatDate, formatDateTime } from '@/lib/api'
-import { showApiError } from '@/lib/formErrors'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -127,11 +124,9 @@ export function InvoiceAttention({
               />
             ))}
             {att.doc_url && (
-              <Button asChild variant="ghost" size="sm" className="text-xs">
-                <a href={att.doc_url} target="_blank" rel="noopener noreferrer">
-                  Learn more
-                  <ExternalLink size={12} className="ml-1" />
-                </a>
+              <Button render={<a href={att.doc_url} target="_blank" rel="noopener noreferrer" />} variant="ghost" size="sm" className="text-xs">
+                Learn more
+                <ExternalLink size={12} className="ml-1" />
               </Button>
             )}
           </div>
@@ -226,8 +221,8 @@ function ActionButton({
     case 'edit_billing_profile':
     case 'add_payment_method':
       return (
-        <Button asChild variant={variant} size="sm">
-          <Link to={`/customers/${invoice.customer_id}`}>{display}</Link>
+        <Button render={<Link to={`/customers/${invoice.customer_id}`} />} variant={variant} size="sm">
+          {display}
         </Button>
       )
     case 'retry_tax':
@@ -243,23 +238,21 @@ function ActionButton({
       )
     case 'wait_provider':
       return (
-        <Button asChild variant={variant} size="sm">
-          <a href="https://status.stripe.com/" target="_blank" rel="noopener noreferrer">
-            {display}
-            <ExternalLink size={12} className="ml-1" />
-          </a>
+        <Button render={<a href="https://status.stripe.com/" target="_blank" rel="noopener noreferrer" />} variant={variant} size="sm">
+          {display}
+          <ExternalLink size={12} className="ml-1" />
         </Button>
       )
     case 'rotate_api_key':
       return (
-        <Button asChild variant={variant} size="sm">
-          <Link to="/settings">{display}</Link>
+        <Button render={<Link to="/settings" />} variant={variant} size="sm">
+          {display}
         </Button>
       )
     case 'review_registration':
       return (
-        <Button asChild variant={variant} size="sm">
-          <Link to="/settings">{display}</Link>
+        <Button render={<Link to="/settings" />} variant={variant} size="sm">
+          {display}
         </Button>
       )
     case 'connect_tax_provider':
@@ -268,8 +261,8 @@ function ActionButton({
       // there in the active mode lets them connect the right
       // credentials without a second mode toggle.
       return (
-        <Button asChild variant={variant} size="sm">
-          <Link to="/settings?tab=payments">{display}</Link>
+        <Button render={<Link to="/settings?tab=payments" />} variant={variant} size="sm">
+          {display}
         </Button>
       )
     case 'charge_now':
@@ -334,7 +327,7 @@ function UpdatePaymentMethodButton({ variant, display, invoice }: { variant: 'de
     queryFn: () => api.getCustomer(invoice.customer_id),
     enabled: open,
   })
-  const amountDueLabel = `${getCurrencySymbol(invoice.currency)}${formatCents(invoice.amount_due_cents, false)}`
+  const amountDueLabel = formatCents(invoice.amount_due_cents, invoice.currency)
   return (
     <>
       <Button variant={variant} size="sm" onClick={() => setOpen(true)}>
@@ -422,6 +415,7 @@ function defaultLabel(action: AttentionAction): string {
     // attention reason; the UI label is generic.
     send_reminder: 'Email payment link',
     add_payment_method: 'Add payment method',
+    update_payment_method: 'Update payment method',
     connect_tax_provider: 'Connect Stripe',
   }
   return map[action] ?? action

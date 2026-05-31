@@ -65,7 +65,7 @@ export function SendSetupLinkDialog({ open, onOpenChange, customerId, customerEm
       toast.success(`Setup link sent to ${res.to}`)
       close()
     } catch (err) {
-      showApiError(err)
+      showApiError(err, 'Failed to send setup link')
     } finally {
       setLoading(null)
     }
@@ -83,7 +83,7 @@ export function SendSetupLinkDialog({ open, onOpenChange, customerId, customerEm
         // Clipboard API unavailable — URL stays visible for manual copy.
       }
     } catch (err) {
-      showApiError(err)
+      showApiError(err, 'Failed to create setup link')
     } finally {
       setLoading(null)
     }

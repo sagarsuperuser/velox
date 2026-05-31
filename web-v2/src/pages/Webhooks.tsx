@@ -240,7 +240,7 @@ function EndpointsTab() {
           onClose={() => setShowCreate(false)}
           onCreated={(secret) => {
             setShowCreate(false)
-            setCreatedSecret(secret)
+            setCreatedSecret({ secret })
             queryClient.invalidateQueries({ queryKey: ['webhook-endpoints'] })
             toast.success('Endpoint created')
           }}

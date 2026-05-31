@@ -33,7 +33,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Loader2, Pencil, CreditCard, Archive, Wand2, FilePlus2, Plus, Trash2, Code2, RotateCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2, FilePlus2, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
@@ -247,7 +247,7 @@ export default function CustomerDetailPage() {
       await refetchPMs()
       toast.success('Default payment method updated')
     } catch (err) {
-      showApiError(err)
+      showApiError(err, 'Failed to update default payment method')
     } finally {
       setPmActionLoading(null)
     }
@@ -260,7 +260,7 @@ export default function CustomerDetailPage() {
       await refetchPMs()
       toast.success('Payment method removed')
     } catch (err) {
-      showApiError(err)
+      showApiError(err, 'Failed to remove payment method')
     } finally {
       setPmActionLoading(null)
     }
@@ -812,14 +812,16 @@ export default function CustomerDetailPage() {
                         </Button>
                       )}
                       <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={pmActionLoading === pm.id}
-                          >
-                            <Trash2 size={14} />
-                          </Button>
+                        <AlertDialogTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={pmActionLoading === pm.id}
+                            />
+                          }
+                        >
+                          <Trash2 size={14} />
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>

@@ -1,12 +1,11 @@
-import { Fragment, useState, useMemo, useEffect } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Fragment, useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   api,
   formatDateTime,
   formatCents,
-  type DunningPolicy,
   type DunningRun,
   type DunningEvent,
   type Invoice,
@@ -20,19 +19,9 @@ import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -58,7 +47,7 @@ import {
 } from '@/components/ui/pagination'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { AlertTriangle, Loader2, X, XCircle } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 
 // effectiveNowMs resolves the "now" baseline for relative-time
 // formatting on dunning rows. When effectiveNowISO is provided (the

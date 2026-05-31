@@ -9,7 +9,11 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
  */
 
 /**
- * Lifecycle state of the invoice.
+ * Lifecycle state of the invoice. `uncollectible` marks an invoice
+a dunning policy has given up collecting (no further retries) while
+keeping it on the books — distinct from `voided` (cancelled, owes
+nothing).
+
  */
 export type InvoiceStatus = typeof InvoiceStatus[keyof typeof InvoiceStatus];
 
@@ -19,4 +23,5 @@ export const InvoiceStatus = {
   finalized: 'finalized',
   paid: 'paid',
   voided: 'voided',
+  uncollectible: 'uncollectible',
 } as const;
