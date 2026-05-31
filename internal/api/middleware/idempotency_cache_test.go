@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -136,6 +138,78 @@ func TestIdempotency_FingerprintMismatchStill422(t *testing.T) {
 	}
 	if !strings.Contains(rec2.Body.String(), "idempotency_error") {
 		t.Errorf("mismatch: expected idempotency_error in body, got: %s", rec2.Body.String())
+	}
+}
+
+// TestIdempotency_ConcurrentSameKey_RunsOnce is the regression test for the
+// check-then-act race: two concurrent requests with the same idempotency key
+// must execute the side effect exactly once. Before the reserve-before-act
+// fix, both requests passed the read (no row yet) and both invoked the handler
+// — a double credit-grant / double-charge. With the fix, exactly one request
+// claims the key and runs the handler; the other either replays the stored
+// response or gets a 409 conflict_idempotency, but never re-executes.
+func TestIdempotency_ConcurrentSameKey_RunsOnce(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	tenantID := testutil.CreateTestTenant(t, db, "Idempotency Concurrent")
+
+	var calls atomic.Int64
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Count the side effect (the "credit grant"). Sleep briefly while
+		// holding the claim so the racing request reliably reaches the
+		// conflict path and starts polling — exercising the serialization.
+		calls.Add(1)
+		time.Sleep(150 * time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"granted"}`))
+	})
+	handler := Idempotency(db)(inner)
+
+	const n = 2
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		codes   [n]int
+		replays [n]string
+	)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release both goroutines as close to simultaneously as possible
+			rec := invokeWithKey(t, handler, tenantID, "idem-concurrent", `{"amount":100}`)
+			codes[i] = rec.Code
+			replays[i] = rec.Header().Get("Idempotent-Replayed")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// The side effect must have run exactly once.
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent same-key: handler must run exactly once, got %d", got)
+	}
+
+	// Exactly one request executed (201, no replay header). The other must be
+	// either a replay of that 201, or a 409 conflict_idempotency — never a
+	// second fresh execution.
+	executed, replayed, conflicted := 0, 0, 0
+	for i := 0; i < n; i++ {
+		switch {
+		case codes[i] == http.StatusCreated && replays[i] == "":
+			executed++
+		case codes[i] == http.StatusCreated && replays[i] == "true":
+			replayed++
+		case codes[i] == http.StatusConflict:
+			conflicted++
+		default:
+			t.Errorf("request %d: unexpected outcome code=%d replayed=%q", i, codes[i], replays[i])
+		}
+	}
+	if executed != 1 {
+		t.Errorf("exactly one request should have executed fresh, got %d (codes=%v replays=%v)", executed, codes, replays)
+	}
+	if replayed+conflicted != 1 {
+		t.Errorf("the other request should replay or 409, got replayed=%d conflicted=%d (codes=%v)", replayed, conflicted, codes)
 	}
 }
 
