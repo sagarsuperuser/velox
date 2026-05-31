@@ -368,7 +368,15 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	subtotal := eval.RunningSubtotal
 	var discountCents int64
 
-	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, eval.LineItems)
+	// Propagate tax errors rather than discarding them: a swallowed error
+	// yields a zero-value TaxApplication (TaxStatus="") that finalizes a $0
+	// threshold invoice and permanently consumes the cycle idempotency slot,
+	// leaving the over-threshold usage unbilled. Mirrors the cycle-close and
+	// proration call sites. (audit: velox-ops threshold tax-discard finding)
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, eval.LineItems)
+	if err != nil {
+		return false, fmt.Errorf("apply tax: %w", err)
+	}
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 
 	netDays := 30
