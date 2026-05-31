@@ -673,7 +673,7 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
 			tax_jurisdiction, tax_code, tax_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
@@ -927,7 +927,7 @@ func (s *PostgresStore) AddLineItemAtomic(
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
 			tax_jurisdiction, tax_code, tax_reason)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
@@ -1333,7 +1333,7 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 				tax_amount_cents, total_amount_cents, currency, pricing_mode,
 				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at,
 				tax_jurisdiction, tax_code, tax_reason)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		`, itemID, inv.ID, tenantID, items[i].LineType, postgres.NullableString(items[i].MeterID),
 			items[i].Description, items[i].Quantity, items[i].UnitAmountCents, items[i].AmountCents,
 			items[i].TaxRate, items[i].TaxAmountCents, items[i].TotalAmountCents,
