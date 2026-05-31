@@ -82,6 +82,18 @@ func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, st
 	return nil
 }
 
+func (m *memStore) UpdateAllocation(_ context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	cn.RefundAmountCents = refundCents
+	cn.CreditAmountCents = creditCents
+	cn.OutOfBandAmountCents = outOfBandCents
+	m.notes[id] = cn
+	return nil
+}
+
 func (m *memStore) SetTaxTransaction(_ context.Context, tenantID, id, taxTransactionID string) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
