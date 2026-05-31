@@ -358,10 +358,8 @@ export function DatePicker({ value, onChange, placeholder = 'Pick a date', class
                   // span gives the trigger a focusable target since
                   // disabled buttons don't receive focus events.
                   <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-block cursor-not-allowed">
-                        {todayBtn}
-                      </span>
+                    <TooltipTrigger render={<span className="inline-block cursor-not-allowed" />}>
+                      {todayBtn}
                     </TooltipTrigger>
                     <TooltipContent>
                       Today is below the minimum allowed date ({format(minStart!, 'MMM d, yyyy')}).

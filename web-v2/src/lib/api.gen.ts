@@ -1978,10 +1978,13 @@ export interface components {
             timestamp?: string;
         };
         /**
-         * @description Lifecycle state of the invoice.
+         * @description Lifecycle state of the invoice. `uncollectible` marks an invoice
+         *     a dunning policy has given up collecting (no further retries) while
+         *     keeping it on the books — distinct from `voided` (cancelled, owes
+         *     nothing).
          * @enum {string}
          */
-        InvoiceStatus: "draft" | "finalized" | "paid" | "voided";
+        InvoiceStatus: "draft" | "finalized" | "paid" | "voided" | "uncollectible";
         /**
          * @description Payment-attempt status. `unknown` marks a Stripe charge attempt that
          *     returned an ambiguous error (5xx, timeout, connection reset) where

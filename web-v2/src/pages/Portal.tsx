@@ -300,7 +300,7 @@ export default function Portal() {
   // page reads in the customer's actual billing currency, not USD.
   const displayCurrency = resolveCurrency(invoices)
   const unpaidInvoices = invoices.filter(inv =>
-    inv.payment_status !== 'paid' && inv.amount_due_cents > 0
+    inv.payment_status !== 'succeeded' && inv.amount_due_cents > 0
   )
   const outstandingCents = unpaidInvoices.reduce((sum, inv) => sum + inv.amount_due_cents, 0)
   const nextDueInvoice = unpaidInvoices[0]
@@ -539,10 +539,8 @@ export default function Portal() {
           </div>
           <div className="flex items-center gap-2">
             {branding.support_url && (
-              <Button asChild variant="ghost" size="sm">
-                <a href={branding.support_url} target="_blank" rel="noopener noreferrer">
-                  Support <ExternalLink size={12} className="ml-1.5" />
-                </a>
+              <Button render={<a href={branding.support_url} target="_blank" rel="noopener noreferrer" />} variant="ghost" size="sm">
+                Support <ExternalLink size={12} className="ml-1.5" />
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={handleSignOut}>
@@ -840,15 +838,17 @@ export default function Portal() {
                         </Button>
                       )}
                       <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive hover:text-destructive"
-                            disabled={acting}
-                          >
-                            Remove
-                          </Button>
+                        <AlertDialogTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              disabled={acting}
+                            />
+                          }
+                        >
+                          Remove
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
@@ -988,7 +988,7 @@ export default function Portal() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
                         <Badge variant={statusToneInvoice(inv.status)}>{inv.status}</Badge>
-                        {inv.status === 'finalized' && inv.payment_status !== 'paid' && (
+                        {inv.status === 'finalized' && inv.payment_status !== 'succeeded' && (
                           <Badge variant="outline">{inv.payment_status}</Badge>
                         )}
                       </div>
@@ -1031,15 +1031,17 @@ export default function Portal() {
                       </Button>
                     )}
                     <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="shrink-0"
-                          onClick={() => void downloadInvoicePDF(inv)}
-                        >
-                          <Download size={14} />
-                        </Button>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="shrink-0"
+                            onClick={() => void downloadInvoicePDF(inv)}
+                          />
+                        }
+                      >
+                        <Download size={14} />
                       </TooltipTrigger>
                       <TooltipContent>Download PDF</TooltipContent>
                     </Tooltip>

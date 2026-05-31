@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
 import { TestClockBadge } from '@/components/TestClockBadge'
@@ -458,23 +458,19 @@ export default function InvoiceDetailPage() {
               : 'Tax calculation has failed after retries. Resolve the customer billing profile or retry tax before finalizing.'
             return (
               <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-block cursor-not-allowed">
-                    <Button size="sm" disabled>Finalize</Button>
-                  </span>
+                <TooltipTrigger render={<span className="inline-block cursor-not-allowed" />}>
+                  <Button size="sm" disabled>Finalize</Button>
                 </TooltipTrigger>
                 <TooltipContent>{reason}</TooltipContent>
               </Tooltip>
             )
           })()}
 
-          {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0 && (
+          {invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0 && (
             !hasPaymentMethod ? (
               <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-block cursor-not-allowed">
-                    <Button size="sm" disabled className="pointer-events-none">Collect Payment</Button>
-                  </span>
+                <TooltipTrigger render={<span className="inline-block cursor-not-allowed" />}>
+                  <Button size="sm" disabled className="pointer-events-none">Collect Payment</Button>
                 </TooltipTrigger>
                 <TooltipContent>Attach a payment method first.</TooltipContent>
               </Tooltip>
@@ -515,28 +511,26 @@ export default function InvoiceDetailPage() {
               The menu always renders (even on draft where most rows
               are hidden) so the trigger position stays stable. */}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" disabled={acting}>
-                <MoreHorizontal size={16} />
-              </Button>
+            <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={acting} />}>
+              <MoreHorizontal size={16} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
+              {((invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
                 invoice.status === 'uncollectible') && (
                 <DropdownMenuItem onClick={() => setShowRecordPaymentDialog(true)} disabled={acting}>
                   <Receipt size={14} className="mr-2" />
                   Record offline payment
                 </DropdownMenuItem>
               )}
-              {invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && (
+              {invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing' && (
                 <DropdownMenuItem onClick={() => setShowMarkUncollectibleConfirm(true)} disabled={acting} className="text-amber-700 dark:text-amber-400">
                   <AlertOctagon size={14} className="mr-2" />
                   Mark uncollectible
                 </DropdownMenuItem>
               )}
-              {((invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
+              {((invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0) ||
                 invoice.status === 'uncollectible' ||
-                (invoice.status === 'finalized' && invoice.payment_status !== 'paid' && invoice.payment_status !== 'processing')) && (
+                (invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing')) && (
                 <DropdownMenuSeparator />
               )}
 
@@ -825,10 +819,8 @@ export default function InvoiceDetailPage() {
                         <div className="flex items-center gap-2 flex-wrap">
                           {prorationMatch ? (
                             <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="text-sm text-foreground cursor-help underline decoration-dotted underline-offset-2">
-                                  {item.description}
-                                </span>
+                              <TooltipTrigger render={<span className="text-sm text-foreground cursor-help underline decoration-dotted underline-offset-2" />}>
+                                {item.description}
                               </TooltipTrigger>
                               <TooltipContent className="max-w-xs">
                                 {`Subscription started mid-cycle. Charge covers ${prorationMatch[1]} of ${prorationMatch[2]} days in the period. Period boundaries snap to start-of-day in tenant timezone (signup day inclusive).`}

@@ -97,6 +97,7 @@ export default function HostedInvoicePage() {
   const paidSignal = searchParams.get('paid') === '1'
 
   const [payingStatus, setPayingStatus] = useState<'idle' | 'creating' | 'redirecting'>('idle')
+  const [payError, setPayError] = useState<string | null>(null)
 
   // Invoice fetch keyed by (token, paidSignal). When Stripe Checkout
   // redirects back with ?paid=1, the new key forces a refetch so the
@@ -132,6 +133,7 @@ export default function HostedInvoicePage() {
 
   const handlePay = async () => {
     if (!data || !data.pay_enabled) return
+    setPayError(null)
     setPayingStatus('creating')
     try {
       const res = await fetch(
@@ -147,7 +149,7 @@ export default function HostedInvoicePage() {
       window.location.href = url
     } catch (err) {
       setPayingStatus('idle')
-      setError(err instanceof Error ? err.message : 'Unable to start payment.')
+      setPayError(err instanceof Error ? err.message : 'Unable to start payment.')
     }
   }
 
@@ -506,13 +508,20 @@ export default function HostedInvoicePage() {
                   )}
                 </Button>
               ) : null}
-              <Button asChild variant="outline" size="lg" className={data.pay_enabled ? '' : 'flex-1'}>
-                <a href={pdfHref} target="_blank" rel="noopener noreferrer">
-                  <Download size={16} className="mr-2" aria-hidden="true" />
-                  Download PDF
-                </a>
+              <Button
+                render={<a href={pdfHref} target="_blank" rel="noopener noreferrer" />}
+                variant="outline"
+                size="lg"
+                className={data.pay_enabled ? '' : 'flex-1'}
+              >
+                <Download size={16} className="mr-2" aria-hidden="true" />
+                Download PDF
               </Button>
             </section>
+
+            {payError && (
+              <p className="mt-2 text-sm text-destructive" role="alert">{payError}</p>
+            )}
 
             {data.pay_enabled && (
               <p className="text-xs text-muted-foreground flex items-center justify-center gap-1.5">

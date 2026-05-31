@@ -264,33 +264,33 @@ export function CreateSubscriptionDialog({
                     />
                     {itemsArray.fields.length <= 1 ? (
                       <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="inline-block cursor-not-allowed">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                              disabled
-                            >
-                              <Trash2 size={14} />
-                            </Button>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>A subscription requires at least one item.</TooltipContent>
-                      </Tooltip>
-                    ) : (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
+                        <TooltipTrigger render={<span className="inline-block cursor-not-allowed" />}>
                           <Button
                             type="button"
                             size="sm"
                             variant="ghost"
                             className="h-9 px-2 text-muted-foreground hover:text-destructive"
-                            onClick={() => itemsArray.remove(idx)}
+                            disabled
                           >
                             <Trash2 size={14} />
                           </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>A subscription requires at least one item.</TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-9 px-2 text-muted-foreground hover:text-destructive"
+                              onClick={() => itemsArray.remove(idx)}
+                            />
+                          }
+                        >
+                          <Trash2 size={14} />
                         </TooltipTrigger>
                         <TooltipContent>Remove</TooltipContent>
                       </Tooltip>

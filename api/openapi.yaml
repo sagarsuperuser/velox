@@ -192,8 +192,12 @@ components:
 
     InvoiceStatus:
       type: string
-      enum: [draft, finalized, paid, voided]
-      description: Lifecycle state of the invoice.
+      enum: [draft, finalized, paid, voided, uncollectible]
+      description: |
+        Lifecycle state of the invoice. `uncollectible` marks an invoice
+        a dunning policy has given up collecting (no further retries) while
+        keeping it on the books — distinct from `voided` (cancelled, owes
+        nothing).
 
     InvoicePaymentStatus:
       type: string

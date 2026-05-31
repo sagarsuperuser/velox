@@ -348,8 +348,7 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Uninstall {recipe.name}?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-2 text-sm text-muted-foreground">
+            <AlertDialogDescription render={<div className="space-y-2 text-sm text-muted-foreground" />}>
                 <p>
                   This removes the recipe link only. The plans, meters, rating
                   rules, dunning policy, and webhook endpoint that this recipe
@@ -369,7 +368,6 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
                   re-used; you&apos;ll get a name collision unless you
                   archived or renamed them first.
                 </p>
-              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

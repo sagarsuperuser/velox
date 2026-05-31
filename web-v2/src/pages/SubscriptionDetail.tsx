@@ -786,10 +786,8 @@ export default function SubscriptionDetailPage() {
                 <span className="text-sm text-muted-foreground w-40 shrink-0 inline-flex items-center gap-1.5">
                   Billing alignment
                   <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-flex cursor-help">
-                        <HelpCircle size={13} className="text-muted-foreground/70" />
-                      </span>
+                    <TooltipTrigger render={<span className="inline-flex cursor-help" />}>
+                      <HelpCircle size={13} className="text-muted-foreground/70" />
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs">
                       <p className="text-xs">

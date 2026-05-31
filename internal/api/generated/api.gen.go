@@ -236,10 +236,11 @@ func (e InvoicePaymentStatus) Valid() bool {
 
 // Defines values for InvoiceStatus.
 const (
-	InvoiceStatusDraft     InvoiceStatus = "draft"
-	InvoiceStatusFinalized InvoiceStatus = "finalized"
-	InvoiceStatusPaid      InvoiceStatus = "paid"
-	InvoiceStatusVoided    InvoiceStatus = "voided"
+	InvoiceStatusDraft         InvoiceStatus = "draft"
+	InvoiceStatusFinalized     InvoiceStatus = "finalized"
+	InvoiceStatusPaid          InvoiceStatus = "paid"
+	InvoiceStatusUncollectible InvoiceStatus = "uncollectible"
+	InvoiceStatusVoided        InvoiceStatus = "voided"
 )
 
 // Valid indicates whether the value is a known member of the InvoiceStatus enum.
@@ -250,6 +251,8 @@ func (e InvoiceStatus) Valid() bool {
 	case InvoiceStatusFinalized:
 		return true
 	case InvoiceStatusPaid:
+		return true
+	case InvoiceStatusUncollectible:
 		return true
 	case InvoiceStatusVoided:
 		return true
@@ -748,7 +751,10 @@ type Invoice struct {
 	SourcePlanChangedAt      time.Time      `json:"source_plan_changed_at,omitempty"`
 	SourceSubscriptionItemId string         `json:"source_subscription_item_id,omitempty"`
 
-	// Status Lifecycle state of the invoice.
+	// Status Lifecycle state of the invoice. `uncollectible` marks an invoice
+	// a dunning policy has given up collecting (no further retries) while
+	// keeping it on the books — distinct from `voided` (cancelled, owes
+	// nothing).
 	Status InvoiceStatus `json:"status"`
 
 	// StripeInvoiceId Source Stripe invoice id (`in_xxx`) populated by `velox-import`
@@ -859,7 +865,10 @@ type InvoiceLineType string
 // resolves these by querying Stripe after a cool-off window.
 type InvoicePaymentStatus string
 
-// InvoiceStatus Lifecycle state of the invoice.
+// InvoiceStatus Lifecycle state of the invoice. `uncollectible` marks an invoice
+// a dunning policy has given up collecting (no further retries) while
+// keeping it on the books — distinct from `voided` (cancelled, owes
+// nothing).
 type InvoiceStatus string
 
 // InvoiceTaxStatus Whether tax has been successfully calculated. Happy path is `ok`.
