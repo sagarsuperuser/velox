@@ -1216,7 +1216,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
-		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
+		// Per-route gating: listing + per-tenant overrides are tenant-scoped
+		// (PermAPIKeyRead / PermAPIKeyWrite, held by secret + session keys);
+		// the global on/off switch flips behavior for every tenant, so it's
+		// platform-only (PermTenantWrite). A blanket mount permission can't
+		// express this — the two writes are held by disjoint key types — so
+		// the guards are passed down and applied per route.
+		r.Mount("/feature-flags", featureH.Routes(
+			auth.Require(auth.PermAPIKeyRead),
+			auth.Require(auth.PermTenantWrite),
+			auth.Require(auth.PermAPIKeyWrite),
+		))
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		// Streaming CSV exports — one per resource. Each endpoint
