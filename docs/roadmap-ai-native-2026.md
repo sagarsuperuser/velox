@@ -140,6 +140,46 @@ change before shipping it.
 - Apply commits the new price; old price stays read-readable for
   audit.
 
+## B5 — Stripe Customer lazy-create UX surface
+
+**Status:** Deferred (2026-05-31)
+**Estimated effort:** ~30 min, single PR
+**Why now:** Velox creates the Stripe Customer object lazily on first
+payment action (matches Lago / Orb / Metronome — verified 2026-05-31
+research). The architecture is correct for the AI-native peer set,
+but operators hit "I created a customer, why isn't it in Stripe?"
+surprise on day one. Architecture stays as-is — this is a UX gap.
+
+**Scope (UX only, no architectural change):**
+- `CustomerDetail.tsx`: when `stripe_customer_id` is empty, render
+  *"Not yet created — created on first payment action"* with a
+  "View in Stripe" disabled state. When populated, show the `cus_xxx`
+  with an active "View in Stripe" external link.
+- Add a "Create in Stripe now" action button to Customer Detail.
+  Backend: thin wrapper handler that fires the existing
+  `paymentmethods.StripeAdapter.EnsureStripeCustomer` (already
+  idempotent — short-circuits if `stripe_customer_id` is set).
+- README / dashboard tooltip line documenting the lazy-create
+  pattern + the AI-native peer-set rationale, so future operators
+  understand it isn't a bug.
+
+**Dependencies:** none.
+
+**Done definition:**
+- Operator creates customer in Velox → sees explicit "not yet
+  created" state on Customer Detail.
+- Operator clicks "Create in Stripe now" → within ~1s, Stripe
+  Customer is created with full fields (email, name, address,
+  tax_id) per the Phase 1 sync; `stripe_customer_id` populated;
+  field updates to show `cus_xxx`.
+- No regression on the lazy-on-first-PM-action path.
+
+**Industry references:**
+- Lago: lazy + opt-in (https://getlago.com/docs/integrations/payments/stripe-integration)
+- Orb: lazy + explicit mapping (https://docs.withorb.com/integrations-and-exports/stripe)
+- Metronome: lazy + billing-config (https://docs.metronome.com/integrations/invoice-integrations/stripe)
+- Chargebee/Recurly use eager — different category (traditional SaaS, not AI-native)
+
 ## What this roadmap explicitly defers
 
 - **Multi-PSP** (Razorpay / Adyen): defer until a paying tenant asks.
