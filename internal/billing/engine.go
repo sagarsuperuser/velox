@@ -863,6 +863,7 @@ func (e *Engine) EffectiveNowForCustomer(ctx context.Context, tenantID, customer
 type TaxApplication struct {
 	TaxAmountCents   int64
 	TaxRateBP        int64
+	TaxRate          float64 // ADR-042: precise percent rate; persists to invoices.tax_rate NUMERIC(7,4).
 	TaxName          string
 	TaxCountry       string
 	TaxID            string
@@ -1020,6 +1021,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 			"error", err, "tenant_id", tenantID, "provider", provider.Name())
 		for i := range lineItems {
 			lineItems[i].TaxRateBP = 0
+			lineItems[i].TaxRate = 0
 			lineItems[i].TaxAmountCents = 0
 			lineItems[i].TotalAmountCents = lineItems[i].AmountCents
 		}
@@ -1057,6 +1059,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 
 	app.TaxAmountCents = res.TotalTaxCents
 	app.TaxRateBP = res.EffectiveRateBP
+	app.TaxRate = res.EffectiveRate
 	if res.TaxName != "" {
 		app.TaxName = res.TaxName
 	}
@@ -1082,6 +1085,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		}
 		lineItems[i].AmountCents = net
 		lineItems[i].TaxRateBP = rl.TaxRateBP
+		lineItems[i].TaxRate = rl.TaxRate
 		lineItems[i].TaxAmountCents = rl.TaxAmountCents
 		lineItems[i].TaxJurisdiction = rl.Jurisdiction
 		lineItems[i].TaxCode = rl.TaxCode
@@ -2131,6 +2135,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// so the caller always reads the authoritative values off the result.
 	taxAmountCents := taxApp.TaxAmountCents
 	taxRateBP := taxApp.TaxRateBP
+	taxRate := taxApp.TaxRate
 	taxName := taxApp.TaxName
 	taxCountry := taxApp.TaxCountry
 	taxID := taxApp.TaxID
@@ -2183,6 +2188,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		SubtotalCents:      taxApp.SubtotalCents,
 		DiscountCents:      taxApp.DiscountCents,
 		TaxRateBP:          taxRateBP,
+		TaxRate:            taxRate,
 		TaxName:            taxName,
 		TaxCountry:         taxCountry,
 		TaxID:              taxID,
@@ -2576,6 +2582,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		SubtotalCents:      taxApp.SubtotalCents,
 		DiscountCents:      taxApp.DiscountCents,
 		TaxRateBP:          taxApp.TaxRateBP,
+		TaxRate:            taxApp.TaxRate,
 		TaxName:            taxApp.TaxName,
 		TaxCountry:         taxApp.TaxCountry,
 		TaxID:              taxApp.TaxID,
@@ -3029,6 +3036,7 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		SubtotalCents:      taxApp.SubtotalCents,
 		DiscountCents:      taxApp.DiscountCents,
 		TaxRateBP:          taxApp.TaxRateBP,
+		TaxRate:            taxApp.TaxRate,
 		TaxName:            taxApp.TaxName,
 		TaxCountry:         taxApp.TaxCountry,
 		TaxID:              taxApp.TaxID,
@@ -3574,6 +3582,7 @@ func (e *Engine) RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID str
 	update := domain.InvoiceTaxRetryUpdate{
 		TaxAmountCents:   taxApp.TaxAmountCents,
 		TaxRateBP:        taxApp.TaxRateBP,
+		TaxRate:          taxApp.TaxRate,
 		TaxName:          taxApp.TaxName,
 		TaxCountry:       taxApp.TaxCountry,
 		TaxID:            taxApp.TaxID,

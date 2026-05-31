@@ -164,7 +164,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 	now := time.Now().UTC()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenant_settings (tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_provider, tax_rate_bp, tax_name, tax_inclusive, default_product_tax_code,
+			net_payment_terms, tax_provider, tax_rate_bp, tax_rate, tax_name, tax_inclusive, default_product_tax_code,
 			tax_on_failure,
 			company_name,
 			company_address_line1, company_address_line2, company_city, company_state,
@@ -172,12 +172,14 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			company_email, company_phone,
 			logo_url, brand_color, tax_id, support_url, invoice_footer,
 			audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$7::numeric/100,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
 			tax_provider = EXCLUDED.tax_provider,
-			tax_rate_bp = EXCLUDED.tax_rate_bp, tax_name = EXCLUDED.tax_name,
+			tax_rate_bp = EXCLUDED.tax_rate_bp,
+			tax_rate = EXCLUDED.tax_rate,
+			tax_name = EXCLUDED.tax_name,
 			tax_inclusive = EXCLUDED.tax_inclusive,
 			default_product_tax_code = EXCLUDED.default_product_tax_code,
 			tax_on_failure = EXCLUDED.tax_on_failure,

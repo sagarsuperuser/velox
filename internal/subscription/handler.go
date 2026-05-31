@@ -22,6 +22,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -763,13 +764,13 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	// from the period boundaries which don't change when an item is added
 	// mid-cycle, so a pre-add read is equivalent to a post-add read here.
 	var subBefore domain.Subscription
-	var prorationFactor float64
+	var prorationRemainingDays, prorationTotalDays int64
 	if h.plans != nil && h.invoices != nil {
 		sub, serr := h.svc.Get(ctx, tenantID, id)
 		if serr == nil {
 			subBefore = sub
 			if sub.Status == domain.SubscriptionActive {
-				prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
+				prorationRemainingDays, prorationTotalDays = remainingPeriodRatio(sub, clock.Now(ctx))
 			}
 		}
 	}
@@ -778,18 +779,18 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	// follow-through, 2026-05-29): when proration emission is needed
 	// AND the db handle is wired, open one outer tx wrapping the item
 	// insert + the proration write so a failure on either side rolls
-	// back both. Pre-fix the item committed in its own tx and a
-	// proration failure left an orphan item — silent under-charge at
-	// next cycle close. Falls back to the legacy non-atomic path when
-	// db isn't wired (test scaffolding) or when no proration emission
-	// is needed (factor == 0 / no invoices wired).
-	wantProration := prorationFactor > 0 && h.invoices != nil
+	// back both. Falls back to the legacy non-atomic path when db
+	// isn't wired (test scaffolding) or when no proration emission is
+	// needed (zero remaining / no invoices wired). ADR-042 (2026-05-31)
+	// converted prorationFactor float64 → integer day-ratio for
+	// industry-grade money math precision.
+	wantProration := prorationRemainingDays > 0 && h.invoices != nil
 	atomic := h.db != nil && wantProration
 
 	var item domain.SubscriptionItem
 	var addErr error
 	if atomic {
-		item, addErr = h.atomicAddItemWithProration(ctx, tenantID, id, input, subBefore, prorationFactor)
+		item, addErr = h.atomicAddItemWithProration(ctx, tenantID, id, input, subBefore, prorationRemainingDays, prorationTotalDays)
 	} else {
 		item, addErr = h.svc.AddItem(ctx, tenantID, id, input)
 	}
@@ -834,9 +835,10 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 			changeAt = clock.Now(ctx)
 		}
 		spec := itemProrationSpec{
-			changeType:      domain.ItemChangeTypeAdd,
-			changeAt:        changeAt,
-			prorationFactor: prorationFactor,
+			changeType:    domain.ItemChangeTypeAdd,
+			changeAt:      changeAt,
+			remainingDays: prorationRemainingDays,
+			totalDays:     prorationTotalDays,
 			itemID:          item.ID,
 			oldPlanID:       "",
 			oldQuantity:     0,
@@ -851,7 +853,8 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 				"tenant_id", tenantID,
 				"plan_id", item.PlanID,
 				"quantity", item.Quantity,
-				"proration_factor", prorationFactor,
+				"proration_remaining_days", prorationRemainingDays,
+				"proration_total_days", prorationTotalDays,
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
@@ -860,7 +863,8 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 					"change_type":      string(domain.ItemChangeTypeAdd),
 					"plan_id":          item.PlanID,
 					"quantity":         item.Quantity,
-					"proration_factor": prorationFactor,
+					"proration_remaining_days": prorationRemainingDays,
+					"proration_total_days":     prorationTotalDays,
 					"error":            prorationErr.Error(),
 				})
 			}
@@ -905,7 +909,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	// all come from a snapshot taken before UpdateItem mutates the row.
 	var oldPlanID string
 	var oldQuantity int64
-	var prorationFactor float64
+	var prorationRemainingDays, prorationTotalDays int64
 	var subBefore domain.Subscription
 	isImmediatePlanChange := input.NewPlanID != "" && input.Immediate
 	isQuantityChange := input.Quantity != nil
@@ -919,7 +923,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		sub, serr := h.svc.Get(ctx, tenantID, subID)
 		if serr == nil {
 			subBefore = sub
-			prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
+			prorationRemainingDays, prorationTotalDays = remainingPeriodRatio(sub, clock.Now(ctx))
 		}
 	}
 
@@ -933,14 +937,14 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	// existing multi-write engine orchestration. Quantity changes +
 	// same-interval immediate plan changes are now fully atomic with
 	// their proration writes.
-	wantProration := prorationEligible && prorationFactor > 0 && h.invoices != nil
+	wantProration := prorationEligible && prorationRemainingDays > 0 && h.invoices != nil
 	atomic := h.db != nil && wantProration
 	var (
 		result    ItemChangeResult
 		atomicErr error
 	)
 	if atomic {
-		result, atomicErr = h.atomicUpdateItemWithProration(ctx, tenantID, subID, itemID, input, subBefore, oldPlanID, oldQuantity, prorationFactor)
+		result, atomicErr = h.atomicUpdateItemWithProration(ctx, tenantID, subID, itemID, input, subBefore, oldPlanID, oldQuantity, prorationRemainingDays, prorationTotalDays)
 		if errors.Is(atomicErr, errAtomicNotApplicable) {
 			atomic = false
 			atomicErr = nil
@@ -983,7 +987,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	// handleItemProration aren't tight enough (a freshly auto-charged
 	// new in_advance invoice would pass the paid-check), so an
 	// explicit skip here is the only safe guard.
-	if !atomic && prorationEligible && prorationFactor > 0 && h.invoices != nil && !result.OrchestratedCrossAxis {
+	if !atomic && prorationEligible && prorationRemainingDays > 0 && h.invoices != nil && !result.OrchestratedCrossAxis {
 		// Re-hydrate the subscription post-change so the Items slice reflects
 		// the swapped plan/quantity — handleProration walks it to resolve
 		// coupon plan eligibility. Fall back to subBefore on error so the
@@ -1001,14 +1005,15 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				changeAt = clock.Now(ctx)
 			}
 			spec = itemProrationSpec{
-				changeType:      domain.ItemChangeTypePlan,
-				changeAt:        changeAt,
-				prorationFactor: prorationFactor,
-				itemID:          result.Item.ID,
-				oldPlanID:       oldPlanID,
-				oldQuantity:     result.Item.Quantity,
-				newPlanID:       result.Item.PlanID,
-				newQuantity:     result.Item.Quantity,
+				changeType:    domain.ItemChangeTypePlan,
+				changeAt:      changeAt,
+				remainingDays: prorationRemainingDays,
+				totalDays:     prorationTotalDays,
+				itemID:        result.Item.ID,
+				oldPlanID:     oldPlanID,
+				oldQuantity:   result.Item.Quantity,
+				newPlanID:     result.Item.PlanID,
+				newQuantity:   result.Item.Quantity,
 			}
 		} else {
 			// Quantity-only change. Plan is unchanged; store doesn't stamp a
@@ -1020,14 +1025,15 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				changeAt = clock.Now(ctx)
 			}
 			spec = itemProrationSpec{
-				changeType:      domain.ItemChangeTypeQuantity,
-				changeAt:        changeAt,
-				prorationFactor: prorationFactor,
-				itemID:          result.Item.ID,
-				oldPlanID:       oldPlanID,
-				oldQuantity:     oldQuantity,
-				newPlanID:       result.Item.PlanID,
-				newQuantity:     result.Item.Quantity,
+				changeType:    domain.ItemChangeTypeQuantity,
+				changeAt:      changeAt,
+				remainingDays: prorationRemainingDays,
+				totalDays:     prorationTotalDays,
+				itemID:        result.Item.ID,
+				oldPlanID:     oldPlanID,
+				oldQuantity:   oldQuantity,
+				newPlanID:     result.Item.PlanID,
+				newQuantity:   result.Item.Quantity,
 			}
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
@@ -1041,7 +1047,8 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				"new_plan_id", input.NewPlanID,
 				"old_quantity", oldQuantity,
 				"new_quantity", spec.newQuantity,
-				"proration_factor", prorationFactor,
+				"proration_remaining_days", prorationRemainingDays,
+				"proration_total_days", prorationTotalDays,
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
@@ -1052,7 +1059,8 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 					"new_plan_id":      input.NewPlanID,
 					"old_quantity":     oldQuantity,
 					"new_quantity":     spec.newQuantity,
-					"proration_factor": prorationFactor,
+					"proration_remaining_days": prorationRemainingDays,
+					"proration_total_days":     prorationTotalDays,
 					"error":            prorationErr.Error(),
 				})
 			}
@@ -1137,7 +1145,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	var removedPlanID string
 	var removedQuantity int64
 	var subBefore domain.Subscription
-	var prorationFactor float64
+	var prorationRemainingDays, prorationTotalDays int64
 	if h.plans != nil && h.credits != nil {
 		item, gerr := h.svc.store.GetItem(ctx, tenantID, itemID)
 		if gerr == nil && item.SubscriptionID == subID {
@@ -1148,7 +1156,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		if serr == nil {
 			subBefore = sub
 			if sub.Status == domain.SubscriptionActive {
-				prorationFactor = remainingPeriodFactor(sub, clock.Now(ctx))
+				prorationRemainingDays, prorationTotalDays = remainingPeriodRatio(sub, clock.Now(ctx))
 			}
 		}
 	}
@@ -1157,10 +1165,10 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	// tx so a failed credit grant rolls back the delete. Falls back to
 	// the legacy non-atomic flow when db isn't wired or no proration
 	// emission is needed.
-	wantProration := prorationFactor > 0 && removedPlanID != "" && h.credits != nil
+	wantProration := prorationRemainingDays > 0 && removedPlanID != "" && h.credits != nil
 	atomic := h.db != nil && wantProration
 	if atomic {
-		if err := h.atomicRemoveItemWithProration(ctx, tenantID, subID, itemID, subBefore, removedPlanID, removedQuantity, prorationFactor); err != nil {
+		if err := h.atomicRemoveItemWithProration(ctx, tenantID, subID, itemID, subBefore, removedPlanID, removedQuantity, prorationRemainingDays, prorationTotalDays); err != nil {
 			respond.FromError(w, r, err, "subscription item")
 			return
 		}
@@ -1179,20 +1187,21 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Legacy non-atomic proration emission path — only when atomic wasn't taken.
-	if !atomic && prorationFactor > 0 && removedPlanID != "" {
+	if !atomic && prorationRemainingDays > 0 && removedPlanID != "" {
 		// Re-fetch for coupon plan eligibility over the remaining items.
 		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
 			subAfter = subBefore
 		}
 		spec := itemProrationSpec{
-			changeType:      domain.ItemChangeTypeRemove,
-			changeAt:        clock.Now(ctx),
-			prorationFactor: prorationFactor,
-			itemID:          itemID,
-			oldPlanID:       removedPlanID,
-			oldQuantity:     removedQuantity,
-			newPlanID:       "",
+			changeType:    domain.ItemChangeTypeRemove,
+			changeAt:      clock.Now(ctx),
+			remainingDays: prorationRemainingDays,
+			totalDays:     prorationTotalDays,
+			itemID:        itemID,
+			oldPlanID:     removedPlanID,
+			oldQuantity:   removedQuantity,
+			newPlanID:     "",
 			newQuantity:     0,
 		}
 		prorationResult, prorationErr := h.handleItemProration(ctx, tenantID, subAfter, spec, nil)
@@ -1203,7 +1212,8 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 				"tenant_id", tenantID,
 				"plan_id", removedPlanID,
 				"quantity", removedQuantity,
-				"proration_factor", prorationFactor,
+				"proration_remaining_days", prorationRemainingDays,
+				"proration_total_days", prorationTotalDays,
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
@@ -1212,7 +1222,8 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 					"change_type":      string(domain.ItemChangeTypeRemove),
 					"plan_id":          removedPlanID,
 					"quantity":         removedQuantity,
-					"proration_factor": prorationFactor,
+					"proration_remaining_days": prorationRemainingDays,
+					"proration_total_days":     prorationTotalDays,
 					"error":            prorationErr.Error(),
 				})
 			}
@@ -1253,14 +1264,15 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 // item.PlanChangedAt for plan changes, or a freshly-stamped clock for the
 // other three.
 type itemProrationSpec struct {
-	changeType      domain.ItemChangeType
-	changeAt        time.Time
-	prorationFactor float64
-	itemID          string
-	oldPlanID       string
-	oldQuantity     int64
-	newPlanID       string
-	newQuantity     int64
+	changeType    domain.ItemChangeType
+	changeAt      time.Time
+	remainingDays int64 // ADR-042: integer day-ratio for proration math
+	totalDays     int64
+	itemID        string
+	oldPlanID     string
+	oldQuantity   int64
+	newPlanID     string
+	newQuantity   int64
 }
 
 // handleItemProration generates the invoice or credit for a single item
@@ -1283,7 +1295,7 @@ func (h *Handler) atomicAddItemWithProration(
 	tenantID, subID string,
 	input AddItemInput,
 	subBefore domain.Subscription,
-	prorationFactor float64,
+	remainingDays, totalDays int64,
 ) (domain.SubscriptionItem, error) {
 	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -1301,14 +1313,15 @@ func (h *Handler) atomicAddItemWithProration(
 		changeAt = clock.Now(ctx)
 	}
 	spec := itemProrationSpec{
-		changeType:      domain.ItemChangeTypeAdd,
-		changeAt:        changeAt,
-		prorationFactor: prorationFactor,
-		itemID:          item.ID,
-		oldPlanID:       "",
-		oldQuantity:     0,
-		newPlanID:       item.PlanID,
-		newQuantity:     item.Quantity,
+		changeType:    domain.ItemChangeTypeAdd,
+		changeAt:      changeAt,
+		remainingDays: remainingDays,
+		totalDays:     totalDays,
+		itemID:        item.ID,
+		oldPlanID:     "",
+		oldQuantity:   0,
+		newPlanID:     item.PlanID,
+		newQuantity:   item.Quantity,
 	}
 	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
 		return domain.SubscriptionItem{}, fmt.Errorf("proration in atomic addItem tx: %w", err)
@@ -1330,7 +1343,8 @@ func (h *Handler) atomicUpdateItemWithProration(
 	tenantID, subID, itemID string,
 	input UpdateItemInput,
 	subBefore domain.Subscription,
-	oldPlanID string, oldQuantity int64, prorationFactor float64,
+	oldPlanID string, oldQuantity int64,
+	remainingDays, totalDays int64,
 ) (ItemChangeResult, error) {
 	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -1353,14 +1367,15 @@ func (h *Handler) atomicUpdateItemWithProration(
 			changeAt = clock.Now(ctx)
 		}
 		spec = itemProrationSpec{
-			changeType:      domain.ItemChangeTypePlan,
-			changeAt:        changeAt,
-			prorationFactor: prorationFactor,
-			itemID:          result.Item.ID,
-			oldPlanID:       oldPlanID,
-			oldQuantity:     result.Item.Quantity,
-			newPlanID:       result.Item.PlanID,
-			newQuantity:     result.Item.Quantity,
+			changeType:    domain.ItemChangeTypePlan,
+			changeAt:      changeAt,
+			remainingDays: remainingDays,
+			totalDays:     totalDays,
+			itemID:        result.Item.ID,
+			oldPlanID:     oldPlanID,
+			oldQuantity:   result.Item.Quantity,
+			newPlanID:     result.Item.PlanID,
+			newQuantity:   result.Item.Quantity,
 		}
 	} else {
 		changeAt := result.Item.UpdatedAt
@@ -1368,14 +1383,15 @@ func (h *Handler) atomicUpdateItemWithProration(
 			changeAt = clock.Now(ctx)
 		}
 		spec = itemProrationSpec{
-			changeType:      domain.ItemChangeTypeQuantity,
-			changeAt:        changeAt,
-			prorationFactor: prorationFactor,
-			itemID:          result.Item.ID,
-			oldPlanID:       oldPlanID,
-			oldQuantity:     oldQuantity,
-			newPlanID:       result.Item.PlanID,
-			newQuantity:     result.Item.Quantity,
+			changeType:    domain.ItemChangeTypeQuantity,
+			changeAt:      changeAt,
+			remainingDays: remainingDays,
+			totalDays:     totalDays,
+			itemID:        result.Item.ID,
+			oldPlanID:     oldPlanID,
+			oldQuantity:   oldQuantity,
+			newPlanID:     result.Item.PlanID,
+			newQuantity:   result.Item.Quantity,
 		}
 	}
 	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
@@ -1397,7 +1413,8 @@ func (h *Handler) atomicRemoveItemWithProration(
 	ctx context.Context,
 	tenantID, subID, itemID string,
 	subBefore domain.Subscription,
-	oldPlanID string, oldQuantity int64, prorationFactor float64,
+	oldPlanID string, oldQuantity int64,
+	remainingDays, totalDays int64,
 ) error {
 	tx, err := h.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -1410,14 +1427,15 @@ func (h *Handler) atomicRemoveItemWithProration(
 	}
 
 	spec := itemProrationSpec{
-		changeType:      domain.ItemChangeTypeRemove,
-		changeAt:        clock.Now(ctx),
-		prorationFactor: prorationFactor,
-		itemID:          itemID,
-		oldPlanID:       oldPlanID,
-		oldQuantity:     oldQuantity,
-		newPlanID:       "",
-		newQuantity:     0,
+		changeType:    domain.ItemChangeTypeRemove,
+		changeAt:      clock.Now(ctx),
+		remainingDays: remainingDays,
+		totalDays:     totalDays,
+		itemID:        itemID,
+		oldPlanID:     oldPlanID,
+		oldQuantity:   oldQuantity,
+		newPlanID:     "",
+		newQuantity:   0,
 	}
 	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
 		return fmt.Errorf("proration in atomic removeItem tx: %w", err)
@@ -1516,17 +1534,30 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 	oldAmount := oldPlan.BaseAmountCents * spec.oldQuantity
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
-	diff := float64(newAmount-oldAmount) * spec.prorationFactor
-	proratedCents := int64(math.RoundToEven(diff))
+	// Integer day-ratio proration per ADR-042. Pre-fix used float64
+	// `diff * prorationFactor` then `math.RoundToEven` — introduced
+	// ULP error on large amounts. money.RoundHalfToEven keeps the
+	// rounding semantics (banker's) while staying in integer math.
+	proratedCents := money.RoundHalfToEven(
+		(newAmount-oldAmount)*spec.remainingDays,
+		spec.totalDays,
+	)
 
 	if proratedCents == 0 {
 		return nil, nil
 	}
 
+	// Derive display-only factor from the integer day-ratio for the
+	// ProrationDetail payload (operator-visible event metadata). Source
+	// of truth for the cents math is spec.remainingDays / spec.totalDays.
+	var displayFactor float64
+	if spec.totalDays > 0 {
+		displayFactor = float64(spec.remainingDays) / float64(spec.totalDays)
+	}
 	detail := &ProrationDetail{
 		OldPlanID:       spec.oldPlanID,
 		NewPlanID:       spec.newPlanID,
-		ProrationFactor: spec.prorationFactor,
+		ProrationFactor: displayFactor,
 		AmountCents:     proratedCents,
 	}
 
@@ -1766,19 +1797,30 @@ func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string 
 // remainingPeriodFactor returns the fraction of the current billing period
 // that is still ahead of `now`, clamped to [0, 1]. Used to scale a proration
 // charge/credit against the per-period price.
-func remainingPeriodFactor(sub domain.Subscription, now time.Time) float64 {
+// remainingPeriodRatio returns the integer day counts that drive proration
+// math. Per ADR-042 (2026-05-31) Velox switched from float64 prorationFactor
+// to integer day-ratio (`amount * remaining / total`) matching engine.go's
+// segment-aware billing pattern and Stripe / Lago / Orb proration semantics.
+// Pre-fix: prorationFactor was float64 hours/24 — introduced ULP error on
+// large amounts and was non-deterministic across architectures.
+//
+// Returns (0, 0) when proration doesn't apply (period boundaries missing,
+// already past end of period, or period of zero length). When `remaining`
+// exceeds `total` (clock-skew edge case), both clamp to `total` for full-
+// period proration (factor 1).
+func remainingPeriodRatio(sub domain.Subscription, now time.Time) (remainingDays, totalDays int64) {
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
-		return 0
+		return 0, 0
 	}
-	total := sub.CurrentBillingPeriodEnd.Sub(*sub.CurrentBillingPeriodStart).Hours() / 24
-	remaining := sub.CurrentBillingPeriodEnd.Sub(now).Hours() / 24
+	total := int64(math.Round(sub.CurrentBillingPeriodEnd.Sub(*sub.CurrentBillingPeriodStart).Hours() / 24))
+	remaining := int64(math.Round(sub.CurrentBillingPeriodEnd.Sub(now).Hours() / 24))
 	if total <= 0 || remaining <= 0 {
-		return 0
+		return 0, 0
 	}
 	if remaining > total {
-		return 1
+		return total, total
 	}
-	return remaining / total
+	return remaining, total
 }
 
 func planIDsFromItems(items []domain.SubscriptionItem) []string {

@@ -351,7 +351,7 @@ components:
       type: object
       description: |
         A Velox invoice. Returned from create, finalize, void, list, get,
-        apply-coupon, rotate-public-token, and collect-payment endpoints.
+        rotate-public-token, and collect-payment endpoints.
       required:
         - id
         - customer_id
