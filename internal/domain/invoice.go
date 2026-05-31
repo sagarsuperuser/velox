@@ -112,7 +112,8 @@ type Invoice struct {
 	SubtotalCents  int64                `json:"subtotal_cents"`
 	DiscountCents  int64                `json:"discount_cents"`
 	TaxAmountCents int64                `json:"tax_amount_cents"`
-	TaxRateBP      int64                `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
+	TaxRateBP      int64                `json:"tax_rate_bp"` // Basis points (1850 = 18.50%). Deprecated by ADR-042; kept for backward compat during transition.
+	TaxRate        float64              `json:"tax_rate"`    // Authoritative percent rate (4-decimal precision). 7.25 = 7.25%. ADR-042.
 	TaxName        string               `json:"tax_name,omitempty"`
 	TaxCountry     string               `json:"tax_country,omitempty"`
 	TaxID          string               `json:"tax_id,omitempty"`
@@ -265,6 +266,7 @@ type InvoiceDiscountUpdate struct {
 	DiscountCents    int64
 	TaxAmountCents   int64
 	TaxRateBP        int64
+	TaxRate          float64 // ADR-042: precise percent rate alongside the legacy bp field.
 	TaxName          string
 	TaxCountry       string
 	TaxID            string
@@ -290,6 +292,7 @@ type InvoiceDiscountUpdate struct {
 type InvoiceTaxRetryUpdate struct {
 	TaxAmountCents   int64
 	TaxRateBP        int64
+	TaxRate          float64 // ADR-042: precise percent rate alongside the legacy bp field.
 	TaxName          string
 	TaxCountry       string
 	TaxID            string
@@ -324,7 +327,8 @@ type InvoiceLineItem struct {
 	Quantity        int64               `json:"quantity"`
 	UnitAmountCents int64               `json:"unit_amount_cents"`
 	AmountCents     int64               `json:"amount_cents"`
-	TaxRateBP       int64               `json:"tax_rate_bp"` // Basis points (1850 = 18.50%)
+	TaxRateBP       int64               `json:"tax_rate_bp"` // Basis points (1850 = 18.50%). Deprecated by ADR-042.
+	TaxRate         float64             `json:"tax_rate"`    // Precise percent rate (4-decimal precision). ADR-042.
 	TaxAmountCents  int64               `json:"tax_amount_cents"`
 	TaxJurisdiction string              `json:"tax_jurisdiction,omitempty"`
 	TaxCode         string              `json:"tax_code,omitempty"`

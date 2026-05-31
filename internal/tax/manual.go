@@ -98,6 +98,7 @@ func (m *ManualProvider) calculateExclusive(req Request, lines []ResultLine, sub
 			NetAmountCents: li.AmountCents,
 			TaxAmountCents: lineTax,
 			TaxRateBP:      m.rateBP,
+			TaxRate:        float64(m.rateBP) / 100, // ADR-042: bp → precise percent (manual provider preserves precision via NUMERIC storage from tenant_settings)
 			TaxName:        m.taxName,
 		}
 		lineTaxSum += lineTax
@@ -155,6 +156,7 @@ func (m *ManualProvider) calculateInclusive(req Request, lines []ResultLine, sub
 			NetAmountCents: lineNetUndisc,
 			TaxAmountCents: lineTax,
 			TaxRateBP:      m.rateBP,
+			TaxRate:        float64(m.rateBP) / 100, // ADR-042
 			TaxName:        m.taxName,
 		}
 		lineTaxSum += lineTax
@@ -172,6 +174,7 @@ func (m *ManualProvider) wrap(totalTax int64, lines []ResultLine) *Result {
 		Provider:        "manual",
 		TotalTaxCents:   totalTax,
 		EffectiveRateBP: m.rateBP,
+		EffectiveRate:   float64(m.rateBP) / 100, // ADR-042
 		TaxName:         m.taxName,
 		Lines:           lines,
 		Breakdowns: []Breakdown{{

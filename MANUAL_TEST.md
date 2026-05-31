@@ -596,11 +596,20 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 - [ ] Backdate `current_period_end` → 1 invoice with prorated base + usage + tax + due date + invoice-number prefix.
 - [ ] Invoice line items: base line's `billing_period_start/end` matches the invoice's (current period).
 
-## FLOW B2: Tax precision (basis points)
+## FLOW B2: Tax precision (NUMERIC(7,4), ADR-042)
 
-- [ ] Tax `7.25%` → `tax_rate_bp=725` (no float column).
-- [ ] $100 subtotal → tax exactly $7.25.
-- [ ] 3 line items $33.33+$33.33+$33.34: per-line tax sums exactly to invoice tax.
+Velox stores tax rates at 4-decimal precision (`tax_rate NUMERIC(7,4)`)
+matching Stripe Tax's `percentage_decimal` shape. The legacy
+`tax_rate_bp bigint` column is retained for backward compat during
+transition; both fields are written on every invoice / line-item /
+settings INSERT. NYC 8.875%, Quebec 9.975%, Hawaii 4.7120% all
+round-trip exactly.
+
+- [ ] Manual provider: set tax 7.25% in Settings → `tenant_settings.tax_rate_bp=725 AND tax_rate=7.2500`.
+- [ ] $100 subtotal at 7.25% → `invoices.tax_amount_cents=725, tax_rate_bp=725, tax_rate=7.2500`.
+- [ ] 3 line items $33.33+$33.33+$33.34 at 7.25%: `SUM(invoice_line_items.tax_amount_cents) = invoices.tax_amount_cents` exactly (residual absorbed by last line per Stripe Tax's documented pattern).
+- [ ] **Stripe-side high-precision case (NYC):** create an invoice for an NY customer (10118 / Manhattan), Stripe Tax returns `percentage_decimal: "8.875"`. Velox stores `tax_rate=8.8750` (precise) AND `tax_rate_bp=888` (banker's rounded). `subtotal_cents × 8.8750 / 100` round-trips to `tax_amount_cents`.
+- [ ] **Proration math uses integer day-ratio (B7.4):** mid-cycle plan upgrade on a 30-day period with 18 days remaining → proration line item amount = `(new_amount - old_amount) × 18 / 30` exactly (banker's rounded). No `float64` ULP drift visible on amounts up to ~$36M.
 
 ## FLOW B3: Idempotency
 

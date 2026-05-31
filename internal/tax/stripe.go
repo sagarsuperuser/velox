@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 
@@ -318,8 +319,13 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 		subtotal += li.AmountCents
 	}
 	effectiveRateBP := int64(0)
+	effectiveRate := float64(0)
 	if subtotal > 0 {
 		effectiveRateBP = money.RoundHalfToEven(totalTax*10000, subtotal)
+		// Precise effective rate as percent (4-decimal precision is more
+		// than enough; tax = totalTax/subtotal * 100). ADR-042: stored
+		// alongside the legacy bp for industry-grade rate display.
+		effectiveRate = float64(totalTax) * 100 / float64(subtotal)
 	}
 
 	taxName := ""
@@ -345,9 +351,9 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 				}
 			}
 			if pct := tb.TaxRateDetails.PercentageDecimal; pct != "" {
-				if v, err := strconv.ParseFloat(pct, 64); err == nil {
-					rateBP = int64(v * 100)
-				}
+				rate, bp := parseStripeRate(pct)
+				_ = rate // rate captured per-breakdown when needed below; aggregate effective rate handled separately
+				rateBP = bp
 			}
 		}
 		if taxName == "" {
@@ -406,9 +412,9 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 						lines[idx].TaxName = string(bd.TaxRateDetails.TaxType)
 					}
 					if bd.TaxRateDetails.PercentageDecimal != "" {
-						if v, err := strconv.ParseFloat(bd.TaxRateDetails.PercentageDecimal, 64); err == nil {
-							lines[idx].TaxRateBP = int64(v * 100)
-						}
+						rate, bp := parseStripeRate(bd.TaxRateDetails.PercentageDecimal)
+						lines[idx].TaxRate = rate
+						lines[idx].TaxRateBP = bp
 					}
 				}
 				if bd.Jurisdiction != nil && bd.Jurisdiction.Country != "" {
@@ -440,12 +446,35 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 		CalculationID:   calc.ID,
 		TotalTaxCents:   totalTax,
 		EffectiveRateBP: effectiveRateBP,
+		EffectiveRate:   effectiveRate,
 		TaxName:         taxName,
 		TaxCountry:      taxCountry,
 		ReverseCharge:   reverseCharge,
 		Lines:           lines,
 		Breakdowns:      breakdowns,
 	}, nil
+}
+
+// parseStripeRate parses a Stripe Tax `percentage_decimal` string (e.g.
+// "8.875") into both the precise percent rate (float64, captured for the
+// new tax_rate NUMERIC(7,4) column per ADR-042) and the legacy
+// basis-points integer (banker's-rounded for backward compat in the
+// tax_rate_bp column). Returns 0, 0 on parse failure.
+//
+// Pre-ADR-042 the call site did `int64(v * 100)` truncating toward zero
+// — losing the trailing 0.005% on NYC's 8.875% (888 instead of 887.5
+// rounded). Banker's rounding is closer to industry standard for the
+// legacy bp; the precise float is the authoritative value for display
+// and persistence going forward.
+func parseStripeRate(pct string) (rate float64, bp int64) {
+	if pct == "" {
+		return 0, 0
+	}
+	v, err := strconv.ParseFloat(pct, 64)
+	if err != nil {
+		return 0, 0
+	}
+	return v, int64(math.RoundToEven(v * 100))
 }
 
 // parseLineRef extracts the index from a reference like "line_2". Used when
