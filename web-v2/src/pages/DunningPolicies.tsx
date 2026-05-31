@@ -38,6 +38,19 @@ import {
 // Lago (campaigns + per-customer assignment), Orb (rules + schedules),
 // Recurly (campaigns + per-account assignment). Velox follows the
 // converging named-templates pattern.
+
+// ADR-036 amendment — four Stripe-aligned terminal actions. Single
+// source of truth for both the dropdown <SelectItem>s and the Base UI
+// `items` prop that lets <SelectValue> render the selected label
+// (Base UI shows the raw value otherwise). Labels reflect the actual
+// semantics (pause = collection-only, not hard pause).
+const FINAL_ACTION_OPTIONS = [
+  { value: 'pause', label: 'Pause collection (keep drafting invoices)' },
+  { value: 'cancel_subscription', label: 'Cancel subscription' },
+  { value: 'mark_uncollectible', label: 'Mark invoice uncollectible' },
+  { value: 'manual_review', label: 'Leave open — manual review' },
+]
+
 export default function DunningPoliciesPage() {
   const queryClient = useQueryClient()
   const [editingPolicy, setEditingPolicy] = useState<DunningPolicyWithCount | null>(null)
@@ -255,18 +268,14 @@ function PolicyDialog({ mode, initial, onClose, onSaved }: {
           </div>
           <div className="space-y-2">
             <Label>Final action</Label>
-            <Select value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val ?? 'pause' }))}>
+            <Select items={FINAL_ACTION_OPTIONS} value={form.final_action} onValueChange={(val) => setForm(f => ({ ...f, final_action: val ?? 'pause' }))}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {/* ADR-036 amendment — four Stripe-aligned terminal
-                    actions. Labels reflect the actual semantics
-                    (pause = collection-only, not hard pause). */}
-                <SelectItem value="pause">Pause collection (keep drafting invoices)</SelectItem>
-                <SelectItem value="cancel_subscription">Cancel subscription</SelectItem>
-                <SelectItem value="mark_uncollectible">Mark invoice uncollectible</SelectItem>
-                <SelectItem value="manual_review">Leave open — manual review</SelectItem>
+                {FINAL_ACTION_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

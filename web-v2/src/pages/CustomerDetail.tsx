@@ -1494,7 +1494,16 @@ function AssignDunningPolicyDialog({ customerId, currentPolicyID, policies, onCl
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-2">
             <Label>Policy</Label>
-            <Select value={selected} onValueChange={(val) => setSelected(val ?? '__default__')}>
+            {/* items maps value→label so <SelectValue> renders the policy
+                name, not the raw policy ID (Base UI). */}
+            <Select
+              items={[
+                { value: '__default__', label: defaultPolicy ? `Tenant default (${defaultPolicy.name || 'Default'})` : 'Tenant default' },
+                ...policies.filter(p => !p.is_default).map(p => ({ value: p.id, label: p.name || '(unnamed policy)' })),
+              ]}
+              value={selected}
+              onValueChange={(val) => setSelected(val ?? '__default__')}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -1731,7 +1740,11 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
           {/* Currency */}
           <div className="space-y-2">
             <Label htmlFor="composer-currency">Currency</Label>
-            <Select value={currency} onValueChange={(v) => setCurrency((v ?? 'USD').toUpperCase())}>
+            <Select
+              items={GEO_CURRENCIES.map(c => ({ value: c.code, label: `${c.symbol} ${c.code} — ${c.label}` }))}
+              value={currency}
+              onValueChange={(v) => setCurrency((v ?? 'USD').toUpperCase())}
+            >
               <SelectTrigger id="composer-currency" className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -1788,7 +1801,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
                         {lineErrs.description && <p className="text-xs text-destructive">{lineErrs.description}</p>}
                       </div>
                       <div className="px-3 py-2">
-                        <Select value={line.line_type} onValueChange={v => updateLine(idx, { line_type: v ?? 'add_on' })}>
+                        <Select items={COMPOSER_LINE_TYPES} value={line.line_type} onValueChange={v => updateLine(idx, { line_type: v ?? 'add_on' })}>
                           <SelectTrigger className="w-full">
                             <SelectValue />
                           </SelectTrigger>

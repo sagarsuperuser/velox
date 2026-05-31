@@ -35,6 +35,19 @@ import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 
 const statusVariant = statusBadgeVariant
 
+// Static option sets — single source of truth for both the dropdown
+// <SelectItem>s and the Base UI `items` prop that lets <SelectValue>
+// render the selected option's label (Base UI shows the raw value
+// otherwise).
+const BILL_TIMING_OPTIONS = [
+  { value: 'in_arrears', label: 'At end of period' },
+  { value: 'in_advance', label: 'At start of period' },
+]
+const PLAN_STATUS_OPTIONS = [
+  { value: 'active', label: 'Active' },
+  { value: 'archived', label: 'Archived' },
+]
+
 const editPlanSchema = z.object({
   name: z.string().min(1, 'Name is required'),
 })
@@ -525,13 +538,14 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
 
           <div className="space-y-2">
             <Label>Base fee billed</Label>
-            <Select value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
+            <Select items={BILL_TIMING_OPTIONS} value={billTiming} onValueChange={(v) => setBillTiming((v ?? 'in_arrears') as 'in_arrears' | 'in_advance')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="in_arrears">At end of period</SelectItem>
-                <SelectItem value="in_advance">At start of period</SelectItem>
+                {BILL_TIMING_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
@@ -543,13 +557,14 @@ function EditPlanDialog({ plan, onClose, onSaved }: {
 
           <div className="space-y-2">
             <Label>Status</Label>
-            <Select value={status} onValueChange={(v) => setStatus(v ?? '')}>
+            <Select items={PLAN_STATUS_OPTIONS} value={status} onValueChange={(v) => setStatus(v ?? '')}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="archived">Archived</SelectItem>
+                {PLAN_STATUS_OPTIONS.map(o => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

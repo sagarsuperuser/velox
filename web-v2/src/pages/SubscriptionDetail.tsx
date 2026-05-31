@@ -1273,6 +1273,15 @@ export default function SubscriptionDetailPage() {
   )
 }
 
+// planOptionLabel is the single source of truth for how a plan reads in a
+// picker — used for BOTH the dropdown option AND the Base UI `items` prop
+// that drives <SelectValue>. Base UI's Select renders the raw value in the
+// trigger unless `items` maps value→label, so any picker showing plan IDs
+// instead of names is missing this wiring.
+function planOptionLabel(p: Plan): string {
+  return `${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`
+}
+
 // AddItemDialog picks a plan + quantity and POSTs to /subscriptions/:id/items.
 // The backend rejects duplicates on (subscription, plan); we pre-filter to
 // keep the dropdown clean.
@@ -1320,7 +1329,11 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-2">
             <Label>Plan</Label>
-            <Select value={selectedPlan} onValueChange={(v) => setSelectedPlan(v ?? '')}>
+            <Select
+              items={availablePlans.map(p => ({ value: p.id, label: planOptionLabel(p) }))}
+              value={selectedPlan}
+              onValueChange={(v) => setSelectedPlan(v ?? '')}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select a plan..." />
               </SelectTrigger>
@@ -1331,7 +1344,7 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
                   </div>
                 ) : availablePlans.map(p => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name} — {formatCents(p.base_amount_cents)}/{p.billing_interval}
+                    {planOptionLabel(p)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1418,7 +1431,11 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
 
           <div className="space-y-2">
             <Label>New Plan</Label>
-            <Select value={selectedPlan} onValueChange={(v) => setSelectedPlan(v ?? '')}>
+            <Select
+              items={availablePlans.map(p => ({ value: p.id, label: planOptionLabel(p) }))}
+              value={selectedPlan}
+              onValueChange={(v) => setSelectedPlan(v ?? '')}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select a plan..." />
               </SelectTrigger>
@@ -1427,7 +1444,7 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
                   <div className="px-2 py-2 text-sm text-muted-foreground">No other plans available</div>
                 ) : availablePlans.map(p => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name} — {formatCents(p.base_amount_cents)}/{p.billing_interval}
+                    {planOptionLabel(p)}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -582,7 +582,11 @@ function CreatePricingRuleDialog({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">Aggregation</Label>
-              <Select value={aggregation} onValueChange={(v) => setAggregation(v as MeterAggregationMode)}>
+              <Select
+                items={AGGREGATION_MODES.map(m => ({ value: m.value, label: m.label }))}
+                value={aggregation}
+                onValueChange={(v) => setAggregation(v as MeterAggregationMode)}
+              >
                 <SelectTrigger className="mt-2 w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -612,7 +616,11 @@ function CreatePricingRuleDialog({
 
           <div>
             <Label className="text-xs uppercase tracking-wide text-muted-foreground">Rating rule</Label>
-            <Select value={ratingRuleId} onValueChange={(v) => setRatingRuleId(v ?? '')}>
+            <Select
+              items={ratingRules.map(rr => ({ value: rr.id, label: `${rr.name} — ${rr.mode} · v${rr.version}` }))}
+              value={ratingRuleId}
+              onValueChange={(v) => setRatingRuleId(v ?? '')}
+            >
               <SelectTrigger className="mt-2 w-full">
                 <SelectValue placeholder="Select rating rule…" />
               </SelectTrigger>
