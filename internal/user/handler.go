@@ -27,7 +27,7 @@ type Handler struct {
 	sessions         *session.Service
 	cookie           session.CookieConfig
 	email            EmailSender // required — production always wires the adapter
-	dashboardBaseURL string      // optional; overrides r.Host for reset links (split-origin dev)
+	dashboardBaseURL string      // canonical dashboard origin for reset links; never from request headers. empty => reset emails disabled
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -40,11 +40,12 @@ type EmailSender interface {
 }
 
 // NewHandler wires the dependencies. emailSender is required —
-// password-reset requests will nil-panic if it's nil. dashboardBaseURL
-// is optional; when empty, reset-link URLs are built from the request's
-// Host header (works for single-origin prod deployments where the API
-// and SPA share a domain). For split-origin dev (Vite on :5173 vs API
-// on :8080) set DASHBOARD_BASE_URL so the link points at the SPA.
+// password-reset requests will nil-panic if it's nil. dashboardBaseURL is
+// the canonical dashboard origin used to build password-reset links; it is
+// never derived from the request (Host header) to prevent host-header
+// poisoning / token theft. When empty, password-reset emails are not sent
+// (requestPasswordReset fails safe). Set it to your dashboard URL — in
+// split-origin dev (Vite on :5173 vs API on :8080) that's the SPA URL.
 func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string) *Handler {
 	return &Handler{
 		users:            users,
@@ -231,8 +232,15 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// email is on file, you'll get a link" to avoid email
 		// enumeration. SMTP misconfiguration shows up as a logged
 		// SendPasswordReset error.
-		resetLink := h.buildResetLink(r, plaintext)
-		if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
+		resetLink, ok := h.buildResetLink(plaintext)
+		if !ok {
+			// DASHBOARD_BASE_URL is unset. Refuse to derive the link origin
+			// from the request Host header — a poisoned Host would email the
+			// victim a reset link pointing at an attacker domain, leaking the
+			// token. Fail safe: don't send a poisonable link. Operator must
+			// set DASHBOARD_BASE_URL to enable password-reset emails.
+			slog.Error("password reset email not sent: DASHBOARD_BASE_URL is unset; refusing to build a reset link from request headers", "tenant_id", tenantID)
+		} else if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
 	}
@@ -315,25 +323,17 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildResetLink constructs the operator-facing URL for the reset
-// confirmation page. When DASHBOARD_BASE_URL is set (split-origin
-// deployments — typical local dev where the SPA on :5173 and the
-// API on :8080 are different origins) it's used as the base. Otherwise
-// falls back to the request's Host header — correct for single-origin
-// prod deployments where the API and SPA share a domain.
-func (h *Handler) buildResetLink(r *http.Request, token string) string {
-	if h.dashboardBaseURL != "" {
-		return h.dashboardBaseURL + "/reset-password?token=" + token
+// confirmation page from the configured DASHBOARD_BASE_URL. It never
+// derives the origin from the request (Host header, X-Forwarded-Proto):
+// a password-reset link is a security-token carrier, and a poisoned Host
+// header would let an attacker email the victim a link pointing at their
+// own domain to capture the token. Returns ok=false when
+// DASHBOARD_BASE_URL is unset so the caller can fail safe rather than
+// send a poisonable link. Single-origin prod deployments still set
+// DASHBOARD_BASE_URL to their canonical dashboard URL.
+func (h *Handler) buildResetLink(token string) (string, bool) {
+	if h.dashboardBaseURL == "" {
+		return "", false
 	}
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-		scheme = "http"
-	}
-	return scheme + "://" + r.Host + "/reset-password?token=" + token
+	return h.dashboardBaseURL + "/reset-password?token=" + token, true
 }
-
-// (Email integration deferred — internal/email's surface is built
-// for tenant-scoped invoice/dunning email delivery via outbox+
-// dispatcher and doesn't yet expose a simple SendRaw call. v1
-// password-reset emits the reset link to server logs; operators
-// retrieve it from there. Production deployments will wire a real
-// EmailSender once internal/email exposes the right surface.)
