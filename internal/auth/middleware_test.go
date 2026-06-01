@@ -226,7 +226,8 @@ func TestLivemodeFromRequest(t *testing.T) {
 
 func TestRequire_PlatformKeyOnlyTenants(t *testing.T) {
 	svc := NewService(newMemStore())
-	result, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Platform", KeyType: KeyTypePlatform})
+	// Platform keys can only be minted by an existing platform principal.
+	result, _ := svc.CreateKey(WithKeyType(t.Context(), KeyTypePlatform), "t1", CreateKeyInput{Name: "Platform", KeyType: KeyTypePlatform})
 
 	// Should have tenant access
 	handler := Middleware(svc)(Require(PermTenantWrite)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
