@@ -712,6 +712,23 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
 
+	// Ignore an out-of-order failure for an already-settled invoice. Stripe
+	// delivers webhooks at-least-once and without ordering guarantees, so a
+	// stale payment_intent.payment_failed can arrive AFTER the invoice was
+	// already marked paid (a retried PI failed upstream but a different PI
+	// succeeded first, or the success webhook simply landed first). Applying it
+	// would flip payment_status back to 'failed', null paid_at, relink the
+	// stale PI, and kick off dunning on a paid invoice. Treat it as a no-op.
+	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
+		slog.Info("ignoring out-of-order payment_failed for already-settled invoice",
+			"invoice_id", inv.ID,
+			"invoice_status", inv.Status,
+			"payment_status", inv.PaymentStatus,
+			"event_payment_intent_id", event.PaymentIntentID,
+		)
+		return nil
+	}
+
 	// Bind effective-now so dunning's StartDunning (called below) and
 	// any UpdatePayment-side stamps land in simulated time on
 	// clock-pinned invoices.
