@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 )
@@ -22,4 +23,15 @@ func GeneratePublicToken() (string, error) {
 		return "", fmt.Errorf("generate public token: %w", err)
 	}
 	return PublicTokenPrefix + hex.EncodeToString(buf), nil
+}
+
+// HashPublicToken is the deterministic blind index used to resolve a presented
+// URL token to its invoice row without storing the raw token. The token already
+// carries 256 bits of entropy, so a plain SHA-256 (no keyed HMAC) is sufficient
+// — the hash is unguessable and irreversible, so a DB snapshot yields nothing
+// replayable. Must match the SQL backfill in migration 0107
+// (encode(sha256(public_token::bytea),'hex')).
+func HashPublicToken(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
 }

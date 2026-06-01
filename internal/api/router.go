@@ -135,10 +135,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		} else {
 			sharedEnc = enc
 			customerStore.SetEncryptor(enc)
-			slog.Info("encryption at rest enabled for customer PII, webhook secrets, and Stripe credentials")
+			invoiceStore.SetEncryptor(enc)
+			slog.Info("encryption at rest enabled for customer PII, webhook secrets, Stripe credentials, and hosted-invoice tokens")
 		}
 	} else {
-		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII, webhook secrets, and Stripe credentials stored in plaintext")
+		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII, webhook secrets, Stripe credentials, and hosted-invoice tokens stored in plaintext")
 	}
 
 	// Per-tenant Stripe credentials. Each tenant connects their own Stripe

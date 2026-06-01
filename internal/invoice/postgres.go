@@ -11,15 +11,78 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 type PostgresStore struct {
-	db *postgres.DB
+	db  *postgres.DB
+	enc *crypto.Encryptor
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
-	return &PostgresStore{db: db}
+	return &PostgresStore{db: db, enc: crypto.NewNoop()}
+}
+
+// SetEncryptor wires AES-256-GCM encryption for the hosted-invoice public_token
+// at rest. When set (non-noop), the raw token is encrypted before storage and
+// decrypted on read so the hosted URL can be rebuilt on re-send; lookups go
+// through the SHA-256 blind index (public_token_hash) which never needs the key.
+// Without it, public_token_encrypted holds plaintext (dev/migration parity) —
+// the blind index still hides the raw token from a snapshot of the hash column.
+func (s *PostgresStore) SetEncryptor(enc *crypto.Encryptor) {
+	if enc == nil {
+		enc = crypto.NewNoop()
+	}
+	s.enc = enc
+}
+
+// decryptScanner is a sql.Scanner that decrypts the public_token_encrypted
+// column into a plain string on read, so inv.PublicToken stays populated for
+// the e-mail/checkout-URL paths without those callers knowing about encryption.
+type decryptScanner struct {
+	enc *crypto.Encryptor
+	dst *string
+}
+
+// encodeToken returns the (encrypted, hash) pair to persist for a raw hosted-
+// invoice token. Empty token → empty pair. Encryption failure (real key
+// misconfigured) is non-fatal: the hash is still stored so lookups work; only
+// the re-send URL is degraded until the token is rotated.
+func (s *PostgresStore) encodeToken(rawToken string) (encrypted, hash string) {
+	if rawToken == "" {
+		return "", ""
+	}
+	hash = HashPublicToken(rawToken)
+	if ct, err := s.enc.Encrypt(rawToken); err == nil {
+		encrypted = ct
+	}
+	return encrypted, hash
+}
+
+func (d decryptScanner) Scan(src any) error {
+	var ct string
+	switch v := src.(type) {
+	case nil:
+		*d.dst = ""
+		return nil
+	case []byte:
+		ct = string(v)
+	case string:
+		ct = v
+	default:
+		return fmt.Errorf("decryptScanner: unexpected source type %T", src)
+	}
+	if ct == "" {
+		*d.dst = ""
+		return nil
+	}
+	pt, err := d.enc.Decrypt(ct)
+	if err != nil {
+		return fmt.Errorf("decrypt public_token: %w", err)
+	}
+	*d.dst = pt
+	return nil
 }
 
 // Unique-index names on the invoices table. Constants instead of inline
@@ -33,7 +96,7 @@ const (
 	idxInvoicesBillingIdempotency  = "idx_invoices_billing_idempotency"
 	idxInvoicesProrationDedup      = "idx_invoices_proration_dedup"
 	idxInvoicesInvoiceNumberUnique = "invoices_tenant_id_livemode_invoice_number_key"
-	idxInvoicesPublicTokenUnique   = "idx_invoices_public_token"
+	idxInvoicesPublicTokenUnique   = "idx_invoices_public_token_hash"
 	idxInvoicesThresholdPerCycle   = "idx_invoices_threshold_unique_per_cycle"
 	idxInvoicesStripeInvoiceID     = "idx_invoices_stripe_invoice_id"
 )
@@ -102,7 +165,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
 	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
-	COALESCE(public_token,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
+	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -218,7 +281,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err != nil {
 		if mapped := mapInvoiceUniqueViolation(err, inv); mapped != nil {
@@ -241,7 +304,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.In
 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE id = $1`, id).
-		Scan(scanInvDest(&inv)...)
+		Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
@@ -267,7 +330,7 @@ func (s *PostgresStore) GetByProrationSource(ctx context.Context, tenantID, subs
 		FROM invoices
 		WHERE tenant_id = $1 AND subscription_id = $2 AND source_subscription_item_id = $3 AND source_change_type = $4 AND source_plan_changed_at = $5`,
 		tenantID, subscriptionID, subscriptionItemID, string(changeType), changeAt,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
@@ -283,7 +346,7 @@ func (s *PostgresStore) GetByNumber(ctx context.Context, tenantID, number string
 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE invoice_number = $1`, number).
-		Scan(scanInvDest(&inv)...)
+		Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
@@ -369,7 +432,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.I
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, 0, err
 		}
 		invoices = append(invoices, inv)
@@ -396,7 +459,7 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 		WHERE id = $4
 		RETURNING `+invCols,
 		status, postgres.NullableTime(voidedAt), now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -426,7 +489,7 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 		RETURNING `+invCols,
 		paymentStatus, postgres.NullableString(stripePaymentIntentID),
 		postgres.NullableString(lastPaymentError), postgres.NullableTime(paidAt), now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -539,7 +602,7 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		WHERE id = $4
 		RETURNING `+invCols,
 		postgres.NullableString(stripePaymentIntentID), paidAt, now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -603,7 +666,7 @@ func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string
 		WHERE id = $3
 		RETURNING `+invCols,
 		amountCents, now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -635,7 +698,7 @@ func (s *PostgresStore) ApplyCredits(ctx context.Context, tenantID, id string, a
 		WHERE id = $3
 		RETURNING `+invCols,
 		amountCents, now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -663,7 +726,7 @@ func (s *PostgresStore) UpdateTotals(ctx context.Context, tenantID, id string, s
 		WHERE id = $5
 		RETURNING `+invCols,
 		subtotal, total, amountDue, now, id,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
@@ -854,7 +917,7 @@ func (s *PostgresStore) ListApproachingDue(ctx context.Context, daysBeforeDue in
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		invoices = append(invoices, inv)
@@ -894,7 +957,7 @@ func (s *PostgresStore) ListApproachingDueForClock(ctx context.Context, tenantID
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		invoices = append(invoices, inv)
@@ -993,7 +1056,7 @@ func (s *PostgresStore) AddLineItemAtomic(
 		WHERE i.id = $1
 		RETURNING `+invCols,
 		invoiceID, now,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
 	}
@@ -1112,7 +1175,7 @@ func (s *PostgresStore) ApplyDiscountAtomic(
 		update.TaxStatus, postgres.NullableTime(update.TaxDeferredAt), update.TaxPendingReason,
 		postgres.NullableString(update.TaxErrorCode),
 		total, now,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
@@ -1224,7 +1287,7 @@ func (s *PostgresStore) UpdateTaxAtomic(
 		update.TaxPendingReason, postgres.NullableString(update.TaxErrorCode),
 		postgres.NullableTime(update.TaxNextRetryAt),
 		update.TotalAmountCents, now,
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
@@ -1300,6 +1363,9 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			publicToken = t
 		}
 	}
+	// Store the token as an encrypted blob (reversible, for re-send URLs) + a
+	// SHA-256 blind index (for lookup). Never store the raw token.
+	encToken, tokenHash := s.encodeToken(publicToken)
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO invoices (id, tenant_id, customer_id, subscription_id, invoice_number,
 			status, payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents,
@@ -1310,8 +1376,8 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
-			stripe_invoice_id, public_token, paid_at, voided_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)
+			stripe_invoice_id, public_token_encrypted, public_token_hash, paid_at, voided_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -1331,9 +1397,9 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
-		postgres.NullableString(publicToken),
+		postgres.NullableString(encToken), postgres.NullableString(tokenHash),
 		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
-	).Scan(scanInvDest(&inv)...)
+	).Scan(s.scanInvDest(&inv)...)
 
 	if err != nil {
 		if mapped := mapInvoiceUniqueViolation(err, inv); mapped != nil {
@@ -1456,7 +1522,7 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		invoices = append(invoices, inv)
@@ -1506,7 +1572,7 @@ func (s *PostgresStore) ListAutoChargePendingForClock(ctx context.Context, tenan
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		invoices = append(invoices, inv)
@@ -1551,7 +1617,7 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 	var invoices []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		invoices = append(invoices, inv)
@@ -1617,7 +1683,7 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 	var out []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
@@ -1680,7 +1746,7 @@ func (s *PostgresStore) ListPendingTaxRetryForClock(ctx context.Context, tenantI
 	var out []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
@@ -1753,7 +1819,7 @@ func (s *PostgresStore) scanInvoiceRows(rows *sql.Rows, queryErr error) ([]domai
 	var out []domain.Invoice
 	for rows.Next() {
 		var inv domain.Invoice
-		if err := rows.Scan(scanInvDest(&inv)...); err != nil {
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
@@ -1761,7 +1827,7 @@ func (s *PostgresStore) scanInvoiceRows(rows *sql.Rows, queryErr error) ([]domai
 	return out, rows.Err()
 }
 
-func scanInvDest(inv *domain.Invoice) []any {
+func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 	var metaJSON []byte
 	return []any{
 		&inv.ID, &inv.TenantID, &inv.CustomerID, &inv.SubscriptionID, &inv.InvoiceNumber,
@@ -1780,7 +1846,7 @@ func scanInvDest(inv *domain.Invoice) []any {
 		(*string)(&inv.TaxStatus), &inv.TaxDeferredAt, &inv.TaxRetryCount, &inv.TaxPendingReason,
 		&inv.TaxErrorCode, &inv.TaxNextRetryAt,
 		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
-		&inv.PublicToken, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
+		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 	}
 }
 
@@ -1795,10 +1861,11 @@ func (s *PostgresStore) SetPublicToken(ctx context.Context, tenantID, invoiceID,
 	}
 	defer postgres.Rollback(tx)
 
+	encToken, tokenHash := s.encodeToken(token)
 	res, err := tx.ExecContext(ctx, `
-		UPDATE invoices SET public_token = $1, updated_at = $2
-		WHERE id = $3 AND status <> 'draft'
-	`, token, clock.Now(ctx), invoiceID)
+		UPDATE invoices SET public_token_encrypted = $1, public_token_hash = $2, updated_at = $3
+		WHERE id = $4 AND status <> 'draft'
+	`, postgres.NullableString(encToken), postgres.NullableString(tokenHash), clock.Now(ctx), invoiceID)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			// 256 bits of entropy means collisions are astronomically unlikely,
@@ -1835,8 +1902,8 @@ func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (dom
 		inv      domain.Invoice
 		livemode bool
 	)
-	dest := append(scanInvDest(&inv), &livemode)
-	err = tx.QueryRowContext(ctx, `SELECT `+invCols+`, livemode FROM invoices WHERE public_token = $1`, token).
+	dest := append(s.scanInvDest(&inv), &livemode)
+	err = tx.QueryRowContext(ctx, `SELECT `+invCols+`, livemode FROM invoices WHERE public_token_hash = $1`, HashPublicToken(token)).
 		Scan(dest...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, false, errs.ErrNotFound
@@ -1872,7 +1939,7 @@ func (s *PostgresStore) GetByStripeInvoiceID(ctx context.Context, tenantID, stri
 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE stripe_invoice_id = $1`, stripeInvoiceID).
-		Scan(scanInvDest(&inv)...)
+		Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
@@ -1916,7 +1983,7 @@ func (s *PostgresStore) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, 
 		  )
 		ORDER BY i.created_at DESC
 		LIMIT 1
-	`, subscriptionID, periodStart).Scan(scanInvDest(&inv)...)
+	`, subscriptionID, periodStart).Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
