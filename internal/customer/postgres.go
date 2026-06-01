@@ -270,6 +270,7 @@ func (s *PostgresStore) GetByCostDashboardToken(ctx context.Context, token strin
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
 			COALESCE(dunning_policy_id, ''),
+			livemode,
 			created_at, updated_at
 		FROM customers WHERE cost_dashboard_token = $1
 	`, token).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
@@ -277,6 +278,7 @@ func (s *PostgresStore) GetByCostDashboardToken(ctx context.Context, token strin
 		&c.CostDashboardToken,
 		&c.TestClockID,
 		&c.DunningPolicyID,
+		&c.Livemode,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
