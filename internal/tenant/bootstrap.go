@@ -3,6 +3,7 @@ package tenant
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -67,7 +68,11 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if provided == "" {
 		provided = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	}
-	if provided != h.token {
+	// Constant-time compare so the bootstrap token can't be recovered by
+	// timing how long the rejection takes (a byte-by-byte string != short-
+	// circuits on the first mismatched byte). The empty-token disable case is
+	// already handled above; subtle returns 0 on a length mismatch.
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) != 1 {
 		respond.Error(w, r, http.StatusForbidden, "authentication_error", "forbidden",
 			"invalid bootstrap token")
 		return
