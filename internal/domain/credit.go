@@ -51,6 +51,15 @@ type CreditLedgerEntry struct {
 	// after partial-failure of CN Issue() hits the index, store
 	// returns ErrAlreadyExists, service fetches the existing grant.
 	SourceCreditNoteID string `json:"source_credit_note_id,omitempty"`
+
+	// SourceInvoiceReversalID dedups invoice-void credit reversals. credit.
+	// ReverseForInvoice (invoice void / dunning manual-resolve) stamps the
+	// voided invoice's id here; the partial unique index
+	// idx_credit_ledger_reversal_dedup (migration 0106) enforces one reversal
+	// grant per (tenant, invoice). A second void/resolve of the same invoice
+	// hits the index, the store returns ErrAlreadyExists, and ReverseForInvoice
+	// treats it as an idempotent no-op instead of double-crediting.
+	SourceInvoiceReversalID string `json:"source_invoice_reversal_id,omitempty"`
 }
 
 type CreditBalance struct {
