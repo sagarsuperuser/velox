@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-15
-**Related**: ADR-031 (per-plan bill_timing), ADR-005 (decimal-as-string), industry-reference-first workflow
+**Related**: ADR-031 (per-plan bill_timing), ADR-005 (integer cents for money), industry-reference-first workflow
 
 ## Context
 

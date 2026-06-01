@@ -93,14 +93,14 @@ Response `200`:
         {
           "rating_rule_version_id": "vlx_rrv_gpt4_input_uncached",
           "rule_key": "gpt4_input_uncached",
-          "dimension_match": { "model": "gpt-4", "operation": "input", "cached": false },
+          "dimension_match": { "model": "gpt-4", "token_type": "input" },
           "quantity": "1000000.000000000000",
           "amount_cents": 3000
         },
         {
           "rating_rule_version_id": "vlx_rrv_gpt4_output",
           "rule_key": "gpt4_output",
-          "dimension_match": { "model": "gpt-4", "operation": "output" },
+          "dimension_match": { "model": "gpt-4", "token_type": "output" },
           "quantity": "234567.000000000000",
           "amount_cents": 704
         }
@@ -188,7 +188,7 @@ Standard `BeginTx(ctx, postgres.TxTenant, tenantID)`. The customer lookup natura
 
 ### Integration tests (real Postgres)
 
-- **Single-meter, single-rule.** Seed 1000 events on a `b2b_saas_pro`-style flat meter. Verify `total_quantity` and `total_amount_cents` match the cycle-scan output for the same period.
+- **Single-meter, single-rule.** Seed 1000 events on a seat-based / flat-rate meter. Verify `total_quantity` and `total_amount_cents` match the cycle-scan output for the same period.
 - **Multi-dim meter.** Seed events split across 3 dimension combinations on `anthropic_style`. Verify the per-rule breakdown sums to `total_amount_cents` and matches `usage.AggregateByPricingRules` exactly. This is the parity test that catches drift between dashboard math and invoice math.
 - **Cycle alignment.** Seed events both inside and outside the cycle window. Default call only counts in-cycle. Explicit-window call counts the requested range.
 - **Cross-tenant isolation.** Customer ID exists for tenant A; tenant B's GET → 404. RLS-by-construction.

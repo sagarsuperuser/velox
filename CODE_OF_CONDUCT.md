@@ -23,7 +23,7 @@ The maintainer at conduct@velox.dev is responsible for:
 - Acknowledging every report within 5 business days
 - Investigating in good faith with the reporter's stated comfort level on confidentiality
 - Applying the Contributor Covenant enforcement ladder consistently
-- Documenting the outcome in a private incident log retained for 18 months (matches the audit log retention default in `docs/ops/audit-log-retention.md`)
+- Documenting the outcome in a private incident log retained for 18 months (matches the default audit log retention)
 
 The maintainer is held to the same standard as everyone else; concerns about the maintainer's own conduct should be sent to **conduct-escalation@velox.dev** (a separate inbox).
 

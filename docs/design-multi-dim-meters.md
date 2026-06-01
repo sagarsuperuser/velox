@@ -6,6 +6,8 @@
 >
 > The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to the package-level docs in `internal/usage/` and `internal/billing/` for the current behaviour.
 
+> **Note (2026-06-01):** ADR-044 replaced the `operation` + boolean `cached` dimensions shown in examples below with a single `token_type` enum (input, output, cache_read, cache_write_5m, cache_write_1h). The mechanism (one meter, N dimension-matched rules, priority+claim) is unchanged; only the example dimension names are dated. See ADR-044 for the canonical shape.
+
 ## Motivation
 
 Stripe's Meter API was bolted onto a card-subscription engine. To bill `gpt-4 input cached` vs `gpt-4 input uncached` vs `gpt-4 output` at different rates, you create three Meters with three event names and three pricing rules. For full Anthropic / OpenAI parity (3 models × 4 operations × 2 cache states), you need ~24 Meters. The dimensional structure is encoded in event-name strings instead of data.
