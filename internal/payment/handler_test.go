@@ -240,6 +240,89 @@ func TestWebhookHandler_TenantMismatchRejects(t *testing.T) {
 	}
 }
 
+// TestWebhookHandler_TransientFailureRedelivers is the regression test for the
+// silent-drop bug: a transient processing failure used to commit the dedup row
+// FIRST and then return HTTP 200, so Stripe never redelivered and the dedup row
+// short-circuited any retry — the event was lost forever.
+//
+// The fix: on a transient failure the handler writes NO dedup row and returns
+// 5xx, so Stripe redelivers and the (now healthy) handler re-processes.
+func TestWebhookHandler_TransientFailureRedelivers(t *testing.T) {
+	invoices := newMockInvoiceUpdaterH()
+	invoices.invoices["inv_1"] = mockInvoice{
+		id: "inv_1", tenantID: "t1", status: "finalized",
+		paymentStatus: "processing", stripePI: "pi_test_abc",
+	}
+	invoices.byPI["pi_test_abc"] = "inv_1"
+	// First delivery hits a transient DB blip on MarkPaid.
+	invoices.markPaidErr = fmt.Errorf("connection reset by peer")
+
+	webhooks := newMockWebhookStoreHandler()
+	stripeAdapter := NewStripe(nil, invoices, webhooks, nil)
+	secret := "whsec_transient_test"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
+
+	event := map[string]any{
+		"id":       "evt_transient_1",
+		"type":     "payment_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
+		"data": map[string]any{
+			"object": map[string]any{
+				"id":       "pi_test_abc",
+				"object":   "payment_intent",
+				"status":   "succeeded",
+				"amount":   19900,
+				"currency": "usd",
+				"metadata": map[string]string{
+					"velox_tenant_id":  "t1",
+					"velox_invoice_id": "inv_1",
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(event)
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
+		rec := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// First delivery: transient failure must surface as 5xx so Stripe retries.
+	rec := send()
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("transient failure: got status %d, want 500. body: %s", rec.Code, rec.Body.String())
+	}
+	// And it must NOT have been recorded as seen — otherwise the redelivery
+	// is short-circuited as a duplicate and the event is dropped forever.
+	if webhooks.seen["evt_transient_1"] {
+		t.Fatalf("transient failure must not mark the event consumed (would block Stripe redelivery)")
+	}
+	if invoices.invoices["inv_1"].paymentStatus == "succeeded" {
+		t.Fatalf("invoice should not be paid after a failed MarkPaid")
+	}
+
+	// Stripe redelivers the SAME event_id; the blip has cleared.
+	invoices.markPaidErr = nil
+	rec = send()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("redelivery: got status %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	if !webhooks.seen["evt_transient_1"] {
+		t.Fatalf("successful redelivery must record the dedup row")
+	}
+	if got := invoices.invoices["inv_1"].paymentStatus; got != "succeeded" {
+		t.Fatalf("redelivery should settle the invoice: payment_status got %q, want succeeded", got)
+	}
+}
+
 // signStripePayload produces a valid Stripe-Signature header for payload+secret.
 func signStripePayload(payload []byte, secret string) string {
 	ts := fmt.Sprintf("%d", time.Now().Unix())
@@ -256,8 +339,9 @@ type mockInvoice struct {
 }
 
 type mockInvoiceUpdaterHandler struct {
-	invoices map[string]mockInvoice
-	byPI     map[string]string
+	invoices    map[string]mockInvoice
+	byPI        map[string]string
+	markPaidErr error // when set, MarkPaid returns this (simulates a transient DB failure)
 }
 
 func newMockInvoiceUpdaterH() *mockInvoiceUpdaterHandler {
@@ -311,6 +395,9 @@ func (m *mockInvoiceUpdaterHandler) Get(_ context.Context, _, id string) (domain
 }
 
 func (m *mockInvoiceUpdaterHandler) MarkPaid(_ context.Context, _, id string, piID string, paidAt time.Time) (domain.Invoice, error) {
+	if m.markPaidErr != nil {
+		return domain.Invoice{}, m.markPaidErr
+	}
 	inv, ok := m.invoices[id]
 	if !ok {
 		return domain.Invoice{}, fmt.Errorf("not found")
@@ -343,6 +430,10 @@ type mockWebhookStoreH struct {
 
 func newMockWebhookStoreHandler() *mockWebhookStoreH {
 	return &mockWebhookStoreH{seen: make(map[string]bool)}
+}
+
+func (m *mockWebhookStoreH) WasProcessed(_ context.Context, _, stripeEventID string) (bool, error) {
+	return m.seen[stripeEventID], nil
 }
 
 func (m *mockWebhookStoreH) IngestEvent(_ context.Context, _ string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error) {

@@ -148,7 +148,20 @@ type InvoiceUpdater interface {
 }
 
 // WebhookStore persists and queries Stripe webhook events.
+//
+// Dedup is split across two calls so the dedup marker can be written
+// AFTER the business side-effect commits, not before. WasProcessed is
+// the read-only pre-check; IngestEvent is the write that both records
+// the audit row and claims the dedup slot (ON CONFLICT DO NOTHING).
+// HandleWebhook calls IngestEvent only once processing has succeeded
+// (or failed permanently) — a transient processing failure persists no
+// row, so Stripe's redelivery re-runs the handler instead of being
+// short-circuited as a duplicate.
 type WebhookStore interface {
+	// WasProcessed reports whether an event with this stripe_event_id has
+	// already been ingested for the tenant+livemode. Read-only; used as the
+	// idempotency pre-check before running side-effects.
+	WasProcessed(ctx context.Context, tenantID, stripeEventID string) (bool, error)
 	IngestEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error)
 	ListByInvoice(ctx context.Context, tenantID, invoiceID string) ([]domain.StripeWebhookEvent, error)
 }
@@ -521,18 +534,71 @@ func simulatedFailureAt(inv domain.Invoice) time.Time {
 	return failureAt
 }
 
-// HandleWebhook processes a Stripe webhook event and updates the corresponding invoice.
+// HandleWebhook processes a Stripe webhook event and updates the
+// corresponding invoice.
+//
+// Dedup ordering (the fix): the dedup marker is written AFTER the
+// business side-effect commits, not before. The pre-2026-06 flow
+// committed the dedup row first (IngestEvent's own tx) and then ran the
+// handler — so a transient handler failure left a committed dedup row,
+// the HTTP layer ack'd 200, and Stripe's redelivery short-circuited as
+// a duplicate. The event was silently and permanently dropped.
+//
+// Now:
+//  1. WasProcessed is a read-only idempotency pre-check.
+//  2. processEvent runs the side-effect (MarkPaid / dunning / etc.).
+//  3. On a TRANSIENT failure we persist NO row and return the error —
+//     the HTTP handler turns that into a 5xx so Stripe redelivers and
+//     the handler re-runs. "dedup row exists" now strictly implies
+//     "side-effect committed."
+//  4. On success OR a PERMANENT failure (the event references an entity
+//     that isn't in our DB and never will be — errs.ErrNotFound) we
+//     IngestEvent to persist the audit row + claim the dedup slot, then
+//     ack. Acking a permanent failure is deliberate: redelivering it
+//     forever achieves nothing.
+//
+// Business side-effects on these paths are idempotent (MarkPaid is a
+// no-op on an already-paid invoice; StartDunning is UNIQUE per invoice),
+// so a redelivery that races a slow first delivery and double-processes
+// converges to the same state — the ON CONFLICT DO NOTHING in
+// IngestEvent collapses the duplicate audit row.
 func (s *Stripe) HandleWebhook(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
-	// Persist the event for audit trail (idempotent — returns false if already seen)
-	_, isNew, err := s.webhooks.IngestEvent(ctx, tenantID, event)
+	seen, err := s.webhooks.WasProcessed(ctx, tenantID, event.StripeEventID)
 	if err != nil {
-		return fmt.Errorf("ingest webhook event: %w", err)
+		return fmt.Errorf("webhook dedup pre-check: %w", err)
 	}
-	if !isNew {
+	if seen {
 		slog.Info("duplicate webhook event, skipping", "stripe_event_id", event.StripeEventID)
 		return nil
 	}
 
+	if procErr := s.processEvent(ctx, tenantID, event); procErr != nil {
+		if isTransientWebhookError(procErr) {
+			// No dedup row written — return the error so the HTTP layer
+			// responds 5xx and Stripe redelivers the event.
+			return procErr
+		}
+		// Permanent: record the audit row (and claim the dedup slot) so the
+		// event shows up in history with its outcome, then ack.
+		slog.Warn("webhook permanently unprocessable — acking without retry",
+			"stripe_event_id", event.StripeEventID,
+			"event_type", event.EventType,
+			"error", procErr)
+	}
+
+	// Side-effect committed (or permanently un-processable) — claim the
+	// dedup slot + persist the audit row.
+	if _, _, err := s.webhooks.IngestEvent(ctx, tenantID, event); err != nil {
+		return fmt.Errorf("ingest webhook event: %w", err)
+	}
+	return nil
+}
+
+// processEvent runs the side-effect for one webhook event. Returns nil on
+// success (including no-op event types). A non-nil error is classified by
+// HandleWebhook as transient (redeliver) or permanent (ack) via
+// isTransientWebhookError.
+func (s *Stripe) processEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
 	switch event.EventType {
 	case "payment_intent.succeeded":
 		return s.handlePaymentSucceeded(ctx, tenantID, event)
@@ -554,6 +620,16 @@ func (s *Stripe) HandleWebhook(ctx context.Context, tenantID string, event domai
 		slog.Debug("unhandled webhook event type", "type", event.EventType)
 		return nil
 	}
+}
+
+// isTransientWebhookError reports whether a webhook processing error is
+// worth a Stripe redelivery. A missing target entity (errs.ErrNotFound)
+// is permanent — the event references an invoice/customer that isn't in
+// our DB, and redelivering won't conjure it — so we ack it. Everything
+// else (DB write failure, contention, a downstream timeout) is treated
+// as transient: return it, respond 5xx, let Stripe redeliver.
+func isTransientWebhookError(err error) bool {
+	return !errors.Is(err, errs.ErrNotFound)
 }
 
 // handleSetupIntentSucceeded re-parses the raw payload to pull out the
