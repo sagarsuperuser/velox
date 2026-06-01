@@ -116,9 +116,15 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, ErrAccountLocked) {
-			respond.Error(w, r, http.StatusTooManyRequests,
-				"authentication_error", "account_locked",
-				"too many failed attempts — try again in 15 minutes")
+			// Return the SAME generic 401 as a wrong password / unknown email.
+			// A distinct 429 'account_locked' was an enumeration oracle: it
+			// confirmed the email belongs to a real account (only real accounts
+			// can be locked). Lockout is still enforced — Authenticate refuses
+			// the login during the window even with the correct password — we
+			// just don't disclose that state. (The 15-minute window is short
+			// enough that a legitimately locked-out operator recovers by
+			// retrying later.)
+			respond.Unauthorized(w, r, "invalid email or password")
 			return
 		}
 		respond.FromError(w, r, err, "user")
