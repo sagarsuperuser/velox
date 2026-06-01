@@ -1604,8 +1604,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		if h.tax != nil {
 			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, sub.CustomerID, effectivePlan.Currency, proratedCents, discountCents, lineItems)
 			if err != nil {
-				slog.WarnContext(ctx, "tax apply failed on proration, proceeding with zero tax",
+				// Transient tax-infra failure. Do NOT finalize with zero tax —
+				// that ships an invoice lying about authoritative amounts.
+				// Mark pending so InvoiceFinalizationStatus stamps Draft and the
+				// tax retry worker re-runs calculation (same contract as the
+				// engine's billOnePeriod / BillOnCreate paths).
+				slog.WarnContext(ctx, "tax apply failed on proration, deferring invoice to draft for retry",
 					"error", err, "subscription_id", sub.ID)
+				taxResult.TaxStatus = domain.InvoiceTaxPending
 			} else {
 				taxResult = r
 			}
