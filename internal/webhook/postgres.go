@@ -509,6 +509,16 @@ func (s *PostgresStore) UpdateDelivery(ctx context.Context, tenantID string, d d
 	return d, nil
 }
 
+// ListPendingDeliveries atomically CLAIMS up to `limit` due deliveries and
+// returns them. It is not a pure read: each returned row is leased by pushing
+// next_retry_at retryLeaseWindow into the future, and rows already locked by a
+// concurrent worker are skipped (FOR UPDATE SKIP LOCKED). This makes the retry
+// worker safe to run on multiple replicas — two workers never claim the same
+// delivery, so a webhook isn't delivered twice per due-tick. The lease also
+// provides crash recovery: if the claiming worker dies before overwriting the
+// row's status, the lease expires after retryLeaseWindow and another worker
+// re-claims it. The window must exceed the per-attempt HTTP timeout (10s) by a
+// wide margin so an in-flight delivery is never re-claimed underneath itself.
 func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([]domain.WebhookDelivery, error) {
 	if limit <= 0 {
 		limit = 100
@@ -521,14 +531,19 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
+		UPDATE webhook_deliveries
+		SET next_retry_at = NOW() + make_interval(secs => $1)
+		WHERE id IN (
+			SELECT id FROM webhook_deliveries
+			WHERE status = 'pending' AND next_retry_at <= NOW()
+			ORDER BY next_retry_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
 			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
 			attempt_count, next_retry_at, created_at, completed_at
-		FROM webhook_deliveries
-		WHERE status = 'pending' AND next_retry_at <= NOW()
-		ORDER BY next_retry_at ASC
-		LIMIT $1
-	`, limit)
+	`, int(retryLeaseWindow.Seconds()), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +559,10 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 		}
 		deliveries = append(deliveries, d)
 	}
-	return deliveries, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return deliveries, tx.Commit()
 }
 
 func (s *PostgresStore) GetEndpointStats(ctx context.Context, tenantID string) ([]EndpointStats, error) {

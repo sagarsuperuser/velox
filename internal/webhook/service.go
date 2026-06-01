@@ -29,6 +29,15 @@ import (
 
 const maxAttempts = 5
 
+// retryLeaseWindow is how far ListPendingDeliveries pushes next_retry_at
+// forward when it claims a due delivery, so a concurrent retry worker on
+// another replica won't re-claim the same row while it's being delivered. Must
+// comfortably exceed the per-attempt HTTP timeout (10s); if a claiming worker
+// crashes mid-delivery, the lease expires after this window and the row becomes
+// eligible again. Far below the smallest real retry backoff (1m) so it never
+// delays a legitimate scheduled retry.
+const retryLeaseWindow = 1 * time.Minute
+
 // retryBackoffs defines the delay before each retry attempt (index 0 = after attempt 1).
 var retryBackoffs = [maxAttempts]time.Duration{
 	1 * time.Minute,
@@ -434,10 +443,15 @@ func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.Webhoo
 
 	delivery.HTTPStatusCode = resp.StatusCode
 	delivery.ResponseBody = string(respBody)
-	delivery.AttemptCount++
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		now := time.Now().UTC()
+		// Count this attempt only on success. scheduleRetryOrFail is the
+		// single owner of the increment on the failure path — incrementing
+		// here too double-counted, burning a retry and skipping the first
+		// backoff interval (retryBackoffs[AttemptCount-1] indexed off the
+		// inflated count). Mirrors retryDeliver.
+		delivery.AttemptCount++
 		delivery.Status = domain.DeliverySucceeded
 		delivery.CompletedAt = &now
 		delivery.NextRetryAt = nil
