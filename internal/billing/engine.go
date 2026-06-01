@@ -54,18 +54,21 @@ type Engine struct {
 	invoices      InvoiceWriter
 	credits       CreditApplier
 	creditGranter CreditGranter
-	settings      SettingsReader
-	paymentSetups PaymentReadiness
-	charger       InvoiceCharger
-	profiles      BillingProfileReader
-	customers     CustomerReader
-	taxProviders  TaxProviderResolver
-	taxCalcStore  TaxCalculationWriter
-	clock         clock.Clock
-	testClocks    TestClockReader
-	events        domain.EventDispatcher
-	noPMNotifier  NoPaymentMethodNotifier
-	auditLogger   AuditWriter
+	// #22: settle an UNPAID in_advance prebill at mid-period cancel.
+	invoiceVoider      InvoiceVoider
+	creditNoteAdjuster CreditNoteAdjuster
+	settings           SettingsReader
+	paymentSetups      PaymentReadiness
+	charger            InvoiceCharger
+	profiles           BillingProfileReader
+	customers          CustomerReader
+	taxProviders       TaxProviderResolver
+	taxCalcStore       TaxCalculationWriter
+	clock              clock.Clock
+	testClocks         TestClockReader
+	events             domain.EventDispatcher
+	noPMNotifier       NoPaymentMethodNotifier
+	auditLogger        AuditWriter
 }
 
 // AuditWriter is the narrow audit surface the engine needs. Defined
@@ -90,6 +93,20 @@ func (e *Engine) SetAuditLogger(a AuditWriter) {
 // without it, in_advance subs cancel without a proration credit.
 func (e *Engine) SetCreditGranter(g CreditGranter) {
 	e.creditGranter = g
+}
+
+// SetInvoiceVoider / SetCreditNoteAdjuster wire the two issuers BillOnCancel
+// uses to settle an UNPAID in_advance invoice at mid-period cancel (#22):
+// void it when nothing was consumed, or reduce its amount_due to the consumed
+// portion via an adjustment credit note. Both optional — when unwired (narrow
+// unit tests), BillOnCancel falls back to the legacy behavior of leaving the
+// unpaid invoice for the dunning path.
+func (e *Engine) SetInvoiceVoider(v InvoiceVoider) {
+	e.invoiceVoider = v
+}
+
+func (e *Engine) SetCreditNoteAdjuster(a CreditNoteAdjuster) {
+	e.creditNoteAdjuster = a
 }
 
 // CustomerReader is the narrow read interface the engine uses to
@@ -156,6 +173,24 @@ type CreditApplier interface {
 // Implemented by *credit.Service.
 type CreditGranter interface {
 	Grant(ctx context.Context, tenantID string, input credit.GrantInput) (domain.CreditLedgerEntry, error)
+}
+
+// InvoiceVoider annuls a finalized, unpaid invoice. Used by BillOnCancel (#22)
+// to void an in_advance prebill that the customer never consumed any of when
+// they cancel mid-period. Implemented by *invoice.Service (refuses paid and
+// already-voided invoices, reverses upstream tax). Narrow on purpose so billing
+// keeps coordinating through a domain-typed interface, not an invoice import.
+type InvoiceVoider interface {
+	Void(ctx context.Context, tenantID, id string) (domain.Invoice, error)
+}
+
+// CreditNoteAdjuster reduces an unpaid finalized invoice's amount_due by issuing
+// an adjustment credit note. Used by BillOnCancel (#22) to settle a partially-
+// consumed unpaid in_advance prebill down to the consumed portion (the unused
+// fraction is removed from the receivable, proportional tax reversed). The
+// amount is gross (tax-inclusive). Implemented by *creditnote.Service.
+type CreditNoteAdjuster interface {
+	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -3251,28 +3286,26 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 		return 0, nil
 	}
 
-	// Paid-check gate: a "refund-style" credit only makes financial sense
-	// if the customer actually paid the in_advance invoice for this
-	// period. Without this gate, a cancel on an in_advance sub whose
-	// day-1 invoice was never paid (failed card, no PM yet) would still
-	// emit a credit grant that applies against future invoices — giving
-	// the customer money they never put in. Industry parity: Chargebee
-	// Adjustment credit shape (reduces unpaid invoice) and Stripe's
-	// `proration_behavior=none` recommendation for unpaid latest invoice.
-	//
-	// Velox's pre-launch choice: skip the credit grant entirely when the
-	// source invoice is missing or not paid. The unpaid invoice will be
-	// voided / uncollected through the normal dunning path; operator
-	// can manually issue a credit grant if needed. Defaulting to "no
-	// credit when in doubt" matches feedback_billing_accuracy.
+	// Source-invoice gate. How the unused portion is relieved depends on
+	// whether the in_advance invoice for this period was actually paid:
+	//   - PAID    → grant the unused amount to the customer's credit balance
+	//               (the refund-style path below). This is the industry default
+	//               (Stripe / Orb / Lago / Chargebee all credit-balance the
+	//               paid unused portion; a card refund is a separate operator
+	//               action via a refund credit note).
+	//   - UNPAID  → settle the invoice itself down to the consumed portion
+	//               instead of granting an unfunded credit (#22): void it when
+	//               nothing was consumed, else reduce amount_due via an
+	//               adjustment credit note. Leaving the FULL-period amount on
+	//               the dunning path — the prior behavior — is the one shape no
+	//               major platform endorses; it chases the customer for time
+	//               they never used. See relieveUnpaidPrebillOnCancel.
+	//   - MISSING → never billed for this period (e.g. trial cancel); nothing
+	//               to relieve, skip cleanly.
 	if e.invoices != nil {
 		src, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
 		if errors.Is(lookupErr, errs.ErrNotFound) {
-			// Legitimate "no in_advance base invoice for this period" —
-			// the customer was never billed for the period (e.g. trial
-			// period being canceled). No refund credit to grant; skip
-			// cleanly.
-			slog.InfoContext(ctx, "cancel proration: no in_advance invoice for period; no credit to grant",
+			slog.InfoContext(ctx, "cancel proration: no in_advance invoice for period; no relief to apply",
 				"subscription_id", sub.ID,
 				"customer_id", sub.CustomerID,
 				"period_start", periodStart,
@@ -3286,13 +3319,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 			return 0, fmt.Errorf("cancel proration: lookup source invoice: %w", lookupErr)
 		}
 		if src.PaymentStatus != domain.PaymentSucceeded {
-			slog.InfoContext(ctx, "cancel proration: source in_advance invoice not paid; skipping credit grant",
-				"subscription_id", sub.ID,
-				"customer_id", sub.CustomerID,
-				"source_invoice_id", src.ID,
-				"source_payment_status", src.PaymentStatus,
-			)
-			return 0, nil
+			return e.relieveUnpaidPrebillOnCancel(ctx, sub, src, totalUnused, cancelAt)
 		}
 	}
 
@@ -3320,6 +3347,80 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 		"canceled_at", cancelAt,
 	)
 	return totalUnused, nil
+}
+
+// relieveUnpaidPrebillOnCancel settles an UNPAID in_advance prebill at
+// mid-period cancel (#22). totalUnused is the net (tax-exclusive) unused base
+// already computed by BillOnCancel; src is the unpaid finalized invoice for the
+// period. No customer-balance credit is granted (no cash was funded), so it
+// always returns 0 cents; the error is non-nil only on a hard failure.
+//
+// Rule:
+//   - Gross up totalUnused to the invoice's gross via its own Total/Subtotal
+//     ratio so the relief also covers the unused portion's proportional tax.
+//     Velox invoices carry a single uniform tax rate and (post-coupon-cut) no
+//     discount, so Total/Subtotal == 1 + rate; a zero-tax invoice grosses up by
+//     1× (no change).
+//   - Clamp to the invoice's current amount_due.
+//   - Whole remaining receivable unused AND nothing paid → Void (clean terminal
+//     status, full tax reversal).
+//   - Otherwise → adjustment credit note reducing amount_due to the consumed
+//     portion (reverses the unused fraction's tax).
+//
+// When the relevant issuer isn't wired (narrow unit tests), it logs and leaves
+// the invoice untouched — the legacy "ride the dunning path" behavior — so
+// existing engine tests that don't wire the issuers keep passing.
+//
+// Idempotency: BillOnCancel runs once per cancel (CancelAtomic refuses to
+// re-cancel an already-canceled sub before the biller is reached), so this is
+// not re-entered for the same invoice in normal operation.
+func (e *Engine) relieveUnpaidPrebillOnCancel(ctx context.Context, sub domain.Subscription, src domain.Invoice, totalUnused int64, cancelAt time.Time) (int64, error) {
+	grossUnused := totalUnused
+	if src.SubtotalCents > 0 {
+		grossUnused = money.RoundHalfToEven(totalUnused*src.TotalAmountCents, src.SubtotalCents)
+	}
+	reduceBy := grossUnused
+	if reduceBy > src.AmountDueCents {
+		reduceBy = src.AmountDueCents
+	}
+	if reduceBy <= 0 {
+		return 0, nil
+	}
+
+	// Whole remaining receivable is unused and nothing has been paid → void it.
+	// A partial payment (amount_paid > 0) would make a void annul collected
+	// money, so fall through to the reduce path in that case.
+	if reduceBy >= src.AmountDueCents && src.AmountPaidCents == 0 {
+		if e.invoiceVoider == nil {
+			slog.InfoContext(ctx, "cancel: unpaid prebill fully unused but invoice voider unwired; leaving for dunning",
+				"subscription_id", sub.ID, "source_invoice_id", src.ID)
+			return 0, nil
+		}
+		if _, err := e.invoiceVoider.Void(ctx, sub.TenantID, src.ID); err != nil {
+			return 0, fmt.Errorf("cancel: void fully-unused unpaid prebill %s: %w", src.ID, err)
+		}
+		slog.InfoContext(ctx, "cancel: voided fully-unused unpaid prebill",
+			"subscription_id", sub.ID, "customer_id", sub.CustomerID,
+			"source_invoice_id", src.ID, "amount_cents", reduceBy)
+		return 0, nil
+	}
+
+	// Partially consumed → reduce amount_due down to the consumed portion.
+	if e.creditNoteAdjuster == nil {
+		slog.InfoContext(ctx, "cancel: unpaid prebill partially used but credit-note adjuster unwired; leaving for dunning",
+			"subscription_id", sub.ID, "source_invoice_id", src.ID)
+		return 0, nil
+	}
+	desc := fmt.Sprintf("Unused portion of %s — canceled %s",
+		sub.Code, cancelAt.UTC().Format("2006-01-02"))
+	if _, err := e.creditNoteAdjuster.CreateAndIssueAdjustment(
+		ctx, sub.TenantID, src.ID, reduceBy, "subscription_cancellation", desc); err != nil {
+		return 0, fmt.Errorf("cancel: reduce unpaid prebill %s to consumed portion: %w", src.ID, err)
+	}
+	slog.InfoContext(ctx, "cancel: reduced unpaid prebill to consumed portion",
+		"subscription_id", sub.ID, "customer_id", sub.CustomerID,
+		"source_invoice_id", src.ID, "reduced_by_cents", reduceBy)
+	return 0, nil
 }
 
 // BillOnPlanSwapImmediate issues the refund credit for the unused

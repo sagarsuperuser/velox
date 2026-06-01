@@ -650,6 +650,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// issue a credit grant for the unused portion of an in_advance
 	// period when a sub is canceled mid-cycle. No-op for in_arrears.
 	engine.SetCreditGranter(creditSvc)
+	// #22: when the in_advance prebill for the canceled period is UNPAID,
+	// BillOnCancel settles it down to the consumed portion instead of leaving
+	// the full amount in dunning — voiding it (nothing consumed) or reducing
+	// amount_due via an adjustment credit note (partially consumed).
+	engine.SetInvoiceVoider(invoiceSvc)
+	engine.SetCreditNoteAdjuster(creditNoteSvc)
 	// invoice.Service uses the resolver at Create so one-off
 	// composer invoices and manual sub-attached addenda for
 	// clock-pinned customers / subs stamp due_at in simulated time.
