@@ -241,7 +241,13 @@ func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tena
 				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4
 				ORDER BY timestamp DESC LIMIT 1
 			`, customerID, meterID, from, to).Scan(&val)
-			if err == nil && val.IsPositive() {
+			// Propagate query errors — swallowing them here silently
+			// drops the meter from the billing total (under-billing at
+			// finalize). Only a positive aggregate is a billable line.
+			if err != nil {
+				return nil, fmt.Errorf("aggregate meter %s (%s): %w", meterID, agg, err)
+			}
+			if val.IsPositive() {
 				result[meterID] = val
 			}
 			continue
@@ -253,7 +259,12 @@ func (s *PostgresStore) AggregateForBillingPeriodByAgg(ctx context.Context, tena
 				WHERE customer_id = $1 AND meter_id = $2 AND timestamp >= $3 AND timestamp < $4`,
 				aggFunc),
 			customerID, meterID, from, to).Scan(&val)
-		if err == nil && val.IsPositive() {
+		// Propagate query errors — see the 'last' branch above. A swallowed
+		// error here under-bills the meter at finalize.
+		if err != nil {
+			return nil, fmt.Errorf("aggregate meter %s (%s): %w", meterID, agg, err)
+		}
+		if val.IsPositive() {
 			result[meterID] = val
 		}
 	}
@@ -410,10 +421,17 @@ func (s *PostgresStore) AggregateByPricingRules(
 				rr.rating_rule_version_id AS rating_rule_version_id
 			FROM usage_events e
 			LEFT JOIN LATERAL (
+				-- ALL rules (last_ever included) compete to claim the event,
+				-- so rule_rank picks the true top-priority match. last_ever
+				-- must NOT be filtered out of the candidate set here: if it
+				-- were, an event whose real winner is a last_ever rule would
+				-- fall through to a lower-priority period rule (or the
+				-- unclaimed bucket) AND get claimed again by the last_ever
+				-- pass below — double-counting it. We exclude such events
+				-- from the period buckets after the claim instead.
 				SELECT id, aggregation_mode, rating_rule_version_id, rule_rank
 				FROM ranked_rules
 				WHERE e.properties @> ranked_rules.dimension_match
-				  AND ranked_rules.aggregation_mode <> 'last_ever'
 				ORDER BY rule_rank ASC
 				LIMIT 1
 			) rr ON TRUE
@@ -422,6 +440,10 @@ func (s *PostgresStore) AggregateByPricingRules(
 			  AND e.customer_id = $3
 			  AND e.timestamp >= $4
 			  AND e.timestamp <  $5
+			  -- Events whose winning rule is last_ever belong solely to the
+			  -- last_ever pass; drop them from the period-bounded set so they
+			  -- neither double-count nor leak into the unclaimed default.
+			  AND COALESCE(rr.aggregation_mode, '') <> 'last_ever'
 		)
 		SELECT
 			COALESCE(rule_id, '')                AS rule_id,
