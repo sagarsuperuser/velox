@@ -24,6 +24,13 @@ func TestClassify_TableDriven(t *testing.T) {
 		{"invalid-api-key", errors.New("Invalid API Key provided: sk_test_***"), ErrCodeProviderAuth},
 		{"unauthorized", errors.New("401 unauthorized"), ErrCodeProviderAuth},
 		{"unknown-blob", errors.New("an unexpected error happened"), ErrCodeUnknown},
+		// Not-configured: must match the actual messages tax/stripe.go emits.
+		// Pre-fix the regex was written against a drifted "no client configured
+		// for livemode" string, so these fell through to ErrCodeUnknown and
+		// triggered futile auto-retries with the wrong operator remediation.
+		{"stripe-calculate-no-credentials", errors.New("stripe tax: no Stripe credentials connected for livemode=true — connect Stripe in Settings → Payments or change tax provider"), ErrCodeProviderNotConfigured},
+		{"stripe-reverse-no-client", errors.New("stripe tax: reverse: no client for context (livemode=false)"), ErrCodeProviderNotConfigured},
+		{"legacy-no-client-configured", errors.New("no client configured for livemode=true"), ErrCodeProviderNotConfigured},
 	}
 
 	for _, tc := range cases {
