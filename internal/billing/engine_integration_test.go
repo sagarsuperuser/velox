@@ -587,6 +587,18 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	// --- Slice 3: BillOnCancel issues a credit grant ---
 	// Reload sub (UpdateBillingCycle moved it to July), then cancel
 	// halfway through July and assert the credit grant amount.
+	//
+	// Mark the July in-advance invoice PAID first. BillOnCancel only issues a
+	// credit *balance* for unused time the customer actually paid for — when
+	// the source invoice is unpaid it (correctly) skips the grant and the
+	// open invoice is relieved another way. This matches the industry split
+	// (Stripe / Orb / Lago / Chargebee): paid → credit balance, unpaid →
+	// reduce/void the invoice, never a credit. Without this step the test was
+	// asserting a grant the engine rightly refuses.
+	if _, err := invoiceStore.MarkPaid(ctx, tenantID, cycleInv.ID, "pi_test_cancel", periodEnd); err != nil {
+		t.Fatalf("mark July invoice paid: %v", err)
+	}
+
 	subRefreshed, err := subStore.Get(ctx, tenantID, sub.ID)
 	if err != nil {
 		t.Fatalf("reload sub: %v", err)
