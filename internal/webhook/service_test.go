@@ -514,11 +514,20 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 	if store.deliveries[0].Status != domain.DeliveryPending {
 		t.Errorf("status: got %q, want pending (scheduled for retry)", store.deliveries[0].Status)
 	}
-	if store.deliveries[0].AttemptCount != 2 {
-		t.Errorf("attempt_count: got %d, want 2", store.deliveries[0].AttemptCount)
+	// Exactly one attempt has happened. Pre-fix this was 2 — deliver()
+	// incremented unconditionally AND scheduleRetryOrFail incremented again,
+	// burning a retry and skipping the first backoff.
+	if store.deliveries[0].AttemptCount != 1 {
+		t.Errorf("attempt_count: got %d, want 1 (single increment per failed attempt)", store.deliveries[0].AttemptCount)
 	}
 	if store.deliveries[0].NextRetryAt == nil {
-		t.Error("next_retry_at should be set for retry")
+		t.Fatal("next_retry_at should be set for retry")
+	}
+	// The first retry must use the FIRST backoff (1m), not the second (5m).
+	// jitter adds 0–30s, so the gap lands in [1m, 1m30s).
+	gap := time.Until(*store.deliveries[0].NextRetryAt)
+	if gap < retryBackoffs[0] || gap >= retryBackoffs[0]+31*time.Second {
+		t.Errorf("next_retry_at gap = %v, want within [1m, 1m30s) — first backoff must not be skipped", gap)
 	}
 }
 
