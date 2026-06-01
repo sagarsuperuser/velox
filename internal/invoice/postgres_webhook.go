@@ -18,7 +18,7 @@ func (s *PostgresStore) GetByStripePaymentIntentID(ctx context.Context, tenantID
 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `SELECT `+invCols+` FROM invoices WHERE stripe_payment_intent_id = $1`, stripePI).
-		Scan(scanInvDest(&inv)...)
+		Scan(s.scanInvDest(&inv)...)
 	if err == sql.ErrNoRows {
 		return domain.Invoice{}, errs.ErrNotFound
 	}
