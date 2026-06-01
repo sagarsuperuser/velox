@@ -93,8 +93,8 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
 			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
 			source_subscription_id, source_subscription_item_id, source_plan_changed_at, source_change_type,
-			source_credit_note_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			source_credit_note_id, source_invoice_reversal_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
 			COALESCE(source_subscription_id,''), COALESCE(source_subscription_item_id,''),
@@ -109,6 +109,7 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		postgres.NullableTime(entry.SourcePlanChangedAt),
 		postgres.NullableString(string(entry.SourceChangeType)),
 		postgres.NullableString(entry.SourceCreditNoteID),
+		postgres.NullableString(entry.SourceInvoiceReversalID),
 	).Scan(&entry.ID, &entry.TenantID, &entry.CustomerID, &entry.EntryType,
 		&entry.AmountCents, &entry.BalanceAfter, &entry.Description,
 		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt,
@@ -134,6 +135,9 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 			case "idx_credit_ledger_credit_note_dedup":
 				return domain.CreditLedgerEntry{}, errs.AlreadyExists("credit_note_source",
 					"credit ledger entry already exists for this credit note").WithCode("credit_note_source_taken")
+			case "idx_credit_ledger_reversal_dedup":
+				return domain.CreditLedgerEntry{}, errs.AlreadyExists("invoice_reversal_source",
+					"credit ledger reversal already exists for this invoice").WithCode("credit_reversal_source_taken")
 			}
 			return domain.CreditLedgerEntry{}, errs.AlreadyExists("",
 				fmt.Sprintf("unique constraint %q violated on credit ledger insert",
