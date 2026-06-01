@@ -244,6 +244,30 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 	return tx.Commit()
 }
 
+// UpdateAllocation persists the three-channel allocation. Issue() calls
+// this when a CN created against a then-unpaid invoice is issued after
+// the invoice became paid — the allocation frozen at Create was all
+// zeros, so Issue re-derives it (default: full credit to balance) and
+// persists the result here so the dashboard and any retry observe the
+// same split Issue acted on.
+func (s *PostgresStore) UpdateAllocation(ctx context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE credit_notes SET refund_amount_cents=$1, credit_amount_cents=$2,
+			out_of_band_amount_cents=$3, updated_at=$4
+		WHERE id=$5`,
+		refundCents, creditCents, outOfBandCents, clock.Now(ctx), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

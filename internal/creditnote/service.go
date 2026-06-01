@@ -437,8 +437,10 @@ func (s *Service) CreateRefund(ctx context.Context, tenantID string, input Refun
 	issued, err := s.Issue(ctx, tenantID, cn.ID)
 	if err != nil {
 		// Issue failed after Create succeeded — void the draft so we don't
-		// leave an unusable record. Best-effort: if void itself fails,
-		// surface the original issue error (it's the actionable one).
+		// leave an unusable record. Best-effort: Void deliberately refuses
+		// when the Stripe refund leg already executed (that cash must stay
+		// counted in the over-refund cap), and any other void failure is
+		// non-actionable here. Either way, surface the original issue error.
 		_, _ = s.Void(ctx, tenantID, cn.ID)
 		return domain.CreditNote{}, err
 	}
@@ -482,6 +484,29 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	}
 
 	if inv.PaymentStatus == domain.PaymentSucceeded {
+		// Re-derive the three-channel allocation from the CURRENT invoice
+		// state. The allocation persisted at Create is frozen against the
+		// invoice status AT THAT TIME: a CN created while the invoice was
+		// still unpaid (InvoiceFinalized) skips Create's paid-invoice
+		// block entirely, so all three channels land at zero. If that
+		// invoice is then paid BEFORE the CN is issued, this Issue path
+		// sees a paid invoice but a CN with zero allocations — neither the
+		// refund leg nor the credit-grant leg below fires, and the
+		// refund/credit silently vanishes (the CN issues as a no-op).
+		//
+		// Mirror Create's documented paid-invoice default: when the
+		// invoice is now paid and the CN carries zero across all three
+		// channels, grant the full CN total to the customer's credit
+		// balance — the safest fallback (no cash movement, restorable
+		// later). Persist it so the dashboard and any retry see the same
+		// allocation the Issue path acts on.
+		if cn.RefundAmountCents == 0 && cn.CreditAmountCents == 0 && cn.OutOfBandAmountCents == 0 && cn.TotalCents > 0 {
+			cn.CreditAmountCents = cn.TotalCents
+			if err := s.store.UpdateAllocation(ctx, tenantID, id, cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents); err != nil {
+				return domain.CreditNote{}, fmt.Errorf("re-derive credit-note allocation at issue: %w", err)
+			}
+		}
+
 		// Invoice already paid — handle based on refund type.
 		//
 		// Idempotency contract (added 2026-05-22 after audit):
@@ -697,6 +722,20 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditN
 	// To correct a mistake on an issued CN, create a new invoice or adjustment.
 	if cn.Status == domain.CreditNoteIssued {
 		return domain.CreditNote{}, errs.InvalidState("cannot void an issued credit note — issued credit notes are final financial documents")
+	}
+	// Refuse to void a draft CN whose Stripe refund leg already executed.
+	// CreateRefund() voids the draft as a best-effort rollback when Issue()
+	// returns an error — but Issue() persists the Stripe refund_id BEFORE
+	// the credit-grant / tax-reversal steps, so an error after the refund
+	// leg succeeded leaves a draft CN that ALREADY pushed cash back to the
+	// payment method. The over-refund cap in Create()/CreateRefund() sums
+	// RefundAmountCents only over non-voided CNs, so voiding this CN would
+	// drop its executed refund from that ceiling — a later CN could then
+	// refund the same money again (double refund). Keep the CN un-voided so
+	// it stays counted; the operator reconciles the partially-issued CN
+	// (e.g. RetryRefund / re-Issue) instead.
+	if cn.StripeRefundID != "" || cn.RefundStatus == domain.RefundSucceeded {
+		return domain.CreditNote{}, errs.InvalidState("cannot void a credit note whose refund has already been processed — voiding would drop the executed refund from the over-refund cap and allow a duplicate refund. Reconcile the existing refund instead.")
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteVoided)
 }
