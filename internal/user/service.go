@@ -175,8 +175,11 @@ func VerifyPassword(hash, plaintext string) error {
 var ErrBadCredentials = errs.New("bad_credentials", "invalid email or password")
 
 // ErrAccountLocked is returned when the account's lockout deadline
-// hasn't passed. The login handler maps this to 429 Too Many Requests
-// with a Retry-After header.
+// hasn't passed. The login handler deliberately maps this to the SAME
+// generic 401 "invalid email or password" as bad credentials — a distinct
+// locked/429 response is an enumeration oracle (only real accounts can be
+// locked). The lock is enforced (Authenticate refuses the login during the
+// window) but not disclosed. See user/handler.go.
 var ErrAccountLocked = errs.New("account_locked",
 	"too many failed attempts — account temporarily locked")
 

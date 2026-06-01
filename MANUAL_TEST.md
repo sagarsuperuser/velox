@@ -188,8 +188,8 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Empty form → inline error, no request.
 - [ ] Wrong password → 401 "Invalid email or password".
-- [ ] 5 consecutive wrong passwords → 5th returns 429 "too many failed attempts — try again in 15 minutes". A 6th attempt during the lock returns 429 again WITHOUT extending the timer (fixed window from the lockout-trigger time, not sliding). Successful login before hitting 5 resets the counter.
-- [ ] Lockout still fires with **`REDIS_URL` unset** (or Redis stopped): repeat the 5-wrong-passwords step with no Redis → 5th still returns 429. The throttle degrades to a per-process counter, it does not switch off. (Stop Redis mid-session and the WARN "serving from in-process counter" logs once.)
+- [ ] 5 consecutive wrong passwords locks the account for 15 min, but the lock is **invisible in the response** — the 5th (and any attempt during the window) still returns the same generic **401 "invalid email or password"**, never a distinct 429/`account_locked`. This is deliberate anti-enumeration: a distinct locked response is an oracle confirming the email is a real account. Verify the lock fired by then submitting the **correct** password during the window → also 401 (Authenticate refuses it while locked). A successful login before the 5th attempt resets the counter.
+- [ ] Lockout still fires with **`REDIS_URL` unset** (or Redis stopped) — the counter degrades to a per-process one, it does not switch off (velox-ops #21). Same observable: 5 wrong then a correct password → still 401 during the window. (Stop Redis mid-session and the WARN "serving from in-process counter" logs once.)
 - [ ] Right credentials → redirect to `/`, dashboard loads.
 - [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
 - [ ] Reload → still signed in.
@@ -228,7 +228,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] **Cross-tab sync**: open the dashboard in two browser tabs. Toggle test→live in Tab A; switch to Tab B without clicking anything. Tab B's pill flips amber→emerald automatically (BroadcastChannel push from Tab A). Tab B's queries refetch live data on next focus — no stale TEST label over live data.
 - [ ] **URL params dropped on toggle**: navigate to `/customers?status=active&cursor=cus_test_xxx`, toggle modes. URL becomes `/customers` (search string stripped). The opposite-mode page does not show an empty list because the dead cursor was carried over.
 - [ ] **Per-mode invoice numbering**: in test mode, create an invoice → `INV-000001`. Toggle to live mode, create a real invoice → also starts at `INV-000001` (or wherever the live counter sits — independent from test). Test exploration no longer burns live invoice numbers.
-- [ ] **Per-mode rate-limit buckets**: hammer the dashboard in test mode until you see `429 Too Many Requests`. Toggle to live mode — live requests should still be allowed (separate bucket). Inspect Redis: `KEYS rl:tenant:*` shows `tenant:<id>:test` and `tenant:<id>:live` as distinct keys.
+- [ ] **Per-mode rate-limit buckets**: hammer the dashboard in test mode until you see `429 Too Many Requests`. Toggle to live mode — live requests should still be allowed (separate bucket). Inspect Redis: `KEYS rl:*` shows the rate-limit buckets, keyed `rl:<namespace>:<scope>:<id>` (e.g. `rl:general:ip:1.2.3.4`); test- and live-mode buckets are distinct keys.
 
 ---
 
@@ -236,16 +236,18 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Secret key: full read/write everywhere.
 - [ ] Publishable key: read-only — POST → 403.
-- [ ] Revoked key: any request → 401 `api key revoked`.
+- [ ] Revoked key: any request → 401 `invalid or expired API key`.
 - [ ] Create dialog: raw key shown once, copy button, "you won't see this again" warning.
+
+> **Wire-message convention (ADR-026):** the API never reveals *why* a key failed — revoked, expired, and unknown all return the same generic 401 `invalid or expired API key`. The specific reason is logged server-side only. Don't assert revoked-vs-expired-vs-unknown from the response body.
 
 ## FLOW K2: Expiration
 
 - [ ] Create key with presets: No expiration / 30d / 90d / 1y / Custom.
 - [ ] Custom: today is disabled in calendar grid + Today button (tooltip explains minDate).
 - [ ] Tenant TZ consistency: pick "30d" → hint "Key will expire on <date> at 11:59 PM <TenantTZ>". Stored UTC matches "23:59:59.999 in tenant TZ".
-- [ ] Create with `expires_at = now+90s` via API → 200 until expiry, 401 `api key expired` after.
-- [ ] Backdate `expires_at` via psql → 401 `api key expired`.
+- [ ] Create with `expires_at = now+90s` via API → 200 until expiry, then 401 `invalid or expired API key` (generic — see K1 note).
+- [ ] Backdate `expires_at` via psql → 401 `invalid or expired API key`.
 - [ ] Keys ≤7 days from expiry → yellow "Expires in Xd" badge.
 - [ ] Expired keys collapsed under "Expired keys" section; Revoke still enabled.
 
@@ -258,7 +260,7 @@ Single tenant-wide timezone used for date input and timestamp display
 ## FLOW K4: Rotate
 
 - [ ] Rotate with `expires_in_seconds=300` → new raw_key returned; old key works ~5 min.
-- [ ] Rotate with `expires_in_seconds=0` → old key 401 `invalid api key` immediately.
+- [ ] Rotate with `expires_in_seconds=0` → old key 401 `invalid or expired API key` immediately.
 - [ ] Rotate revoked key → 422 `cannot rotate a revoked key`.
 - [ ] `expires_in_seconds > 604800` → 422.
 
@@ -451,7 +453,7 @@ End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The das
 - [ ] Advance clock past `resumes_at` → catchup Phase 0.7 auto-clears `pause_collection_*` columns AT `resumes_at` (not waiting for next cycle close); next cycle bills normally; previously-draft invoice can be finalized manually if intended.
 - [ ] Activity timeline shows "Collection paused" (manual via dashboard) or "Collection paused by dunning" (when reached as a dunning final_action), with "Cycle keeps drafting; no charge until resumed" or "Auto-resumes …" detail line.
 - [ ] Activity timeline shows "Collection auto-resumed — Scheduled resume date reached" for the schedule-driven resume (distinct from "Collection resumed" emitted by manual API call).
-- [ ] API parity: `POST /v1/subscriptions/{id}/pause-collection` with `{"behavior":"keep_as_draft","resumes_at":"..."}` produces the same sub state as the dialog path.
+- [ ] API parity: `PUT /v1/subscriptions/{id}/pause-collection` with `{"behavior":"keep_as_draft","resumes_at":"..."}` produces the same sub state as the dialog path (resume is `DELETE` on the same route).
 
 ## FLOW TC10: Credit grant expiry firing (via catchup)
 
@@ -476,7 +478,7 @@ The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 ve
   1. Mint: `curl -s -X POST $API/v1/public/customer-portal/magic-link -H 'Content-Type: application/json' -d '{"email":"<real-customer-email>"}'` → `202 Accepted`.
   2. Extract the raw token from the queued email (the hash is what's stored; the raw token only exists in the email payload):
      `TOKEN=$(psql "$DB" -At -c "SELECT split_part(payload->>'magic_link_url', 'token=', 2) FROM email_outbox WHERE email_type='portal_magic_link' ORDER BY created_at DESC LIMIT 1;")`
-  3. Consume: `curl -s -i -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}"` → `200` + body `{"token":"vlx_cps_…","customer_id":"vlx_cus_…","livemode":false,"expires_at":"<iso ~24h out>"}`. The response `token` is a **portal session** (different prefix and secret from the input magic-link).
+  3. Consume: `curl -s -i -X POST $API/v1/public/customer-portal/magic/consume -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}"` → `200` + body `{"token":"vlx_cps_…","customer_id":"vlx_cus_…","livemode":false,"expires_at":"<iso ~1h out>"}`. The response `token` is a **portal session** (different prefix and secret from the input magic-link; session TTL is 1h).
   4. Replay the same token: same curl again → `401` + `{"error":{"type":"authentication_error","code":"unauthorized","message":"invalid or expired magic link"}}`. Same envelope covers never-existed / expired / already-used (anti-enumeration).
   5. DB sanity (optional): `psql "$DB" -c "SELECT id, used_at IS NOT NULL AS consumed FROM customer_portal_magic_links ORDER BY created_at DESC LIMIT 1;"` → `consumed=t` after step 3.
 - [ ] Returned token as Bearer on `/v1/me/invoices` → invoice list.
@@ -524,7 +526,7 @@ The portal's PM surface is the customer-side half of a unified design shared wit
 - [ ] Set default: `POST /v1/me/payment-methods/{id}/default` → 200; future invoices charge that card.
 - [ ] After Set default → Stripe Dashboard → Customer → `invoice_settings.default_payment_method` reflects the newly promoted PM (not the previously-default one). Phase 1 sync.
 - [ ] If Stripe is unreachable when SetDefault fires → operator save still succeeds (local default flips); the audit row for the action carries `stripe_sync_error` in its metadata. Local-wins per Lago/Recurly/Chargebee.
-- [ ] Remove: `DELETE /v1/me/payment-methods/{id}` → 204; PM detached upstream and locally.
+- [ ] Remove: `DELETE /v1/me/payment-methods/{id}` → 200 with the detached PM JSON; PM detached upstream and locally.
 
 ### UI — portal
 
@@ -551,7 +553,7 @@ Section title is always **"Payment methods"** (plural). Primary CTA label is alw
 
 ## FLOW CP4: Invoice PDF download
 
-- [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" $API/v1/me/invoices/$INV_ID/pdf` → PDF, `Content-Type: application/pdf`, `Content-Disposition: attachment`.
+- [ ] `curl -OJ -H "Authorization: Bearer $PORTAL_TOKEN" $API/v1/me/invoices/$INV_ID/pdf` → PDF, `Content-Type: application/pdf`, `Content-Disposition: inline`.
 - [ ] Different customer's invoice → 404.
 - [ ] `GET /v1/me/invoices` → each invoice row includes `credits_applied_cents` when > 0; UI surfaces "$X from credits · $Y card" breakdown on the row.
 
@@ -609,12 +611,12 @@ Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at
 
 Velox stores tax rates at 4-decimal precision (`tax_rate NUMERIC(7,4)`)
 matching Stripe Tax's `percentage_decimal` shape. The legacy
-`tax_rate_bp bigint` column was dropped in migration 0105 (ADR-043) —
+`tax_rate_bp bigint` column was dropped in migration 0105 (ADR-043) — <!-- currency-ok: documents the dropped legacy column -->
 `tax_rate` is the only rate storage. NYC 8.875%, Quebec 9.975%, Hawaii
 4.7120% all round-trip exactly.
 
 - [ ] Settings → Tax rate input accepts decimal percent directly (e.g. `8.875`). No bp dance.
-- [ ] Manual provider: set tax 7.25% in Settings → `tenant_settings.tax_rate=7.2500` (no `tax_rate_bp` column exists).
+- [ ] Manual provider: set tax 7.25% in Settings → `tenant_settings.tax_rate=7.2500` (no `tax_rate_bp` column exists). <!-- currency-ok: states the column was removed -->
 - [ ] $100 subtotal at 7.25% → `invoices.tax_amount_cents=725, tax_rate=7.2500`.
 - [ ] Manual provider precision: set tax `8.8750` in Settings → 100 × 8.875% = 887.5, banker's rounded to 888 cents = $8.88 (ppm-based integer math preserves the 4-decimal precision without float drift).
 - [ ] 3 line items $33.33+$33.33+$33.34 at 7.25%: `SUM(invoice_line_items.tax_amount_cents) = invoices.tax_amount_cents` exactly (residual absorbed by last line per Stripe Tax's documented pattern).
@@ -658,7 +660,7 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 - [ ] In_advance sub downgrade immediately + source invoice paid → immediate credit grant lands in `customer_credit_ledger`.
 - [ ] In_advance sub upgrade/downgrade immediately + source invoice **unpaid** → no immediate artifact (operator must wait for source invoice to clear OR void it).
 - [ ] Scheduled plan change (`immediate=false`) → no immediate artifact; engine emits closing invoice under OUTGOING plan at period boundary (FLOW B20).
-- [ ] Plan change across `base_bill_timing` rejected with 400 (`bill_timing change is not supported on plan-swap`) — both immediate and scheduled. 2026-05-22 industry verification (Stripe / Lago / Orb / Chargebee / Recurly / Metronome) found no peer documents cadence-change as an in-place plan-swap. Operator path: cancel + recreate.
+- [ ] Plan change across `base_bill_timing` rejected with 422 (`bill_timing change is not supported on plan-swap`) — both immediate and scheduled. 2026-05-22 industry verification (Stripe / Lago / Orb / Chargebee / Recurly / Metronome) found no peer documents cadence-change as an in-place plan-swap. Operator path: cancel + recreate.
 - [ ] Immediate same-cadence cross-interval plan-swap (yearly → monthly or monthly → yearly, both in_advance OR both in_arrears) accepted — see FLOW B21.
 - [ ] Plan billing-fields immutability (ADR-034): live-sub plans reject `PATCH` to `base_amount_cents` / `base_bill_timing` / `meter_ids` with 422; `name` / `description` / `tax_code` / `status` mutate cleanly.
 - [ ] **Plan billing-fields immutability (ADR-034)**: with at least one live sub on a plan, `PATCH /v1/plans/{id}` with a different `base_amount_cents`, `base_bill_timing`, or `meter_ids` → **422** with message naming the blocked field(s) + live-sub count + "Create a new plan instead." Display-only fields (`name`, `description`, `tax_code`, `status`) STILL mutate cleanly on the same call. On a plan with zero live subs, all fields are mutable (covers typo correction at plan creation). Canceled / archived subs do NOT count as live for the guard.
@@ -673,19 +675,16 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 - [ ] POST /v1/price-overrides → that customer's invoice uses override price.
 - [ ] Other customers → default rule price.
 
-## FLOW B10: Manual tax + cross-border zero-rating
+## FLOW B10: Manual tax + customer tax status
 
-- [ ] `tax_home_country="IN"`, `tax_rate_bp=1800`, `tax_name="IGST"`.
-- [ ] Domestic IN customer: $100 → $18, name `IGST`, PDF `IGST (18.00%)`.
-- [ ] Export US customer: $100 → $0, name `IGST (zero-rated export)`.
-- [ ] Customer with no country → 18% applies.
-- [ ] Customer with `tax_exempt=true` → $0, blank name.
-- [ ] Clear `tax_home_country` → US customer back to 18%.
-- [ ] India B2B reverse-charge: PDF carries supplier GSTIN under company line + "Tax payable on reverse charge basis: YES".
-- [ ] EU reverse-charge: PDF retains EU wording.
-- [ ] Stripe Tax `taxability_reason=not_collecting` round-trip → line item `tax_reason='not_collecting'`, badge in dashboard.
-- [ ] `tax_status='exempt'` customer → `tax_reason='customer_exempt'`, PDF carries customer-exemption legend.
-- [ ] Invalid country codes (`INDIA`, `in `, `XX`) → 422.
+Manual provider applies one flat tenant rate to every customer regardless of country (the old `tax_home_country` / cross-border zero-rating model was dropped — ADR-038). Exemption is driven solely by the customer's `tax_status` (`standard` / `exempt` / `reverse_charge`). Rate precision is covered by B2. <!-- currency-ok: documents the dropped tax_home_country model -->
+
+- [ ] Settings → set tax rate `18` + tax name `IGST` (`tenant_settings.tax_rate=18.0000`; no `tax_rate_bp` / `tax_home_country` columns exist). <!-- currency-ok: states the columns were removed -->
+- [ ] Any `standard` customer, any country: $100 → `tax_amount_cents=1800`, `tax_name=IGST`, PDF tax line `IGST (18%)` (decimal `%.4g`).
+- [ ] Customer `tax_status=exempt` → $0 tax, invoice `tax_reason='customer_exempt'`, PDF carries the customer-exemption legend.
+- [ ] Customer `tax_status=reverse_charge` (India B2B): $0 tax; PDF carries supplier GSTIN under the company line + "Tax payable on reverse charge basis: YES".
+- [ ] EU `reverse_charge` customer → $0 tax, PDF retains the EU reverse-charge wording.
+- [ ] Stripe-Tax path: `taxability_reason=not_collecting` round-trips → line item `tax_reason='not_collecting'`, badge in dashboard.
 
 ## FLOW B11: Tax-ID validation
 
@@ -708,8 +707,8 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 
 - [ ] `POST /v1/usage-events` with dimensions `{model, operation, cached, tier}` → 201; value stored as NUMERIC.
 - [ ] Decimal preserved end-to-end (`10000.5` round-trips).
-- [ ] Replay same idempotency_key → 200 with original event id, no duplicate.
-- [ ] Rule with `dimension_match={"operation":"input"}` claims only input events. More-specific match (`+cached:true`) wins over less-specific.
+- [ ] Replay same idempotency_key → 409 Conflict (`invalid_request_error`), no duplicate (the duplicate-key error propagates; there's no fetch-original-on-replay).
+- [ ] Rule with `dimension_match={"token_type":"input"}` claims only input events; `{"token_type":"cache_read"}` claims only cache-read events. Token roles are DISJOINT (ADR-044), so each `{model, token_type}` matches exactly one rule — no priority tie-break needed (the old boolean `cached` + priority-wins model is gone).
 - [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
 - [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.
 
@@ -750,7 +749,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Day 1: create sub → day-1 invoice carries ONLY the base fee ($99). Usage line absent (no events).
 - [ ] Ingest 1,000 events over the period.
 - [ ] Period close → cycle invoice:
-  - Base line: $99, `billing_period_start/end = next period`, sub-line "Covers <next period> (in advance)"
+  - Base line: $99, `billing_period_start/end = next period`, sub-line "Covers <next period>" (date range only — no "(in advance)" parenthetical)
   - Usage line: $10 (1,000 × $0.01), `billing_period_start/end = elapsed period` (matches invoice header — sub-line suppressed)
   - Single invoice carries both — no separate invoice for the upcoming base.
 - [ ] Tax applies to both lines; per-line `tax_amount_cents` populated.
@@ -768,7 +767,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Cancel on a pure `in_arrears` sub → no proration credit (nothing was prebilled).
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
-- [ ] **Source invoice paid-check (Chargebee Refundable vs Adjustment shape):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled` but **NO credit ledger entry**. Server log: `cancel proration: source in_advance invoice not paid; skipping credit grant`. The unpaid invoice flows through dunning as normal (void or uncollectible); operator manually grants credit if needed.
+- [ ] **Source invoice unpaid → invoice settled, not credited (#22, ADR-031 amendment):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled`, **NO credit ledger entry** (no cash was funded), and the unpaid invoice is settled down to the consumed portion: partially-consumed → an **adjustment credit note reduces `amount_due`** (log `cancel: reduced unpaid prebill to consumed portion`); cancel before any consumption → invoice **voided** (log `cancel: voided fully-unused unpaid prebill`). It does NOT ride dunning for the full amount. Full coverage in FLOW TC8b.
 - [ ] **Plans > ~$36 base** (regression for the 2026-05-21 int64-overflow fix): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`. Pre-fix the nanosecond-math overflowed int64 for plans > ~$36 and silently returned 0.
 
 ## FLOW B19: Cancel-flow billing artifacts (PR-9 + PR-10)
@@ -800,7 +799,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 - [ ] **In_advance monthly → yearly upgrade (same cadence, cross interval):** sub on `pro-monthly-adv` ($100/mo in_advance), day-1 invoice paid. On day 15 of a 30-day cycle, swap to `pro-yearly-adv` ($1200/yr). Refund credit `$100 × 15/30 = $50`; period jumps to (today, today + 1 year); new $1200 invoice.
 - [ ] **In_arrears yearly → monthly (same cadence, cross interval):** sub on `pro-yearly-arr` ($1200/yr in_arrears). On day 90 swap to `pro-monthly-arr` ($100/mo in_arrears, immediate=true). No immediate invoice or credit. `current_period_end` truncated to today; `next_billing_at = today`. On next scheduler tick / test-clock Advance, closing invoice fires under OLD yearly plan at `$1200 × 90/365 ≈ $295.89`, then a new period (today, today + 1 month) opens under the new monthly plan.
 - [ ] **In_arrears monthly → yearly (same cadence, cross interval):** symmetric. Closing invoice on next tick at OLD monthly rate × days-elapsed proration; new yearly period opens.
-- [ ] **Cross-cadence REJECTED (both directions, both immediate and scheduled):** swap from any in_advance plan to any in_arrears plan (or vice versa) → 400 (`bill_timing change is not supported on plan-swap (current X, new Y); cancel the subscription and start a new one with the target plan`). 2026-05-22 industry verification: no peer documents bill_timing change as an in-place plan-swap. Lago — the closest model to Velox (per-plan `pay_in_advance`) — documents same-cadence transitions only.
+- [ ] **Cross-cadence REJECTED (both directions, both immediate and scheduled):** swap from any in_advance plan to any in_arrears plan (or vice versa) → 422 (`bill_timing change is not supported on plan-swap (current X, new Y); cancel the subscription and start a new one with the target plan`). 2026-05-22 industry verification: no peer documents bill_timing change as an in-place plan-swap. Lago — the closest model to Velox (per-plan `pay_in_advance`) — documents same-cadence transitions only.
 - [ ] **Paid-check gate (NEW in_advance OR cross-cadence with OLD in_advance):** swap on an in_advance sub whose source invoice is `payment_status='pending'`. No credit grant; server log `plan-swap refund: source in_advance invoice not paid; skipping credit grant`. The plan swap + period jump/truncate still happen; operator can manually issue a credit grant from the dashboard.
 - [ ] **Same-interval same-cadence swap (no regression):** swap monthly $29 → monthly $49 immediately (both in_arrears). Existing segment-aware behavior — no credit grant, no period jump, no immediate invoice. Cycle close emits per-segment lines (FLOW B20).
 
@@ -825,19 +824,18 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 
 - [ ] `POST /v1/recipes/anthropic_style/instantiate {livemode:false}` → 201 with all created IDs. DB now has products + prices + meters + dunning policy + webhook endpoint.
 - [ ] Pricing rules carry `dimension_match` JSONB.
-- [ ] Audit log: one entry per resource, `actor=recipe:<key>`.
-- [ ] Repeat for all 5 recipes — each completes <500ms.
+- [ ] Repeat for all 3 recipes — each completes <500ms. (Instantiate writes no audit-log entry; created resources carry `created_by=<key_id>`.)
 
 ## FLOW R3: Per-tenant idempotency
 
 - [ ] Instantiate same recipe twice → second call 409 `recipe already instantiated`.
 - [ ] Different tenant, same recipe → 201.
-- [ ] `DELETE /v1/recipes/{key}/instance` cleans up product+prices+meters+webhook+dunning atomically.
+- [ ] `DELETE /v1/recipes/instances/{id}` removes the instance row only — products/prices/meters/webhook/dunning PERSIST (no cascade; see R5).
 
 ## FLOW R4: Atomic rollback
 
 - [ ] Inject mid-instantiate failure (e.g. invalid webhook URL) → 422; zero rows created.
-- [ ] No `tenant_recipe_instances` row.
+- [ ] No `recipe_instances` row.
 
 ## FLOW R5: Dashboard UI
 
@@ -946,7 +944,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW I9: Credit note on void
 
-- [ ] Void invoice → issue CN → error "cannot issue credit note on voided invoice". CN not created.
+- [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.
 
 ## FLOW I11: `create_preview`
 
@@ -1006,13 +1004,8 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW D2: Resolution
 
-- [ ] "Payment recovered" → invoice marked paid.
-- [ ] "Manually resolved" → run resolved without touching invoice.
-
-## FLOW D3: Per-customer override
-
-- [ ] Customer detail → Dunning Override → max_retries=5, grace=7d → applies on next failure.
-- [ ] Reset to Default → override removed.
+- [ ] "Payment recovered" → invoice marked **paid** (`paid_at` stamped; clock-pinned invoices land in sim-time), run closed.
+- [ ] "Manually resolved" → invoice is **voided** (`status='voided'`), any applied credits **reversed** back to the customer's balance, and the Stripe PaymentIntent **canceled**. It is NOT a no-op. (Note: the dialog describes this as "offline payment, negotiation, etc." but the effect is a full void — if collecting offline you likely want "Payment recovered" instead. Behavior mismatch worth revisiting.)
 
 ## FLOW D4: Self-service payment update
 
@@ -1096,8 +1089,8 @@ Rebuild trigger: first DP names a load-bearing promo-code use case.
 - [ ] Settings: company name change → "Saved" indicator. Navigating with unsaved changes prompts.
 - [ ] Currency change → new invoices use it; existing unchanged.
 - [ ] Edit billing profile (address, tax ID) → PDF reflects update.
-- [ ] Edit billing profile when customer has `stripe_customer_id` set → Stripe Dashboard → Customer shows the updated legal_name / phone / address / tax_exempt immediately (Phase 1 Velox→Stripe sync, best-effort, fires on every customer/profile update).
-- [ ] Create a brand-new customer with email + display_name + billing profile → first PM action (Add card from portal) lazily creates the Stripe Customer pre-populated with email, name, address, and tax_exempt status — Stripe Dashboard shows a fully-populated row, NOT a blank one with only `velox_*` metadata.
+- [ ] Edit billing profile when customer has `stripe_customer_id` set → Stripe Dashboard → Customer shows the updated legal_name / phone / address / tax_exempt immediately (Phase 1 Velox→Stripe sync, best-effort, fires on every customer/profile update). <!-- currency-ok: Stripe Customer object's own tax_exempt field -->
+- [ ] Create a brand-new customer with email + display_name + billing profile → first PM action (Add card from portal) lazily creates the Stripe Customer pre-populated with email, name, address, and tax_exempt status — Stripe Dashboard shows a fully-populated row, NOT a blank one with only `velox_*` metadata. <!-- currency-ok: Stripe's own tax_exempt field -->
 - [ ] Set billing profile tax_id (e.g. `eu_vat` + `DE123456789`) → Stripe Dashboard → Customer → Tax IDs tab shows the entry (Phase 2 reconcile). Change tax_id value → old entry gone, new entry present. Clear tax_id → Tax IDs tab empty. Brand-new customer with tax_id pre-filled in profile → first PM action creates the Stripe Customer with the tax_id already in the Tax IDs tab (no follow-up update call needed).
 - [ ] Draft invoice held >24h, then click Finalize → operator sees `tax calculation expired (age 24h0m, max 23h0m) — retry tax to refresh, then finalize` (Phase 2 expiry guard). Click Retry tax → tax recomputes → Finalize succeeds, Stripe Tax dashboard shows a `tx_*` transaction. Without the guard, finalize previously left the invoice with `tax_calculation_id` populated but no `tax_transaction_id`.
 - [ ] **Tax-retry flush on profile update.** Customer with a draft invoice stuck on `tax_error_code = customer_data_invalid` (e.g. US customer missing `postal_code`). Edit billing profile → fill the missing field → Save. Without per-invoice clicking: invoice's `tax_status` flips to `succeeded` (or back to `failed` with a different code if still wrong), and `slog | grep "billing profile flush retried tax errors"` shows `processed >= 1`. Other stuck-tax codes (e.g. `provider_outage`) are NOT replayed by the flush — only `customer_data_invalid`.
@@ -1229,10 +1222,10 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Stop Postgres → `/health/ready` → 503 `degraded` with `database: error:…`. `/health` still 200.
 - [ ] Kill scheduler goroutine or wait past 2× interval → readiness shows scheduler degraded.
 
-## FLOW P6: Tax fallback metrics
+## FLOW P6: Tax deferral metrics
 
-- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" /metrics | grep velox_tax_fallback_total` → counter registered.
-- [ ] Reasons increment correctly: `no_country` (customer missing country), `no_client_for_mode` (one-mode tenant), `api_error` (invalid Stripe key).
+- [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" /metrics | grep velox_tax_outcome_total` → counter registered (the legacy `velox_tax_fallback_total` was renamed when the zero-tax fallback was cut — ADR-041; outcome is now `deferred`). <!-- currency-ok: documents the metric rename -->
+- [ ] Reasons increment correctly: `velox_tax_outcome_total{outcome="deferred",reason=...}` for `no_country` (customer missing country), `no_client_for_mode` (one-mode tenant), `api_error` (invalid Stripe key).
 - [ ] Happy path → counter unchanged.
 
 ---
@@ -1279,7 +1272,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 
 ## FLOW U10: Public pages
 
-- [ ] `/invoice/:token` (FLOW I10), `/update-payment` (FLOW D4), `/checkout/success`, `/login` all load without auth.
+- [ ] `/invoice/:token` (FLOW I10), `/update-payment` (FLOW D4), `/payment-method-added`, `/login` all load without auth. (The old `/checkout/success`/`/checkout/setup`/`/checkout/status` routes were removed in the unified-PM-paths cleanup.)
 
 ---
 
@@ -1324,8 +1317,8 @@ Major releases, infra changes, post-mortems.
 ## FLOW X7: Stripe Tax
 
 - [ ] `PUT /v1/feature-flags/billing.stripe_tax {enabled:true}`. Customer with full address → invoice tax calculated by Stripe; `tax_name` shows jurisdiction; per-line tax populated.
-- [ ] Invalid Stripe key → invoice generates with $0 tax (graceful fallback); counter `velox_tax_fallback_total{reason="api_error"}` +1.
-- [ ] `tax_exempt=true` → $0 tax regardless.
+- [ ] Invalid Stripe key → invoice is **deferred** to `tax_status=pending` (NOT charged $0 — the zero-tax fallback was removed in ADR-041); the TaxRetrier reconciles it later. Counter `velox_tax_outcome_total{outcome="deferred",reason="api_error"}` +1.
+- [ ] Customer `tax_status=exempt` → $0 tax regardless.
 - [ ] India-registered Stripe account → blocked at account level → use FLOW B10.
 - [ ] **Re-connect flushes stuck tax (ADR-019)**: with Stripe disconnected, advance a test clock to generate an invoice → invoice goes `tax_status=pending` with `tax_error_code=provider_not_configured`. Reconnect Stripe in Settings → Payments. Toast reads `Connected test mode as <Account>` with description `Retrying 1 invoice that was stuck on tax in the background.` Reload `/invoices` after a moment — invoice flipped to `Open` (engine-generated → auto-finalized via ADR-017 chain). No per-invoice manual Retry-tax click required.
 
@@ -1356,7 +1349,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 ## FLOW X11: Large batch usage ingestion
 
-- [ ] POST /v1/usage-events/batch with 1000 events → `{accepted:1000, rejected:0}`.
+- [ ] POST /v1/usage-events/batch with 1000 events → `{ingested:1000, errors:[], total:1000}`.
 - [ ] Include duplicate idempotency keys → duplicates rejected.
 - [ ] Run billing → aggregated correctly.
 
@@ -1364,7 +1357,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 - [ ] `docker compose up -d postgres redis mailpit` → 3 sidecars healthy.
 - [ ] `make bootstrap` + `make dev` + `cd web-v2 && npm run dev`. `/health` and `/health/ready` 200.
-- [ ] `RUN_MIGRATIONS_ON_BOOT=true` (default) applies all migrations idempotently.
+- [ ] `RUN_MIGRATIONS_ON_BOOT=true` applies all migrations idempotently (default is `false` — set it explicitly for local dev).
 - [ ] Mail catches at `localhost:8025`.
 
 ## FLOW X15: LiteLLM integration (ADR-033)
@@ -1372,7 +1365,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingPayload`, resolves customer + meters, and dedupes replays.
 
 - [ ] Create a customer with `external_id="cus_litellm_test"`.
-- [ ] Instantiate the `anthropic_style` recipe (creates `tokens_input` + `tokens_output` meters).
+- [ ] Instantiate the `anthropic_style` recipe (creates one `tokens` meter + per-`{model, token_type}` rules — ADR-044).
 - [ ] Single payload happy path:
   ```bash
   curl -X POST "$API/v1/integrations/litellm/spend" \
@@ -1385,7 +1378,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
       "response_cost":0.018,"endTime":1730000000
     }'
   ```
-  → `{"accepted":2,"skipped":0,"errors":[]}`. `GET /v1/usage-events?external_customer_id=cus_litellm_test` shows TWO events (tokens_input qty 1200 + tokens_output qty 350), both with `dimensions.model="claude-3-5-sonnet-20241022"` + `dimensions.provider="anthropic"`.
+  → `{"accepted":2,"skipped":0,"errors":[]}`. `GET /v1/usage-events?customer_id=<internal cus_ id>` shows TWO events on meter `tokens` — `token_type=input` qty 1200 + `token_type=output` qty 350 — both with `dimensions.model="claude-3-5-sonnet-20241022"` + `dimensions.provider="anthropic"`. (List filter is the internal `customer_id`, not `external_customer_id`.)
 - [ ] Idempotent replay: same POST again → `accepted=0` (events already exist; the `(tenant, customer, meter, idempotency_key)` UNIQUE caught the replay). No duplicates in the event list.
 - [ ] Missing `user`: payload with `"user":""` → response has `errors[]` populated, batch otherwise OK. **NOT 5xx.**
 - [ ] Unknown customer: `"user":"cus_nonexistent"` → same partial-failure shape: `errors[].error` says `customer "cus_nonexistent" not found (set user=...)`.
@@ -1393,7 +1386,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 - [ ] Zero-token completion (error / empty response): `"usage":{"prompt_tokens":0,"completion_tokens":0}` → `accepted=0, skipped=1`.
 - [ ] Batch shape: POST `{"events":[<payload1>,<payload2>,...]}` → each payload mapped independently. Per-row failures don't fail the batch.
 - [ ] Bare array shape: POST `[<payload1>,<payload2>]` → same handling as `events:[...]`.
-- [ ] Embedding call: `"call_type":"embedding","usage":{"prompt_tokens":500,"completion_tokens":0}` → ONE event (`tokens_input` only), `accepted=1`.
+- [ ] Embedding call: `"call_type":"embedding","usage":{"prompt_tokens":500,"completion_tokens":0}` → ONE event (meter `tokens`, `token_type=input`), `accepted=1`.
 - [ ] Dimension promotion: `"metadata":{"team_id":"team_eng","request_tags":["prod"],"x_other":"ignored"}` → emitted events have `dimensions.team_id="team_eng"` and `dimensions.request_tags=["prod"]`; `x_other` stays in the event's `metadata.litellm_metadata.x_other` (NOT promoted to dimensions for pricing dispatch).
 - [ ] Cost surfacing: `cost_breakdown:{input_cost:0.012,output_cost:0.045,total_cost:0.057}` → input event's `metadata.velox.litellm_cost_usd=0.012`, output event's = 0.045. Velox billing math is unaffected — pricing rules drive the invoice amount; LiteLLM's cost is audit-only.
 - [ ] Auth: POST without `Authorization` header → 401. Publishable key (no `usage:write`) → 403.
@@ -1423,8 +1416,8 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 - `billing.auto_charge` off → invoice generated but not charged.
 
 ## Stripe Tax errors
-- Unsupported home country → FLOW B10 manual fallback.
-- Missing customer address → counter `velox_tax_fallback_total{reason="no_country"}` +1.
+- These defer the invoice to `tax_status=pending` (the TaxRetrier reconciles) and bump `velox_tax_outcome_total{outcome="deferred",reason=...}` — they do NOT charge $0 (zero-tax fallback removed, ADR-041).
+- Missing customer address → `{reason="no_country"}`.
 - Tenant in disconnected mode → `{reason="no_client_for_mode"}`.
 - Invalid key → `{reason="api_error"}`.
 
