@@ -478,8 +478,32 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		return domain.Invoice{}, fmt.Errorf("load invoice for mark-paid: %w", err)
 	}
 	switch domain.InvoiceStatus(status) {
-	case domain.InvoiceFinalized, domain.InvoiceUncollectible, domain.InvoicePaid:
-		// ok
+	case domain.InvoiceFinalized, domain.InvoiceUncollectible:
+		// ok — transition to paid below.
+	case domain.InvoicePaid:
+		// Already paid: re-marking is a legitimate idempotent event. The
+		// payment_intent.succeeded webhook and the ambiguous-charge reconciler
+		// can resolve the SAME charge under different Stripe event ids (the
+		// reconciler never goes through event-id dedup), so MarkPaid fires
+		// more than once on the unknown-charge recovery path. Return the
+		// existing row UNCHANGED rather than re-running the money UPDATE.
+		//
+		// The money UPDATE is NOT idempotent: `amount_paid_cents =
+		// amount_due_cents` reads the row's CURRENT amount_due_cents, which the
+		// first MarkPaid already zeroed — so a second call set
+		// amount_paid_cents = 0, corrupting the recorded paid amount and
+		// blocking card refunds (refunds size against amount_paid_cents).
+		// (audit: velox-ops MarkPaid finding)
+		var inv domain.Invoice
+		if err := tx.QueryRowContext(ctx,
+			`SELECT `+invCols+` FROM invoices WHERE id = $1`, id,
+		).Scan(scanInvDest(&inv)...); err != nil {
+			return domain.Invoice{}, fmt.Errorf("reload already-paid invoice: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Invoice{}, err
+		}
+		return inv, nil
 	default:
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
 			"cannot mark invoice paid from status %q — finalize the invoice first (tax-pending invoices stay draft until tax resolves; voided invoices are terminal)",
