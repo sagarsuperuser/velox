@@ -6,7 +6,9 @@
 >
 > The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to the package-level docs in `internal/recipe/` for the current behaviour.
 >
-> **2026-05-14 amendment:** the original "five built-ins" plan was trimmed to three AI-native built-ins (`anthropic_style`, `openai_style`, `replicate_style`). `b2b_saas_pro` and `marketplace_gmv` were dropped — generic SaaS / marketplace shapes diluted the AI-native wedge pitch when prospects browsed the Recipes page. The technical mechanism (one-call instantiate, preview, atomic rollback, per-tenant idempotency) is unchanged.
+> **2026-05-14 amendment:** the original "five built-ins" plan was trimmed to three AI-native built-ins (`anthropic_style`, `openai_style`, `replicate_style`). `b2b_saas_pro` and `marketplace_gmv` were dropped — generic SaaS / marketplace shapes diluted the AI-native wedge pitch when prospects browsed the Recipes page. The technical mechanism (one-call instantiate, preview, atomic rollback, per-tenant idempotency) is unchanged. So every "five built-ins" / `b2b_saas_pro` / `marketplace_gmv` reference in the RFC body below is dated — only the three AI-native recipes ship.
+>
+> **2026-06-01 amendment (ADR-044/045):** the token dimension shown throughout the body as `operation` + boolean `cached` was replaced by a single `token_type` enum (`input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`) — a boolean can't express the three distinct Anthropic cache prices. So the live `anthropic_style`/`openai_style` recipes carry ~20/14 pricing rules over `{model, token_type}` at equal priority (not the "9 rules, operation × cached" the body describes), and per-unit rates are decimals (ADR-045). See ADR-044/045 for the canonical shape; the body examples below use the dated `operation`/`cached` form.
 
 ## Motivation
 

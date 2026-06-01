@@ -2,13 +2,13 @@
 
 Drop a `generic_api` callback in your LiteLLM proxy config and every LLM call lands in Velox as a usage event. No glue code.
 
-Design: [ADR-033](../adr/033-litellm-spend-adapter.md).
+Design: [ADR-033](../adr/033-litellm-spend-adapter.md), superseded for the metering shape by [ADR-044](../adr/044-canonical-ai-token-metering-model.md) (one `tokens` meter + `token_type` dimension).
 
-## 1. Create the token meters in Velox
+## 1. Create the `tokens` meter in Velox
 
-The adapter writes to two meters: `tokens_input` and `tokens_output`. Both must exist before LiteLLM starts POSTing.
+The adapter writes to a single meter, `tokens`, carrying the token role on a `token_type` dimension (ADR-044). It must exist before LiteLLM starts POSTing.
 
-Recommended: instantiate one of the AI-native recipes — both create the meters with sane aggregation + pricing-rule defaults.
+Recommended: instantiate one of the AI-native recipes — each creates the `tokens` meter plus the per-`{model, token_type}` pricing rules.
 
 ```bash
 curl -X POST "$VELOX/v1/recipes/anthropic_style/instantiate" \
@@ -17,18 +17,13 @@ curl -X POST "$VELOX/v1/recipes/anthropic_style/instantiate" \
   -d '{"livemode": false}'
 ```
 
-Or create them by hand:
+Or create it by hand (you still need pricing rules per `{model, token_type}` to bill it):
 
 ```bash
 curl -X POST "$VELOX/v1/meters" \
   -H "Authorization: Bearer $VELOX_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"key":"tokens_input","name":"Tokens — input","unit":"tokens","aggregation":"sum"}'
-
-curl -X POST "$VELOX/v1/meters" \
-  -H "Authorization: Bearer $VELOX_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"key":"tokens_output","name":"Tokens — output","unit":"tokens","aggregation":"sum"}'
+  -d '{"key":"tokens","name":"Tokens","unit":"tokens","aggregation":"sum"}'
 ```
 
 ## 2. Configure the LiteLLM proxy
@@ -68,14 +63,17 @@ Without `user=`, the adapter rejects the event with `payload.user is required`. 
 
 ## 4. What lands in Velox
 
-For each completion call, the adapter emits up to two usage events:
+For each completion call, the adapter emits **up to three** usage events — all on the single `tokens` meter, distinguished by the `token_type` dimension (ADR-044). Roles are additive-disjoint: `prompt_tokens` already includes cached reads, so the mapper splits them.
 
-| Event             | Quantity                  | Dimensions                                   | Idempotency key            |
-|-------------------|---------------------------|----------------------------------------------|----------------------------|
-| `tokens_input`    | `usage.prompt_tokens`     | `{model, provider, team_id?, request_tags?}` | `<litellm_id>:input`       |
-| `tokens_output`   | `usage.completion_tokens` | same                                         | `<litellm_id>:output`      |
+| `token_type` | Quantity                                         | Idempotency key             |
+|--------------|--------------------------------------------------|-----------------------------|
+| `input`      | `prompt_tokens − cached_tokens` (uncached input) | `<litellm_id>:input`        |
+| `cache_read` | `prompt_tokens_details.cached_tokens` (if any)   | `<litellm_id>:cache_read`   |
+| `output`     | `usage.completion_tokens`                        | `<litellm_id>:output`       |
 
-Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
+Every event also carries dimensions `{model, model_raw, provider, team_id?, tags?}`. `model` is the **canonical recipe family** (the mapper normalizes LiteLLM's raw string — e.g. `claude-3-5-sonnet-20241022` → `claude-3.5-sonnet`); `model_raw` preserves the verbatim string for audit. Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
+
+Cache-**write** tokens (`cache_creation`) are seen but **not yet billed** — LiteLLM doesn't expose the 5m-vs-1h cache-write TTL split (BerriAI/litellm#15056), so the mapper logs them loudly and defers (ADR-044 follow-up).
 
 ## 5. Verify
 
@@ -85,7 +83,7 @@ curl "$VELOX/v1/usage-events?external_customer_id=cus_acme_corp&limit=5" \
   -H "Authorization: Bearer $VELOX_KEY"
 ```
 
-You should see one `tokens_input` and one `tokens_output` event per LiteLLM call, with `model` / `provider` dimensions set.
+You should see one or more `tokens` events per LiteLLM call (up to three when prompt caching is used: `input`, `cache_read`, `output`), each with a `token_type` dimension plus `model` / `model_raw` / `provider`.
 
 ## Reference: response shape
 
@@ -109,5 +107,5 @@ You should see one `tokens_input` and one `tokens_output` event per LiteLLM call
 ## Caveats
 
 - **Cost figures**: LiteLLM's `response_cost` is stored on each event's `metadata.velox.litellm_response_cost_usd` but does NOT drive Velox billing. The billable amount is computed by Velox's pricing rules. Operators can reconcile by querying both — they won't always match (Velox uses your configured rates, LiteLLM uses its built-in cost table).
-- **Meters must exist**: missing meter → per-row 422. Same path as missing `user`.
+- **`tokens` meter must exist**: missing meter → per-row 422. Same path as missing `user`.
 - **Single tenant per API key**: each Velox API key pins to one tenant. Multi-tenant LiteLLM proxies route via separate API keys per tenant (not a metadata field on the call).

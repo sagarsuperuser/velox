@@ -179,17 +179,23 @@ auto-confirm and the invoice flips to `status=paid` within ~5 seconds.
 
 ## Step 5 — Webhook delivery from Stripe → Velox
 
-Velox's webhook ingestion (signed via `STRIPE_WEBHOOK_SECRET` per
-`internal/payment/handler.go`) verifies signatures and stores the raw event
-in `webhook_event` keyed on `(tenant_id, stripe_event_id)` for idempotency.
+Velox's webhook ingestion verifies signatures with a **per-tenant** secret —
+there is no operator-level `STRIPE_WEBHOOK_SECRET` env var. The signing secret
+lives (encrypted) in `stripe_provider_credentials.webhook_secret` and is
+resolved per request via the `endpoint_id` embedded in the URL path
+`/v1/webhooks/stripe/{endpoint_id}` (`LookupEndpoint` in
+`internal/payment/handler.go`). Verified events are stored in `webhook_event`
+keyed on `(tenant_id, stripe_event_id)` for idempotency.
 
 For local testing without exposing port 8080 to the public internet:
 
 ```bash
 brew install stripe/stripe-cli/stripe   # one-time
 stripe listen --api-key $STRIPE_SK \
-  --forward-to http://localhost:8080/v1/webhooks/stripe
+  --forward-to http://localhost:8080/v1/webhooks/stripe/<endpoint_id>
 ```
+
+`<endpoint_id>` is your tenant's `stripe_provider_credentials.id` (`vlx_spc_…`) — the per-tenant webhook endpoint; there is no platform-level webhook URL.
 
 The CLI will print a temporary webhook secret. Paste it into the Velox dashboard
 under **Settings → Stripe → Webhook secret** (or via

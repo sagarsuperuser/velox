@@ -12,14 +12,14 @@ Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensio
 
 Built for two market truths Stripe Billing structurally cannot serve:
 
-1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × operation × cached × tier × context-window`. Stripe's Meter API forces one Meter per dimension combination — six Meters and ugly subscription wiring just to model GPT-4 input/output/cached/uncached. Velox treats dimensions as first-class on the meter.
+1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × token_type × tier × context-window`, where `token_type` is a disjoint role (`input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`). Stripe's Meter API forces one Meter per dimension combination — many Meters and ugly subscription wiring just to model a single model's token roles. Velox treats dimensions as first-class on the meter.
 2. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
 
 ---
 
 ## The wedge in code
 
-Bill Anthropic-style multi-dimensional pricing (model × operation × cached) with **one meter** and a few pricing rules — not 24 Stripe Meters and a Subscription Item per combination.
+Bill Anthropic-style multi-dimensional pricing (model × token_type) with **one meter** and a few pricing rules — not 24 Stripe Meters and a Subscription Item per combination.
 
 ```bash
 # 1. Create one meter for "tokens"
@@ -35,20 +35,20 @@ curl -X POST https://api.velox.dev/v1/usage-events \
     "event_name": "tokens",
     "external_customer_id": "cust_acme",
     "quantity": "12450",
-    "dimensions": {"model": "gpt-4", "operation": "input", "cached": false}
+    "dimensions": {"model": "gpt-4", "token_type": "input"}
   }'
 
 # 3. Define one pricing rule per (dimension subset, rate)
-curl -X POST https://api.velox.dev/v1/meters/mtr_tokens/pricing-rules \
+curl -X POST https://api.velox.dev/v1/meters/vlx_mtr_tokens/pricing-rules \
   -d '{
-    "dimension_match": {"model": "gpt-4", "operation": "input", "cached": false},
-    "rating_rule_version_id": "rrv_gpt4_input_uncached",
+    "dimension_match": {"model": "gpt-4", "token_type": "input"},
+    "rating_rule_version_id": "rrv_gpt4_input",
     "aggregation_mode": "sum",
     "priority": 100
   }'
 ```
 
-A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4", "cached": true}` at higher priority) compose cleanly — each event is claimed by the highest-priority matching rule, no double-count. The full design — schema, aggregation semantics, decimal quantities, all five aggregation modes (`sum`, `count`, `last_during_period`, `last_ever`, `max`) — lives in [`docs/design-multi-dim-meters.md`](docs/design-multi-dim-meters.md).
+Token roles are disjoint, so each `{model, token_type}` is exactly one rule at equal priority — no double-count. A coarse catch-all (`{"model": "gpt-4"}`) and finer per-role rules (`{"model": "gpt-4", "token_type": "cache_read"}`) still compose cleanly via the priority+claim resolver. The full design — schema, aggregation semantics, decimal quantities, all five aggregation modes (`sum`, `count`, `last_during_period`, `last_ever`, `max`) — lives in [`docs/design-multi-dim-meters.md`](docs/design-multi-dim-meters.md).
 
 ---
 
@@ -58,8 +58,8 @@ A coarser rule (`{"model": "gpt-4"}`) plus a finer override (`{"model": "gpt-4",
 - **Multi-dimensional meters** — one meter, N rules, dimensions on every event
 - **Decimal quantities** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens
 - **Per-rule aggregation modes** — `sum`, `count`, `last_during_period`, `last_ever`, `max`
-- **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`)
-- **Embeddable cost dashboard** — drop `<VeloxCostDashboard customerId={…} />` into your app and end users see "$4.31 of GPT-4 today" with a projected bill
+- **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`)
+- **Embeddable cost dashboard** — drop `<CostDashboard customerId={…} />` into your app and end users see "$4.31 of GPT-4 today" with a projected bill
 
 ### Self-host first
 - **Docker Compose** — single-VM install, ~5 min from clone to invoice
@@ -139,7 +139,7 @@ cmd/velox/                  — single Go binary
 internal/
   domain/                   — pure domain models, zero deps
   api/respond/              — Stripe-style JSON responses
-  auth/                     — API key auth (3 key types, 16 permissions)
+  auth/                     — API key auth (3 key types, 17 permissions)
   tenant/                   — tenants + settings
   customer/                 — customer CRUD + billing profiles
   pricing/                  — meters, rating rules, plans, price overrides
@@ -180,8 +180,8 @@ GET    /v1/customers/{id}/usage         — period aggregation, grouped by dimen
 
 POST   /v1/customers                    — create customer
 POST   /v1/subscriptions                — create subscription
-POST   /v1/subscriptions/{id}/change-plan        — plan change w/ proration
-POST   /v1/subscriptions/{id}/pause-collection   — keep cycle, invoice as draft
+PATCH  /v1/subscriptions/{id}/items/{itemID}     — plan/quantity change (proration on immediate)
+PUT    /v1/subscriptions/{id}/pause-collection   — keep cycle, invoice as draft
 POST   /v1/subscriptions/{id}/extend-trial       — push trial_end_at later
 
 POST   /v1/billing/run                  — finalize all due cycles
@@ -218,9 +218,9 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 - **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
 - **Decimal per-unit rates** — sub-cent-per-unit pricing (e.g. $3.00 / 1M tokens) bills linearly and exactly via decimal unit prices (Stripe `unit_amount_decimal` model); invoice totals stay whole cents
-- **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`; recipe-picker UI; one-click uninstall
+- **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`; recipe-picker UI; one-click uninstall
 - **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
-- **Embeddable cost dashboard** — `<VeloxCostDashboard customerId={…} />` plus token-authenticated public URL
+- **Embeddable cost dashboard** — `<CostDashboard customerId={…} />` plus token-authenticated public URL
 - **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), credit notes, dunning, hosted invoice page, transactional outbox
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.

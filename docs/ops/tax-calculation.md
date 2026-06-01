@@ -19,8 +19,9 @@ billing offline.
 
 ### `manual`
 
-Flat basis-point rate applied uniformly across every line item.
-Configured per tenant via `tenant_settings.tax_rate_bp` and
+Flat percent rate applied uniformly across every line item.
+Configured per tenant via `tenant_settings.tax_rate` (a percent —
+`7.25` = 7.25%) and
 `tenant_settings.tax_name` (the label that renders on the invoice —
 "VAT", "Sales Tax", "GST", …). Honours tax-inclusive vs exclusive via
 `Request.TaxInclusive`, exempt customers (`StatusExempt`), and
@@ -30,7 +31,7 @@ are no-ops (no upstream state to record).
 Pick this when:
 
 - Single jurisdiction, single legal rate.
-- Tenant exempt (set `tax_rate_bp=0`).
+- Tenant exempt (set `tax_rate=0`).
 - Tenant does not have Stripe Tax registered or wired up.
 
 Manual is also the internal fallback used by `stripe_tax` when the
@@ -175,7 +176,7 @@ audit table — the invoice is the durable record:
 | `invoices.tax_transaction_id`       | Stripe Tax `tx_xxx`, set at `Commit` (`stripe_tax` only) |
 | `invoices.tax_reverse_charge`       | reverse-charge flag                                     |
 | `invoices.tax_exempt_reason`        | exempt-customer reason                                  |
-| `invoice_line_items.tax_rate_bp`    | rate applied to this line                               |
+| `invoice_line_items.tax_rate`       | rate applied to this line (percent, e.g. `7.25` = 7.25%) |
 | `invoice_line_items.tax_name`       | label rendered on the invoice                           |
 
 The line-level fields are what the customer sees on the PDF. The
