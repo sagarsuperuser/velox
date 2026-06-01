@@ -662,7 +662,15 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
 			// belt-and-suspenders against future paths.
 			reason = errs.SanitizeForOperator(runErr, job.ClockID)
 		}
-		if _, ferr := s.store.MarkFailed(ctx, job.TenantID, job.ClockID, reason); ferr != nil {
+		// The common cause of runErr is the catchup ctx hitting CatchupTimeout.
+		// Reusing that already-expired ctx for MarkFailed would fail too,
+		// leaving the clock stuck in 'advancing' forever. Detach from the
+		// catchup deadline (retaining ctx values — the livemode pin) and give
+		// the failure-flip its own short timeout so the clock always lands in
+		// internal_failure where the operator can retry or delete it.
+		failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if _, ferr := s.store.MarkFailed(failCtx, job.TenantID, job.ClockID, reason); ferr != nil {
 			slog.Error("test clock: failed to mark clock as failed after catchup error",
 				"clock_id", job.ClockID, "catchup_err", runErr, "mark_err", ferr)
 		}
