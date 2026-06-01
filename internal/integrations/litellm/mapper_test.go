@@ -52,8 +52,13 @@ func TestMapPayload_HappyPath(t *testing.T) {
 	if in.IdempotencyKey != "litellm_call_abc123:input" {
 		t.Errorf("input idempotency: got %q", in.IdempotencyKey)
 	}
-	if in.Dimensions["model"] != "claude-3-5-sonnet-20241022" {
-		t.Errorf("input dim model: got %v", in.Dimensions["model"])
+	// ADR-044 model normalization: dated API string → canonical recipe family
+	// on `model`; raw string preserved on `model_raw`.
+	if in.Dimensions["model"] != "claude-3.5-sonnet" {
+		t.Errorf("input dim model: got %v, want canonical family claude-3.5-sonnet", in.Dimensions["model"])
+	}
+	if in.Dimensions["model_raw"] != "claude-3-5-sonnet-20241022" {
+		t.Errorf("input dim model_raw: got %v, want verbatim claude-3-5-sonnet-20241022", in.Dimensions["model_raw"])
 	}
 	if in.Dimensions["provider"] != "anthropic" {
 		t.Errorf("input dim provider: got %v", in.Dimensions["provider"])
@@ -81,6 +86,105 @@ func TestMapPayload_HappyPath(t *testing.T) {
 	}
 	if outE.IdempotencyKey != "litellm_call_abc123:output" {
 		t.Errorf("output idempotency: got %q", outE.IdempotencyKey)
+	}
+}
+
+// TestCanonicalModel pins the model-normalization table (ADR-044): real
+// LiteLLM model strings (dated snapshots, provider-prefixed, aliases) resolve
+// to the recipe family token; unknown models resolve to "" (caller keeps raw).
+func TestCanonicalModel(t *testing.T) {
+	cases := map[string]string{
+		"claude-3-5-sonnet-20241022":         "claude-3.5-sonnet",
+		"claude-3-5-sonnet-20240620":         "claude-3.5-sonnet",
+		"claude-3-opus-20240229":             "claude-3-opus",
+		"claude-3-haiku-20240307":            "claude-3-haiku",
+		"gpt-4o-2024-08-06":                  "gpt-4o",
+		"gpt-4o-mini-2024-07-18":             "gpt-4o-mini", // longest-prefix: not gpt-4o
+		"gpt-4o-mini":                        "gpt-4o-mini",
+		"gpt-4o":                             "gpt-4o",
+		"gpt-4-turbo-2024-04-09":             "gpt-4-turbo",
+		"gpt-3.5-turbo-0125":                 "gpt-3.5-turbo",
+		"azure/gpt-4o-eu":                    "gpt-4o", // provider prefix stripped
+		"bedrock/claude-3-5-sonnet-20241022": "claude-3.5-sonnet",
+		"anthropic.claude-3-haiku-20240307":  "claude-3-haiku",
+		"text-embedding-3-small":             "text-embedding-3-small",
+		"GPT-4O-2024-08-06":                  "gpt-4o", // case-insensitive
+		"some-unknown-model-v9":              "",       // unrecognized → "" (raw kept upstream)
+		"gpt-5-cosmic":                       "",
+	}
+	for raw, want := range cases {
+		if got := canonicalModel(raw); got != want {
+			t.Errorf("canonicalModel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// TestMapPayload_CacheRead covers the cache_read role (ADR-044): prompt_tokens
+// INCLUDES cached tokens, so the mapper splits them additive-disjoint —
+// input = prompt_tokens − cached, cache_read = cached.
+func TestMapPayload_CacheRead(t *testing.T) {
+	p := StandardLoggingPayload{
+		ID: "c1", CallType: "completion", User: "cus_x",
+		Model: "claude-3-5-sonnet-20241022", CustomLLMProvider: "anthropic",
+		Usage: &Usage{
+			PromptTokens:         7296, // includes the 7277 cached
+			CompletionTokens:     400,
+			PromptTokensDetails:  &PromptTokensDetails{CachedTokens: 7277},
+			CacheReadInputTokens: 7277,
+		},
+	}
+	out, err := MapPayload(p)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	got := map[string]int64{}
+	for _, e := range out {
+		got[e.Dimensions["token_type"].(string)] = e.Quantity.IntPart()
+		if e.Dimensions["model"] != "claude-3.5-sonnet" {
+			t.Errorf("event model: got %v, want claude-3.5-sonnet", e.Dimensions["model"])
+		}
+	}
+	// uncached input = 7296 − 7277 = 19; cache_read = 7277; output = 400.
+	if got[TokenTypeInput] != 19 {
+		t.Errorf("input qty: got %d, want 19 (uncached = prompt − cached)", got[TokenTypeInput])
+	}
+	if got[TokenTypeCacheRead] != 7277 {
+		t.Errorf("cache_read qty: got %d, want 7277", got[TokenTypeCacheRead])
+	}
+	if got[TokenTypeOutput] != 400 {
+		t.Errorf("output qty: got %d, want 400", got[TokenTypeOutput])
+	}
+	// Additive-disjoint: input + cache_read == prompt_tokens.
+	if got[TokenTypeInput]+got[TokenTypeCacheRead] != 7296 {
+		t.Errorf("input + cache_read = %d, want 7296 (= prompt_tokens)", got[TokenTypeInput]+got[TokenTypeCacheRead])
+	}
+}
+
+// TestMapPayload_CacheWriteDeferred: cache-write (cache_creation) tokens are
+// NOT yet emitted as events (LiteLLM exposes no 5m/1h TTL split). The fully-
+// cached-write call (cached_tokens=0, cache_creation>0) emits only output here.
+func TestMapPayload_CacheWriteDeferred(t *testing.T) {
+	p := StandardLoggingPayload{
+		ID: "w1", CallType: "completion", User: "cus_x",
+		Model: "claude-3-5-sonnet-20241022", CustomLLMProvider: "anthropic",
+		Usage: &Usage{
+			PromptTokens:             19, // prompt_tokens excludes cache_creation
+			CompletionTokens:         400,
+			CacheCreationInputTokens: 7277,
+		},
+	}
+	out, err := MapPayload(p)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	for _, e := range out {
+		if e.Dimensions["token_type"] == "cache_write" || e.Dimensions["token_type"] == "cache_write_5m" || e.Dimensions["token_type"] == "cache_write_1h" {
+			t.Errorf("cache-write should be deferred (not emitted), got event token_type=%v", e.Dimensions["token_type"])
+		}
+	}
+	// input (19) + output (400) only.
+	if len(out) != 2 {
+		t.Errorf("expected 2 events (input + output; cache-write deferred), got %d", len(out))
 	}
 }
 
