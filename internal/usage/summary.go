@@ -24,21 +24,25 @@ type UsageSummary struct {
 }
 
 // GetSummary aggregates usage for a customer in the current billing period.
+//
+// Uses the server-side Aggregate (SUM ... GROUP BY meter_id, COUNT(*)) rather
+// than List-and-reduce: List clamps to 1000 rows, so a customer with more than
+// 1000 events in the window had their summary silently truncated to the newest
+// page — under-reporting both per-meter totals and TotalEvents.
 func (s *Service) GetSummary(ctx context.Context, tenantID, customerID string, from, to time.Time) (UsageSummary, error) {
-	events, _, err := s.store.List(ctx, ListFilter{
+	agg, err := s.store.Aggregate(ctx, ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
 		From:       &from,
 		To:         &to,
-		Limit:      10000,
 	})
 	if err != nil {
 		return UsageSummary{}, err
 	}
 
-	meters := make(map[string]decimal.Decimal)
-	for _, e := range events {
-		meters[e.MeterID] = meters[e.MeterID].Add(e.Quantity)
+	meters := make(map[string]decimal.Decimal, len(agg.ByMeter))
+	for _, m := range agg.ByMeter {
+		meters[m.MeterID] = m.Total
 	}
 
 	return UsageSummary{
@@ -46,7 +50,7 @@ func (s *Service) GetSummary(ctx context.Context, tenantID, customerID string, f
 		PeriodFrom:  from,
 		PeriodTo:    to,
 		Meters:      meters,
-		TotalEvents: len(events),
+		TotalEvents: agg.TotalEvents,
 	}, nil
 }
 
