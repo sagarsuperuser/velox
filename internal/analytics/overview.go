@@ -17,6 +17,12 @@ import (
 type OverviewResponse struct {
 	Period string `json:"period"`
 
+	// Currency is the tenant's default currency. All money figures below are
+	// scoped to it — invoices in other currencies are excluded rather than
+	// summed into a meaningless mixed-currency total. The dashboard renders
+	// every amount labeled with this code.
+	Currency string `json:"currency"`
+
 	// Money (cents)
 	MRR             int64 `json:"mrr"`
 	MRRPrev         int64 `json:"mrr_prev"`
@@ -75,6 +81,20 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 
 	resp := OverviewResponse{Period: period.Key}
 
+	// Resolve the tenant's default currency once. Every invoice-money
+	// aggregate (revenue, outstanding AR, avg invoice value) is scoped to it
+	// so the dashboard never sums amounts across currencies into a corrupt
+	// total. Defaults to USD when settings are unset (fresh tenant).
+	defaultCurrency := "USD"
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(NULLIF(default_currency, ''), 'USD') FROM tenant_settings LIMIT 1`,
+	).Scan(&defaultCurrency); err != nil && err != sql.ErrNoRows {
+		slog.Error("analytics overview: default currency", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+	resp.Currency = defaultCurrency
+
 	// MRR now and at the start of the period (approximated from current
 	// subscription state — see mrrAtPointInTime).
 	var err1, err2 error
@@ -89,8 +109,8 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	resp.ARRPrev = resp.MRRPrev * 12
 
 	// Revenue: paid invoices inside the period vs. the prior period.
-	resp.Revenue, err1 = sumPaidRevenue(ctx, tx, period.Start, period.End)
-	resp.RevenuePrev, err2 = sumPaidRevenue(ctx, tx, period.PrevStart, period.PrevEnd)
+	resp.Revenue, err1 = sumPaidRevenue(ctx, tx, period.Start, period.End, defaultCurrency)
+	resp.RevenuePrev, err2 = sumPaidRevenue(ctx, tx, period.PrevStart, period.PrevEnd, defaultCurrency)
 	if err := firstErr(err1, err2); err != nil {
 		slog.Error("analytics overview: revenue", "error", err)
 		respond.InternalError(w, r)
@@ -114,9 +134,11 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		{"trialing_subs", &resp.TrialingSubs,
 			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND trial_end_at IS NOT NULL AND trial_end_at > now()`, nil},
 		{"outstanding_ar", &resp.OutstandingAR,
-			`SELECT COALESCE(SUM(amount_due_cents), 0) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded'`, nil},
+			`SELECT COALESCE(SUM(amount_due_cents), 0) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded' AND currency = $1`,
+			[]any{defaultCurrency}},
 		{"avg_invoice", &resp.AvgInvoiceValue,
-			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid'`, nil},
+			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid' AND currency = $1`,
+			[]any{defaultCurrency}},
 		{"paid_invoices", &resp.PaidInvoices,
 			`SELECT COUNT(*) FROM invoices WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2`,
 			[]any{period.Start, period.End}},
@@ -144,14 +166,15 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Credit balance: latest ledger row per customer, summed.
+	// Credit balance: authoritative SUM(amount_cents) over the whole ledger,
+	// matching credit.GetBalance. The previous DISTINCT ON (customer_id)
+	// balance_after read the denormalized running balance of the latest row
+	// BY created_at — but catchup / late-cron expiry entries can be inserted
+	// out of created_at order, so "latest row" wasn't the true latest balance
+	// and total credit liability was mis-reported. Summing amount_cents is
+	// order-independent and exact.
 	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(balance_after), 0)
-		FROM (
-			SELECT DISTINCT ON (customer_id) balance_after
-			FROM customer_credit_ledger
-			ORDER BY customer_id, created_at DESC
-		) latest
+		SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger
 	`).Scan(&resp.CreditBalance)
 	if err != nil {
 		slog.Error("analytics overview: credit balance", "error", err)
@@ -268,13 +291,13 @@ func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any) (int64, error) {
 	return v, err
 }
 
-func sumPaidRevenue(ctx context.Context, tx *sql.Tx, start, end any) (int64, error) {
+func sumPaidRevenue(ctx context.Context, tx *sql.Tx, start, end any, currency string) (int64, error) {
 	var v int64
 	err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(total_amount_cents), 0)
 		FROM invoices
-		WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2
-	`, start, end).Scan(&v)
+		WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2 AND currency = $3
+	`, start, end, currency).Scan(&v)
 	return v, err
 }
 
