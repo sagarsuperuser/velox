@@ -852,6 +852,40 @@ func (g *fakeCreditGranter) Grant(_ context.Context, _ string, in credit.GrantIn
 	return domain.CreditLedgerEntry{ID: fmt.Sprintf("vlx_cle_%d", len(g.grants))}, nil
 }
 
+// fakeInvoiceVoider / fakeCreditNoteAdjuster back the #22 unpaid-prebill-relief
+// tests: they record which settlement path BillOnCancel took (void the whole
+// invoice vs reduce amount_due to the consumed portion via an adjustment CN).
+type fakeInvoiceVoider struct {
+	voided []string // invoice IDs
+	err    error
+}
+
+func (v *fakeInvoiceVoider) Void(_ context.Context, _, id string) (domain.Invoice, error) {
+	if v.err != nil {
+		return domain.Invoice{}, v.err
+	}
+	v.voided = append(v.voided, id)
+	return domain.Invoice{ID: id, Status: domain.InvoiceVoided}, nil
+}
+
+type cnAdjustCall struct {
+	invoiceID string
+	gross     int64
+}
+
+type fakeCreditNoteAdjuster struct {
+	calls []cnAdjustCall
+	err   error
+}
+
+func (a *fakeCreditNoteAdjuster) CreateAndIssueAdjustment(_ context.Context, _, invoiceID string, grossCents int64, _, _ string) (domain.CreditNote, error) {
+	if a.err != nil {
+		return domain.CreditNote{}, a.err
+	}
+	a.calls = append(a.calls, cnAdjustCall{invoiceID: invoiceID, gross: grossCents})
+	return domain.CreditNote{ID: fmt.Sprintf("vlx_cn_%d", len(a.calls)), TotalCents: grossCents}, nil
+}
+
 func (m *mockInvoices) FindBaseInvoiceForPeriod(_ context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
 	// Mock: search the invoices slice for one whose subscription matches
 	// and that has a line item (in the flat m.lineItems slice) with
@@ -2820,6 +2854,174 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		}
 		if len(granter.grants) != 0 {
 			t.Errorf("expected no credit grant when source invoice missing, got %d", len(granter.grants))
+		}
+	})
+}
+
+// TestBillOnCancel_UnpaidPrebillRelief covers #22: when the in_advance prebill
+// for the canceled period is UNPAID, BillOnCancel settles the invoice itself
+// rather than granting an unfunded credit or leaving the full amount in dunning.
+//   - nothing consumed (whole receivable unused)  → void the invoice
+//   - partially consumed                          → adjustment credit note
+//     reducing amount_due to the consumed portion (gross, so tax is reversed too)
+//   - issuers unwired                             → legacy no-op (leave for dunning)
+//
+// In every unpaid case no customer-balance credit is granted and the return is 0.
+func TestBillOnCancel_UnpaidPrebillRelief(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) // 31-day cycle
+
+	makeSub := func(cancelAt time.Time) domain.Subscription {
+		return domain.Subscription{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
+			Status:                    domain.SubscriptionCanceled,
+			Items:                     []domain.SubscriptionItem{{PlanID: "pln_advance", Quantity: 1}},
+			CurrentBillingPeriodStart: &periodStart,
+			CurrentBillingPeriodEnd:   &periodEnd,
+			CanceledAt:                &cancelAt,
+		}
+	}
+	makePricing := func() *mockPricing {
+		return &mockPricing{plans: map[string]domain.Plan{
+			"pln_advance": {ID: "pln_advance", Name: "Advance", Currency: "USD",
+				BillingInterval: domain.BillingMonthly, BaseAmountCents: 6000,
+				BaseBillTiming: domain.BillInAdvance},
+		}}
+	}
+	// seedInvoices returns a mockInvoices holding one unpaid finalized in_advance
+	// base invoice for the period, with the given money fields.
+	seedInvoices := func(subtotal, tax, total, amountDue, amountPaid int64) *mockInvoices {
+		ps := periodStart
+		return &mockInvoices{
+			invoices: []domain.Invoice{{
+				ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+				Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+				SubtotalCents: subtotal, TaxAmountCents: tax, TotalAmountCents: total,
+				AmountDueCents: amountDue, AmountPaidCents: amountPaid,
+			}},
+			lineItems: []domain.InvoiceLineItem{{
+				ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+				BillingPeriodStart: &ps,
+			}},
+		}
+	}
+	newEngine := func(inv *mockInvoices) (*Engine, *fakeCreditGranter, *fakeInvoiceVoider, *fakeCreditNoteAdjuster) {
+		e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		g := &fakeCreditGranter{}
+		v := &fakeInvoiceVoider{}
+		a := &fakeCreditNoteAdjuster{}
+		e.SetCreditGranter(g)
+		e.SetInvoiceVoider(v)
+		e.SetCreditNoteAdjuster(a)
+		return e, g, v, a
+	}
+
+	t.Run("partially consumed, no tax → adjustment CN reduces to consumed, no void, no grant", func(t *testing.T) {
+		inv := seedInvoices(6000, 0, 6000, 6000, 0)
+		e, g, v, a := newEngine(inv)
+		cancelAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC) // 17 unused / 31 days
+
+		cents, err := e.BillOnCancel(context.Background(), makeSub(cancelAt))
+		if err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if cents != 0 {
+			t.Errorf("return cents = %d, want 0 (no balance credit on unpaid path)", cents)
+		}
+		if len(g.grants) != 0 {
+			t.Errorf("credit grants = %d, want 0 (unfunded — must not gift balance credit)", len(g.grants))
+		}
+		if len(v.voided) != 0 {
+			t.Errorf("voids = %d, want 0 (partial consumption must reduce, not void)", len(v.voided))
+		}
+		if len(a.calls) != 1 {
+			t.Fatalf("adjustment CN calls = %d, want 1", len(a.calls))
+		}
+		// unusedDays = round(Apr1 - Mar15) = 17; gross = round(6000*17/31) = 3290.
+		if a.calls[0].invoiceID != "inv_1" || a.calls[0].gross != 3290 {
+			t.Errorf("adjustment CN = {%s, %d}, want {inv_1, 3290}", a.calls[0].invoiceID, a.calls[0].gross)
+		}
+	})
+
+	t.Run("partially consumed WITH tax → CN amount grossed up so unused tax is reversed too", func(t *testing.T) {
+		// 10% tax: subtotal 6000, tax 600, total 6600, all unpaid.
+		inv := seedInvoices(6000, 600, 6600, 6600, 0)
+		e, _, v, a := newEngine(inv)
+		cancelAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+		if _, err := e.BillOnCancel(context.Background(), makeSub(cancelAt)); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if len(v.voided) != 0 {
+			t.Errorf("voids = %d, want 0", len(v.voided))
+		}
+		if len(a.calls) != 1 {
+			t.Fatalf("adjustment CN calls = %d, want 1", len(a.calls))
+		}
+		// net unused = 3290; grossed up by total/subtotal = 6600/6000: round(3290*6600/6000) = 3619.
+		if a.calls[0].gross != 3619 {
+			t.Errorf("adjustment CN gross = %d, want 3619 (net 3290 + proportional tax)", a.calls[0].gross)
+		}
+	})
+
+	t.Run("nothing consumed (cancel at period start) → void whole invoice, no CN, no grant", func(t *testing.T) {
+		inv := seedInvoices(6000, 0, 6000, 6000, 0)
+		e, g, v, a := newEngine(inv)
+		cancelAt := periodStart.Add(time.Hour) // ~whole period unused → unusedDays rounds to full cycle
+
+		cents, err := e.BillOnCancel(context.Background(), makeSub(cancelAt))
+		if err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if cents != 0 {
+			t.Errorf("return cents = %d, want 0", cents)
+		}
+		if len(g.grants) != 0 {
+			t.Errorf("credit grants = %d, want 0", len(g.grants))
+		}
+		if len(a.calls) != 0 {
+			t.Errorf("adjustment CN calls = %d, want 0 (fully unused → void)", len(a.calls))
+		}
+		if len(v.voided) != 1 || v.voided[0] != "inv_1" {
+			t.Fatalf("voids = %v, want [inv_1]", v.voided)
+		}
+	})
+
+	t.Run("partial payment present → never void (would annul collected money), reduce instead", func(t *testing.T) {
+		// Whole period unused but $20 already paid: must NOT void, must reduce
+		// amount_due (clamped) so the collected slice is preserved.
+		inv := seedInvoices(6000, 0, 6000, 4000, 2000) // 2000 paid, 4000 still due
+		e, _, v, a := newEngine(inv)
+		cancelAt := periodStart.Add(time.Hour)
+
+		if _, err := e.BillOnCancel(context.Background(), makeSub(cancelAt)); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if len(v.voided) != 0 {
+			t.Errorf("voids = %d, want 0 (partial payment present — must not void)", len(v.voided))
+		}
+		if len(a.calls) != 1 {
+			t.Fatalf("adjustment CN calls = %d, want 1", len(a.calls))
+		}
+		// gross unused = 6000 (full), clamped to amount_due 4000.
+		if a.calls[0].gross != 4000 {
+			t.Errorf("adjustment CN gross = %d, want 4000 (clamped to amount_due)", a.calls[0].gross)
+		}
+	})
+
+	t.Run("issuers unwired → legacy no-op (leave for dunning), no grant, no panic", func(t *testing.T) {
+		inv := seedInvoices(6000, 0, 6000, 6000, 0)
+		e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		g := &fakeCreditGranter{}
+		e.SetCreditGranter(g) // no voider / adjuster wired
+		cancelAt := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+		cents, err := e.BillOnCancel(context.Background(), makeSub(cancelAt))
+		if err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+		if cents != 0 || len(g.grants) != 0 {
+			t.Errorf("unwired issuers: cents=%d grants=%d, want 0/0", cents, len(g.grants))
 		}
 	})
 }

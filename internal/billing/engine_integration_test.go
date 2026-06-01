@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/credit"
+	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -640,4 +641,155 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 		float64(dayOneInv.TotalAmountCents)/100,
 		expectedNextStart.Format("2006-01-02"),
 		float64(grant.AmountCents)/100)
+}
+
+// TestBillOnCancel_UnpaidPrebillRelief_E2E exercises the fully-wired #22 path
+// against postgres: an UNPAID in_advance prebill is settled at mid-period
+// cancel by the real invoice.Service (void) and creditnote.Service (reduce
+// amount_due), not left full-amount in dunning and not turned into an unfunded
+// credit. Two scenarios, each on its own subscription + day-1 invoice:
+//   - partial consumption → adjustment credit note reduces amount_due to the
+//     consumed portion
+//   - no consumption (cancel at period start) → invoice voided
+func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	customerStore := customer.NewPostgresStore(db)
+	pricingStore := pricing.NewPostgresStore(db)
+	subStore := subscription.NewPostgresStore(db)
+	invoiceStore := invoice.NewPostgresStore(db)
+	usageStore := usage.NewPostgresStore(db)
+	creditStore := credit.NewPostgresStore(db)
+	creditSvc := credit.NewService(creditStore)
+	creditNoteStore := creditnote.NewPostgresStore(db)
+	settingsStore := tenant.NewSettingsStore(db)
+
+	tenantID := testutil.CreateTestTenant(t, db, "Unpaid Relief Corp")
+
+	plan, err := pricingStore.CreatePlan(ctx, tenantID, domain.Plan{
+		Code: "pro-advance", Name: "Pro Advance",
+		Currency: "USD", BillingInterval: domain.BillingMonthly,
+		Status: domain.PlanActive, BaseAmountCents: 4900,
+		BaseBillTiming: domain.BillInAdvance,
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	periodStart := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC) // 30-day cycle
+
+	// real services the engine settles the unpaid invoice through.
+	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
+	creditNoteSvc := creditnote.NewService(creditNoteStore, invoiceStore, nil)
+	creditNoteSvc.SetNumberGenerator(settingsStore)
+
+	newEngine := func() *billing.Engine {
+		e := billing.NewEngine(
+			&subStoreAdapter{subStore},
+			&usageStoreAdapter{usageStore},
+			&pricingStoreAdapter{pricingStore},
+			&invoiceStoreAdapter{invoiceStore},
+			nil, settingsStore, nil, nil, clock.NewFake(periodStart.Add(time.Hour)),
+		)
+		e.SetTaxProviderResolver(tax.NewResolver(nil))
+		e.SetCreditGranter(creditSvc)
+		e.SetInvoiceVoider(invoiceSvc)
+		e.SetCreditNoteAdjuster(creditNoteSvc)
+		return e
+	}
+
+	// freshUnpaidSub creates a customer + in_advance sub, emits the (unpaid,
+	// finalized) day-1 invoice, and returns the sub and that invoice's id.
+	freshUnpaidSub := func(extID string) (domain.Subscription, string) {
+		cust, err := customerStore.Create(ctx, tenantID, domain.Customer{ExternalID: extID, DisplayName: extID})
+		if err != nil {
+			t.Fatalf("create customer: %v", err)
+		}
+		sub, err := subStore.Create(ctx, tenantID, domain.Subscription{
+			Code: "sub-" + extID, DisplayName: extID, CustomerID: cust.ID,
+			Items:  []domain.SubscriptionItem{{PlanID: plan.ID, Quantity: 1}},
+			Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+			StartedAt: &periodStart,
+		})
+		if err != nil {
+			t.Fatalf("create sub: %v", err)
+		}
+		if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd); err != nil {
+			t.Fatalf("set billing cycle: %v", err)
+		}
+		sub.CurrentBillingPeriodStart = &periodStart
+		sub.CurrentBillingPeriodEnd = &periodEnd
+		inv, err := newEngine().BillOnCreate(ctx, sub)
+		if err != nil {
+			t.Fatalf("BillOnCreate: %v", err)
+		}
+		if inv.Status != domain.InvoiceFinalized || inv.PaymentStatus == domain.PaymentSucceeded {
+			t.Fatalf("day-1 invoice should be finalized + unpaid, got status=%s payment=%s", inv.Status, inv.PaymentStatus)
+		}
+		return sub, inv.ID
+	}
+
+	countGrants := func(customerID string) int {
+		entries, err := creditStore.ListEntries(ctx, credit.ListFilter{TenantID: tenantID, CustomerID: customerID, Limit: 50})
+		if err != nil {
+			t.Fatalf("list credit entries: %v", err)
+		}
+		n := 0
+		for _, e := range entries {
+			if e.EntryType == domain.CreditGrant {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("partial consumption reduces amount_due to consumed portion", func(t *testing.T) {
+		sub, invID := freshUnpaidSub("cus_reduce")
+		cancelAt := time.Date(2026, 6, 16, 0, 0, 0, 0, time.UTC) // 15 unused / 30 days
+		sub.Status = domain.SubscriptionCanceled
+		sub.CanceledAt = &cancelAt
+
+		if _, err := newEngine().BillOnCancel(ctx, sub); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+
+		got, err := invoiceStore.Get(ctx, tenantID, invID)
+		if err != nil {
+			t.Fatalf("reload invoice: %v", err)
+		}
+		// unused = round(4900 * 15/30) = 2450; amount_due 4900 → 2450.
+		if got.Status == domain.InvoiceVoided {
+			t.Fatalf("partial consumption must reduce, not void")
+		}
+		if got.AmountDueCents != 2450 {
+			t.Errorf("amount_due after reduce: got %d, want 2450 (consumed half)", got.AmountDueCents)
+		}
+		if n := countGrants(sub.CustomerID); n != 0 {
+			t.Errorf("credit grants = %d, want 0 (unpaid → no balance credit)", n)
+		}
+	})
+
+	t.Run("no consumption voids the unpaid invoice", func(t *testing.T) {
+		sub, invID := freshUnpaidSub("cus_void")
+		cancelAt := periodStart.Add(time.Hour) // whole period unused
+		sub.Status = domain.SubscriptionCanceled
+		sub.CanceledAt = &cancelAt
+
+		if _, err := newEngine().BillOnCancel(ctx, sub); err != nil {
+			t.Fatalf("BillOnCancel: %v", err)
+		}
+
+		got, err := invoiceStore.Get(ctx, tenantID, invID)
+		if err != nil {
+			t.Fatalf("reload invoice: %v", err)
+		}
+		if got.Status != domain.InvoiceVoided {
+			t.Errorf("invoice status: got %s, want voided (nothing consumed)", got.Status)
+		}
+		if n := countGrants(sub.CustomerID); n != 0 {
+			t.Errorf("credit grants = %d, want 0", n)
+		}
+	})
 }

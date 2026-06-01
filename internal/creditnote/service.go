@@ -224,6 +224,34 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	return cn, nil
 }
 
+// CreateAndIssueAdjustment creates and immediately issues an adjustment credit
+// note that reduces an unpaid, finalized invoice's amount_due by grossCents
+// (a tax-inclusive amount). The billing engine calls it on mid-period
+// subscription cancel to settle an unpaid in-advance invoice down to the
+// consumed portion (#22): the unconsumed prebill is removed from the
+// receivable, and because the invoice is unpaid no customer-balance credit or
+// card refund is produced — Issue's unpaid branch simply lowers amount_due and
+// reverses the proportional output tax. The note is a single gross-amount
+// line; Create caps grossCents at the invoice's current amount_due. Returns the
+// issued credit note. Idempotency is the caller's responsibility (BillOnCancel
+// runs once per cancel — see its contract); a second call would create a second
+// adjustment and is rejected by Create's amount_due cap once the first lands.
+func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error) {
+	cn, err := s.Create(ctx, tenantID, CreateInput{
+		InvoiceID: invoiceID,
+		Reason:    reason,
+		Lines: []CreditLineInput{{
+			Description:     description,
+			Quantity:        1,
+			UnitAmountCents: grossCents,
+		}},
+	})
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	return s.Issue(ctx, tenantID, cn.ID)
+}
+
 // buildCreditNote runs the tax-breakout, three-channel allocation, refund cap,
 // and number generation, returning the credit note to insert. Called inside
 // CreateUnderInvoiceLock with the lock-stable `existingCNs` snapshot.
