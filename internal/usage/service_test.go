@@ -161,6 +161,43 @@ func TestIngest(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects future timestamp on live ingest", func(t *testing.T) {
+		future := time.Now().UTC().Add(2 * time.Hour)
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_fut", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &future,
+		})
+		if err == nil {
+			t.Error("expected rejection for future-dated live usage event")
+		}
+	})
+
+	t.Run("allows near-now timestamp within skew", func(t *testing.T) {
+		near := time.Now().UTC().Add(1 * time.Minute) // within usageFutureSkew
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_near", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &near,
+		})
+		if err != nil {
+			t.Errorf("near-now timestamp within skew should be accepted, got: %v", err)
+		}
+	})
+
+	t.Run("rejects quantity exceeding NUMERIC(38,12) envelope", func(t *testing.T) {
+		huge := decimal.New(1, 26) // 10^26 — one past the 26-integer-digit limit
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_big", MeterID: "mtr_1", Quantity: huge,
+		})
+		if err == nil {
+			t.Error("expected 422-style rejection for over-magnitude quantity (would 500 on INSERT)")
+		}
+		// A large-but-representable value (just under the bound) is accepted.
+		ok := decimal.New(999, 23) // 9.99e25 < 10^26
+		if _, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_ok_big", MeterID: "mtr_1", Quantity: ok,
+		}); err != nil {
+			t.Errorf("representable large quantity should be accepted, got: %v", err)
+		}
+	})
+
 	t.Run("default origin is api", func(t *testing.T) {
 		e, err := svc.Ingest(ctx, "t1", IngestInput{
 			CustomerID: "cus_origin_api", MeterID: "mtr_1", Quantity: dec(1),
