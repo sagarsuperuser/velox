@@ -486,6 +486,58 @@ func TestHandleWebhook_PaymentFailed(t *testing.T) {
 	}
 }
 
+// TestHandleWebhook_PaymentFailed_IgnoredForPaidInvoice covers the pass-3
+// medium audit finding: an out-of-order payment_intent.payment_failed arriving
+// after an invoice is already paid must not corrupt it (flip to failed, null
+// paid_at, relink stale PI, start dunning). It's a no-op.
+func TestHandleWebhook_PaymentFailed_IgnoredForPaidInvoice(t *testing.T) {
+	paidAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		inv  domain.Invoice
+	}{
+		{"status paid", domain.Invoice{
+			ID: "inv_1", TenantID: "t1", Status: domain.InvoicePaid,
+			PaymentStatus: domain.PaymentSucceeded, PaidAt: &paidAt,
+			StripePaymentIntentID: "pi_ok",
+		}},
+		{"payment succeeded, finalized", domain.Invoice{
+			ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+			PaymentStatus: domain.PaymentSucceeded, PaidAt: &paidAt,
+			StripePaymentIntentID: "pi_ok",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invoices := newMockInvoiceUpdater()
+			invoices.invoices["inv_1"] = tc.inv
+			invoices.byPI["pi_stale"] = "inv_1"
+
+			stripe := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+
+			err := stripe.HandleWebhook(context.Background(), "t1", domain.StripeWebhookEvent{
+				StripeEventID:   "evt_ooo",
+				EventType:       "payment_intent.payment_failed",
+				PaymentIntentID: "pi_stale",
+				FailureMessage:  "Your card was declined.",
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			got := invoices.invoices["inv_1"]
+			if got.PaymentStatus != domain.PaymentSucceeded {
+				t.Errorf("payment_status: got %q, want succeeded (out-of-order failure ignored)", got.PaymentStatus)
+			}
+			if got.PaidAt == nil {
+				t.Error("paid_at was nulled by an out-of-order failure")
+			}
+			if got.StripePaymentIntentID != "pi_ok" {
+				t.Errorf("stripe_payment_intent_id: got %q, want pi_ok (stale PI must not relink)", got.StripePaymentIntentID)
+			}
+		})
+	}
+}
+
 func TestHandleWebhook_DuplicateEvent(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{
