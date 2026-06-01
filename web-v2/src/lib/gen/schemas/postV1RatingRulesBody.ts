@@ -15,8 +15,11 @@ export type PostV1RatingRulesBody = {
   name: string;
   mode: PostV1RatingRulesBodyMode;
   currency: string;
+  /** Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units). */
   flat_amount_cents?: string;
   graduated_tiers?: PostV1RatingRulesBodyGraduatedTiersItem[];
   package_size?: number;
   package_amount_cents?: number;
+  /** Package-mode per-unit overage rate in cents, as a decimal string. Fixed fees (package_amount_cents) stay integer cents. */
+  overage_unit_amount_cents?: string;
 };

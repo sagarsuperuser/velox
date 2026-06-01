@@ -410,14 +410,17 @@ export interface paths {
                         /** @enum {string} */
                         mode: "flat" | "graduated" | "package";
                         currency: string;
-                        /** Per-unit rate in cents, decimal string (e.g. "0.0003"). */
+                        /** @description Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units). */
                         flat_amount_cents?: string;
                         graduated_tiers?: {
                             up_to?: number;
+                            /** @description Per-unit rate in cents, as a decimal string. */
                             unit_amount_cents?: string;
                         }[];
                         package_size?: number;
                         package_amount_cents?: number;
+                        /** @description Package-mode per-unit overage rate in cents, as a decimal string. Fixed fees (package_amount_cents) stay integer cents. */
+                        overage_unit_amount_cents?: string;
                     };
                 };
             };
@@ -1945,10 +1948,11 @@ export interface components {
             /** @enum {string} */
             mode?: "flat" | "graduated" | "package";
             currency?: string;
-            /** Per-unit rate in cents, decimal string (e.g. "0.0003"). */
+            /** @description Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units). Arbitrary precision; invoice line amounts and totals still round to whole cents. */
             flat_amount_cents?: string;
             graduated_tiers?: {
                 up_to?: number;
+                /** @description Per-unit rate in cents, as a decimal string (see flat_amount_cents). */
                 unit_amount_cents?: string;
             }[];
         };

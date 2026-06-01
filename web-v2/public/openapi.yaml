@@ -132,8 +132,11 @@ components:
         currency:
           type: string
         flat_amount_cents:
-          type: integer
-          format: int64
+          type: string
+          description: >-
+            Per-unit rate in cents, as a decimal string (e.g. "0.0003" =
+            $3.00 per 1,000,000 units). Arbitrary precision; invoice line
+            amounts and totals still round to whole cents.
         graduated_tiers:
           type: array
           items:
@@ -142,7 +145,8 @@ components:
               up_to:
                 type: integer
               unit_amount_cents:
-                type: integer
+                type: string
+                description: Per-unit rate in cents, as a decimal string (see flat_amount_cents).
 
     Subscription:
       type: object
@@ -878,7 +882,10 @@ paths:
                 currency:
                   type: string
                 flat_amount_cents:
-                  type: integer
+                  type: string
+                  description: >-
+                    Per-unit rate in cents, as a decimal string (e.g.
+                    "0.0003" = $3.00 per 1,000,000 units).
                 graduated_tiers:
                   type: array
                   items:
@@ -887,11 +894,17 @@ paths:
                       up_to:
                         type: integer
                       unit_amount_cents:
-                        type: integer
+                        type: string
+                        description: Per-unit rate in cents, as a decimal string.
                 package_size:
                   type: integer
                 package_amount_cents:
                   type: integer
+                overage_unit_amount_cents:
+                  type: string
+                  description: >-
+                    Package-mode per-unit overage rate in cents, as a decimal
+                    string. Fixed fees (package_amount_cents) stay integer cents.
       responses:
         "201":
           description: Rating rule created
