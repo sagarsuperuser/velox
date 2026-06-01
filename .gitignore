@@ -10,3 +10,6 @@ tmp/
 /velox-bench
 temp.txt
 MANUAL_TEST_BUGS.md
+
+# Local agent worktrees + settings (Claude Code)
+.claude/
