@@ -12,6 +12,11 @@ type Store interface {
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
+	// UpdateAllocation persists the three-channel allocation
+	// (refund / credit / out-of-band). Used by Issue() to re-derive the
+	// allocation from the current invoice state when a CN created against
+	// a then-unpaid invoice is issued after that invoice became paid.
+	UpdateAllocation(ctx context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error
 	// SetTaxTransaction persists the reversal transaction id returned by
 	// the tax provider at Issue time.
 	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
