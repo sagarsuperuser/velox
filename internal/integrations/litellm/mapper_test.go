@@ -36,8 +36,12 @@ func TestMapPayload_HappyPath(t *testing.T) {
 
 	in, outE := out[0], out[1]
 
-	if in.MeterKey != MeterKeyTokensInput {
-		t.Errorf("input meter key: got %q, want %q", in.MeterKey, MeterKeyTokensInput)
+	// ADR-044: one `tokens` meter; role rides on the token_type dimension.
+	if in.MeterKey != MeterKeyTokens {
+		t.Errorf("input meter key: got %q, want %q", in.MeterKey, MeterKeyTokens)
+	}
+	if in.Dimensions["token_type"] != TokenTypeInput {
+		t.Errorf("input dim token_type: got %v, want %q", in.Dimensions["token_type"], TokenTypeInput)
 	}
 	if in.Quantity.IntPart() != 1200 {
 		t.Errorf("input quantity: got %s, want 1200", in.Quantity)
@@ -62,8 +66,15 @@ func TestMapPayload_HappyPath(t *testing.T) {
 		t.Error("input dim should not carry non-promoted metadata keys")
 	}
 
-	if outE.MeterKey != MeterKeyTokensOutput {
-		t.Errorf("output meter key: got %q", outE.MeterKey)
+	if outE.MeterKey != MeterKeyTokens {
+		t.Errorf("output meter key: got %q, want %q", outE.MeterKey, MeterKeyTokens)
+	}
+	if outE.Dimensions["token_type"] != TokenTypeOutput {
+		t.Errorf("output dim token_type: got %v, want %q", outE.Dimensions["token_type"], TokenTypeOutput)
+	}
+	// The two events must NOT share one dimensions map (token_type would alias).
+	if in.Dimensions["token_type"] == outE.Dimensions["token_type"] {
+		t.Error("input and output events share a dimensions map — token_type aliased")
 	}
 	if outE.Quantity.IntPart() != 350 {
 		t.Errorf("output quantity: got %s, want 350", outE.Quantity)
@@ -133,8 +144,11 @@ func TestMapPayload_EmbeddingOnlyPromptTokens(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 event (input only), got %d", len(out))
 	}
-	if out[0].MeterKey != MeterKeyTokensInput {
-		t.Errorf("embedding event meter: got %q, want %q", out[0].MeterKey, MeterKeyTokensInput)
+	if out[0].MeterKey != MeterKeyTokens {
+		t.Errorf("embedding event meter: got %q, want %q", out[0].MeterKey, MeterKeyTokens)
+	}
+	if out[0].Dimensions["token_type"] != TokenTypeInput {
+		t.Errorf("embedding token_type: got %v, want %q", out[0].Dimensions["token_type"], TokenTypeInput)
 	}
 }
 

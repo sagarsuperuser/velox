@@ -126,12 +126,12 @@ Walks the wedge demo path: instantiate an AI-native recipe → set up a customer
 Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.1 Recipe + plan
-- [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates `tokens_input` + `tokens_output` meters + a `pro-anthropic` plan with multi-dim rules.
-- [ ] Pricing → edit the plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
+- [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
+- [ ] Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
 
 ### S2.2 Customer + day-1 invoice
-- [ ] Create customer `external_id=cus_demo_ai` with PM `4242 4242 4242 4242`.
-- [ ] Create active subscription on `pro-anthropic` → day-1 invoice generated: `billing_reason=subscription_create`, $99 base only, auto-charged.
+- [ ] Create customer `external_id=cus_demo_ai` with PM `4242 4242 4242 4242`. Note its internal `id` (`cus_…`) from the response — used as `customer_id` below.
+- [ ] Create active subscription on `ai_api_pro` → day-1 invoice generated: `billing_reason=subscription_create`, $99 base only, auto-charged.
 
 ### S2.3 LiteLLM ingest
 - [ ] POST a LiteLLM payload directly (simulates the proxy callback):
@@ -146,20 +146,20 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
       "response_cost":0.018,"endTime":'$(date +%s)'
     }' | jq .
   ```
-  → `{"accepted":2,"skipped":0,"errors":[]}`.
+  → `{"accepted":2,"skipped":0}` (one event per token role).
 - [ ] Repeat the curl 4 more times with `smoke_call_2` … `smoke_call_5` → 10 events total (5 input + 5 output).
-- [ ] `GET /v1/usage-events?external_customer_id=cus_demo_ai&limit=20` → 10 events, all with `dimensions.model=claude-3-5-sonnet-20241022` + `dimensions.provider=anthropic`.
+- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-3-5-sonnet-20241022`, `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: TWO line types — `tokens_input` + `tokens_output` for the elapsed period AND the $99 base line covering the UPCOMING period. The base line shows "Covers <upcoming range> (in advance)" sub-line.
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line for the elapsed period (the 6,000 input + 1,750 output tokens priced at the recipe's claude-3.5-sonnet rates — input $3.00/M, output $15.00/M) AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
 - [ ] `curl <that URL>` (no auth header) → JSON with `customer_id`, `tenant_id`, `billing_period`, `subscriptions[]`, `usage[]` (per-meter + rules), `totals`, `projected_total_cents`. **No PII** (email/display_name/billing_profile absent).
 - [ ] Click Rotate in the dashboard → old URL goes 401 immediately; the new URL works.
 
-**S2 passing = wedge demo path is healthy. The AI-native pitch (LiteLLM → multi-dim meters → hybrid invoice → embeddable cost view) works end-to-end.**
+**S2 passing = wedge demo path is healthy. The AI-native pitch (LiteLLM → one `tokens` meter priced by `{model, token_type}` → hybrid invoice → embeddable cost view) works end-to-end.**
 
 ---
 
