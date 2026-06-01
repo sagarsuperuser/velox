@@ -477,10 +477,10 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	}
 	if s.audit != nil {
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, map[string]any{
-			"action":      "marked_uncollectible",
-			"customer_id": updated.CustomerID,
+			"action":           "marked_uncollectible",
+			"customer_id":      updated.CustomerID,
 			"amount_due_cents": updated.AmountDueCents,
-			"currency":    updated.Currency,
+			"currency":         updated.Currency,
 		})
 	}
 	if s.events != nil {
@@ -543,10 +543,10 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 	}
 	if s.audit != nil {
 		meta := map[string]any{
-			"action":      "payment_recorded",
-			"customer_id": updated.CustomerID,
-			"amount_cents": updated.AmountDueCents,
-			"currency":    updated.Currency,
+			"action":                "payment_recorded",
+			"customer_id":           updated.CustomerID,
+			"amount_cents":          updated.AmountDueCents,
+			"currency":              updated.Currency,
 			"recovered_from_status": string(inv.Status),
 		}
 		if note != "" {
@@ -556,13 +556,13 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 	}
 	if s.events != nil {
 		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoicePaymentRecorded, map[string]any{
-			"invoice_id":      updated.ID,
-			"invoice_number":  updated.InvoiceNumber,
-			"customer_id":     updated.CustomerID,
-			"amount_cents":    updated.AmountDueCents,
-			"currency":        updated.Currency,
-			"recovered_from":  string(inv.Status),
-			"recorded_at":     now.UTC(),
+			"invoice_id":     updated.ID,
+			"invoice_number": updated.InvoiceNumber,
+			"customer_id":    updated.CustomerID,
+			"amount_cents":   updated.AmountDueCents,
+			"currency":       updated.Currency,
+			"recovered_from": string(inv.Status),
+			"recorded_at":    now.UTC(),
 		})
 	}
 	return updated, nil

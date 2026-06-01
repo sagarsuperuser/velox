@@ -425,7 +425,7 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
 			TaxAmountCents: 185,
-			TaxRate:      18.50,
+			TaxRate:        18.50,
 			TaxName:        "VAT",
 			TaxCountry:     "GB",
 		},

@@ -20,21 +20,21 @@ type AuditEntry struct {
 
 // Well-known audit actions.
 const (
-	AuditActionCreate      = "create"
-	AuditActionUpdate      = "update"
-	AuditActionDelete      = "delete"
-	AuditActionActivate    = "activate"
-	AuditActionCancel      = "cancel"
-	AuditActionPause       = "pause"
-	AuditActionResume      = "resume"
-	AuditActionFinalize    = "finalize"
-	AuditActionVoid        = "void"
-	AuditActionRevoke      = "revoke"
-	AuditActionGrant       = "grant"
-	AuditActionRefund      = "refund"
-	AuditActionArchive     = "archive"
-	AuditActionUnarchive   = "unarchive"
-	AuditActionRedeem = "redeem"
+	AuditActionCreate    = "create"
+	AuditActionUpdate    = "update"
+	AuditActionDelete    = "delete"
+	AuditActionActivate  = "activate"
+	AuditActionCancel    = "cancel"
+	AuditActionPause     = "pause"
+	AuditActionResume    = "resume"
+	AuditActionFinalize  = "finalize"
+	AuditActionVoid      = "void"
+	AuditActionRevoke    = "revoke"
+	AuditActionGrant     = "grant"
+	AuditActionRefund    = "refund"
+	AuditActionArchive   = "archive"
+	AuditActionUnarchive = "unarchive"
+	AuditActionRedeem    = "redeem"
 	// AuditActionRetryTax covers operator-initiated tax recompute on a
 	// pending/failed invoice. Persists the actor + before/after attention
 	// so post-mortems can see who retried what and whether it cleared.
@@ -47,14 +47,14 @@ const (
 )
 
 type TenantSettings struct {
-	TenantID        string `json:"tenant_id"`
-	DefaultCurrency string `json:"default_currency"`
-	Timezone        string `json:"timezone"`
-	InvoicePrefix   string `json:"invoice_prefix"`
-	NetPaymentTerms int    `json:"net_payment_terms"`
+	TenantID        string  `json:"tenant_id"`
+	DefaultCurrency string  `json:"default_currency"`
+	Timezone        string  `json:"timezone"`
+	InvoicePrefix   string  `json:"invoice_prefix"`
+	NetPaymentTerms int     `json:"net_payment_terms"`
 	TaxRate         float64 `json:"tax_rate"` // Percent rate (4-decimal precision via NUMERIC(7,4)). 7.25 = 7.25%. ADR-042/043.
 	TaxName         string  `json:"tax_name,omitempty"`
-	TaxInclusive    bool   `json:"tax_inclusive"`
+	TaxInclusive    bool    `json:"tax_inclusive"`
 	// TaxProvider selects the backend used to compute tax. 'none' skips tax
 	// entirely; 'manual' uses the flat tenant-level rate below. Future
 	// providers (e.g. 'stripe_tax') will be added once their integrations are
