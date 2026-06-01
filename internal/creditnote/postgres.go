@@ -176,6 +176,46 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	return notes, rows.Err()
 }
 
+// TransitionStatus atomically flips a credit note from `from` to `to` only if
+// it is currently in `from`, returning whether this call won the transition.
+// The conditional UPDATE ... WHERE status=$from is the compare-and-swap that
+// serializes concurrent/retried Issue() calls: exactly one caller gets won=true
+// and proceeds to the (non-idempotent) amount_due reduction; the losers get
+// won=false and must not re-apply.
+func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := clock.Now(ctx)
+	var issuedAt, voidedAt *time.Time
+	if to == domain.CreditNoteIssued {
+		issuedAt = &now
+	}
+	if to == domain.CreditNoteVoided {
+		voidedAt = &now
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE credit_notes SET status=$1, issued_at=COALESCE($2, issued_at),
+			voided_at=COALESCE($3, voided_at), updated_at=$4
+		WHERE id=$5 AND status=$6`,
+		to, postgres.NullableTime(issuedAt), postgres.NullableTime(voidedAt), now, id, from)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

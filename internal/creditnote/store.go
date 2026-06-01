@@ -11,6 +11,10 @@ type Store interface {
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
+	// TransitionStatus is a compare-and-swap status flip: it succeeds (won=true)
+	// only if the credit note is currently in `from`. Used to serialize the
+	// draft→issued transition against concurrent/retried Issue() calls.
+	TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
 	// UpdateAllocation persists the three-channel allocation
 	// (refund / credit / out-of-band). Used by Issue() to re-derive the
