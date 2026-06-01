@@ -55,8 +55,8 @@ func TestResolve_MalformedTimestampRejected(t *testing.T) {
 
 	t.Run("rejected", func(t *testing.T) {
 		cases := map[string]*json.RawMessage{
-			"non-string number": rawMsg(`1716000000`),
-			"non-string object": rawMsg(`{"t":1}`),
+			"non-string number":  rawMsg(`1716000000`),
+			"non-string object":  rawMsg(`{"t":1}`),
 			"unparseable string": rawMsg(`"not-a-date"`),
 			"empty string":       rawMsg(`""`),
 		}
