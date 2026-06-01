@@ -8,6 +8,12 @@ import (
 
 type Store interface {
 	Create(ctx context.Context, tenantID string, cn domain.CreditNote) (domain.CreditNote, error)
+	// CreateUnderInvoiceLock serializes credit-note creation for one invoice:
+	// it takes a per-invoice advisory lock, lists the invoice's existing credit
+	// notes in the same transaction, lets `build` run the cap checks against
+	// that locked snapshot and return the note to insert, and inserts it
+	// atomically — closing the over-credit TOCTOU on concurrent Create.
+	CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
