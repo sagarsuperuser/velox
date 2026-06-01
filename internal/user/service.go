@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -277,15 +278,19 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 // to flip.
 func (s *Service) RecordFailedAttempt(ctx context.Context, email string) {
 	if s.failures == nil {
-		// No counter wired (e.g. local dev without Redis). Match the
-		// rate-limiter's fail-open default — no enforcement.
+		// Only nil in unit tests that build a bare Service. Production wiring
+		// always sets the counter (FallbackFailureCounter — see router.go), so
+		// the lockout is enforced in every real deployment, including local dev
+		// and with Redis down. velox-ops #21.
 		return
 	}
 	count, err := s.failures.Increment(ctx, email)
 	if err != nil {
-		// Redis hiccup — fail open, same as rate limiter. We could
-		// fail closed and lock immediately for security, but that
-		// converts a Redis blip into a DoS for the real user.
+		// Defensive only — FallbackFailureCounter never surfaces a Redis error
+		// (it degrades to an in-process counter internally), so this branch is
+		// unreachable in production. Log and skip rather than panic on a
+		// misbehaving counter impl.
+		slog.WarnContext(ctx, "lockout: failed-login counter increment failed", "error", err)
 		return
 	}
 	if count < FailedLoginThreshold {
