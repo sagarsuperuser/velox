@@ -27,7 +27,7 @@ type Handler struct {
 	sessions         *session.Service
 	cookie           session.CookieConfig
 	email            EmailSender // required — production always wires the adapter
-	dashboardBaseURL string      // optional; overrides r.Host for reset links (split-origin dev)
+	dashboardBaseURL string      // canonical dashboard origin for reset links; never from request headers. empty => reset emails disabled
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -40,11 +40,12 @@ type EmailSender interface {
 }
 
 // NewHandler wires the dependencies. emailSender is required —
-// password-reset requests will nil-panic if it's nil. dashboardBaseURL
-// is optional; when empty, reset-link URLs are built from the request's
-// Host header (works for single-origin prod deployments where the API
-// and SPA share a domain). For split-origin dev (Vite on :5173 vs API
-// on :8080) set DASHBOARD_BASE_URL so the link points at the SPA.
+// password-reset requests will nil-panic if it's nil. dashboardBaseURL is
+// the canonical dashboard origin used to build password-reset links; it is
+// never derived from the request (Host header) to prevent host-header
+// poisoning / token theft. When empty, password-reset emails are not sent
+// (requestPasswordReset fails safe). Set it to your dashboard URL — in
+// split-origin dev (Vite on :5173 vs API on :8080) that's the SPA URL.
 func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string) *Handler {
 	return &Handler{
 		users:            users,
