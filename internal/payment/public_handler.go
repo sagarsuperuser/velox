@@ -164,11 +164,34 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		return
 	}
 
+	// Scope ctx to the token's resolved (tenant, livemode) for all
+	// downstream tenant-scoped DB work.
+	scopedCtx := postgres.WithLivemode(r.Context(), token.Livemode)
+
+	// Atomically consume the single-use token BEFORE creating the checkout
+	// session. Validate's `used_at IS NULL` is only a read, so two concurrent
+	// requests for the same token both passed it and both opened a setup
+	// session (TOCTOU). The conditional UPDATE here is the compare-and-swap:
+	// only the winner proceeds; a loser (or a replay) sees consumed=false and
+	// gets the same generic invalid-token response. Consuming first means a
+	// later Stripe failure burns the token — acceptable for a single-use
+	// security credential; the customer requests a fresh link.
+	consumed, err := h.tokens.Consume(scopedCtx, token.TenantID, rawToken)
+	if err != nil {
+		slog.ErrorContext(scopedCtx, "public payment: consume token", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+	if !consumed {
+		respond.Error(w, r, http.StatusUnauthorized, "authentication_error", "invalid_token",
+			"invalid or expired token")
+		return
+	}
+
 	// Look up the customer's Stripe customer ID under TxTenant scoped
 	// to the token's resolved (tenant, livemode). RLS stays in play
 	// past the token gate; the token's JOIN already resolved livemode
 	// authoritatively, so no extra bypass-required lookup is needed.
-	scopedCtx := postgres.WithLivemode(r.Context(), token.Livemode)
 	tx, err := h.db.BeginTx(scopedCtx, postgres.TxTenant, token.TenantID)
 	if err != nil {
 		slog.ErrorContext(scopedCtx, "public payment: begin tx", "error", err)
@@ -231,17 +254,8 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Mark token as used (single use). Pass scopedCtx (with livemode
-	// pinned from the validated token), not raw r.Context() — MarkUsed
-	// opens TxTenant internally, and post-ADR-029's fail-closed
-	// BeginTx guard returns an error when ctx has no livemode. Using
-	// the bare request context here was a copy-paste miss when the
-	// scoped variable was introduced; without livemode the token
-	// silently failed to mark used, leaving the magic-link reusable.
-	if err := h.tokens.MarkUsed(scopedCtx, token.TenantID, rawToken); err != nil {
-		slog.ErrorContext(scopedCtx, "public payment: failed to mark token used", "error", err)
-		// Non-fatal: session was already created.
-	}
+	// Token was already atomically consumed above (before the session was
+	// created), so there's no post-success mark step here.
 
 	slog.InfoContext(r.Context(), "public payment update session created",
 		"customer_id", token.CustomerID,
