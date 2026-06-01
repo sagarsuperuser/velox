@@ -1,4 +1,4 @@
-.PHONY: build run test lint lint-clock migrate dev clean cli gen gen-go gen-ts
+.PHONY: build run test lint lint-clock lint-manual-test migrate dev clean cli gen gen-go gen-ts
 
 # Build the velox binary
 build:
@@ -58,6 +58,11 @@ lint:
 # audit-log recorded_at).
 lint-clock:
 	@./scripts/lint-clock.sh
+
+# Anti-rot guard for MANUAL_TEST.md: fails if a flow names a metric / column /
+# table / meter-key the code no longer has (ADR-038/041/043/044 cleanups, etc.).
+lint-manual-test:
+	@./scripts/check-manual-test-currency.sh
 
 # Run benchmarks
 bench:
