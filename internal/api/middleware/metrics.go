@@ -43,6 +43,20 @@ var (
 		},
 	)
 
+	// idempotencyCacheErrors counts idempotency-layer DB failures by stage.
+	// Non-zero means the idempotency guarantee lapsed: a "reserve" failure
+	// fell open (the handler ran without a claim, so a concurrent/retried
+	// request could re-execute the side effect), and a "finalize" failure
+	// means the response wasn't cached (a retry under the same key re-runs the
+	// handler). Operators should alert on any sustained rate here.
+	idempotencyCacheErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_idempotency_cache_errors_total",
+			Help: "Idempotency cache DB errors by stage (reserve|finalize).",
+		},
+		[]string{"stage"},
+	)
+
 	invoicesGenerated = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "velox_invoices_generated_total",
