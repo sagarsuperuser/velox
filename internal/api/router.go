@@ -976,7 +976,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// Only honor X-Forwarded-For / X-Real-IP from configured trusted proxies.
+	// chi's middleware.RealIP trusted them unconditionally, letting any client
+	// forge a forwarding header to rotate its per-IP rate-limit bucket
+	// (enumeration bypass) or pin a victim's IP. TRUST_PROXY is a comma-list of
+	// CIDRs / IPs (e.g. "10.0.0.0/8,127.0.0.1"); unset → trust nothing and key
+	// rate limits on the raw TCP peer.
+	trustedProxies := mw.ParseTrustedProxies(os.Getenv("TRUST_PROXY"))
+	if len(trustedProxies) == 0 {
+		slog.Info("TRUST_PROXY not set — X-Forwarded-For/X-Real-IP ignored; rate limiting keys on the direct TCP peer. Set TRUST_PROXY to your load balancer's CIDR if Velox runs behind a proxy.")
+	}
+	r.Use(mw.TrustedRealIP(trustedProxies))
 	corsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsEnv == "" {
 		corsEnv = "http://localhost:3000,http://localhost:5173,http://localhost:5174"
