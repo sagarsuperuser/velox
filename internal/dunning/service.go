@@ -329,7 +329,7 @@ func (s *Service) ProcessDueRuns(ctx context.Context, tenantID string, limit int
 	if err != nil {
 		return 0, []error{fmt.Errorf("list due runs: %w", err)}
 	}
-	return s.processRunsBatch(ctx, tenantID, dueRuns)
+	return s.processRunsBatch(ctx, tenantID, dueRuns, false /* wall-clock cron */)
 }
 
 // ProcessDueRunsForClock is the catchup-path counterpart. ADR-029
@@ -393,7 +393,7 @@ func (s *Service) ProcessDueRunsForClock(ctx context.Context, tenantID, clockID 
 		for _, r := range dueRuns {
 			seen[r.ID] = r.AttemptCount
 		}
-		n, errs := s.processRunsBatch(ctx, tenantID, dueRuns)
+		n, errs := s.processRunsBatch(ctx, tenantID, dueRuns, true /* test-clock catchup */)
 		total += n
 		allErrs = append(allErrs, errs...)
 	}
@@ -405,11 +405,11 @@ func (s *Service) ProcessDueRunsForClock(ctx context.Context, tenantID, clockID 
 // processRunsBatch is the shared per-run body of ProcessDueRuns and
 // ProcessDueRunsForClock. The candidate list shape differs by trigger;
 // the per-run state-machine step is identical.
-func (s *Service) processRunsBatch(ctx context.Context, tenantID string, dueRuns []domain.InvoiceDunningRun) (int, []error) {
+func (s *Service) processRunsBatch(ctx context.Context, tenantID string, dueRuns []domain.InvoiceDunningRun, isCatchup bool) (int, []error) {
 	processed := 0
 	var runErrs []error
 	for _, run := range dueRuns {
-		if err := s.processRun(ctx, tenantID, run); err != nil {
+		if err := s.processRun(ctx, tenantID, run, isCatchup); err != nil {
 			runErrs = append(runErrs, fmt.Errorf("run %s: %w", run.ID, err))
 			continue
 		}
@@ -418,7 +418,7 @@ func (s *Service) processRunsBatch(ctx context.Context, tenantID string, dueRuns
 	return processed, runErrs
 }
 
-func (s *Service) processRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) error {
+func (s *Service) processRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, isCatchup bool) error {
 	// Resolve the policy bound to this run at StartDunning time.
 	// Runs stay on their original policy for their lifetime — if the
 	// customer's dunning_policy_id assignment changed mid-flight (or
@@ -443,21 +443,30 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 
 	// Attempt retry
 	run.AttemptCount++
-	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
-	// Anchor this attempt on the simulated moment it was scheduled
-	// for (run.NextActionAt) rather than the orchestrator's
-	// frozen_time. Without this, every retry under catchup gets
-	// last_attempt_at = advance-end frozen_time, and the next retry
-	// is scheduled at frozen_time + interval (always past advance-end,
-	// so it never fires in the same Advance click). Anchoring on
-	// NextActionAt walks the state machine through simulated time:
-	// retry 1 at NextActionAt (May 4), schedules retry 2 at May 7,
-	// etc. Falls back to clock.Now() for runs missing NextActionAt
-	// (defensive — shouldn't happen for runs that just passed
-	// `next_action_at <= frozen_time`).
+	var pinned bool
+	ctx, pinned = clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: run.InvoiceID})
+	// Anchor this attempt's instant.
+	//
+	// Simulated time (test-clock catchup, or a clock-pinned customer): anchor
+	// on the simulated moment the retry was scheduled for (run.NextActionAt)
+	// rather than the orchestrator's frozen_time. Without this, every retry
+	// under catchup gets last_attempt_at = advance-end frozen_time, and the
+	// next retry is scheduled at frozen_time + interval (always past
+	// advance-end, so it never fires in the same Advance click). Anchoring on
+	// NextActionAt walks the state machine through simulated time.
+	//
+	// Pure wall-clock cron (not catchup, not pinned): anchor on
+	// max(now, NextActionAt). In steady state NextActionAt == now. But after
+	// the scheduler is down for several intervals, NextActionAt is
+	// stale-in-the-past; anchoring on it would schedule the next retry at
+	// staleNextActionAt + interval — still in the past — so the whole backlog
+	// fires back-to-back in one tick, collapsing the configured cadence.
+	// Clamping to now resumes the cadence from the recovery instant.
 	now := s.clock.Now(ctx)
 	if run.NextActionAt != nil {
-		now = *run.NextActionAt
+		if isCatchup || pinned || run.NextActionAt.After(now) {
+			now = *run.NextActionAt
+		}
 	}
 	run.LastAttemptAt = &now
 
@@ -552,6 +561,13 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
 			return err
 		}
+
+		s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
+			"run_id":      run.ID,
+			"invoice_id":  run.InvoiceID,
+			"customer_id": run.CustomerID,
+			"resolution":  string(run.Resolution),
+		})
 		return nil
 	}
 
@@ -760,6 +776,13 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		return domain.InvoiceDunningRun{}, err
 	}
 
+	s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
+		"run_id":      updated.ID,
+		"invoice_id":  updated.InvoiceID,
+		"customer_id": updated.CustomerID,
+		"resolution":  string(updated.Resolution),
+	})
+
 	if resolution == domain.ResolutionInvoiceNotCollectible && s.invoiceUncollect != nil {
 		if err := s.invoiceUncollect.MarkUncollectible(ctx, tenantID, run.InvoiceID); err != nil {
 			// Already-uncollectible is benign (race with automated
@@ -799,8 +822,17 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 		CreatedAt: now,
 	})
 
-	_, err = s.store.UpdateRun(ctx, tenantID, run)
-	return err
+	if _, err = s.store.UpdateRun(ctx, tenantID, run); err != nil {
+		return err
+	}
+
+	s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
+		"run_id":      run.ID,
+		"invoice_id":  run.InvoiceID,
+		"customer_id": run.CustomerID,
+		"resolution":  string(run.Resolution),
+	})
+	return nil
 }
 
 // GetDefaultPolicy returns the tenant's default dunning policy.
