@@ -1,26 +1,34 @@
 key: anthropic_style
-version: 1.0.0
+version: 2.0.0
 name: Anthropic-style AI inference
 summary: |
-  Per-token billing across model × operation × cached. Eight pricing rules,
-  one multi-dim meter, monthly billing. Designed for inference platforms
+  Per-token billing across model × token_type. One multi-dim `tokens` meter;
+  five disjoint token roles per model (input, output, cache_read,
+  cache_write_5m, cache_write_1h). Monthly billing. For inference platforms
   reselling LLM API access.
 description: |
   Models the public Anthropic pricing page: claude-3.5-sonnet,
-  claude-3-opus, claude-3-sonnet, and claude-3-haiku, billed
-  per-million-tokens with separate rates for input vs output and a
-  cache-discount on input.
+  claude-3-opus, claude-3-sonnet, claude-3-haiku, billed
+  per-million-tokens. Each model carries five token roles, matching how
+  Anthropic itemizes and prices token usage (ADR-044):
 
-  Eight pricing rules cover (4 models × 2 operations) — rather than two
-  rules per model, the cache discount is expressed by a separate higher-
-  priority rule that claims `cached: true` events. A non-cached rule with
-  `cached: false` would over-claim if dimension keys are missing on
-  events; using a positive priority on the cached variant lets uncached
-  events fall through cleanly.
+    - input          base input (uncached)
+    - output         generated tokens
+    - cache_read     prompt-cache hit            (0.1× input)
+    - cache_write_5m  5-minute cache write       (1.25× input)
+    - cache_write_1h  1-hour cache write         (2× input)
 
-  All amounts are in cents per million tokens. Operators override
-  `currency`, the customer-facing `plan_name`, and the slug `plan_code`
-  at instantiation; the rest is fixed for v1.
+  Roles live in the `token_type` event dimension and are DISJOINT, so each
+  (model, token_type) pair is exactly one rule at equal priority — no
+  priority tie-breaking and no boolean `cached` flag (a boolean can't
+  distinguish read from 5m-write from 1h-write, which are three prices).
+  Each provider mapper (e.g. LiteLLM) is responsible for emitting these
+  roles as additive-disjoint quantities; the engine never does role math.
+
+  Cache rates are derived from each model's input rate (0.1× / 1.25× / 2×);
+  sub-cent-per-million values are rounded to the nearest cent. All amounts
+  are cents per million tokens. Operators override `currency`, `plan_name`,
+  and `plan_code` at instantiation; the rest is fixed for v1.
 
 overridable:
   - key: currency
@@ -43,107 +51,218 @@ meters:
     aggregation: sum
 
 rating_rules:
-  # Claude 3.5 Sonnet — $3.00 / $15.00 per million; cached input $0.30
-  - key: claude35_sonnet_input
-    name: Claude 3.5 Sonnet input (uncached)
+  # Claude 3.5 Sonnet — input $3.00 / output $15.00 per million.
+  - key: c35_sonnet_input
+    name: Claude 3.5 Sonnet input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 300
-  - key: claude35_sonnet_input_cached
-    name: Claude 3.5 Sonnet input (cached)
-    mode: flat
-    currency: '{{ .currency }}'
-    flat_amount_cents: 30
-  - key: claude35_sonnet_output
+  - key: c35_sonnet_output
     name: Claude 3.5 Sonnet output
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 1500
+  - key: c35_sonnet_cache_read
+    name: Claude 3.5 Sonnet cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 30
+  - key: c35_sonnet_cache_write_5m
+    name: Claude 3.5 Sonnet cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 375
+  - key: c35_sonnet_cache_write_1h
+    name: Claude 3.5 Sonnet cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 600
 
-  # Claude 3 Opus — $15 / $75 per million
-  - key: claude3_opus_input
+  # Claude 3 Opus — input $15.00 / output $75.00 per million.
+  - key: opus_input
     name: Claude 3 Opus input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 1500
-  - key: claude3_opus_output
+  - key: opus_output
     name: Claude 3 Opus output
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 7500
+  - key: opus_cache_read
+    name: Claude 3 Opus cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 150
+  - key: opus_cache_write_5m
+    name: Claude 3 Opus cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 1875
+  - key: opus_cache_write_1h
+    name: Claude 3 Opus cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 3000
 
-  # Claude 3 Sonnet — $3 / $15 per million
-  - key: claude3_sonnet_input
+  # Claude 3 Sonnet — input $3.00 / output $15.00 per million.
+  - key: sonnet_input
     name: Claude 3 Sonnet input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 300
-  - key: claude3_sonnet_output
+  - key: sonnet_output
     name: Claude 3 Sonnet output
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 1500
+  - key: sonnet_cache_read
+    name: Claude 3 Sonnet cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 30
+  - key: sonnet_cache_write_5m
+    name: Claude 3 Sonnet cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 375
+  - key: sonnet_cache_write_1h
+    name: Claude 3 Sonnet cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 600
 
-  # Claude 3 Haiku — $0.25 / $1.25 per million
-  - key: claude3_haiku_input
+  # Claude 3 Haiku — input $0.25 / output $1.25 per million. Cache rates
+  # round to the cent (0.1×/1.25×/2× of 25 = 2.5/31.25/50 → 3/31/50).
+  - key: haiku_input
     name: Claude 3 Haiku input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 25
-  - key: claude3_haiku_output
+  - key: haiku_output
     name: Claude 3 Haiku output
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 125
+  - key: haiku_cache_read
+    name: Claude 3 Haiku cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 3
+  - key: haiku_cache_write_5m
+    name: Claude 3 Haiku cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 31
+  - key: haiku_cache_write_1h
+    name: Claude 3 Haiku cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: 50
 
+# Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:
-  # Cached rule wins via priority=200 over the uncached input variant.
   - meter: tokens
-    rating_rule: claude35_sonnet_input_cached
-    dimension_match: { model: claude-3.5-sonnet, operation: input, cached: true }
-    aggregation_mode: sum
-    priority: 200
-  - meter: tokens
-    rating_rule: claude35_sonnet_input
-    dimension_match: { model: claude-3.5-sonnet, operation: input }
+    rating_rule: c35_sonnet_input
+    dimension_match: { model: claude-3.5-sonnet, token_type: input }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
-    rating_rule: claude35_sonnet_output
-    dimension_match: { model: claude-3.5-sonnet, operation: output }
-    aggregation_mode: sum
-    priority: 100
-
-  - meter: tokens
-    rating_rule: claude3_opus_input
-    dimension_match: { model: claude-3-opus, operation: input }
+    rating_rule: c35_sonnet_output
+    dimension_match: { model: claude-3.5-sonnet, token_type: output }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
-    rating_rule: claude3_opus_output
-    dimension_match: { model: claude-3-opus, operation: output }
+    rating_rule: c35_sonnet_cache_read
+    dimension_match: { model: claude-3.5-sonnet, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: c35_sonnet_cache_write_5m
+    dimension_match: { model: claude-3.5-sonnet, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: c35_sonnet_cache_write_1h
+    dimension_match: { model: claude-3.5-sonnet, token_type: cache_write_1h }
     aggregation_mode: sum
     priority: 100
 
   - meter: tokens
-    rating_rule: claude3_sonnet_input
-    dimension_match: { model: claude-3-sonnet, operation: input }
+    rating_rule: opus_input
+    dimension_match: { model: claude-3-opus, token_type: input }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
-    rating_rule: claude3_sonnet_output
-    dimension_match: { model: claude-3-sonnet, operation: output }
+    rating_rule: opus_output
+    dimension_match: { model: claude-3-opus, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus_cache_read
+    dimension_match: { model: claude-3-opus, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus_cache_write_5m
+    dimension_match: { model: claude-3-opus, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus_cache_write_1h
+    dimension_match: { model: claude-3-opus, token_type: cache_write_1h }
     aggregation_mode: sum
     priority: 100
 
   - meter: tokens
-    rating_rule: claude3_haiku_input
-    dimension_match: { model: claude-3-haiku, operation: input }
+    rating_rule: sonnet_input
+    dimension_match: { model: claude-3-sonnet, token_type: input }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
-    rating_rule: claude3_haiku_output
-    dimension_match: { model: claude-3-haiku, operation: output }
+    rating_rule: sonnet_output
+    dimension_match: { model: claude-3-sonnet, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet_cache_read
+    dimension_match: { model: claude-3-sonnet, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet_cache_write_5m
+    dimension_match: { model: claude-3-sonnet, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet_cache_write_1h
+    dimension_match: { model: claude-3-sonnet, token_type: cache_write_1h }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: haiku_input
+    dimension_match: { model: claude-3-haiku, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku_output
+    dimension_match: { model: claude-3-haiku, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku_cache_read
+    dimension_match: { model: claude-3-haiku, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku_cache_write_5m
+    dimension_match: { model: claude-3-haiku, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku_cache_write_1h
+    dimension_match: { model: claude-3-haiku, token_type: cache_write_1h }
     aggregation_mode: sum
     priority: 100
 

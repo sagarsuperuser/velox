@@ -21,18 +21,25 @@ Ship a **push-mode adapter** that accepts LiteLLM's `StandardLoggingPayload` dir
 
 ### Token mapping convention
 
-Each LiteLLM call maps to up to two Velox usage events:
+> **Superseded by ADR-044 (2026-06-01).** The original two-meter shape
+> (`tokens_input` / `tokens_output`) is replaced by the canonical single
+> `tokens` meter with token role carried on the `token_type` dimension. The
+> table below reflects the current (ADR-044) mapping.
 
-| LiteLLM field         | Velox event 1 (input)            | Velox event 2 (output)             |
-|-----------------------|----------------------------------|------------------------------------|
-| `usage.prompt_tokens` | `meter_key=tokens_input`, qty=N  | —                                  |
-| `usage.completion_tokens` | —                            | `meter_key=tokens_output`, qty=N   |
-| `model`               | `dimensions.model`               | `dimensions.model`                 |
-| `custom_llm_provider` | `dimensions.provider`            | `dimensions.provider`              |
-| `metadata.team_id`    | `dimensions.team_id` (if present)| `dimensions.team_id` (if present)  |
-| `metadata.request_tags` | `dimensions.request_tags`      | `dimensions.request_tags`          |
-| `user`                | (resolves to `external_customer_id`) | (same)                         |
-| `id`                  | `idempotency_key = id + ":input"` | `idempotency_key = id + ":output"` |
+Each LiteLLM call maps to up to two Velox usage events on the single `tokens` meter:
+
+| LiteLLM field         | Velox event 1 (input)                          | Velox event 2 (output)                          |
+|-----------------------|------------------------------------------------|-------------------------------------------------|
+| `usage.prompt_tokens` | `meter_key=tokens`, `token_type=input`, qty=N  | —                                               |
+| `usage.completion_tokens` | —                                          | `meter_key=tokens`, `token_type=output`, qty=N  |
+| `model`               | `dimensions.model`                             | `dimensions.model`                              |
+| `custom_llm_provider` | `dimensions.provider`                          | `dimensions.provider`                           |
+| `metadata.team_id`    | `dimensions.team_id` (if present)              | `dimensions.team_id` (if present)               |
+| `metadata.request_tags` | `dimensions.request_tags`                    | `dimensions.request_tags`                       |
+| `user`                | (resolves to `external_customer_id`)           | (same)                                          |
+| `id`                  | `idempotency_key = id + ":input"`              | `idempotency_key = id + ":output"`              |
+
+Cache roles (`cache_read`, `cache_write_5m`, `cache_write_1h`) are a fast-follow once the payload parser reads `prompt_tokens_details.cached_tokens` / Anthropic `cache_creation` and normalizes them to additive-disjoint quantities (ADR-044).
 
 ### Customer resolution
 
@@ -40,7 +47,7 @@ LiteLLM's `user` field is the partner's caller identity. We require operators to
 
 ### Meter creation
 
-Operators must create the `tokens_input` and `tokens_output` meters in Velox before LiteLLM events start arriving. Recommended path: instantiate the `anthropic_style` or `openai_style` recipe (both wedge-aligned, three AI-native recipes post-Phase-2 trim). Missing meters → 422 per row.
+Operators must create the single `tokens` meter in Velox before LiteLLM events start arriving (ADR-044). Recommended path: instantiate the `anthropic_style` or `openai_style` recipe (both create the `tokens` meter + the per-`{model, token_type}` pricing rules). Missing meter → 422 per row.
 
 Velox does NOT auto-create meters from LiteLLM payloads. Reasons:
 - Aggregation choice (sum vs max vs last_during_period) is a pricing decision the operator owns

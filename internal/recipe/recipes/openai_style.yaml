@@ -1,20 +1,26 @@
 key: openai_style
-version: 1.0.0
+version: 2.0.0
 name: OpenAI-style AI inference
 summary: |
-  Per-token billing across model × operation × cached for the GPT family
-  plus embedding models. Fourteen pricing rules, one multi-dim meter.
-  Designed for inference platforms reselling OpenAI API access.
+  Per-token billing across model × token_type for the GPT family plus
+  embedding models. One multi-dim `tokens` meter. Designed for inference
+  platforms reselling OpenAI API access.
 description: |
   Models the public OpenAI pricing page: gpt-4-turbo, gpt-4o,
-  gpt-4o-mini, gpt-3.5-turbo, plus three embedding models. Token
-  billing is broken out by input vs output and a cache-discount on
-  input tokens for the chat models that support prompt caching.
+  gpt-4o-mini, gpt-3.5-turbo, plus three embedding models. Token billing
+  is broken out by the `token_type` event dimension (ADR-044):
 
-  Cached-input rules use higher priority so an event tagged
-  `cached: true` is claimed by the discount rate and not double-counted
-  by the uncached fallback. Embedding models charge once per input
-  token only — no separate output rate.
+    - input        base input (uncached)
+    - output       generated tokens
+    - cache_read   cached-input hit (discounted; chat models only)
+
+  OpenAI charges no separate cache-WRITE fee (prompt caching is automatic),
+  so there are no cache_write_* roles here — unlike anthropic_style. Roles
+  are DISJOINT, so each (model, token_type) is exactly one rule at equal
+  priority; no boolean `cached` flag and no priority tie-break. The
+  provider mapper normalizes OpenAI's cached_tokens (a SUBSET of
+  prompt_tokens) into additive-disjoint input + cache_read quantities.
+  Embedding models charge per input token only (matched by model alone).
 
   All amounts are in cents per million tokens. Operators override
   `currency`, the customer-facing `plan_name`, and the slug `plan_code`
@@ -41,14 +47,14 @@ meters:
     aggregation: sum
 
 rating_rules:
-  # gpt-4-turbo — $10 / $30 per million; cached input $0.50
+  # gpt-4-turbo — input $10 / output $30 per million; cache read $0.50
   - key: gpt4_turbo_input
-    name: GPT-4 Turbo input (uncached)
+    name: GPT-4 Turbo input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 1000
-  - key: gpt4_turbo_input_cached
-    name: GPT-4 Turbo input (cached)
+  - key: gpt4_turbo_cache_read
+    name: GPT-4 Turbo cache read
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 50
@@ -58,14 +64,14 @@ rating_rules:
     currency: '{{ .currency }}'
     flat_amount_cents: 3000
 
-  # gpt-4o — $2.50 / $10 per million; cached input $1.25
+  # gpt-4o — input $2.50 / output $10 per million; cache read $1.25
   - key: gpt4o_input
-    name: GPT-4o input (uncached)
+    name: GPT-4o input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 250
-  - key: gpt4o_input_cached
-    name: GPT-4o input (cached)
+  - key: gpt4o_cache_read
+    name: GPT-4o cache read
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 125
@@ -75,14 +81,14 @@ rating_rules:
     currency: '{{ .currency }}'
     flat_amount_cents: 1000
 
-  # gpt-4o-mini — $0.15 / $0.60 per million; cached input $0.075
+  # gpt-4o-mini — input $0.15 / output $0.60 per million; cache read $0.075
   - key: gpt4o_mini_input
-    name: GPT-4o mini input (uncached)
+    name: GPT-4o mini input
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 15
-  - key: gpt4o_mini_input_cached
-    name: GPT-4o mini input (cached)
+  - key: gpt4o_mini_cache_read
+    name: GPT-4o mini cache read
     mode: flat
     currency: '{{ .currency }}'
     flat_amount_cents: 7
@@ -121,65 +127,64 @@ rating_rules:
     currency: '{{ .currency }}'
     flat_amount_cents: 10
 
+# Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:
-  # Cached variants win via priority=200 over the uncached fallback
-  # for the same (model, operation: input) tuple.
-  - meter: tokens
-    rating_rule: gpt4_turbo_input_cached
-    dimension_match: { model: gpt-4-turbo, operation: input, cached: true }
-    aggregation_mode: sum
-    priority: 200
   - meter: tokens
     rating_rule: gpt4_turbo_input
-    dimension_match: { model: gpt-4-turbo, operation: input }
+    dimension_match: { model: gpt-4-turbo, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4_turbo_cache_read
+    dimension_match: { model: gpt-4-turbo, token_type: cache_read }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
     rating_rule: gpt4_turbo_output
-    dimension_match: { model: gpt-4-turbo, operation: output }
+    dimension_match: { model: gpt-4-turbo, token_type: output }
     aggregation_mode: sum
     priority: 100
 
   - meter: tokens
-    rating_rule: gpt4o_input_cached
-    dimension_match: { model: gpt-4o, operation: input, cached: true }
-    aggregation_mode: sum
-    priority: 200
-  - meter: tokens
     rating_rule: gpt4o_input
-    dimension_match: { model: gpt-4o, operation: input }
+    dimension_match: { model: gpt-4o, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4o_cache_read
+    dimension_match: { model: gpt-4o, token_type: cache_read }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
     rating_rule: gpt4o_output
-    dimension_match: { model: gpt-4o, operation: output }
+    dimension_match: { model: gpt-4o, token_type: output }
     aggregation_mode: sum
     priority: 100
 
   - meter: tokens
-    rating_rule: gpt4o_mini_input_cached
-    dimension_match: { model: gpt-4o-mini, operation: input, cached: true }
-    aggregation_mode: sum
-    priority: 200
-  - meter: tokens
     rating_rule: gpt4o_mini_input
-    dimension_match: { model: gpt-4o-mini, operation: input }
+    dimension_match: { model: gpt-4o-mini, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt4o_mini_cache_read
+    dimension_match: { model: gpt-4o-mini, token_type: cache_read }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
     rating_rule: gpt4o_mini_output
-    dimension_match: { model: gpt-4o-mini, operation: output }
+    dimension_match: { model: gpt-4o-mini, token_type: output }
     aggregation_mode: sum
     priority: 100
 
   - meter: tokens
     rating_rule: gpt35_turbo_input
-    dimension_match: { model: gpt-3.5-turbo, operation: input }
+    dimension_match: { model: gpt-3.5-turbo, token_type: input }
     aggregation_mode: sum
     priority: 100
   - meter: tokens
     rating_rule: gpt35_turbo_output
-    dimension_match: { model: gpt-3.5-turbo, operation: output }
+    dimension_match: { model: gpt-3.5-turbo, token_type: output }
     aggregation_mode: sum
     priority: 100
 
