@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -139,6 +140,22 @@ func (w *CatchupWorker) process(job CatchupJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), CatchupTimeout)
 	defer cancel()
 	ctx = postgres.WithLivemode(ctx, false)
+
+	// A panic in the runner (nil-deref in some billing path, etc.) would
+	// otherwise unwind this goroutine and crash the whole process, taking
+	// down the API server for every tenant. Recover, log with the stack, and
+	// let the drain loop continue — one bad clock can't kill the server.
+	// Mirrors scheduler.runOneTick's recovering wrapper.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("test-clock catchup panicked",
+				"clock_id", job.ClockID,
+				"tenant_id", job.TenantID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
 
 	start := time.Now()
 	if err := w.runner(ctx, job); err != nil {

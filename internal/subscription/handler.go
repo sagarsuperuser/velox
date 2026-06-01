@@ -839,11 +839,11 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 			changeAt:      changeAt,
 			remainingDays: prorationRemainingDays,
 			totalDays:     prorationTotalDays,
-			itemID:          item.ID,
-			oldPlanID:       "",
-			oldQuantity:     0,
-			newPlanID:       item.PlanID,
-			newQuantity:     item.Quantity,
+			itemID:        item.ID,
+			oldPlanID:     "",
+			oldQuantity:   0,
+			newPlanID:     item.PlanID,
+			newQuantity:   item.Quantity,
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
@@ -859,13 +859,13 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 			)
 			if h.auditLogger != nil {
 				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", id, "", map[string]any{
-					"item_id":          item.ID,
-					"change_type":      string(domain.ItemChangeTypeAdd),
-					"plan_id":          item.PlanID,
-					"quantity":         item.Quantity,
+					"item_id":                  item.ID,
+					"change_type":              string(domain.ItemChangeTypeAdd),
+					"plan_id":                  item.PlanID,
+					"quantity":                 item.Quantity,
 					"proration_remaining_days": prorationRemainingDays,
 					"proration_total_days":     prorationTotalDays,
-					"error":            prorationErr.Error(),
+					"error":                    prorationErr.Error(),
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
@@ -1053,15 +1053,15 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			)
 			if h.auditLogger != nil {
 				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
-					"item_id":          result.Item.ID,
-					"change_type":      string(spec.changeType),
-					"old_plan_id":      oldPlanID,
-					"new_plan_id":      input.NewPlanID,
-					"old_quantity":     oldQuantity,
-					"new_quantity":     spec.newQuantity,
+					"item_id":                  result.Item.ID,
+					"change_type":              string(spec.changeType),
+					"old_plan_id":              oldPlanID,
+					"new_plan_id":              input.NewPlanID,
+					"old_quantity":             oldQuantity,
+					"new_quantity":             spec.newQuantity,
 					"proration_remaining_days": prorationRemainingDays,
 					"proration_total_days":     prorationTotalDays,
-					"error":            prorationErr.Error(),
+					"error":                    prorationErr.Error(),
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
@@ -1202,7 +1202,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 			oldPlanID:     removedPlanID,
 			oldQuantity:   removedQuantity,
 			newPlanID:     "",
-			newQuantity:     0,
+			newQuantity:   0,
 		}
 		prorationResult, prorationErr := h.handleItemProration(ctx, tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
@@ -1218,13 +1218,13 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 			)
 			if h.auditLogger != nil {
 				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
-					"item_id":          itemID,
-					"change_type":      string(domain.ItemChangeTypeRemove),
-					"plan_id":          removedPlanID,
-					"quantity":         removedQuantity,
+					"item_id":                  itemID,
+					"change_type":              string(domain.ItemChangeTypeRemove),
+					"plan_id":                  removedPlanID,
+					"quantity":                 removedQuantity,
 					"proration_remaining_days": prorationRemainingDays,
 					"proration_total_days":     prorationTotalDays,
-					"error":            prorationErr.Error(),
+					"error":                    prorationErr.Error(),
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
@@ -1604,8 +1604,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		if h.tax != nil {
 			r, err := h.tax.ApplyTaxToLineItems(ctx, tenantID, sub.CustomerID, effectivePlan.Currency, proratedCents, discountCents, lineItems)
 			if err != nil {
-				slog.WarnContext(ctx, "tax apply failed on proration, proceeding with zero tax",
+				// Transient tax-infra failure. Do NOT finalize with zero tax —
+				// that ships an invoice lying about authoritative amounts.
+				// Mark pending so InvoiceFinalizationStatus stamps Draft and the
+				// tax retry worker re-runs calculation (same contract as the
+				// engine's billOnePeriod / BillOnCreate paths).
+				slog.WarnContext(ctx, "tax apply failed on proration, deferring invoice to draft for retry",
 					"error", err, "subscription_id", sub.ID)
+				taxResult.TaxStatus = domain.InvoiceTaxPending
 			} else {
 				taxResult = r
 			}
@@ -1864,7 +1870,7 @@ type timelineEvent struct {
 	// human-meaningful context that doesn't belong in the main line:
 	// "At end of current period", "New trial end: …", "Amount ≥ …",
 	// "Plan: … → …", "After next cycle close", etc.
-	Detail      string `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"`
 	// DetailTimestamp ships the RFC3339 timestamp that the detail
 	// prefix refers to (e.g. "Auto-resumes" → resumes_at). When set,
 	// the frontend formats it in tenant TZ via formatDateTime so the

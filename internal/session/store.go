@@ -22,6 +22,7 @@ type Store interface {
 	Insert(ctx context.Context, s Session) error
 	GetByIDHash(ctx context.Context, idHash string) (Session, error)
 	Revoke(ctx context.Context, idHash string) error
+	RevokeAllForUser(ctx context.Context, userID string) error
 	UpdateLivemode(ctx context.Context, idHash string, livemode bool) error
 }
 
@@ -106,6 +107,29 @@ func (s *postgresStore) Revoke(ctx context.Context, idHash string) error {
 		SET revoked_at = $1
 		WHERE id_hash = $2 AND revoked_at IS NULL
 	`, time.Now().UTC(), idHash); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RevokeAllForUser revokes every active session for a user in one
+// statement. Backs the password-reset flow: changing the password
+// must invalidate any session a thief minted from a stolen cookie,
+// not let it ride out the 7-day TTL. Uses idx_dashboard_sessions_user
+// (migration 0070). Idempotent — already-revoked rows are skipped by
+// the revoked_at IS NULL guard.
+func (s *postgresStore) RevokeAllForUser(ctx context.Context, userID string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE dashboard_sessions
+		SET revoked_at = $1
+		WHERE user_id = $2 AND revoked_at IS NULL
+	`, time.Now().UTC(), userID); err != nil {
 		return err
 	}
 	return tx.Commit()

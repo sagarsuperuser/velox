@@ -80,18 +80,18 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine      *billing.Engine
-	DunningSvc       *dunning.Service
-	SettingsStore    *tenant.SettingsStore
-	WebhookOutSvc    *webhook.Service
-	OutboxStore      *webhook.OutboxStore
-	EmailOutboxStore *email.OutboxStore
-	EmailSender      *email.Sender
-	CreditSvc          *credit.Service
-	InvoiceSvc         *invoice.Service
-	SubscriptionSvc    *subscription.Service
-	TokenSvc           *payment.TokenService
-	PaymentReconciler  *payment.Reconciler
+	BillingEngine     *billing.Engine
+	DunningSvc        *dunning.Service
+	SettingsStore     *tenant.SettingsStore
+	WebhookOutSvc     *webhook.Service
+	OutboxStore       *webhook.OutboxStore
+	EmailOutboxStore  *email.OutboxStore
+	EmailSender       *email.Sender
+	CreditSvc         *credit.Service
+	InvoiceSvc        *invoice.Service
+	SubscriptionSvc   *subscription.Service
+	TokenSvc          *payment.TokenService
+	PaymentReconciler *payment.Reconciler
 
 	// TestClockSvc lets main.go wire the async catchup queue + worker
 	// (per ADR-015 — Stripe-style async test-clock advance) and run
@@ -135,10 +135,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		} else {
 			sharedEnc = enc
 			customerStore.SetEncryptor(enc)
-			slog.Info("encryption at rest enabled for customer PII, webhook secrets, and Stripe credentials")
+			invoiceStore.SetEncryptor(enc)
+			slog.Info("encryption at rest enabled for customer PII, webhook secrets, Stripe credentials, and hosted-invoice tokens")
 		}
 	} else {
-		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII, webhook secrets, and Stripe credentials stored in plaintext")
+		slog.Warn("VELOX_ENCRYPTION_KEY not set — customer PII, webhook secrets, Stripe credentials, and hosted-invoice tokens stored in plaintext")
 	}
 
 	// Per-tenant Stripe credentials. Each tenant connects their own Stripe
@@ -473,11 +474,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	outboxSender := email.NewOutboxSender(emailOutboxStore)
 	emailOutboxSenderRef := outboxSender
 	var (
-		invoiceEmail       invoice.EmailSender                = outboxSender
-		dunningEmail       dunning.EmailNotifier              = outboxSender
-		receiptEmail       payment.EmailReceipt               = outboxSender
-		paymentSetupEmail  paymentSetupEmailSender            = outboxSender
-		paymentFailedEmail payment.EmailPaymentFailed         = outboxSender
+		invoiceEmail       invoice.EmailSender                 = outboxSender
+		dunningEmail       dunning.EmailNotifier               = outboxSender
+		receiptEmail       payment.EmailReceipt                = outboxSender
+		paymentSetupEmail  paymentSetupEmailSender             = outboxSender
+		paymentFailedEmail payment.EmailPaymentFailed          = outboxSender
 		magicLinkEmail     customerportal.MagicLinkEmailSender = outboxSender
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
@@ -893,7 +894,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// hits a 404 when clicking the email.
 	dashboardBaseURL := strings.TrimSpace(os.Getenv("DASHBOARD_BASE_URL"))
 	if dashboardBaseURL == "" {
-		slog.Warn("DASHBOARD_BASE_URL NOT SET — password-reset links will use the API server's Host header. Fine for single-origin prod (api + dashboard share a domain), but for split-origin dev set this to the dashboard SPA URL (e.g. http://localhost:5173).")
+		slog.Warn("DASHBOARD_BASE_URL NOT SET — password-reset emails will NOT be sent (the reset link origin is never derived from request headers, to prevent host-header poisoning / token theft). Set this to your canonical dashboard URL (e.g. http://localhost:5173 in dev) to enable password-reset emails.")
 	}
 	dashboardAuthH := user.NewHandler(
 		userSvc, sessionSvc, session.DefaultCookieConfig(),
@@ -902,19 +903,19 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	s := &Server{
-		BillingEngine:    engine,
-		DunningSvc:       dunningSvc,
-		SettingsStore:    settingsStore,
-		WebhookOutSvc:    webhookOutSvc,
-		OutboxStore:      outboxStore,
-		EmailOutboxStore: emailOutboxStore,
-		EmailSender:      emailSender,
-		CreditSvc:          creditSvc,
-		InvoiceSvc:         invoiceSvc,
-		SubscriptionSvc:    subSvc,
-		TokenSvc:           tokenSvc,
-		PaymentReconciler:  paymentReconciler,
-		TestClockSvc:       testClockSvc,
+		BillingEngine:     engine,
+		DunningSvc:        dunningSvc,
+		SettingsStore:     settingsStore,
+		WebhookOutSvc:     webhookOutSvc,
+		OutboxStore:       outboxStore,
+		EmailOutboxStore:  emailOutboxStore,
+		EmailSender:       emailSender,
+		CreditSvc:         creditSvc,
+		InvoiceSvc:        invoiceSvc,
+		SubscriptionSvc:   subSvc,
+		TokenSvc:          tokenSvc,
+		PaymentReconciler: paymentReconciler,
+		TestClockSvc:      testClockSvc,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)
@@ -943,7 +944,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if rdb != nil {
 		userSvc.SetFailureCounter(user.NewRedisFailureCounter(rdb))
 	}
-	rateLimiter := mw.NewRateLimiter(rdb, 100, time.Minute)
+	rateLimiter := mw.NewRateLimiter(rdb, "general", 100, time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
 	// silently disabling rate limiting (DDoS vector).
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
@@ -959,7 +960,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// requests per visit. 60/min per IP leaves headroom for ~10
 	// simultaneous customers behind a single corporate NAT while keeping
 	// enumerations and scraping bounded.
-	hostedInvoiceRL := mw.NewRateLimiter(rdb, 60, time.Minute)
+	hostedInvoiceRL := mw.NewRateLimiter(rdb, "hosted_invoice", 60, time.Minute)
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		hostedInvoiceRL.SetFailClosed(true)
 	}
@@ -970,13 +971,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// a Redis hiccup shouldn't block a legitimate operator's "send link"
 	// action; the worst case (Redis down + actual double-click) is two
 	// near-identical emails, no money/state at risk.
-	setupLinkCooldown := mw.NewRateLimiter(rdb, 1, time.Minute)
+	setupLinkCooldown := mw.NewRateLimiter(rdb, "setup_link", 1, time.Minute)
 	paymentMethodsH.SetCooldown(setupLinkCooldown)
 
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// Only honor X-Forwarded-For / X-Real-IP from configured trusted proxies.
+	// chi's middleware.RealIP trusted them unconditionally, letting any client
+	// forge a forwarding header to rotate its per-IP rate-limit bucket
+	// (enumeration bypass) or pin a victim's IP. TRUST_PROXY is a comma-list of
+	// CIDRs / IPs (e.g. "10.0.0.0/8,127.0.0.1"); unset → trust nothing and key
+	// rate limits on the raw TCP peer.
+	trustedProxies := mw.ParseTrustedProxies(os.Getenv("TRUST_PROXY"))
+	if len(trustedProxies) == 0 {
+		slog.Info("TRUST_PROXY not set — X-Forwarded-For/X-Real-IP ignored; rate limiting keys on the direct TCP peer. Set TRUST_PROXY to your load balancer's CIDR if Velox runs behind a proxy.")
+	}
+	r.Use(mw.TrustedRealIP(trustedProxies))
 	corsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsEnv == "" {
 		corsEnv = "http://localhost:3000,http://localhost:5173,http://localhost:5174"
@@ -1216,7 +1227,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
-		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/feature-flags", featureH.Routes())
+		// Per-route gating: listing + per-tenant overrides are tenant-scoped
+		// (PermAPIKeyRead / PermAPIKeyWrite, held by secret + session keys);
+		// the global on/off switch flips behavior for every tenant, so it's
+		// platform-only (PermTenantWrite). A blanket mount permission can't
+		// express this — the two writes are held by disjoint key types — so
+		// the guards are passed down and applied per route.
+		r.Mount("/feature-flags", featureH.Routes(
+			auth.Require(auth.PermAPIKeyRead),
+			auth.Require(auth.PermTenantWrite),
+			auth.Require(auth.PermAPIKeyWrite),
+		))
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		// Streaming CSV exports — one per resource. Each endpoint
@@ -1257,11 +1278,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// click from a retry-happy mobile client must not create two payment
 	// methods for the same card.
 	portalAPI := portalapi.New(portalapi.Deps{
-		Invoices:      invoiceSvc,
-		Subscriptions: subSvc,
-		Customers:     customerStore,
-		Settings:      settingsStore,
-		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
+		Invoices:       invoiceSvc,
+		Subscriptions:  subSvc,
+		Customers:      customerStore,
+		Settings:       settingsStore,
+		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
 		Credits:        &portalCreditReaderAdapter{svc: creditSvc},
 		CustomerWriter: &portalCustomerWriterAdapter{svc: customerSvc},
 		// Pay-now needs both the Stripe charger and a way to look

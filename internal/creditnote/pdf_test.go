@@ -41,7 +41,7 @@ func TestRenderPDF_Basic(t *testing.T) {
 		Currency:   "USD",
 		TaxCountry: "US",
 		TaxName:    "Sales Tax",
-		TaxRate:      18.00,
+		TaxRate:    18.00,
 	}
 	bt := BillToInfo{
 		Name:         "Acme Corp",

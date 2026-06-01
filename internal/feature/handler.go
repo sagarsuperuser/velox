@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/auth"
 )
 
 // Handler serves HTTP endpoints for feature flag management.
@@ -21,12 +22,28 @@ func NewHandler(svc *Service) *Handler {
 }
 
 // Routes returns a chi.Router with all feature flag routes.
-func (h *Handler) Routes() chi.Router {
+//
+// Gating differs by blast radius and is enforced per-route rather than at the
+// mount point because a single mount-level permission can't distinguish the
+// global mutation (affects every tenant) from the per-tenant override
+// (affects only the caller's tenant), and the two are held by disjoint key
+// types (platform vs secret/session):
+//
+//   - readGuard protects GET / — listing the global flags.
+//   - globalGuard protects PUT /{key}, the global on/off switch. A global
+//     flip changes behavior for ALL tenants, so it must be platform-only.
+//   - tenantGuard protects the override routes, which are scoped to the
+//     caller's own tenant (derived from auth context, never the URL).
+//
+// The override routes deliberately omit a {tenant_id} path segment: the
+// tenant is taken from the authenticated principal so a tenant-scoped key
+// cannot write or delete another tenant's override (IDOR).
+func (h *Handler) Routes(readGuard, globalGuard, tenantGuard func(http.Handler) http.Handler) chi.Router {
 	r := chi.NewRouter()
-	r.Get("/", h.list)
-	r.Put("/{key}", h.setGlobal)
-	r.Put("/{key}/overrides/{tenant_id}", h.setOverride)
-	r.Delete("/{key}/overrides/{tenant_id}", h.removeOverride)
+	r.With(readGuard).Get("/", h.list)
+	r.With(globalGuard).Put("/{key}", h.setGlobal)
+	r.With(tenantGuard).Put("/{key}/override", h.setOverride)
+	r.With(tenantGuard).Delete("/{key}/override", h.removeOverride)
 	return r
 }
 
@@ -71,7 +88,9 @@ type setOverrideRequest struct {
 
 func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
-	tenantID := chi.URLParam(r, "tenant_id")
+	// Tenant is the authenticated principal's, never a URL param — taking it
+	// from the path let a tenant-scoped key write another tenant's override.
+	tenantID := auth.TenantID(r.Context())
 
 	var req setOverrideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -94,7 +113,9 @@ func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) removeOverride(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
-	tenantID := chi.URLParam(r, "tenant_id")
+	// Tenant is the authenticated principal's, never a URL param — taking it
+	// from the path let a tenant-scoped key delete another tenant's override.
+	tenantID := auth.TenantID(r.Context())
 
 	if err := h.svc.RemoveOverride(r.Context(), tenantID, key); err != nil {
 		slog.ErrorContext(r.Context(), "feature flags: remove override", "key", key, "tenant", tenantID, "error", err)

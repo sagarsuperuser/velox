@@ -1638,7 +1638,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// plan (which UNIQUE (sub_id, plan_id) prevents, but defend anyway) resolve
 	// to the same plan struct.
 	plans := make(map[string]domain.Plan, len(sub.Items))
-	planIDs := make([]string, 0, len(sub.Items))
 	for _, it := range sub.Items {
 		if _, ok := plans[it.PlanID]; ok {
 			continue
@@ -1648,7 +1647,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			return false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
 		}
 		plans[it.PlanID] = pl
-		planIDs = append(planIDs, it.PlanID)
 	}
 
 	// Invoice currency: customer billing profile > tenant settings > first
@@ -2160,7 +2158,14 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// Coupons removed 2026-05-29 (Phase A1). Discount stays at zero;
 	// AI-native discount intent flows through the credit ledger.
 	var discountCents int64
-	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, lineItems)
+	if err != nil {
+		// A tax failure must abort before invoice create/finalize and
+		// before the cycle advances — otherwise a transient DB blip would
+		// finalize a $0 invoice and burn the period. Returning the error
+		// leaves the sub untouched so the next tick retries.
+		return false, fmt.Errorf("apply tax: %w", err)
+	}
 	// In tax-inclusive mode the engine back-calculates net subtotal/discount
 	// from the gross inputs; in exclusive mode these pass through unchanged,
 	// so the caller always reads the authoritative values off the result.

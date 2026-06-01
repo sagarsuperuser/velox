@@ -256,13 +256,21 @@ func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, i
 	}
 
 	_, err = s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:  customerID,
-		EntryType:   domain.CreditGrant,
-		AmountCents: totalUsed,
-		Description: desc,
-		InvoiceID:   invoiceID,
+		CustomerID:              customerID,
+		EntryType:               domain.CreditGrant,
+		AmountCents:             totalUsed,
+		Description:             desc,
+		InvoiceID:               invoiceID,
+		SourceInvoiceReversalID: invoiceID,
 	})
 	if err != nil {
+		// A second void / dunning manual-resolve of the same invoice hits the
+		// partial unique index (migration 0106) and the store returns
+		// ErrAlreadyExists with this code — the reversal already happened, so
+		// this is an idempotent no-op rather than a double-credit.
+		if errs.Code(err) == "credit_reversal_source_taken" {
+			return 0, nil
+		}
 		return 0, err
 	}
 

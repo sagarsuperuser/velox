@@ -36,7 +36,14 @@ func (m *memStore) Ingest(_ context.Context, tenantID string, e domain.UsageEven
 	return e, nil
 }
 
-func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {
+// listClamp mirrors the PostgresStore.List cap (it silently clamps the
+// requested limit to 1000). GetSummary must NOT read its totals from
+// List, or any customer with more events than this in the window is
+// under-counted. Keeping the fake honest about the clamp is what makes
+// the GetSummary regression test meaningful.
+const listClamp = 1000
+
+func (m *memStore) matching(filter ListFilter) []domain.UsageEvent {
 	var result []domain.UsageEvent
 	for _, e := range m.events {
 		if e.TenantID != filter.TenantID {
@@ -47,11 +54,35 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEve
 		}
 		result = append(result, e)
 	}
-	return result, len(result), nil
+	return result
 }
 
-func (m *memStore) Aggregate(_ context.Context, _ ListFilter) (Aggregate, error) {
-	return Aggregate{ByMeter: []MeterTotal{}}, nil
+func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {
+	result := m.matching(filter)
+	total := len(result)
+	if len(result) > listClamp {
+		result = result[:listClamp]
+	}
+	return result, total, nil
+}
+
+// Aggregate reduces the full filtered set server-side (no clamp) — the
+// shape PostgresStore.Aggregate produces via COUNT(*) + GROUP BY SUM.
+func (m *memStore) Aggregate(_ context.Context, filter ListFilter) (Aggregate, error) {
+	events := m.matching(filter)
+	byMeter := make(map[string]decimal.Decimal)
+	order := []string{}
+	for _, e := range events {
+		if _, seen := byMeter[e.MeterID]; !seen {
+			order = append(order, e.MeterID)
+		}
+		byMeter[e.MeterID] = byMeter[e.MeterID].Add(e.Quantity)
+	}
+	agg := Aggregate{TotalEvents: len(events), ByMeter: []MeterTotal{}}
+	for _, id := range order {
+		agg.ByMeter = append(agg.ByMeter, MeterTotal{MeterID: id, Total: byMeter[id]})
+	}
+	return agg, nil
 }
 
 func (m *memStore) AggregateForBillingPeriod(_ context.Context, _, _ string, _ []string, _, _ time.Time) (map[string]decimal.Decimal, error) {
@@ -127,6 +158,43 @@ func TestIngest(t *testing.T) {
 			if err == nil {
 				t.Errorf("expected error for %+v", input)
 			}
+		}
+	})
+
+	t.Run("rejects future timestamp on live ingest", func(t *testing.T) {
+		future := time.Now().UTC().Add(2 * time.Hour)
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_fut", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &future,
+		})
+		if err == nil {
+			t.Error("expected rejection for future-dated live usage event")
+		}
+	})
+
+	t.Run("allows near-now timestamp within skew", func(t *testing.T) {
+		near := time.Now().UTC().Add(1 * time.Minute) // within usageFutureSkew
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_near", MeterID: "mtr_1", Quantity: dec(1), Timestamp: &near,
+		})
+		if err != nil {
+			t.Errorf("near-now timestamp within skew should be accepted, got: %v", err)
+		}
+	})
+
+	t.Run("rejects quantity exceeding NUMERIC(38,12) envelope", func(t *testing.T) {
+		huge := decimal.New(1, 26) // 10^26 — one past the 26-integer-digit limit
+		_, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_big", MeterID: "mtr_1", Quantity: huge,
+		})
+		if err == nil {
+			t.Error("expected 422-style rejection for over-magnitude quantity (would 500 on INSERT)")
+		}
+		// A large-but-representable value (just under the bound) is accepted.
+		ok := decimal.New(999, 23) // 9.99e25 < 10^26
+		if _, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_ok_big", MeterID: "mtr_1", Quantity: ok,
+		}); err != nil {
+			t.Errorf("representable large quantity should be accepted, got: %v", err)
 		}
 	})
 
@@ -213,6 +281,42 @@ func TestAggregateByPricingRules_DefaultModeValidation(t *testing.T) {
 			t.Fatalf("empty mode should default to sum: %v", err)
 		}
 	})
+}
+
+// TestGetSummaryServerSideAggregate is the regression guard for the
+// under-count bug: GetSummary used List(Limit:10000), but List clamps to
+// 1000, so a customer with >1000 events in the window reported a truncated
+// total_events AND truncated per-meter quantities. The fix reads from
+// store.Aggregate (full COUNT(*) + GROUP BY SUM). This test ingests more
+// than the clamp and asserts the summary reflects the full set.
+func TestGetSummaryServerSideAggregate(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	const n = listClamp + 250 // 1250 events, over the List clamp
+	for i := 0; i < n; i++ {
+		if _, err := svc.Ingest(ctx, "t1", IngestInput{
+			CustomerID: "cus_big", MeterID: "mtr_tokens", Quantity: dec(1),
+		}); err != nil {
+			t.Fatalf("ingest %d: %v", i, err)
+		}
+	}
+
+	from := time.Now().Add(-1 * time.Hour)
+	to := time.Now().Add(1 * time.Hour)
+	summary, err := svc.GetSummary(ctx, "t1", "cus_big", from, to)
+	if err != nil {
+		t.Fatalf("GetSummary: %v", err)
+	}
+
+	if summary.TotalEvents != n {
+		t.Errorf("total_events: got %d, want %d (List-clamped under-count regressed)", summary.TotalEvents, n)
+	}
+	got := summary.Meters["mtr_tokens"]
+	if !got.Equal(dec(int64(n))) {
+		t.Errorf("meter total: got %s, want %d (per-meter quantity truncated)", got.String(), n)
+	}
 }
 
 // TestBackfill exercises the audit-path contract: past timestamp required,

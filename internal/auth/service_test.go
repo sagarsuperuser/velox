@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -166,7 +167,10 @@ func TestCreateKey_Publishable(t *testing.T) {
 func TestCreateKey_Platform(t *testing.T) {
 	svc := NewService(newMemStore())
 
-	result, err := svc.CreateKey(context.Background(), "tenant1", CreateKeyInput{
+	// Platform keys may only be minted by an existing platform principal, so
+	// the caller ctx must carry KeyTypePlatform.
+	ctx := WithKeyType(context.Background(), KeyTypePlatform)
+	result, err := svc.CreateKey(ctx, "tenant1", CreateKeyInput{
 		Name:    "Platform Key",
 		KeyType: KeyTypePlatform,
 	})
@@ -178,6 +182,36 @@ func TestCreateKey_Platform(t *testing.T) {
 	}
 	if result.Key.KeyType != "platform" {
 		t.Errorf("key_type: got %q, want platform", result.Key.KeyType)
+	}
+}
+
+// Regression for the audit critical (velox-ops #1): a non-platform principal
+// (secret key, dashboard session, or no key-type in ctx) must NOT be able to
+// mint a platform key by passing key_type=platform in the request body. Before
+// the fix, any single-tenant secret/session could self-escalate to a platform
+// key and read/create every tenant.
+func TestCreateKey_Platform_RejectedForNonPlatformCaller(t *testing.T) {
+	svc := NewService(newMemStore())
+
+	callers := map[string]context.Context{
+		"no key-type (raw ctx)": context.Background(),
+		"secret key":            WithKeyType(context.Background(), KeyTypeSecret),
+		"dashboard session":     WithKeyType(context.Background(), KeyTypeSession),
+		"publishable key":       WithKeyType(context.Background(), KeyTypePublishable),
+	}
+	for name, ctx := range callers {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.CreateKey(ctx, "tenant1", CreateKeyInput{
+				Name:    "Escalation attempt",
+				KeyType: KeyTypePlatform,
+			})
+			if err == nil {
+				t.Fatal("expected platform-key creation to be rejected, got nil error")
+			}
+			if !errors.Is(err, errs.ErrForbidden) {
+				t.Errorf("want ErrForbidden (HTTP 403), got %T: %v", err, err)
+			}
+		})
 	}
 }
 
@@ -265,10 +299,14 @@ func TestValidateKey_AllTypes(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()
 
+	// A platform principal may mint any key type; use it so the platform
+	// iteration passes the privileged-mint guard (secret/publishable are
+	// unrestricted either way).
+	mintCtx := WithKeyType(ctx, KeyTypePlatform)
 	types := []KeyType{KeyTypeSecret, KeyTypePublishable, KeyTypePlatform}
 	for _, kt := range types {
 		t.Run(string(kt), func(t *testing.T) {
-			result, _ := svc.CreateKey(ctx, "tenant1", CreateKeyInput{
+			result, _ := svc.CreateKey(mintCtx, "tenant1", CreateKeyInput{
 				Name:    "Test " + string(kt),
 				KeyType: kt,
 			})

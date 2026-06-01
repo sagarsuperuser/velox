@@ -112,9 +112,9 @@ func (h *customerPortalHandler) overview(w http.ResponseWriter, r *http.Request)
 	outstanding, _ := h.invoices.GetOutstandingBalance(r.Context(), tenantID, customerID)
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{
-		"customer_id":              customerID,
-		"active_subscriptions":     subs,
-		"recent_invoices":          invoices,
-		"outstanding_balance":      outstanding,
+		"customer_id":          customerID,
+		"active_subscriptions": subs,
+		"recent_invoices":      invoices,
+		"outstanding_balance":  outstanding,
 	})
 }

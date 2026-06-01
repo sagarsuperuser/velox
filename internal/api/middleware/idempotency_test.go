@@ -153,7 +153,7 @@ func TestParsePageParams_MaxLimit(t *testing.T) {
 
 func TestRateLimiter_NilDB_FailsOpen(t *testing.T) {
 	// With nil db the rate limiter should fail open — every request is allowed.
-	rl := NewRateLimiter(nil, 1, time.Minute)
+	rl := NewRateLimiter(nil, "test", 1, time.Minute)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -180,7 +180,7 @@ func TestRateLimiter_NilDB_FailsOpen(t *testing.T) {
 }
 
 func TestRateLimiter_NilDB_FailsClosed_WhenConfigured(t *testing.T) {
-	rl := NewRateLimiter(nil, 1, time.Minute)
+	rl := NewRateLimiter(nil, "test", 1, time.Minute)
 	rl.SetFailClosed(true)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -195,7 +195,7 @@ func TestRateLimiter_NilDB_FailsClosed_WhenConfigured(t *testing.T) {
 }
 
 func TestRateLimiter_HealthSkipped(t *testing.T) {
-	rl := NewRateLimiter(nil, 1, time.Minute)
+	rl := NewRateLimiter(nil, "test", 1, time.Minute)
 	handler := rl.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

@@ -173,31 +173,61 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		subtotal += line.Quantity * line.UnitAmountCents
 	}
 
-	// Validate: total credit notes cannot exceed invoice total.
-	// For unpaid invoices, also cap at current amount_due.
-	existingCNs, err := s.store.List(ctx, ListFilter{TenantID: tenantID, InvoiceID: input.InvoiceID})
+	// Build + insert the credit note under a per-invoice advisory lock so the
+	// over-credit / over-refund caps are evaluated against a snapshot that
+	// can't change underneath us. Two concurrent Create calls for the same
+	// invoice serialize on the lock: the second sees the first's note in
+	// `existingCNs` and is capped correctly, closing the TOCTOU where both
+	// read the same pre-state and both inserted past the invoice total.
+	cn, err := s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
+		// Validate: total credit notes cannot exceed invoice total.
+		// For unpaid invoices, also cap at current amount_due.
+		var existingTotal, existingTaxReversed int64
+		for _, cn := range existingCNs {
+			if cn.Status != domain.CreditNoteVoided {
+				existingTotal += cn.TotalCents
+				existingTaxReversed += cn.TaxAmountCents
+			}
+		}
+		if existingTotal+subtotal > inv.TotalAmountCents {
+			remaining := inv.TotalAmountCents - existingTotal
+			if remaining <= 0 {
+				return domain.CreditNote{}, errs.InvalidState("invoice has already been fully credited")
+			}
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100))
+		}
+		// For unpaid invoices, credit note cannot exceed current amount_due
+		if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
+		}
+
+		return s.buildCreditNote(ctx, tenantID, input, inv, subtotal, existingTotal, existingTaxReversed, existingCNs)
+	})
 	if err != nil {
-		return domain.CreditNote{}, fmt.Errorf("list existing credit notes: %w", err)
-	}
-	var existingTotal, existingTaxReversed int64
-	for _, cn := range existingCNs {
-		if cn.Status != domain.CreditNoteVoided {
-			existingTotal += cn.TotalCents
-			existingTaxReversed += cn.TaxAmountCents
-		}
-	}
-	if existingTotal+subtotal > inv.TotalAmountCents {
-		remaining := inv.TotalAmountCents - existingTotal
-		if remaining <= 0 {
-			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully credited")
-		}
-		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100))
-	}
-	// For unpaid invoices, credit note cannot exceed current amount_due
-	if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
-		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
+		return domain.CreditNote{}, err
 	}
 
+	// Create line items
+	for _, line := range input.Lines {
+		_, err := s.store.CreateLineItem(ctx, tenantID, domain.CreditNoteLineItem{
+			CreditNoteID:      cn.ID,
+			InvoiceLineItemID: line.InvoiceLineItemID,
+			Description:       line.Description,
+			Quantity:          line.Quantity,
+			UnitAmountCents:   line.UnitAmountCents,
+			AmountCents:       line.Quantity * line.UnitAmountCents,
+		})
+		if err != nil {
+			return domain.CreditNote{}, fmt.Errorf("create line item: %w", err)
+		}
+	}
+	return cn, nil
+}
+
+// buildCreditNote runs the tax-breakout, three-channel allocation, refund cap,
+// and number generation, returning the credit note to insert. Called inside
+// CreateUnderInvoiceLock with the lock-stable `existingCNs` snapshot.
+func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input CreateInput, inv domain.Invoice, subtotal, existingTotal, existingTaxReversed int64, existingCNs []domain.CreditNote) (domain.CreditNote, error) {
 	// Break out proportional tax from the gross subtotal. The invoice's
 	// tax_amount / total_amount ratio tells us what fraction of the gross
 	// was tax; apply the same ratio to the CN's gross subtotal so a
@@ -315,7 +345,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		cnNumber = fmt.Sprintf("CN-%s-%06d", now.Format("200601"), now.UnixNano()%1000000)
 	}
 
-	cn, err := s.store.Create(ctx, tenantID, domain.CreditNote{
+	return domain.CreditNote{
 		InvoiceID:            input.InvoiceID,
 		CustomerID:           inv.CustomerID,
 		CreditNoteNumber:     cnNumber,
@@ -329,27 +359,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		OutOfBandAmountCents: outOfBandAmount,
 		Currency:             inv.Currency,
 		RefundStatus:         domain.RefundNone,
-	})
-	if err != nil {
-		return domain.CreditNote{}, err
-	}
-
-	// Create line items
-	for _, line := range input.Lines {
-		_, err := s.store.CreateLineItem(ctx, tenantID, domain.CreditNoteLineItem{
-			CreditNoteID:      cn.ID,
-			InvoiceLineItemID: line.InvoiceLineItemID,
-			Description:       line.Description,
-			Quantity:          line.Quantity,
-			UnitAmountCents:   line.UnitAmountCents,
-			AmountCents:       line.Quantity * line.UnitAmountCents,
-		})
-		if err != nil {
-			return domain.CreditNote{}, fmt.Errorf("create line item: %w", err)
-		}
-	}
-
-	return cn, nil
+	}, nil
 }
 
 // RefundInput describes a direct refund against a paid invoice. It bypasses
@@ -437,8 +447,10 @@ func (s *Service) CreateRefund(ctx context.Context, tenantID string, input Refun
 	issued, err := s.Issue(ctx, tenantID, cn.ID)
 	if err != nil {
 		// Issue failed after Create succeeded — void the draft so we don't
-		// leave an unusable record. Best-effort: if void itself fails,
-		// surface the original issue error (it's the actionable one).
+		// leave an unusable record. Best-effort: Void deliberately refuses
+		// when the Stripe refund leg already executed (that cash must stay
+		// counted in the over-refund cap), and any other void failure is
+		// non-actionable here. Either way, surface the original issue error.
 		_, _ = s.Void(ctx, tenantID, cn.ID)
 		return domain.CreditNote{}, err
 	}
@@ -476,12 +488,52 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return domain.CreditNote{}, errs.InvalidState("can only issue draft credit notes")
 	}
 
+	// Compare-and-swap the draft→issued transition BEFORE any side effect.
+	// Issue() reduces the invoice amount_due (unpaid path) and grants/refunds
+	// (paid path); the amount_due reduction is not idempotent, so two
+	// concurrent or retried Issue() calls that both passed the draft check
+	// above would apply it twice — double-reducing amount_due. The CAS makes
+	// exactly one caller the winner; losers see won=false and return the
+	// already-issued credit note unchanged.
+	won, err := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteIssued)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("claim issue transition: %w", err)
+	}
+	if !won {
+		// A concurrent/retried Issue() already claimed the transition. Return
+		// the current credit note rather than re-applying side effects.
+		return s.store.Get(ctx, tenantID, id)
+	}
+
 	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
 	if err != nil {
 		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
 	}
 
 	if inv.PaymentStatus == domain.PaymentSucceeded {
+		// Re-derive the three-channel allocation from the CURRENT invoice
+		// state. The allocation persisted at Create is frozen against the
+		// invoice status AT THAT TIME: a CN created while the invoice was
+		// still unpaid (InvoiceFinalized) skips Create's paid-invoice
+		// block entirely, so all three channels land at zero. If that
+		// invoice is then paid BEFORE the CN is issued, this Issue path
+		// sees a paid invoice but a CN with zero allocations — neither the
+		// refund leg nor the credit-grant leg below fires, and the
+		// refund/credit silently vanishes (the CN issues as a no-op).
+		//
+		// Mirror Create's documented paid-invoice default: when the
+		// invoice is now paid and the CN carries zero across all three
+		// channels, grant the full CN total to the customer's credit
+		// balance — the safest fallback (no cash movement, restorable
+		// later). Persist it so the dashboard and any retry see the same
+		// allocation the Issue path acts on.
+		if cn.RefundAmountCents == 0 && cn.CreditAmountCents == 0 && cn.OutOfBandAmountCents == 0 && cn.TotalCents > 0 {
+			cn.CreditAmountCents = cn.TotalCents
+			if err := s.store.UpdateAllocation(ctx, tenantID, id, cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents); err != nil {
+				return domain.CreditNote{}, fmt.Errorf("re-derive credit-note allocation at issue: %w", err)
+			}
+		}
+
 		// Invoice already paid — handle based on refund type.
 		//
 		// Idempotency contract (added 2026-05-22 after audit):
@@ -546,10 +598,10 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}
 		}
 	} else {
-		// Invoice not yet paid — reduce amount_due. Idempotent via
-		// the cn.AmountDueReduced flag we'd add for full safety; for
-		// now this path is single-shot per CN and the UpdateStatus
-		// at the end guards against re-entry.
+		// Invoice not yet paid — reduce amount_due. This is the
+		// non-idempotent step; the draft→issued CAS at the top of Issue
+		// guarantees exactly one caller reaches here per credit note, so a
+		// concurrent/retried Issue() can't double-reduce amount_due.
 		if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
 		}
@@ -599,7 +651,9 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		}
 	}
 
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
+	// Status was already flipped to issued by the CAS at the top; just return
+	// the current row (with the refund/tax fields persisted above).
+	return s.store.Get(ctx, tenantID, id)
 }
 
 // RetryRefund re-attempts the Stripe refund for an already-issued
@@ -697,6 +751,20 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditN
 	// To correct a mistake on an issued CN, create a new invoice or adjustment.
 	if cn.Status == domain.CreditNoteIssued {
 		return domain.CreditNote{}, errs.InvalidState("cannot void an issued credit note — issued credit notes are final financial documents")
+	}
+	// Refuse to void a draft CN whose Stripe refund leg already executed.
+	// CreateRefund() voids the draft as a best-effort rollback when Issue()
+	// returns an error — but Issue() persists the Stripe refund_id BEFORE
+	// the credit-grant / tax-reversal steps, so an error after the refund
+	// leg succeeded leaves a draft CN that ALREADY pushed cash back to the
+	// payment method. The over-refund cap in Create()/CreateRefund() sums
+	// RefundAmountCents only over non-voided CNs, so voiding this CN would
+	// drop its executed refund from that ceiling — a later CN could then
+	// refund the same money again (double refund). Keep the CN un-voided so
+	// it stays counted; the operator reconciles the partially-issued CN
+	// (e.g. RetryRefund / re-Issue) instead.
+	if cn.StripeRefundID != "" || cn.RefundStatus == domain.RefundSucceeded {
+		return domain.CreditNote{}, errs.InvalidState("cannot void a credit note whose refund has already been processed — voiding would drop the executed refund from the over-refund cap and allow a duplicate refund. Reconcile the existing refund instead.")
 	}
 	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteVoided)
 }

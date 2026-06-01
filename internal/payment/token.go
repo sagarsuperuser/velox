@@ -116,24 +116,41 @@ func (s *TokenService) Validate(ctx context.Context, rawToken string) (*PaymentU
 	return &t, nil
 }
 
-// MarkUsed marks a token as consumed (prevents reuse). The caller passes the
-// tenantID returned by Validate so the update runs under tenant RLS.
-func (s *TokenService) MarkUsed(ctx context.Context, tenantID, rawToken string) error {
+// Consume atomically marks a token used and reports whether THIS call was the
+// one that consumed it. The conditional UPDATE (used_at IS NULL) is a
+// compare-and-swap: under concurrent requests for the same single-use token,
+// exactly one gets consumed=true and may proceed; the others get false and must
+// abort. This closes the validate→mark-used TOCTOU where two requests both
+// passed Validate's `used_at IS NULL` read and both opened a setup-mode checkout
+// session. Callers must consume BEFORE the side effect, not after.
+//
+// The caller passes the tenantID returned by Validate so the update runs under
+// tenant RLS.
+func (s *TokenService) Consume(ctx context.Context, tenantID, rawToken string) (bool, error) {
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(hash[:])
 
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer postgres.Rollback(tx)
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE payment_update_tokens SET used_at = NOW() WHERE token_hash = $1
-	`, tokenHash); err != nil {
-		return err
+	res, err := tx.ExecContext(ctx, `
+		UPDATE payment_update_tokens SET used_at = NOW()
+		WHERE token_hash = $1 AND used_at IS NULL
+	`, tokenHash)
+	if err != nil {
+		return false, err
 	}
-	return tx.Commit()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // Cleanup deletes expired tokens older than 7 days across all tenants. Runs

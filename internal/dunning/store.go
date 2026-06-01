@@ -68,6 +68,10 @@ type Stats struct {
 	EscalatedCount int   `json:"escalated_count"`
 	ResolvedCount  int   `json:"resolved_count"`
 	AtRiskCents    int64 `json:"at_risk_cents"`
+	// Currency scopes AtRiskCents to the tenant's default currency — the
+	// dashboard shows one coherent at-risk figure instead of a meaningless
+	// sum across mixed-currency invoices.
+	Currency string `json:"currency"`
 }
 
 type RunListFilter struct {

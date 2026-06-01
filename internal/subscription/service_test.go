@@ -2156,7 +2156,7 @@ func TestPeriodAnchoring(t *testing.T) {
 		svc := NewService(newMemStore(), clock.NewFake(now))
 		sub, _ := svc.Create(ctx, "t1", CreateInput{
 			Code: "s", DisplayName: "n", CustomerID: "c",
-			Items: []CreateItemInput{{PlanID: "p"}}, // no StartNow, no TrialDays → draft
+			Items:       []CreateItemInput{{PlanID: "p"}}, // no StartNow, no TrialDays → draft
 			BillingTime: domain.BillingTimeCalendar,
 		})
 		if sub.Status != domain.SubscriptionDraft {
@@ -3202,4 +3202,3 @@ func TestProcessExpiredPauseCollections(t *testing.T) {
 		}
 	})
 }
-

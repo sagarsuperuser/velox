@@ -141,7 +141,6 @@ var (
 		},
 		[]string{"table"},
 	)
-
 )
 
 // RecordStripeBreakerState updates the global breaker state gauge. Called

@@ -32,6 +32,20 @@ func (m *memStore) Create(_ context.Context, tenantID string, cn domain.CreditNo
 	return cn, nil
 }
 
+func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	var existing []domain.CreditNote
+	for _, cn := range m.notes {
+		if cn.TenantID == tenantID && cn.InvoiceID == invoiceID {
+			existing = append(existing, cn)
+		}
+	}
+	cn, err := build(existing)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	return m.Create(ctx, tenantID, cn)
+}
+
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.CreditNote, error) {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
@@ -71,6 +85,26 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return cn, nil
 }
 
+func (m *memStore) TransitionStatus(_ context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return false, errs.ErrNotFound
+	}
+	if cn.Status != from {
+		return false, nil // lost the CAS — already transitioned
+	}
+	cn.Status = to
+	now := time.Now().UTC()
+	if to == domain.CreditNoteIssued {
+		cn.IssuedAt = &now
+	}
+	if to == domain.CreditNoteVoided {
+		cn.VoidedAt = &now
+	}
+	m.notes[id] = cn
+	return true, nil
+}
+
 func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
@@ -78,6 +112,18 @@ func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, st
 	}
 	cn.RefundStatus = status
 	cn.StripeRefundID = stripeRefundID
+	m.notes[id] = cn
+	return nil
+}
+
+func (m *memStore) UpdateAllocation(_ context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	cn.RefundAmountCents = refundCents
+	cn.CreditAmountCents = creditCents
+	cn.OutOfBandAmountCents = outOfBandCents
 	m.notes[id] = cn
 	return nil
 }

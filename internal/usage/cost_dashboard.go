@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
 
@@ -130,6 +131,14 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 	if err != nil {
 		return nil, err
 	}
+
+	// Pin the resolved customer's mode onto ctx before any TxTenant read.
+	// The public cost-dashboard route arrives with no mode set, so the
+	// downstream RLS livemode predicate would default to live — and every
+	// read for a test-mode customer would return nothing (500 in prod).
+	// The token lookup runs under TxBypass and is the only place we learn
+	// the customer's mode, so we propagate it here.
+	ctx = postgres.WithLivemode(ctx, cust.Livemode)
 
 	// Empty-state short-circuit. Without an active sub the usage path
 	// requires an explicit window; we don't have one here so we return

@@ -455,6 +455,14 @@ func validateSettings(ts *domain.TenantSettings) error {
 	if len(ts.CompanyName) > 255 {
 		return errs.Invalid("company_name", "must be at most 255 characters")
 	}
+	// company_name flows into the From: display name of every outbound email.
+	// Control characters (CR/LF in particular) have no legitimate place in a
+	// company name and are the classic email-header-injection vector — reject
+	// at write time so the operator gets a clear error, on top of the
+	// RFC-2047 encoding the sender applies at the wire boundary.
+	if strings.ContainsFunc(ts.CompanyName, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errs.Invalid("company_name", "must not contain control characters or line breaks")
+	}
 	if len(ts.CompanyAddressLine1) > 200 {
 		return errs.Invalid("company_address_line1", "must be at most 200 characters")
 	}
