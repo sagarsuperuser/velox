@@ -10,8 +10,8 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
-	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
@@ -2097,7 +2097,6 @@ func TestRunCycle_TaxProviderErrorDefersInvoice(t *testing.T) {
 	}
 }
 
-
 // TestRunCycle_NoPendingChangeNoAppliedEvent ensures the event is gated on an
 // actual swap — a subscription billing on its existing plan with no pending
 // change must not emit a spurious applied event.
@@ -2140,7 +2139,6 @@ func TestRunCycle_NoPendingChangeNoAppliedEvent(t *testing.T) {
 		}
 	}
 }
-
 
 // TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary locks in the schedule-cancel
 // behaviour: when a sub has cancel_at_period_end=true and the cycle scan
@@ -2955,8 +2953,8 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		stubEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) // 8-day stub
 		stubSub := domain.Subscription{
 			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter",
-			Status: domain.SubscriptionActive,
-			Items: []domain.SubscriptionItem{{PlanID: "pln_advance", Quantity: 1}},
+			Status:                    domain.SubscriptionActive,
+			Items:                     []domain.SubscriptionItem{{PlanID: "pln_advance", Quantity: 1}},
 			CurrentBillingPeriodStart: &stubStart,
 			CurrentBillingPeriodEnd:   &stubEnd,
 		}
@@ -3318,7 +3316,7 @@ func TestRunCycle_SegmentAware_NoChanges_FullPeriodLine(t *testing.T) {
 		subs: map[string]domain.Subscription{
 			"sub_1": {
 				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
-				Items: []domain.SubscriptionItem{{ID: "it_1", PlanID: "pln_a", Quantity: 1}},
+				Items:  []domain.SubscriptionItem{{ID: "it_1", PlanID: "pln_a", Quantity: 1}},
 				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
 				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
 				NextBillingAt: &periodEnd,

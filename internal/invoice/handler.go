@@ -606,10 +606,10 @@ func (h *Handler) markUncollectible(w http.ResponseWriter, r *http.Request) {
 	// Audit Log page can finally show "Marked INV-NNN uncollectible".
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
-			"action":          "marked_uncollectible",
-			"customer_id":     inv.CustomerID,
-			"amount_due":      inv.AmountDueCents,
-			"invoice_number":  inv.InvoiceNumber,
+			"action":         "marked_uncollectible",
+			"customer_id":    inv.CustomerID,
+			"amount_due":     inv.AmountDueCents,
+			"invoice_number": inv.InvoiceNumber,
 		})
 	}
 
@@ -668,10 +668,10 @@ func (h *Handler) recordOfflinePayment(w http.ResponseWriter, r *http.Request) {
 	// paid out-of-band must be traceable for finance reconciliation.
 	if h.auditLogger != nil {
 		meta := map[string]any{
-			"action":          "payment_recorded",
-			"customer_id":     inv.CustomerID,
-			"amount_paid":     inv.AmountPaidCents,
-			"invoice_number":  inv.InvoiceNumber,
+			"action":         "payment_recorded",
+			"customer_id":    inv.CustomerID,
+			"amount_paid":    inv.AmountPaidCents,
+			"invoice_number": inv.InvoiceNumber,
 		}
 		if input.Note != "" {
 			meta["note"] = input.Note

@@ -348,4 +348,3 @@ func andClause(idx *int, col string, args *[]any, val string) string {
 	*idx++
 	return clause
 }
-

@@ -13,11 +13,11 @@ import (
 type contextKey string
 
 const (
-	tenantIDKey       contextKey = "tenant_id"
-	apiKeyIDKey       contextKey = "api_key_id"
-	userIDKey         contextKey = "user_id"
-	keyTypeKey        contextKey = "key_type"
-	customerActorKey  contextKey = "customer_actor_id"
+	tenantIDKey      contextKey = "tenant_id"
+	apiKeyIDKey      contextKey = "api_key_id"
+	userIDKey        contextKey = "user_id"
+	keyTypeKey       contextKey = "key_type"
+	customerActorKey contextKey = "customer_actor_id"
 )
 
 // TestTenantIDKey returns the context key for tenant ID (for use in tests).
