@@ -143,14 +143,28 @@ func (m *mockInvoiceUpdater) ApplyCreditNote(_ context.Context, _, id string, am
 }
 
 type mockWebhookStore struct {
-	events map[string]bool
+	events      map[string]bool // stripe_event_id -> ingested (dedup row present)
+	ingestCalls int             // number of IngestEvent invocations
+	ingestErr   error           // when set, IngestEvent returns this error
+	wasProcErr  error           // when set, WasProcessed returns this error
 }
 
 func newMockWebhookStore() *mockWebhookStore {
 	return &mockWebhookStore{events: make(map[string]bool)}
 }
 
+func (m *mockWebhookStore) WasProcessed(_ context.Context, _, stripeEventID string) (bool, error) {
+	if m.wasProcErr != nil {
+		return false, m.wasProcErr
+	}
+	return m.events[stripeEventID], nil
+}
+
 func (m *mockWebhookStore) IngestEvent(_ context.Context, _ string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error) {
+	m.ingestCalls++
+	if m.ingestErr != nil {
+		return domain.StripeWebhookEvent{}, false, m.ingestErr
+	}
 	if m.events[event.StripeEventID] {
 		return event, false, nil
 	}
@@ -472,6 +486,58 @@ func TestHandleWebhook_PaymentFailed(t *testing.T) {
 	}
 }
 
+// TestHandleWebhook_PaymentFailed_IgnoredForPaidInvoice covers the pass-3
+// medium audit finding: an out-of-order payment_intent.payment_failed arriving
+// after an invoice is already paid must not corrupt it (flip to failed, null
+// paid_at, relink stale PI, start dunning). It's a no-op.
+func TestHandleWebhook_PaymentFailed_IgnoredForPaidInvoice(t *testing.T) {
+	paidAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		inv  domain.Invoice
+	}{
+		{"status paid", domain.Invoice{
+			ID: "inv_1", TenantID: "t1", Status: domain.InvoicePaid,
+			PaymentStatus: domain.PaymentSucceeded, PaidAt: &paidAt,
+			StripePaymentIntentID: "pi_ok",
+		}},
+		{"payment succeeded, finalized", domain.Invoice{
+			ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+			PaymentStatus: domain.PaymentSucceeded, PaidAt: &paidAt,
+			StripePaymentIntentID: "pi_ok",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invoices := newMockInvoiceUpdater()
+			invoices.invoices["inv_1"] = tc.inv
+			invoices.byPI["pi_stale"] = "inv_1"
+
+			stripe := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+
+			err := stripe.HandleWebhook(context.Background(), "t1", domain.StripeWebhookEvent{
+				StripeEventID:   "evt_ooo",
+				EventType:       "payment_intent.payment_failed",
+				PaymentIntentID: "pi_stale",
+				FailureMessage:  "Your card was declined.",
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			got := invoices.invoices["inv_1"]
+			if got.PaymentStatus != domain.PaymentSucceeded {
+				t.Errorf("payment_status: got %q, want succeeded (out-of-order failure ignored)", got.PaymentStatus)
+			}
+			if got.PaidAt == nil {
+				t.Error("paid_at was nulled by an out-of-order failure")
+			}
+			if got.StripePaymentIntentID != "pi_ok" {
+				t.Errorf("stripe_payment_intent_id: got %q, want pi_ok (stale PI must not relink)", got.StripePaymentIntentID)
+			}
+		})
+	}
+}
+
 func TestHandleWebhook_DuplicateEvent(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{
@@ -523,6 +589,97 @@ func TestHandleWebhook_UnhandledEvent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unhandled events should not error: %v", err)
+	}
+}
+
+// TestHandleWebhook_TransientFailureNotConsumed is the unit-level regression
+// guard for the silent-drop bug. A transient processing failure (here: a DB
+// blip on MarkPaid surfaced via a missing-then-present invoice) must:
+//   - return the error to the caller (so the HTTP layer responds 5xx), and
+//   - NOT write the dedup row (so Stripe's redelivery re-processes).
+//
+// Before the fix the dedup row was committed BEFORE the business write, so a
+// failed write left the event marked consumed and the redelivery was dropped.
+func TestHandleWebhook_TransientFailureNotConsumed(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		PaymentStatus:         domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_transient",
+	}
+	invoices.byPI["pi_transient"] = "inv_1"
+
+	webhooks := newMockWebhookStore()
+	// Force the audit/dedup insert to fail transiently — stands in for any
+	// retryable error on the persistence path.
+	stripe := NewStripe(&mockStripeClient{}, &transientMarkPaidInvoices{mockInvoiceUpdater: invoices}, webhooks, nil)
+
+	event := domain.StripeWebhookEvent{
+		StripeEventID:   "evt_transient",
+		EventType:       "payment_intent.succeeded",
+		PaymentIntentID: "pi_transient",
+	}
+
+	err := stripe.HandleWebhook(context.Background(), "t1", event)
+	if err == nil {
+		t.Fatal("expected transient processing error to surface, got nil")
+	}
+	if webhooks.events["evt_transient"] {
+		t.Fatal("transient failure must not mark the event consumed")
+	}
+	if webhooks.ingestCalls != 0 {
+		t.Fatalf("transient failure must not write a dedup row, got %d IngestEvent calls", webhooks.ingestCalls)
+	}
+
+	// Stripe redelivers; the blip has cleared. The event must re-process.
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		PaymentStatus:         domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_transient",
+	}
+	invoices.byPI["pi_transient"] = "inv_1"
+	stripe = NewStripe(&mockStripeClient{}, invoices, webhooks, nil)
+	if err := stripe.HandleWebhook(context.Background(), "t1", event); err != nil {
+		t.Fatalf("redelivery should succeed: %v", err)
+	}
+	if !webhooks.events["evt_transient"] {
+		t.Fatal("successful redelivery must record the dedup row")
+	}
+	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentSucceeded {
+		t.Fatalf("redelivery should settle the invoice: got %q, want succeeded", got)
+	}
+}
+
+// transientMarkPaidInvoices wraps the mock to make MarkPaid fail with a
+// transient (non-ErrNotFound) error.
+type transientMarkPaidInvoices struct {
+	*mockInvoiceUpdater
+}
+
+func (t *transientMarkPaidInvoices) MarkPaid(_ context.Context, _, _ string, _ string, _ time.Time) (domain.Invoice, error) {
+	return domain.Invoice{}, fmt.Errorf("connection reset by peer")
+}
+
+// TestHandleWebhook_PermanentFailureAcked verifies the other half of the
+// classification: an event referencing an invoice that isn't in our DB
+// (errs.ErrNotFound) is permanent — redelivering it forever is pointless — so
+// HandleWebhook acks (returns nil) and records the audit/dedup row.
+func TestHandleWebhook_PermanentFailureAcked(t *testing.T) {
+	invoices := newMockInvoiceUpdater() // empty — no such invoice
+	webhooks := newMockWebhookStore()
+	stripe := NewStripe(&mockStripeClient{}, invoices, webhooks, nil)
+
+	event := domain.StripeWebhookEvent{
+		StripeEventID:   "evt_orphan",
+		EventType:       "payment_intent.succeeded",
+		PaymentIntentID: "pi_orphan",
+	}
+
+	if err := stripe.HandleWebhook(context.Background(), "t1", event); err != nil {
+		t.Fatalf("permanent failure should be ack'd (nil), got: %v", err)
+	}
+	if !webhooks.events["evt_orphan"] {
+		t.Fatal("permanently-unprocessable event should still be recorded for audit + dedup")
 	}
 }
 

@@ -49,18 +49,22 @@ func (s *PostgresStore) AppendEntryTx(ctx context.Context, tx *sql.Tx, tenantID 
 // appendEntryInTx is the shared body. AppendEntry opens+commits its
 // own tx; AppendEntryTx delegates to the caller.
 func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
-	// Lock existing rows for this customer to serialize concurrent writes.
-	// This prevents two concurrent grants from computing the same balance_after.
-	// We lock first, then aggregate — FOR UPDATE can't be used directly with aggregates in all cases.
+	// Serialize concurrent writes for this customer so two grants can't compute
+	// the same balance_after off a stale snapshot. A `SELECT ... FOR UPDATE`
+	// over customer_credit_ledger only locks EXISTING rows — for a customer
+	// with an empty ledger (the very first grant) it matches zero rows and
+	// acquires no lock, so the first concurrent appends raced. A per-customer
+	// transaction advisory lock always serializes, regardless of ledger state;
+	// it releases automatically on commit/rollback.
 	//
-	// tenant_id is included in every predicate as defense-in-depth: RLS (TxTenant)
-	// already restricts rows to this tenant, but if RLS were ever misconfigured or
-	// a future refactor opened a tx without tenant scope, these filters prevent
-	// cross-tenant balance leakage.
-	_, _ = tx.ExecContext(ctx,
-		`SELECT 1 FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2 FOR UPDATE`,
-		tenantID, entry.CustomerID,
-	)
+	// tenant_id is folded into the lock key as defense-in-depth (RLS already
+	// scopes the tx to this tenant).
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+entry.CustomerID,
+	); err != nil {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
 	var currentBalance int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`,
@@ -93,8 +97,8 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
 			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
 			source_subscription_id, source_subscription_item_id, source_plan_changed_at, source_change_type,
-			source_credit_note_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			source_credit_note_id, source_invoice_reversal_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
 			COALESCE(source_subscription_id,''), COALESCE(source_subscription_item_id,''),
@@ -109,6 +113,7 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		postgres.NullableTime(entry.SourcePlanChangedAt),
 		postgres.NullableString(string(entry.SourceChangeType)),
 		postgres.NullableString(entry.SourceCreditNoteID),
+		postgres.NullableString(entry.SourceInvoiceReversalID),
 	).Scan(&entry.ID, &entry.TenantID, &entry.CustomerID, &entry.EntryType,
 		&entry.AmountCents, &entry.BalanceAfter, &entry.Description,
 		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt,
@@ -134,6 +139,9 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 			case "idx_credit_ledger_credit_note_dedup":
 				return domain.CreditLedgerEntry{}, errs.AlreadyExists("credit_note_source",
 					"credit ledger entry already exists for this credit note").WithCode("credit_note_source_taken")
+			case "idx_credit_ledger_reversal_dedup":
+				return domain.CreditLedgerEntry{}, errs.AlreadyExists("invoice_reversal_source",
+					"credit ledger reversal already exists for this invoice").WithCode("credit_reversal_source_taken")
 			}
 			return domain.CreditLedgerEntry{}, errs.AlreadyExists("",
 				fmt.Sprintf("unique constraint %q violated on credit ledger insert",

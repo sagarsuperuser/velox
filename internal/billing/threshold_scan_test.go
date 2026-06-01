@@ -225,6 +225,96 @@ func TestEvaluateThresholds_BelowItemQuantity(t *testing.T) {
 	}
 }
 
+// setupThresholdEngineWithTiming mirrors setupThresholdEngine but lets the
+// caller set the plan's BaseBillTiming so the in_advance double-bill guard
+// can be exercised directly.
+func setupThresholdEngineWithTiming(thresholds *domain.BillingThresholds, usageQty int64, baseTiming domain.BillTiming) (*Engine, *thresholdMockSubs, *mockInvoices) {
+	engine, subs, invoices := setupThresholdEngine(thresholds, usageQty)
+	mp, ok := engine.pricing.(*mockPricing)
+	if !ok {
+		panic("expected *mockPricing")
+	}
+	pln := mp.plans["pln_1"]
+	pln.BaseBillTiming = baseTiming
+	mp.plans["pln_1"] = pln
+	return engine, subs, invoices
+}
+
+// TestEvaluateThresholds_InAdvanceBaseExcluded is the regression test for the
+// double-bill: an in_advance base fee is already billed up front by
+// BillOnCreate / cycle close, so it must NOT count toward the threshold
+// running total or ride along on the early-finalize invoice's line items.
+// Without the guard, running would include the 4900-cent prepaid base and the
+// line items would carry a duplicate base_fee row.
+func TestEvaluateThresholds_InAdvanceBaseExcluded(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		AmountGTE:         100000,
+		ResetBillingCycle: true,
+	}
+	// $49 base is in_advance (prepaid); 1000 calls × 100 cents = 100000 usage.
+	engine, _, _ := setupThresholdEngineWithTiming(thresholds, 1000, domain.BillInAdvance)
+
+	sub, _ := engine.subs.Get(context.Background(), "t1", "sub_1")
+	periodStart := *sub.CurrentBillingPeriodStart
+	now := periodStart.AddDate(0, 0, 5)
+
+	eval, err := engine.evaluateThresholds(context.Background(), sub, periodStart, now)
+	if err != nil {
+		t.Fatalf("evaluateThresholds: %v", err)
+	}
+
+	// Running must be usage-only: the prepaid in_advance base is excluded.
+	wantSubtotal := int64(1000 * 100)
+	if eval.RunningSubtotal != wantSubtotal {
+		t.Errorf("running subtotal: got %d, want %d (in_advance base must be excluded)", eval.RunningSubtotal, wantSubtotal)
+	}
+	// No base_fee line should survive — only usage lines.
+	for _, li := range eval.LineItems {
+		if li.LineType == domain.LineTypeBaseFee {
+			t.Errorf("unexpected base_fee line item in threshold eval (in_advance base double-bills): %+v", li)
+		}
+	}
+	// Usage still crosses the cap on its own, so the fire decision is unchanged.
+	if !eval.CrossedAny {
+		t.Error("expected CrossedAny to be true (usage alone crosses the cap)")
+	}
+}
+
+// TestEvaluateThresholds_InArrearsBaseIncluded is the control: an in_arrears
+// base fee is NOT prepaid, so it must still count toward the running total and
+// appear on the early-finalize line items.
+func TestEvaluateThresholds_InArrearsBaseIncluded(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		AmountGTE:         100000,
+		ResetBillingCycle: true,
+	}
+	engine, _, _ := setupThresholdEngineWithTiming(thresholds, 1000, domain.BillInArrears)
+
+	sub, _ := engine.subs.Get(context.Background(), "t1", "sub_1")
+	periodStart := *sub.CurrentBillingPeriodStart
+	now := periodStart.AddDate(0, 0, 5)
+
+	eval, err := engine.evaluateThresholds(context.Background(), sub, periodStart, now)
+	if err != nil {
+		t.Fatalf("evaluateThresholds: %v", err)
+	}
+
+	// $49 base (4900) + 1000 calls × 100 cents (100000) = 104900.
+	wantSubtotal := int64(4900 + 1000*100)
+	if eval.RunningSubtotal != wantSubtotal {
+		t.Errorf("running subtotal: got %d, want %d (in_arrears base must be included)", eval.RunningSubtotal, wantSubtotal)
+	}
+	var baseFeeLines int
+	for _, li := range eval.LineItems {
+		if li.LineType == domain.LineTypeBaseFee {
+			baseFeeLines++
+		}
+	}
+	if baseFeeLines != 1 {
+		t.Errorf("base_fee line items: got %d, want 1", baseFeeLines)
+	}
+}
+
 // TestScanThresholds_SkipsTerminalSubs covers the gate that prevents
 // firing on canceled/archived subs. The candidate query in postgres
 // already restricts to active+trialing — this test guards the second-line

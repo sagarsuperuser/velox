@@ -185,13 +185,42 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 		return thresholdEval{}, err
 	}
 
+	// in_advance base fees are billed up front by BillOnCreate / cycle close,
+	// so they must NOT count toward the threshold running total or ride along
+	// on the early-finalize invoice — doing so double-bills the prepaid base.
+	// previewWithWindow emits one base_fee line per item (in sub.Items order)
+	// whose plan has BaseAmountCents > 0; mirror that ordering to know each
+	// base_fee preview line's timing. Predicate matches billOnePeriod's base
+	// loop (engine.go base-segment skip). in_arrears base fees and all usage
+	// lines pass through unchanged.
+	inAdvanceBaseTiming := make([]bool, 0, len(sub.Items))
+	for _, it := range sub.Items {
+		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return thresholdEval{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		if plan.BaseAmountCents <= 0 {
+			continue
+		}
+		inAdvanceBaseTiming = append(inAdvanceBaseTiming, plan.BaseBillTiming == domain.BillInAdvance)
+	}
+
 	// Roll up the running subtotal across the previewed lines. Multi-currency
 	// sub already filtered upstream at PATCH time, so we sum across all lines
 	// regardless of per-line currency — there's only one.
 	var running int64
 	currency := ""
+	baseFeeIdx := 0
 	lineItems := make([]domain.InvoiceLineItem, 0, len(preview.Lines))
 	for _, pl := range preview.Lines {
+		if pl.LineType == "base_fee" {
+			isInAdvance := baseFeeIdx < len(inAdvanceBaseTiming) && inAdvanceBaseTiming[baseFeeIdx]
+			baseFeeIdx++
+			if isInAdvance {
+				// Already prepaid — skip from running total and line items.
+				continue
+			}
+		}
 		running += pl.AmountCents
 		if currency == "" {
 			currency = pl.Currency
@@ -339,7 +368,15 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	subtotal := eval.RunningSubtotal
 	var discountCents int64
 
-	taxApp, _ := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, eval.LineItems)
+	// Propagate tax errors rather than discarding them: a swallowed error
+	// yields a zero-value TaxApplication (TaxStatus="") that finalizes a $0
+	// threshold invoice and permanently consumes the cycle idempotency slot,
+	// leaving the over-threshold usage unbilled. Mirrors the cycle-close and
+	// proration call sites. (audit: velox-ops threshold tax-discard finding)
+	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, discountCents, eval.LineItems)
+	if err != nil {
+		return false, fmt.Errorf("apply tax: %w", err)
+	}
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 
 	netDays := 30

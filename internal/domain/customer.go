@@ -81,9 +81,16 @@ type Customer struct {
 	// for customers who never went through any PM flow. Single source
 	// of truth for the mapping since migration 0096; previously lived
 	// on customer_payment_setups (now deprecated).
-	StripeCustomerID string    `json:"stripe_customer_id,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	StripeCustomerID string `json:"stripe_customer_id,omitempty"`
+	// Livemode is the mode the customer row lives in (live vs test).
+	// Hydrated by lookups that resolve a customer outside of any tenant
+	// context (e.g. GetByCostDashboardToken on the public cost-dashboard
+	// route): the caller must pin this onto ctx via postgres.WithLivemode
+	// before any TxTenant read, otherwise the RLS livemode predicate
+	// defaults to live and a test-mode customer's reads return nothing.
+	Livemode  bool      `json:"livemode,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type BillingProfileStatus string
@@ -104,7 +111,7 @@ type CustomerBillingProfile struct {
 	// customers.email is the single canonical recipient. Phase 2
 	// (when a DP asks for multi-recipient) adds a
 	// customer_email_contacts table as an additive layer.
-	Phone string `json:"phone,omitempty"`
+	Phone        string `json:"phone,omitempty"`
 	AddressLine1 string `json:"address_line1,omitempty"`
 	AddressLine2 string `json:"address_line2,omitempty"`
 	City         string `json:"city,omitempty"`

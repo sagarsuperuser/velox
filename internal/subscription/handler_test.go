@@ -425,7 +425,7 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
 			TaxAmountCents: 185,
-			TaxRate:      18.50,
+			TaxRate:        18.50,
 			TaxName:        "VAT",
 			TaxCountry:     "GB",
 		},
@@ -470,6 +470,60 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	}
 	if inv.AmountDueCents != wantTotal {
 		t.Errorf("invoice amount_due = %d, want %d", inv.AmountDueCents, wantTotal)
+	}
+}
+
+// TestUpdateItem_ProrationTaxErrorDefersToDraft covers the medium-severity
+// audit finding: when ApplyTaxToLineItems returns a non-nil (transient infra)
+// error, the proration invoice must NOT finalize with zero tax — it would ship
+// an invoice lying about authoritative amounts. Instead the invoice is stamped
+// Draft with tax_status=pending so the tax retry worker re-runs calculation.
+func TestUpdateItem_ProrationTaxErrorDefersToDraft(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
+	credits := &creditsMock{}
+	taxMock := &prorationTaxApplierMock{err: errors.New("stripe tax: 503 service unavailable")}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetProrationTaxApplier(taxMock)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if taxMock.calls != 1 {
+		t.Errorf("tax applier called %d times, want 1", taxMock.calls)
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.createdInvoices))
+	}
+	inv := invoices.createdInvoices[0]
+	if inv.TaxStatus != domain.InvoiceTaxPending {
+		t.Errorf("invoice TaxStatus = %q, want %q (defer for retry)", inv.TaxStatus, domain.InvoiceTaxPending)
+	}
+	if inv.Status != domain.InvoiceDraft {
+		t.Errorf("invoice Status = %q, want %q (not finalized with zero tax)", inv.Status, domain.InvoiceDraft)
+	}
+	if inv.TaxAmountCents != 0 {
+		t.Errorf("invoice TaxAmountCents = %d, want 0 (no tax computed yet)", inv.TaxAmountCents)
 	}
 }
 

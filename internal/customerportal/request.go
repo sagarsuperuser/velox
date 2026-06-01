@@ -45,10 +45,19 @@ type MagicLinkDelivery interface {
 const maxEmailMatches = 10
 
 // MagicLinkRequestService drives the public "I forgot my portal link"
-// flow. Input is an email; output is always a 202 from the handler.
-// Match-or-miss, malformed-or-clean, the service takes the same code path
-// and same (bounded) time so an attacker can't learn anything from
-// differential response behavior.
+// flow. Input is an email; output is always a 202 from the handler —
+// match-or-miss, malformed-or-clean — so the response BODY/STATUS leaks
+// nothing.
+//
+// Timing is NOT fully constant: a match does extra synchronous work (per-
+// match Mint + DeliverMagicLink) that a miss skips, so response latency is
+// measurably longer on a hit. This is a residual email-enumeration oracle,
+// accepted as low-risk because (a) the email lookup itself is constant-time
+// via the blind index, and (b) the endpoint is rate-limited, so an attacker
+// can't gather enough timing samples to extract signal at scale. Closing it
+// fully would mean decoupling delivery onto a background queue so both paths
+// return after identical synchronous work — deferred until a threat model
+// justifies it. Do NOT re-add a "constant-time" claim here without that.
 type MagicLinkRequestService struct {
 	magic    *MagicLinkService
 	lookup   CustomerLookup

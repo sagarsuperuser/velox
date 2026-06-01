@@ -60,9 +60,9 @@ const (
 type DunningResolution string
 
 const (
-	ResolutionPaymentRecovered      DunningResolution = "payment_recovered"
-	ResolutionManuallyResolved      DunningResolution = "manually_resolved"
-	ResolutionRetriesExhausted      DunningResolution = "retries_exhausted"
+	ResolutionPaymentRecovered DunningResolution = "payment_recovered"
+	ResolutionManuallyResolved DunningResolution = "manually_resolved"
+	ResolutionRetriesExhausted DunningResolution = "retries_exhausted"
 	// ResolutionInvoiceNotCollectible is the operator-driven equivalent
 	// of the automated MarkUncollectible final-action. Picking this in
 	// the resolve-dunning dialog records the run as resolved AND flips

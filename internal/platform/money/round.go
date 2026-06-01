@@ -16,20 +16,30 @@ package money
 // out to zero bias. IEEE 754 default, Python 3's round(), .NET decimal, and
 // most financial/GAAP-adjacent systems use this rule.
 //
-// Requires num >= 0 and denom > 0; billing amounts are always non-negative.
+// Requires denom > 0. num may be negative — downgrade/quantity-reduction
+// proration passes a negative numerator. The rounding operates on the
+// magnitude and reapplies the sign so negatives round symmetrically (half to
+// even on the absolute value). Without this, Go's truncate-toward-zero integer
+// division rounded every negative result toward zero, understating proration
+// credits by up to 1 cent. Positive numerators are unaffected.
 func RoundHalfToEven(num, denom int64) int64 {
+	sign := int64(1)
+	if num < 0 {
+		sign = -1
+		num = -num
+	}
 	quotient := num / denom
 	remainder := num % denom
 	doubled := remainder * 2
 	switch {
 	case doubled < denom:
-		return quotient
+		return sign * quotient
 	case doubled > denom:
-		return quotient + 1
+		return sign * (quotient + 1)
 	default:
 		if quotient%2 == 0 {
-			return quotient
+			return sign * quotient
 		}
-		return quotient + 1
+		return sign * (quotient + 1)
 	}
 }

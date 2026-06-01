@@ -84,6 +84,17 @@ func (s *Service) Revoke(ctx context.Context, rawID string) error {
 	return s.store.Revoke(ctx, HashID(rawID))
 }
 
+// RevokeAllForUser revokes every active session belonging to a user.
+// The password-reset flow calls this after the new password is set so
+// a session minted from a stolen cookie can't outlive the credential
+// change. Idempotent — no active sessions is a no-op.
+func (s *Service) RevokeAllForUser(ctx context.Context, userID string) error {
+	if userID == "" {
+		return nil
+	}
+	return s.store.RevokeAllForUser(ctx, userID)
+}
+
 // SetLivemode flips the active mode (test/live) on the cookie session.
 // Same operator switches between modes without re-authenticating; every
 // downstream request inherits the new mode via session.Resolve.

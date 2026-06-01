@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"mime"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"strings"
@@ -736,16 +738,9 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 	}
 
 	var body strings.Builder
-	fromHeader := s.from
-	if msg.FromName != "" {
-		// RFC 5322 name-then-address. Special characters in FromName
-		// would need quoting; for now assume tenant CompanyName is safe
-		// ASCII (server-side validation enforces that).
-		fromHeader = fmt.Sprintf("%s <%s>", msg.FromName, s.from)
-	}
-	fmt.Fprintf(&body, "From: %s\r\n", fromHeader)
+	fmt.Fprintf(&body, "From: %s\r\n", fromHeaderValue(msg.FromName, s.from))
 	fmt.Fprintf(&body, "To: %s\r\n", msg.To)
-	fmt.Fprintf(&body, "Subject: %s\r\n", msg.Subject)
+	fmt.Fprintf(&body, "Subject: %s\r\n", encodeHeader(msg.Subject))
 	body.WriteString("MIME-Version: 1.0\r\n")
 
 	altBoundary := "velox-alt-" + nonce()
@@ -855,13 +850,9 @@ func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject,
 		return err
 	}
 	var msg strings.Builder
-	fromHeader := s.from
-	if fromName != "" {
-		fromHeader = fmt.Sprintf("%s <%s>", fromName, s.from)
-	}
-	fmt.Fprintf(&msg, "From: %s\r\n", fromHeader)
+	fmt.Fprintf(&msg, "From: %s\r\n", fromHeaderValue(fromName, s.from))
 	fmt.Fprintf(&msg, "To: %s\r\n", to)
-	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&msg, "Subject: %s\r\n", encodeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	msg.WriteString(body)
@@ -876,6 +867,24 @@ func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject,
 }
 
 // ---- Utilities ----
+
+// fromHeaderValue renders the From header. mail.Address.String()
+// RFC-2047-encodes the display name and never emits raw CR/LF, so a tenant
+// CompanyName carrying a header-injection payload (e.g. "Acme\r\nBcc: …")
+// cannot smuggle extra SMTP headers through the From line.
+func fromHeaderValue(fromName, addr string) string {
+	if fromName == "" {
+		return addr
+	}
+	return (&mail.Address{Name: fromName, Address: addr}).String()
+}
+
+// encodeHeader Q-encodes any header value (e.g. Subject) that contains
+// non-ASCII or control characters — CR/LF included — neutralizing header
+// injection regardless of which upstream field flowed in.
+func encodeHeader(v string) string {
+	return mime.QEncoding.Encode("utf-8", v)
+}
 
 func formatAmount(cents int64, currency string) string {
 	return fmt.Sprintf("%s %d.%02d", strings.ToUpper(currency), cents/100, cents%100)

@@ -241,7 +241,7 @@ func TestResolver_Routing(t *testing.T) {
 	t.Run("manual", func(t *testing.T) {
 		r := NewResolver(nil)
 		p, err := r.Resolve(context.Background(), domain.TenantSettings{
-			TaxProvider: "manual", TaxRate:      18.00, TaxName: "GST",
+			TaxProvider: "manual", TaxRate: 18.00, TaxName: "GST",
 		})
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
@@ -283,7 +283,7 @@ func TestResolver_Routing(t *testing.T) {
 		// they want, instead of getting it by accident through a fallback.
 		r := NewResolver(nil)
 		_, err := r.Resolve(context.Background(), domain.TenantSettings{
-			TaxProvider: "stripe_tax", TaxRate:      5.00, TaxName: "Sales Tax",
+			TaxProvider: "stripe_tax", TaxRate: 5.00, TaxName: "Sales Tax",
 		})
 		if err == nil {
 			t.Fatal("Resolve: expected error when stripe_tax selected without wired client")

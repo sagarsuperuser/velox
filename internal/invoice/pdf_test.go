@@ -109,7 +109,7 @@ func TestRenderPDF_ThreeChannelCN_WithTaxReversal(t *testing.T) {
 		Currency:           "INR",
 		SubtotalCents:      7000,
 		TaxAmountCents:     1260,
-		TaxRate:      18.00,
+		TaxRate:            18.00,
 		TaxName:            "IGST",
 		TaxCountry:         "IN",
 		TotalAmountCents:   8260,

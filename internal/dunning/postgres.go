@@ -652,16 +652,28 @@ func (s *PostgresStore) GetStats(ctx context.Context, tenantID string) (Stats, e
 	}
 	defer postgres.Rollback(tx)
 
+	// Resolve the tenant's default currency once. The at-risk total is scoped
+	// to it so we never sum amount_due across currencies into a corrupt figure
+	// (a EUR invoice's cents are not a USD invoice's cents). Defaults to USD
+	// when settings are unset.
+	defaultCurrency := "USD"
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(NULLIF(default_currency, ''), 'USD') FROM tenant_settings LIMIT 1`,
+	).Scan(&defaultCurrency); err != nil && err != sql.ErrNoRows {
+		return Stats{}, err
+	}
+
 	var stats Stats
+	stats.Currency = defaultCurrency
 	err = tx.QueryRowContext(ctx, `
 		SELECT
 		    COUNT(*) FILTER (WHERE r.state = 'active')                                AS active_count,
 		    COUNT(*) FILTER (WHERE r.state = 'escalated')                             AS escalated_count,
 		    COUNT(*) FILTER (WHERE r.state = 'resolved')                              AS resolved_count,
-		    COALESCE(SUM(i.amount_due_cents) FILTER (WHERE r.state IN ('active','escalated')), 0) AS at_risk_cents
+		    COALESCE(SUM(i.amount_due_cents) FILTER (WHERE r.state IN ('active','escalated') AND i.currency = $1), 0) AS at_risk_cents
 		FROM invoice_dunning_runs r
 		LEFT JOIN invoices i ON i.id = r.invoice_id
-	`).Scan(&stats.ActiveCount, &stats.EscalatedCount, &stats.ResolvedCount, &stats.AtRiskCents)
+	`, defaultCurrency).Scan(&stats.ActiveCount, &stats.EscalatedCount, &stats.ResolvedCount, &stats.AtRiskCents)
 	if err != nil {
 		return Stats{}, err
 	}
