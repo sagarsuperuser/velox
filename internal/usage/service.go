@@ -66,6 +66,15 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 // cap on meter_pricing_rules.dimension_match (16 keys).
 const MaxDimensionKeys = 16
 
+// usageFutureSkew is how far ahead of wall-clock a live usage event timestamp
+// may be before it's rejected — absorbs minor client clock drift without
+// letting events be parked in a future billing period.
+const usageFutureSkew = 5 * time.Minute
+
+// maxQuantityMagnitude is the exclusive upper bound on |quantity|. The column
+// is NUMERIC(38,12) → 26 integer digits, so values ≥ 10^26 overflow it.
+var maxQuantityMagnitude = decimal.New(1, 26) // 10^26
+
 // validateDimensions enforces the v1 dimension contract: at most
 // MaxDimensionKeys keys, scalar values only (string, number, bool, nil).
 // Object/array values are rejected — Postgres `@>` would still match
@@ -101,9 +110,25 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		// Negative values are allowed as usage corrections.
 		input.Quantity = decimal.NewFromInt(1)
 	}
+	// The quantity column is NUMERIC(38,12): at most 26 integer digits. A value
+	// with |q| ≥ 10^26 overflows the column and Postgres rejects the INSERT,
+	// surfacing as an HTTP 500. Reject it here as a clean 422 instead. (Excess
+	// fractional precision beyond 12 places is rounded by the column, not an
+	// error, so only the integer magnitude is gated.)
+	if input.Quantity.Abs().Cmp(maxQuantityMagnitude) >= 0 {
+		return domain.UsageEvent{}, errs.Invalid("quantity", "magnitude too large — must be less than 10^26")
+	}
 
 	ts := time.Now().UTC()
 	if input.Timestamp != nil {
+		// Reject future-dated live events (a small clock-skew tolerance keeps
+		// legitimate near-now client clocks working). Without this, only
+		// Backfill rejected future timestamps and a live POST could park usage
+		// in a future billing period. Backfill applies its own stricter
+		// past-only gate before reaching here.
+		if input.Timestamp.After(time.Now().UTC().Add(usageFutureSkew)) {
+			return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future")
+		}
 		ts = input.Timestamp.UTC()
 	}
 
