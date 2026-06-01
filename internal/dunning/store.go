@@ -64,10 +64,10 @@ type Store interface {
 // the invoices behind active+escalated runs). Computed server-side so
 // the cards stay correct regardless of how many runs exist.
 type Stats struct {
-	ActiveCount    int    `json:"active_count"`
-	EscalatedCount int    `json:"escalated_count"`
-	ResolvedCount  int    `json:"resolved_count"`
-	AtRiskCents    int64  `json:"at_risk_cents"`
+	ActiveCount    int   `json:"active_count"`
+	EscalatedCount int   `json:"escalated_count"`
+	ResolvedCount  int   `json:"resolved_count"`
+	AtRiskCents    int64 `json:"at_risk_cents"`
 	// Currency scopes AtRiskCents to the tenant's default currency — the
 	// dashboard shows one coherent at-risk figure instead of a meaningless
 	// sum across mixed-currency invoices.

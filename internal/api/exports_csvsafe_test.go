@@ -9,8 +9,8 @@ import "testing"
 func TestCSVSafe(t *testing.T) {
 	cases := map[string]string{
 		"":                  "",
-		"Acme Inc":          "Acme Inc",      // plain text untouched
-		"cus_123":           "cus_123",       // id untouched
+		"Acme Inc":          "Acme Inc", // plain text untouched
+		"cus_123":           "cus_123",  // id untouched
 		"user@example.com":  "user@example.com",
 		"=HYPERLINK(\"x\")": "'=HYPERLINK(\"x\")", // formula neutralized
 		"+1234567890":       "'+1234567890",
