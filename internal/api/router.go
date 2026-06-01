@@ -893,7 +893,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// hits a 404 when clicking the email.
 	dashboardBaseURL := strings.TrimSpace(os.Getenv("DASHBOARD_BASE_URL"))
 	if dashboardBaseURL == "" {
-		slog.Warn("DASHBOARD_BASE_URL NOT SET — password-reset links will use the API server's Host header. Fine for single-origin prod (api + dashboard share a domain), but for split-origin dev set this to the dashboard SPA URL (e.g. http://localhost:5173).")
+		slog.Warn("DASHBOARD_BASE_URL NOT SET — password-reset emails will NOT be sent (the reset link origin is never derived from request headers, to prevent host-header poisoning / token theft). Set this to your canonical dashboard URL (e.g. http://localhost:5173 in dev) to enable password-reset emails.")
 	}
 	dashboardAuthH := user.NewHandler(
 		userSvc, sessionSvc, session.DefaultCookieConfig(),
