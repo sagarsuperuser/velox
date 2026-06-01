@@ -10,23 +10,31 @@ import (
 	"github.com/sagarsuperuser/velox/internal/usage"
 )
 
-// Meter keys the adapter writes to. Operators must create these two
-// meters in Velox (typically via the anthropic_style / openai_style
-// recipe). Adding new meters here means a new convention partners
-// must mirror; we keep the surface minimal so cost-table changes
-// downstream don't require partner re-config.
+// MeterKeyTokens is the single canonical meter every provider mapper writes
+// to (ADR-044). Token ROLE rides on the `token_type` dimension, NOT on the
+// meter key — so the anthropic_style / openai_style recipes (and the cost
+// dashboard) see one `tokens` meter grouped by {model, token_type}, and a new
+// provider never re-opens a meter-shape mismatch.
+const MeterKeyTokens = "tokens"
+
+// Canonical token-role values for the `token_type` dimension (ADR-044). The
+// vocabulary is shared by the recipes and every provider mapper. LiteLLM
+// currently exposes only input/output; the cache roles (cache_read,
+// cache_write_5m, cache_write_1h) are a fast-follow once the payload parser
+// reads prompt_tokens_details / cache_creation and normalizes them to
+// additive-disjoint quantities.
 const (
-	MeterKeyTokensInput  = "tokens_input"
-	MeterKeyTokensOutput = "tokens_output"
+	TokenTypeInput  = "input"
+	TokenTypeOutput = "output"
 )
 
 // MapPayload converts a single LiteLLM StandardLoggingPayload into
 // zero, one, or two Velox IngestInput events.
 //
-// Mapping (per ADR-033):
+// Mapping (per ADR-044, superseding ADR-033's two-meter shape):
 //
-//	prompt_tokens     → IngestInput{meter_key: tokens_input,  quantity: N, ...}
-//	completion_tokens → IngestInput{meter_key: tokens_output, quantity: N, ...}
+//	prompt_tokens     → {meter_key: tokens, token_type: input,  quantity: N}
+//	completion_tokens → {meter_key: tokens, token_type: output, quantity: N}
 //
 // Skipped when:
 //   - call_type isn't token-bearing (image_gen, moderation, etc.)
@@ -85,29 +93,43 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 
 	out := make([]ExternalIngest, 0, 2)
 
+	// One event per present role on the single `tokens` meter, role carried
+	// as the `token_type` dimension (ADR-044). Dimensions are cloned per role
+	// so each event gets its own token_type without aliasing the shared map.
 	if p.Usage.PromptTokens > 0 {
 		out = append(out, ExternalIngest{
 			ExternalCustomerID: p.User,
-			MeterKey:           MeterKeyTokensInput,
+			MeterKey:           MeterKeyTokens,
 			Quantity:           decimal.NewFromInt(p.Usage.PromptTokens),
-			Dimensions:         dims,
-			IdempotencyKey:     p.ID + ":input",
+			Dimensions:         dimsWithTokenType(dims, TokenTypeInput),
+			IdempotencyKey:     p.ID + ":" + TokenTypeInput,
 			Timestamp:          &ts,
-			Metadata:           buildEventMetadata(p, "input"),
+			Metadata:           buildEventMetadata(p, TokenTypeInput),
 		})
 	}
 	if p.Usage.CompletionTokens > 0 {
 		out = append(out, ExternalIngest{
 			ExternalCustomerID: p.User,
-			MeterKey:           MeterKeyTokensOutput,
+			MeterKey:           MeterKeyTokens,
 			Quantity:           decimal.NewFromInt(p.Usage.CompletionTokens),
-			Dimensions:         dims,
-			IdempotencyKey:     p.ID + ":output",
+			Dimensions:         dimsWithTokenType(dims, TokenTypeOutput),
+			IdempotencyKey:     p.ID + ":" + TokenTypeOutput,
 			Timestamp:          &ts,
-			Metadata:           buildEventMetadata(p, "output"),
+			Metadata:           buildEventMetadata(p, TokenTypeOutput),
 		})
 	}
 	return out, nil
+}
+
+// dimsWithTokenType returns a copy of base with token_type set, so the two
+// per-role events don't share (and overwrite) one dimensions map.
+func dimsWithTokenType(base map[string]any, tokenType string) map[string]any {
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["token_type"] = tokenType
+	return out
 }
 
 // ErrMissingUser is returned by MapPayload when the LiteLLM payload
