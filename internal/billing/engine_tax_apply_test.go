@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -396,5 +398,91 @@ func TestApplyTaxToLineItems_NoProvidersFailsLoudly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tax provider resolver not wired") {
 		t.Errorf("error should reference unwired resolver, got: %v", err)
+	}
+}
+
+// TestRunCycle_TaxErrorAbortsBeforeInvoiceAndCycleAdvance is the regression
+// test for the discarded ApplyTaxToLineItems error in billOnePeriod. A tax
+// failure (here: an unwired resolver, the same surface as a transient DB blip
+// resolving provider credentials) MUST abort the cycle close before any
+// invoice is created/finalized and before the billing cycle advances — so the
+// next tick retries against an untouched sub.
+//
+// Pre-fix billOnePeriod read `taxApp, _ :=` and dropped the error, then went
+// on to finalize a $0-tax invoice AND advance the cycle, silently swallowing
+// the failure. With the error captured and propagated, RunCycle surfaces it,
+// no invoice is stored, and the cycle is left untouched.
+func TestRunCycle_TaxErrorAbortsBeforeInvoiceAndCycleAdvance(t *testing.T) {
+	periodStart := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	nextBilling := periodEnd
+
+	subs := &mockSubs{
+		subs: map[string]domain.Subscription{
+			"sub_1": {
+				ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+				Items:  []domain.SubscriptionItem{{PlanID: "pln_1", Quantity: 1}},
+				Status: domain.SubscriptionActive, BillingTime: domain.BillingTimeCalendar,
+				CurrentBillingPeriodStart: &periodStart, CurrentBillingPeriodEnd: &periodEnd,
+				NextBillingAt: &nextBilling,
+			},
+		},
+		cycleUpdated: make(map[string]bool),
+	}
+
+	usage := &mockUsage{totals: map[string]int64{"mtr_api": 1000}}
+
+	pricing := &mockPricing{
+		plans: map[string]domain.Plan{
+			"pln_1": {
+				ID: "pln_1", Name: "Pro Plan", Currency: "USD",
+				BillingInterval: domain.BillingMonthly,
+				BaseAmountCents: 4900,
+				MeterIDs:        []string{"mtr_api"},
+			},
+		},
+		meters: map[string]domain.Meter{
+			"mtr_api": {ID: "mtr_api", Name: "API Calls", Unit: "calls", RatingRuleVersionID: "rrv_api"},
+		},
+		rules: map[string]domain.RatingRuleVersion{
+			"rrv_api": {
+				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingFlat,
+				FlatAmountCents: 100,
+			},
+		},
+	}
+
+	invoices := &mockInvoices{}
+
+	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
+	// Deliberately do NOT call wireBaseTax — the tax provider resolver is
+	// left unwired so ApplyTaxToLineItems returns an error.
+	engine := NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, fakeClk)
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+
+	if len(errs) == 0 {
+		t.Fatal("expected a billing error when tax application fails, got none")
+	}
+	var sawTaxErr bool
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "apply tax") {
+			sawTaxErr = true
+		}
+	}
+	if !sawTaxErr {
+		t.Errorf("expected an 'apply tax' error to surface, got: %v", errs)
+	}
+	if count != 0 {
+		t.Errorf("no invoice should be generated when tax fails, got count=%d", count)
+	}
+	if len(invoices.invoices) != 0 {
+		t.Errorf("no invoice should be stored when tax fails, got %d", len(invoices.invoices))
+	}
+	if len(invoices.lineItems) != 0 {
+		t.Errorf("no line items should be stored when tax fails, got %d", len(invoices.lineItems))
+	}
+	if subs.cycleUpdated["sub_1"] {
+		t.Error("billing cycle must NOT advance when tax fails — the sub must be retried untouched next tick")
 	}
 }
