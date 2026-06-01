@@ -1638,7 +1638,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// plan (which UNIQUE (sub_id, plan_id) prevents, but defend anyway) resolve
 	// to the same plan struct.
 	plans := make(map[string]domain.Plan, len(sub.Items))
-	planIDs := make([]string, 0, len(sub.Items))
 	for _, it := range sub.Items {
 		if _, ok := plans[it.PlanID]; ok {
 			continue
@@ -1648,7 +1647,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			return false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
 		}
 		plans[it.PlanID] = pl
-		planIDs = append(planIDs, it.PlanID)
 	}
 
 	// Invoice currency: customer billing profile > tenant settings > first

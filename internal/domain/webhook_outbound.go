@@ -77,10 +77,10 @@ type EventDispatcher interface {
 
 // Well-known event types emitted by Velox.
 const (
-	EventInvoiceCreated                     = "invoice.created"
-	EventInvoiceFinalized                   = "invoice.finalized"
-	EventInvoicePaid                        = "invoice.paid"
-	EventInvoiceVoided                      = "invoice.voided"
+	EventInvoiceCreated   = "invoice.created"
+	EventInvoiceFinalized = "invoice.finalized"
+	EventInvoicePaid      = "invoice.paid"
+	EventInvoiceVoided    = "invoice.voided"
 	// EventInvoiceMarkedUncollectible matches Stripe's same-named event
 	// (https://docs.stripe.com/api/events/types#event_types-invoice.marked_uncollectible).
 	// Fired when an invoice transitions to status=uncollectible —
@@ -88,7 +88,7 @@ const (
 	// operator-driven ResolveRun(invoice_not_collectible) + the direct
 	// API call. Subscribers should treat this as a bad-debt write-off
 	// signal: stop expecting payment, exclude from AR/revenue rollups.
-	EventInvoiceMarkedUncollectible         = "invoice.marked_uncollectible"
+	EventInvoiceMarkedUncollectible = "invoice.marked_uncollectible"
 	// EventInvoicePaymentRecorded fires when an operator records an
 	// out-of-band payment (cheque, wire, cash). Distinct from
 	// invoice.paid (engine-collected via PaymentIntent) so analytics

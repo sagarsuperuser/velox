@@ -49,9 +49,15 @@ func TestCancelAtomic_OneWinnerUnderContention(t *testing.T) {
 				successes.Add(1)
 				return
 			}
-			// Every non-winner must see the canceled status in the error —
-			// any other error (deadlock, tenant-scope, FK) is a bug.
-			if !strings.Contains(err.Error(), "can only cancel active or paused") {
+			// Every non-winner must see an already-terminated/invalid-state
+			// error — any other error (deadlock, tenant-scope, FK) is a bug.
+			// The atomic cancel path reports "cannot cancel canceled
+			// subscription (already terminated)"; the validation path reports
+			// "can only cancel active or paused". Both are valid race-loser
+			// outcomes.
+			msg := err.Error()
+			if !strings.Contains(msg, "can only cancel active or paused") &&
+				!strings.Contains(msg, "cannot cancel canceled subscription") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		}()

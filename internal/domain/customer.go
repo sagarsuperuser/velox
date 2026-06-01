@@ -104,7 +104,7 @@ type CustomerBillingProfile struct {
 	// customers.email is the single canonical recipient. Phase 2
 	// (when a DP asks for multi-recipient) adds a
 	// customer_email_contacts table as an additive layer.
-	Phone string `json:"phone,omitempty"`
+	Phone        string `json:"phone,omitempty"`
 	AddressLine1 string `json:"address_line1,omitempty"`
 	AddressLine2 string `json:"address_line2,omitempty"`
 	City         string `json:"city,omitempty"`

@@ -80,18 +80,18 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine      *billing.Engine
-	DunningSvc       *dunning.Service
-	SettingsStore    *tenant.SettingsStore
-	WebhookOutSvc    *webhook.Service
-	OutboxStore      *webhook.OutboxStore
-	EmailOutboxStore *email.OutboxStore
-	EmailSender      *email.Sender
-	CreditSvc          *credit.Service
-	InvoiceSvc         *invoice.Service
-	SubscriptionSvc    *subscription.Service
-	TokenSvc           *payment.TokenService
-	PaymentReconciler  *payment.Reconciler
+	BillingEngine     *billing.Engine
+	DunningSvc        *dunning.Service
+	SettingsStore     *tenant.SettingsStore
+	WebhookOutSvc     *webhook.Service
+	OutboxStore       *webhook.OutboxStore
+	EmailOutboxStore  *email.OutboxStore
+	EmailSender       *email.Sender
+	CreditSvc         *credit.Service
+	InvoiceSvc        *invoice.Service
+	SubscriptionSvc   *subscription.Service
+	TokenSvc          *payment.TokenService
+	PaymentReconciler *payment.Reconciler
 
 	// TestClockSvc lets main.go wire the async catchup queue + worker
 	// (per ADR-015 — Stripe-style async test-clock advance) and run
@@ -473,11 +473,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	outboxSender := email.NewOutboxSender(emailOutboxStore)
 	emailOutboxSenderRef := outboxSender
 	var (
-		invoiceEmail       invoice.EmailSender                = outboxSender
-		dunningEmail       dunning.EmailNotifier              = outboxSender
-		receiptEmail       payment.EmailReceipt               = outboxSender
-		paymentSetupEmail  paymentSetupEmailSender            = outboxSender
-		paymentFailedEmail payment.EmailPaymentFailed         = outboxSender
+		invoiceEmail       invoice.EmailSender                 = outboxSender
+		dunningEmail       dunning.EmailNotifier               = outboxSender
+		receiptEmail       payment.EmailReceipt                = outboxSender
+		paymentSetupEmail  paymentSetupEmailSender             = outboxSender
+		paymentFailedEmail payment.EmailPaymentFailed          = outboxSender
 		magicLinkEmail     customerportal.MagicLinkEmailSender = outboxSender
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
@@ -902,19 +902,19 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	s := &Server{
-		BillingEngine:    engine,
-		DunningSvc:       dunningSvc,
-		SettingsStore:    settingsStore,
-		WebhookOutSvc:    webhookOutSvc,
-		OutboxStore:      outboxStore,
-		EmailOutboxStore: emailOutboxStore,
-		EmailSender:      emailSender,
-		CreditSvc:          creditSvc,
-		InvoiceSvc:         invoiceSvc,
-		SubscriptionSvc:    subSvc,
-		TokenSvc:           tokenSvc,
-		PaymentReconciler:  paymentReconciler,
-		TestClockSvc:       testClockSvc,
+		BillingEngine:     engine,
+		DunningSvc:        dunningSvc,
+		SettingsStore:     settingsStore,
+		WebhookOutSvc:     webhookOutSvc,
+		OutboxStore:       outboxStore,
+		EmailOutboxStore:  emailOutboxStore,
+		EmailSender:       emailSender,
+		CreditSvc:         creditSvc,
+		InvoiceSvc:        invoiceSvc,
+		SubscriptionSvc:   subSvc,
+		TokenSvc:          tokenSvc,
+		PaymentReconciler: paymentReconciler,
+		TestClockSvc:      testClockSvc,
 	}
 
 	// Redis for distributed rate limiting (fail-open if not configured)
@@ -1257,11 +1257,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// click from a retry-happy mobile client must not create two payment
 	// methods for the same card.
 	portalAPI := portalapi.New(portalapi.Deps{
-		Invoices:      invoiceSvc,
-		Subscriptions: subSvc,
-		Customers:     customerStore,
-		Settings:      settingsStore,
-		CreditNotes:   &creditNoteListerAdapter{svc: creditNoteSvc},
+		Invoices:       invoiceSvc,
+		Subscriptions:  subSvc,
+		Customers:      customerStore,
+		Settings:       settingsStore,
+		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
 		Credits:        &portalCreditReaderAdapter{svc: creditSvc},
 		CustomerWriter: &portalCustomerWriterAdapter{svc: customerSvc},
 		// Pay-now needs both the Stripe charger and a way to look

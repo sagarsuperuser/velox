@@ -229,14 +229,14 @@ func TestApplyTaxToLineItems_ProviderResultMapped(t *testing.T) {
 	// engine stamps per-line Jurisdiction/TaxCode/TaxRate back onto line
 	// items without extra arithmetic.
 	provider := &stubProvider{result: &tax.Result{
-		Provider:        "stripe_tax",
-		CalculationID:   "taxcalc_test_123",
-		TotalTaxCents:   2000,
+		Provider:      "stripe_tax",
+		CalculationID: "taxcalc_test_123",
+		TotalTaxCents: 2000,
 		EffectiveRate: 20.00,
-		TaxName:         "GST",
-		TaxCountry:      "AU",
+		TaxName:       "GST",
+		TaxCountry:    "AU",
 		Lines: []tax.ResultLine{
-			{Ref: "line_0", NetAmountCents: 10000, TaxAmountCents: 2000, TaxRate:      20.00, TaxName: "GST", Jurisdiction: "AU", TaxCode: "txcd_10103001"},
+			{Ref: "line_0", NetAmountCents: 10000, TaxAmountCents: 2000, TaxRate: 20.00, TaxName: "GST", Jurisdiction: "AU", TaxCode: "txcd_10103001"},
 		},
 	}}
 	e := &Engine{
