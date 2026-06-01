@@ -560,7 +560,7 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		var inv domain.Invoice
 		if err := tx.QueryRowContext(ctx,
 			`SELECT `+invCols+` FROM invoices WHERE id = $1`, id,
-		).Scan(scanInvDest(&inv)...); err != nil {
+		).Scan(s.scanInvDest(&inv)...); err != nil {
 			return domain.Invoice{}, fmt.Errorf("reload already-paid invoice: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
