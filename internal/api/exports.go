@@ -100,6 +100,24 @@ func writeCSVHeaders(w http.ResponseWriter, filenameStem string) *csv.Writer {
 	return csv.NewWriter(w)
 }
 
+// csvSafe neutralizes spreadsheet (CSV) formula injection. A cell whose first
+// character is one of = + - @ TAB CR is interpreted as a formula by Excel,
+// Google Sheets, and LibreOffice — so a customer-controlled value like
+// "=HYPERLINK(...)" or "@SUM(...)" executes when the operator opens the export.
+// Prefixing such values with a single quote forces them to render as text.
+// Empty strings pass through. Applied to free-text, externally-controlled
+// columns (display names, external IDs, emails, codes, idempotency keys).
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', 0x09, 0x0d:
+		return "'" + s
+	}
+	return s
+}
+
 // flushAndContinue flushes the csv buffer to the underlying response
 // so streaming clients see partial output. Without the flush, large
 // exports buffer until completion.
@@ -169,7 +187,7 @@ func (h *exportsHandler) exportCustomers(w http.ResponseWriter, r *http.Request)
 				continue
 			}
 			if err := cw.Write([]string{
-				c.ID, c.ExternalID, c.DisplayName, c.Email,
+				c.ID, csvSafe(c.ExternalID), csvSafe(c.DisplayName), csvSafe(c.Email),
 				string(c.Status),
 				string(c.EmailStatus),
 				c.CreatedAt.UTC().Format(time.RFC3339),
@@ -240,7 +258,7 @@ func (h *exportsHandler) exportInvoices(w http.ResponseWriter, r *http.Request) 
 				continue
 			}
 			if err := cw.Write([]string{
-				inv.ID, inv.InvoiceNumber, inv.CustomerID, inv.SubscriptionID,
+				inv.ID, csvSafe(inv.InvoiceNumber), inv.CustomerID, inv.SubscriptionID,
 				string(inv.Status), string(inv.PaymentStatus), inv.Currency,
 				strconv.FormatInt(inv.SubtotalCents, 10),
 				strconv.FormatInt(inv.TaxAmountCents, 10),
@@ -329,7 +347,7 @@ func (h *exportsHandler) exportSubscriptions(w http.ResponseWriter, r *http.Requ
 				planIDs += item.PlanID
 			}
 			if err := cw.Write([]string{
-				sub.ID, sub.Code, sub.DisplayName, sub.CustomerID,
+				sub.ID, csvSafe(sub.Code), csvSafe(sub.DisplayName), sub.CustomerID,
 				string(sub.Status), string(sub.BillingTime),
 				timePtrCSV(sub.TrialStartAt), timePtrCSV(sub.TrialEndAt),
 				timePtrCSV(sub.StartedAt), timePtrCSV(sub.ActivatedAt),
@@ -415,7 +433,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 				ev.ID, ev.CustomerID, ev.MeterID,
 				ev.Quantity.String(),
 				ev.Timestamp.UTC().Format(time.RFC3339),
-				ev.IdempotencyKey,
+				csvSafe(ev.IdempotencyKey),
 				string(ev.Origin),
 				dimsJSON,
 			}); err != nil {
