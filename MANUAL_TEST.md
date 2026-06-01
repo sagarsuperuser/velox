@@ -148,11 +148,11 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
   ```
   → `{"accepted":2,"skipped":0}` (one event per token role).
 - [ ] Repeat the curl 4 more times with `smoke_call_2` … `smoke_call_5` → 10 events total (5 input + 5 output).
-- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-3-5-sonnet-20241022`, `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
+- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-3.5-sonnet` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-3-5-sonnet-20241022` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input ≈ 2¢, 1,750 output ≈ 3¢; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview).
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input ≈ 2¢, 1,750 output ≈ 3¢; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
@@ -726,7 +726,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 ## FLOW B14: Billing thresholds
 
-- [ ] PATCH sub `billing_thresholds:[{meter_id, usage_gte:10000}]`. Ingest 9999 → no early finalize. Ingest 1 more → invoice auto-finalized within 1 tick, `billing_reason="threshold"`. New events start a new period.
+- [ ] PATCH sub `billing_thresholds:[{subscription_item_id, usage_gte:10000}]` (per-item, keyed on `subscription_item_id` — not `meter_id`). Ingest 9999 → no early finalize. Ingest 1 more → invoice auto-finalized within 1 tick, `billing_reason="threshold"`. New events start a new period.
 - [ ] PATCH `{amount_gte:50000}` → cross $500 → same shape.
 - [ ] Cross threshold + immediately `POST /v1/billing/run` → idempotent skip.
 - [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
