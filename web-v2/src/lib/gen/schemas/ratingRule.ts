@@ -17,6 +17,6 @@ export interface RatingRule {
   version?: number;
   mode?: RatingRuleMode;
   currency?: string;
-  flat_amount_cents?: number;
+  flat_amount_cents?: string;
   graduated_tiers?: RatingRuleGraduatedTiersItem[];
 }

@@ -25,10 +25,13 @@ description: |
   Each provider mapper (e.g. LiteLLM) is responsible for emitting these
   roles as additive-disjoint quantities; the engine never does role math.
 
-  Cache rates are derived from each model's input rate (0.1× / 1.25× / 2×);
-  sub-cent-per-million values are rounded to the nearest cent. All amounts
-  are cents per million tokens. Operators override `currency`, `plan_name`,
-  and `plan_code` at instantiation; the rest is fixed for v1.
+  Cache rates are derived from each model's input rate (0.1× / 1.25× / 2×).
+  All flat amounts are cents PER TOKEN, carried as decimals (the meter is
+  denominated in tokens). A published per-million price divides by 1,000,000:
+  $3.00 / 1M tokens = 300 cents / 1,000,000 = 0.0003 cents/token. This is the
+  Stripe `unit_amount_decimal` model — sub-cent rates bill linearly and
+  exactly, with no per-million rounding. Operators override `currency`,
+  `plan_name`, and `plan_code` at instantiation; the rest is fixed for v1.
 
 overridable:
   - key: currency
@@ -51,114 +54,115 @@ meters:
     aggregation: sum
 
 rating_rules:
-  # Claude 3.5 Sonnet — input $3.00 / output $15.00 per million.
+  # Claude 3.5 Sonnet — input $3.00 / output $15.00 per million (per-token).
   - key: c35_sonnet_input
     name: Claude 3.5 Sonnet input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 300
+    flat_amount_cents: '0.0003'
   - key: c35_sonnet_output
     name: Claude 3.5 Sonnet output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1500
+    flat_amount_cents: '0.0015'
   - key: c35_sonnet_cache_read
     name: Claude 3.5 Sonnet cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 30
+    flat_amount_cents: '0.00003'
   - key: c35_sonnet_cache_write_5m
     name: Claude 3.5 Sonnet cache write (5m)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 375
+    flat_amount_cents: '0.000375'
   - key: c35_sonnet_cache_write_1h
     name: Claude 3.5 Sonnet cache write (1h)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 600
+    flat_amount_cents: '0.0006'
 
-  # Claude 3 Opus — input $15.00 / output $75.00 per million.
+  # Claude 3 Opus — input $15.00 / output $75.00 per million (per-token).
   - key: opus_input
     name: Claude 3 Opus input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1500
+    flat_amount_cents: '0.0015'
   - key: opus_output
     name: Claude 3 Opus output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 7500
+    flat_amount_cents: '0.0075'
   - key: opus_cache_read
     name: Claude 3 Opus cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 150
+    flat_amount_cents: '0.00015'
   - key: opus_cache_write_5m
     name: Claude 3 Opus cache write (5m)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1875
+    flat_amount_cents: '0.001875'
   - key: opus_cache_write_1h
     name: Claude 3 Opus cache write (1h)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 3000
+    flat_amount_cents: '0.003'
 
-  # Claude 3 Sonnet — input $3.00 / output $15.00 per million.
+  # Claude 3 Sonnet — input $3.00 / output $15.00 per million (per-token).
   - key: sonnet_input
     name: Claude 3 Sonnet input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 300
+    flat_amount_cents: '0.0003'
   - key: sonnet_output
     name: Claude 3 Sonnet output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1500
+    flat_amount_cents: '0.0015'
   - key: sonnet_cache_read
     name: Claude 3 Sonnet cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 30
+    flat_amount_cents: '0.00003'
   - key: sonnet_cache_write_5m
     name: Claude 3 Sonnet cache write (5m)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 375
+    flat_amount_cents: '0.000375'
   - key: sonnet_cache_write_1h
     name: Claude 3 Sonnet cache write (1h)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 600
+    flat_amount_cents: '0.0006'
 
-  # Claude 3 Haiku — input $0.25 / output $1.25 per million. Cache rates
-  # round to the cent (0.1×/1.25×/2× of 25 = 2.5/31.25/50 → 3/31/50).
+  # Claude 3 Haiku — input $0.25 / output $1.25 per million (per-token).
+  # Decimal rates carry the exact derived cache multiples (no rounding):
+  # cache_read 0.1×, cache_write_5m 1.25×, cache_write_1h 2× of input.
   - key: haiku_input
     name: Claude 3 Haiku input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 25
+    flat_amount_cents: '0.000025'
   - key: haiku_output
     name: Claude 3 Haiku output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 125
+    flat_amount_cents: '0.000125'
   - key: haiku_cache_read
     name: Claude 3 Haiku cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 3
+    flat_amount_cents: '0.0000025'
   - key: haiku_cache_write_5m
     name: Claude 3 Haiku cache write (5m)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 31
+    flat_amount_cents: '0.00003125'
   - key: haiku_cache_write_1h
     name: Claude 3 Haiku cache write (1h)
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 50
+    flat_amount_cents: '0.00005'
 
 # Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:

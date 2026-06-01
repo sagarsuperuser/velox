@@ -233,7 +233,7 @@ func TestCustomerUsageService_Get_SingleMeterFlat(t *testing.T) {
 		rules: map[string]domain.RatingRuleVersion{
 			"rrv_1": {
 				ID: "rrv_1", RuleKey: "tokens_flat", Mode: domain.PricingFlat,
-				Currency: "USD", FlatAmountCents: 1,
+				Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 			},
 		},
 		pricingMap: map[string][]domain.MeterPricingRule{},
@@ -305,8 +305,8 @@ func TestCustomerUsageService_Get_MultiCurrencyTotals(t *testing.T) {
 			"mtr_eur": {ID: "mtr_eur", Key: "tokens_eur", Aggregation: "sum", RatingRuleVersionID: "rrv_eur"},
 		},
 		rules: map[string]domain.RatingRuleVersion{
-			"rrv_usd": {ID: "rrv_usd", RuleKey: "u", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1},
-			"rrv_eur": {ID: "rrv_eur", RuleKey: "e", Mode: domain.PricingFlat, Currency: "EUR", FlatAmountCents: 2},
+			"rrv_usd": {ID: "rrv_usd", RuleKey: "u", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1)},
+			"rrv_eur": {ID: "rrv_eur", RuleKey: "e", Mode: domain.PricingFlat, Currency: "EUR", FlatAmountCents: decimal.NewFromInt(2)},
 		},
 		pricingMap: map[string][]domain.MeterPricingRule{},
 	}
@@ -394,8 +394,8 @@ func TestCustomerUsageService_Get_MultiDimRulesEchoDimensionMatch(t *testing.T) 
 			"mtr_tokens": {ID: "mtr_tokens", Key: "tokens", Aggregation: "sum"},
 		},
 		rules: map[string]domain.RatingRuleVersion{
-			"rrv_in":  {ID: "rrv_in", RuleKey: "input", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 3},
-			"rrv_out": {ID: "rrv_out", RuleKey: "output", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 5},
+			"rrv_in":  {ID: "rrv_in", RuleKey: "input", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(3)},
+			"rrv_out": {ID: "rrv_out", RuleKey: "output", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(5)},
 		},
 		pricingMap: map[string][]domain.MeterPricingRule{
 			"mtr_tokens": {
@@ -450,7 +450,7 @@ func TestCustomerUsageService_Get_FlatMeterOmitsDimensionMatch(t *testing.T) {
 		plans:  map[string]domain.Plan{"pln_1": {ID: "pln_1", Name: "Flat", Currency: "USD", MeterIDs: []string{"mtr_1"}}},
 		meters: map[string]domain.Meter{"mtr_1": {ID: "mtr_1", Key: "k", Aggregation: "sum", RatingRuleVersionID: "rrv_1"}},
 		rules: map[string]domain.RatingRuleVersion{
-			"rrv_1": {ID: "rrv_1", RuleKey: "rk", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 7},
+			"rrv_1": {ID: "rrv_1", RuleKey: "rk", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(7)},
 		},
 		pricingMap: map[string][]domain.MeterPricingRule{},
 	}

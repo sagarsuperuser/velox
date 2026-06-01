@@ -15,7 +15,7 @@ export type PostV1RatingRulesBody = {
   name: string;
   mode: PostV1RatingRulesBodyMode;
   currency: string;
-  flat_amount_cents?: number;
+  flat_amount_cents?: string;
   graduated_tiers?: PostV1RatingRulesBodyGraduatedTiersItem[];
   package_size?: number;
   package_amount_cents?: number;

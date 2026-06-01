@@ -410,10 +410,11 @@ export interface paths {
                         /** @enum {string} */
                         mode: "flat" | "graduated" | "package";
                         currency: string;
-                        flat_amount_cents?: number;
+                        /** Per-unit rate in cents, decimal string (e.g. "0.0003"). */
+                        flat_amount_cents?: string;
                         graduated_tiers?: {
                             up_to?: number;
-                            unit_amount_cents?: number;
+                            unit_amount_cents?: string;
                         }[];
                         package_size?: number;
                         package_amount_cents?: number;
@@ -1944,11 +1945,11 @@ export interface components {
             /** @enum {string} */
             mode?: "flat" | "graduated" | "package";
             currency?: string;
-            /** Format: int64 */
-            flat_amount_cents?: number;
+            /** Per-unit rate in cents, decimal string (e.g. "0.0003"). */
+            flat_amount_cents?: string;
             graduated_tiers?: {
                 up_to?: number;
-                unit_amount_cents?: number;
+                unit_amount_cents?: string;
             }[];
         };
         Subscription: {

@@ -152,7 +152,7 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line for the elapsed period (the 6,000 input + 1,750 output tokens priced at the recipe's claude-3.5-sonnet rates — input $3.00/M, output $15.00/M) AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input ≈ 2¢, 1,750 output ≈ 3¢; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.

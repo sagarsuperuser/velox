@@ -10,5 +10,5 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
 export type RatingRuleGraduatedTiersItem = {
   up_to?: number;
-  unit_amount_cents?: number;
+  unit_amount_cents?: string;
 };

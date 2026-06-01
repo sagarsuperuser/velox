@@ -184,7 +184,7 @@ func TestCreatePreview_SingleMeterFlatParity(t *testing.T) {
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
 		RuleKey: "tokens_flat", Name: "Tokens Flat",
-		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1,
+		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("create rrv: %v", err)
@@ -262,13 +262,13 @@ func TestCreatePreview_MultiDimDimensionMatchEcho(t *testing.T) {
 	cycleEnd := cycleStart.Add(30 * 24 * time.Hour)
 
 	rrvIn, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
-		RuleKey: "tokens_input", Name: "Input", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 3,
+		RuleKey: "tokens_input", Name: "Input", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(3),
 	})
 	if err != nil {
 		t.Fatalf("create rrv input: %v", err)
 	}
 	rrvOut, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
-		RuleKey: "tokens_output", Name: "Output", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 5,
+		RuleKey: "tokens_output", Name: "Output", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(5),
 	})
 	if err != nil {
 		t.Fatalf("create rrv output: %v", err)
@@ -370,7 +370,7 @@ func TestCreatePreview_NoWrites(t *testing.T) {
 	cycleEnd := cycleStart.Add(30 * 24 * time.Hour)
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
-		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1,
+		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("create rrv: %v", err)
@@ -422,7 +422,7 @@ func TestCreatePreview_CrossTenantIsolation(t *testing.T) {
 	defer cancel()
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
-		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1,
+		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("create rrv: %v", err)
@@ -485,7 +485,7 @@ func TestCreatePreview_ExplicitSubscriptionWrongCustomer(t *testing.T) {
 	defer cancel()
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
-		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1,
+		RuleKey: "x", Name: "x", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("create rrv: %v", err)

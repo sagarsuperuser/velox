@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -1429,6 +1430,29 @@ func catchupDelayFromEnvBilling() time.Duration {
 // means "invoice generated", NOT "next_billing_at advanced" — some
 // skip paths (trial-active) advance the cycle without generating
 // an invoice. The wrapper distinguishes via fresh sub-state reads.
+// usageLineDescription labels a multi-dim usage line by its dimension match
+// so an invoice with N rule buckets on one meter (e.g. tokens → input /
+// cache_read / output) reads as distinct lines rather than N identical
+// "Tokens (tokens)" rows. Falls back to the meter unit when the matched rule
+// carries no dimension_match (or the bucket was the unclaimed fallback).
+func usageLineDescription(meter domain.Meter, rule domain.MeterPricingRule) string {
+	if len(rule.DimensionMatch) == 0 {
+		return fmt.Sprintf("%s (%s)", meter.Name, meter.Unit)
+	}
+	// Prefer a compact "model · token_type" form for the AI shape; otherwise
+	// join whatever dimensions the rule matches on, in a stable order.
+	keys := make([]string, 0, len(rule.DimensionMatch))
+	for k := range rule.DimensionMatch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%v", rule.DimensionMatch[k]))
+	}
+	return fmt.Sprintf("%s (%s)", meter.Name, strings.Join(parts, " · "))
+}
+
 func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bool, error) {
 	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillSubscription",
 		trace.WithAttributes(
@@ -2061,12 +2085,112 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	intervalKey := func(iv usageInterval) string {
 		return iv.start.UTC().Format(time.RFC3339Nano) + "|" + iv.end.UTC().Format(time.RFC3339Nano)
 	}
+	// Separate cache for the multi-dim (pricing-rules) path — keyed by
+	// meter + interval since AggregateByPricingRules is per-meter.
+	ruleAggCache := map[string][]domain.RuleAggregation{}
+	one := decimal.New(1, 0)
 
 	for meterID, ivs := range meterIntervals {
+		meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+		if err != nil {
+			return false, fmt.Errorf("get meter %s: %w", meterID, err)
+		}
+
+		// Does this meter price via dimension-match pricing rules (the
+		// multi-dim shape: e.g. the AI `tokens` meter carries one rule per
+		// {model, token_type})? If so we MUST use the same
+		// AggregateByPricingRules + per-bucket pricing path that preview and
+		// the threshold scan use — a single meter-linked rating rule can't
+		// express N rates, so the legacy single-rule branch below would skip
+		// the meter and emit a $0 invoice (the wedge breakage, ADR-044).
+		// previewMeter is the mirror of this loop: same path → preview ==
+		// invoice. Meters with no pricing rules keep the single-rule path.
+		pricingRules, err := e.pricing.ListMeterPricingRulesByMeter(ctx, sub.TenantID, meterID)
+		if err != nil {
+			return false, fmt.Errorf("list pricing rules for meter %s: %w", meterID, err)
+		}
+		rulesByID := make(map[string]domain.MeterPricingRule, len(pricingRules))
+		for _, r := range pricingRules {
+			rulesByID[r.ID] = r
+		}
+
 		merged := mergeUsageIntervals(ivs)
 		for _, iv := range merged {
-			var quantity decimal.Decimal
+			ivStart := iv.start
+			ivEnd := iv.end
 			fullPeriod := iv.start.Equal(periodStart) && iv.end.Equal(periodEnd)
+
+			// ---- Multi-dim path: one billable bucket per claimed rule. ----
+			if len(pricingRules) > 0 {
+				defaultMode := mapMeterAggregation(meter.Aggregation)
+				cacheK := meterID + "|" + intervalKey(iv)
+				aggs, cached := ruleAggCache[cacheK]
+				if !cached {
+					a, err := e.usage.AggregateByPricingRules(ctx, sub.TenantID, sub.CustomerID, meterID, defaultMode, iv.start, iv.end)
+					if err != nil {
+						return false, fmt.Errorf("aggregate by pricing rules for meter %s [%v, %v): %w", meterID, iv.start, iv.end, err)
+					}
+					aggs = a
+					ruleAggCache[cacheK] = a
+				}
+				for _, agg := range aggs {
+					qty := agg.Quantity
+					// AggregateByPricingRules always returns raw (pre-cap)
+					// quantities, so apply the cap scale here in BOTH the
+					// full-period and sub-period cases (unlike usageTotals,
+					// which is pre-scaled in place above).
+					if !capScale.Equal(one) {
+						qty = qty.Mul(capScale)
+					}
+					if qty.IsZero() {
+						continue
+					}
+					ratingRuleID := agg.RatingRuleVersionID
+					if ratingRuleID == "" {
+						ratingRuleID = meter.RatingRuleVersionID
+					}
+					if ratingRuleID == "" {
+						// Usage that matched no rule and the meter has no
+						// default binding — bill nothing, but loudly (a
+						// silent skip would hide unbilled revenue).
+						slog.Warn("cycle: usage matched no rating rule and meter has no default binding — not billed",
+							"meter", meter.Key, "quantity", qty.String(),
+							"subscription_id", sub.ID)
+						continue
+					}
+					rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, ratingRuleID)
+					if err != nil {
+						return false, fmt.Errorf("get rating rule %s for meter %s: %w", ratingRuleID, meterID, err)
+					}
+					if override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, ratingRuleID); overrideErr == nil && override.Active {
+						rule = override.ToRatingRule()
+					}
+					amount, err := domain.ComputeAmountCents(rule, qty)
+					if err != nil {
+						return false, fmt.Errorf("compute amount for meter %s rule %s: %w", meterID, ratingRuleID, err)
+					}
+					unitAmount := decimal.NewFromInt(amount).Div(qty).RoundBank(0).IntPart()
+					lineItems = append(lineItems, domain.InvoiceLineItem{
+						LineType:            domain.LineTypeUsage,
+						MeterID:             meterID,
+						Description:         usageLineDescription(meter, rulesByID[agg.RuleID]),
+						Quantity:            qty.IntPart(),
+						UnitAmountCents:     unitAmount,
+						AmountCents:         amount,
+						TotalAmountCents:    amount,
+						Currency:            invoiceCurrency,
+						PricingMode:         string(rule.Mode),
+						RatingRuleVersionID: rule.ID,
+						BillingPeriodStart:  &ivStart,
+						BillingPeriodEnd:    &ivEnd,
+					})
+					subtotal += amount
+				}
+				continue
+			}
+
+			// ---- Single-rule path (pre-multi-dim meters). ----
+			var quantity decimal.Decimal
 			if fullPeriod {
 				quantity = usageTotals[meterID]
 			} else {
@@ -2084,7 +2208,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				// Apply cap scale to sub-period quantities so the
 				// per-interval sum matches the cap-scaled full-period
 				// total. Cap doesn't apply if capScale == 1.
-				if !capScale.Equal(decimal.New(1, 0)) {
+				if !capScale.Equal(one) {
 					quantity = quantity.Mul(capScale)
 				}
 			}
@@ -2092,10 +2216,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				continue
 			}
 
-			meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
-			if err != nil {
-				return false, fmt.Errorf("get meter %s: %w", meterID, err)
-			}
 			if meter.RatingRuleVersionID == "" {
 				continue
 			}
@@ -2117,8 +2237,6 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			}
 			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
-			ivStart := iv.start
-			ivEnd := iv.end
 			lineItems = append(lineItems, domain.InvoiceLineItem{
 				LineType:            domain.LineTypeUsage,
 				MeterID:             meterID,

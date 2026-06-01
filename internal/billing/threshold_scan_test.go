@@ -82,7 +82,7 @@ func setupThresholdEngine(thresholds *domain.BillingThresholds, usageQty int64) 
 		rules: map[string]domain.RatingRuleVersion{
 			"rrv_api": {
 				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingFlat,
-				FlatAmountCents: 100, // 1 cent / call (in basis-of-100 — 100 = $1)
+				FlatAmountCents: decimal.NewFromInt(100), // 1 cent / call (in basis-of-100 — 100 = $1)
 			},
 		},
 	}
