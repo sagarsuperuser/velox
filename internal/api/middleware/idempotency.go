@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -98,6 +100,17 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 
 			fingerprint := fingerprintRequest(r.Method, r.URL.Path, bodyBytes)
 
+			// Scope the key to the acting customer on the customer-portal
+			// surface (/v1/me). The idempotency_keys row is keyed on
+			// (tenant, livemode, key) only — without the customer actor folded
+			// in, two different portal customers under the same tenant sending
+			// the same Idempotency-Key would collide, and customer B could be
+			// served customer A's cached profile response. Namespacing the
+			// stored key with the customer id makes the rows disjoint. Operator
+			// (Bearer/session) requests carry no portal customer, so their key
+			// is unchanged.
+			key = scopeKeyToCustomer(r.Context(), key)
+
 			// RESERVE the key before running the handler. A single INSERT ...
 			// ON CONFLICT DO NOTHING is the serialization point: exactly one
 			// concurrent request with the same (tenant, livemode, key) inserts
@@ -110,7 +123,13 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 			if err != nil {
 				// DB error on the reserve — fail open (don't block the write).
 				// An idempotency-infra failure shouldn't prevent the actual
-				// operation; this matches the prior read-path fail-open.
+				// operation; this matches the prior read-path fail-open. But it
+				// IS an idempotency lapse: a concurrent/retried request can now
+				// re-run the side effect, so make it observable rather than
+				// silent — operators need to see it during a DB blip.
+				idempotencyCacheErrors.WithLabelValues("reserve").Inc()
+				slog.ErrorContext(r.Context(), "idempotency reserve failed; failing open (side effect may re-execute on retry)",
+					"tenant_id", tenantID, "path", r.URL.Path, "error", err)
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -160,6 +179,17 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 				recorder.statusCode, recorder.body.Bytes())
 		})
 	}
+}
+
+// scopeKeyToCustomer namespaces the idempotency key with the acting portal
+// customer, when present, so two customers under the same tenant can't collide
+// on (tenant, livemode, key) and replay each other's cached responses. Operator
+// requests (no portal customer in ctx) return the key unchanged.
+func scopeKeyToCustomer(ctx context.Context, key string) string {
+	if cid := customerportal.CustomerID(ctx); cid != "" {
+		return "cust:" + cid + ":" + key
+	}
+	return key
 }
 
 // fingerprintRequest returns a stable hash of the request's identifying
@@ -233,8 +263,19 @@ func finalizeKey(ctx context.Context, db *postgres.DB, tenantID, key string, sta
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	// A finalize failure leaves the row 'pending', so a retry under the same
+	// key re-runs the handler (the response was never cached) — the exact
+	// double-execution idempotency exists to prevent. Make every failure path
+	// observable instead of swallowing it.
+	fail := func(stage string, err error) {
+		idempotencyCacheErrors.WithLabelValues("finalize").Inc()
+		slog.ErrorContext(ctx, "idempotency finalize failed; response NOT cached, retry will re-run the handler",
+			"stage", stage, "tenant_id", tenantID, "status_code", statusCode, "error", err)
+	}
+
 	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
+		fail("begin", err)
 		return
 	}
 	defer postgres.Rollback(tx)
@@ -244,9 +285,12 @@ func finalizeKey(ctx context.Context, db *postgres.DB, tenantID, key string, sta
 		WHERE tenant_id = $1 AND key = $2`,
 		tenantID, key, statusCode, body,
 	); err != nil {
+		fail("update", err)
 		return
 	}
-	_ = tx.Commit()
+	if err := tx.Commit(); err != nil {
+		fail("commit", err)
+	}
 }
 
 // releaseKey deletes the pending reservation so a key whose handler returned a
