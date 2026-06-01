@@ -71,6 +71,26 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return cn, nil
 }
 
+func (m *memStore) TransitionStatus(_ context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return false, errs.ErrNotFound
+	}
+	if cn.Status != from {
+		return false, nil // lost the CAS — already transitioned
+	}
+	cn.Status = to
+	now := time.Now().UTC()
+	if to == domain.CreditNoteIssued {
+		cn.IssuedAt = &now
+	}
+	if to == domain.CreditNoteVoided {
+		cn.VoidedAt = &now
+	}
+	m.notes[id] = cn
+	return true, nil
+}
+
 func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {

@@ -476,6 +476,23 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return domain.CreditNote{}, errs.InvalidState("can only issue draft credit notes")
 	}
 
+	// Compare-and-swap the draft→issued transition BEFORE any side effect.
+	// Issue() reduces the invoice amount_due (unpaid path) and grants/refunds
+	// (paid path); the amount_due reduction is not idempotent, so two
+	// concurrent or retried Issue() calls that both passed the draft check
+	// above would apply it twice — double-reducing amount_due. The CAS makes
+	// exactly one caller the winner; losers see won=false and return the
+	// already-issued credit note unchanged.
+	won, err := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteIssued)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("claim issue transition: %w", err)
+	}
+	if !won {
+		// A concurrent/retried Issue() already claimed the transition. Return
+		// the current credit note rather than re-applying side effects.
+		return s.store.Get(ctx, tenantID, id)
+	}
+
 	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
 	if err != nil {
 		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
@@ -546,10 +563,10 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}
 		}
 	} else {
-		// Invoice not yet paid — reduce amount_due. Idempotent via
-		// the cn.AmountDueReduced flag we'd add for full safety; for
-		// now this path is single-shot per CN and the UpdateStatus
-		// at the end guards against re-entry.
+		// Invoice not yet paid — reduce amount_due. This is the
+		// non-idempotent step; the draft→issued CAS at the top of Issue
+		// guarantees exactly one caller reaches here per credit note, so a
+		// concurrent/retried Issue() can't double-reduce amount_due.
 		if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
 		}
@@ -599,7 +616,9 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		}
 	}
 
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteIssued)
+	// Status was already flipped to issued by the CAS at the top; just return
+	// the current row (with the refund/tax fields persisted above).
+	return s.store.Get(ctx, tenantID, id)
 }
 
 // RetryRefund re-attempts the Stripe refund for an already-issued
