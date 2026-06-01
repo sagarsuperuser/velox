@@ -54,6 +54,21 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 		return CreateKeyResult{}, errs.Invalid("key_type", "must be one of: platform, secret, publishable")
 	}
 
+	// Platform keys are a privileged credential: they carry tenant-management
+	// permissions (PermTenantRead/Write) that reach ACROSS tenants, and the
+	// `tenants` surface they unlock is not RLS-protected. `key_type` arrives
+	// from the request body, and the /v1/api-keys route is reachable by any
+	// secret key or dashboard session (both hold PermAPIKeyWrite, both scoped
+	// to a single tenant). Without this gate a single-tenant principal could
+	// self-mint a platform key and escalate to read/create every tenant.
+	// Treat key_type as privileged: a platform key may only be issued by an
+	// existing platform principal. (The first platform key, if a deployment
+	// ever needs one, is provisioned out-of-band, not over this route.)
+	if keyType == KeyTypePlatform && GetKeyType(ctx) != KeyTypePlatform {
+		return CreateKeyResult{}, errs.Forbidden(
+			"platform keys can only be issued by an existing platform key")
+	}
+
 	// Reject past expires_at — a key that's already expired at creation
 	// is DOA (any auth attempt fails with `api key expired`). Industry
 	// parity (Stripe rejects past expiry on credentials). API keys are

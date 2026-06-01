@@ -145,6 +145,20 @@ func PreconditionFailed(message string) *DomainError {
 	}
 }
 
+// Forbidden marks an authorization denial — the caller is authenticated but
+// not permitted to perform this action (distinct from Invalid, which is bad
+// input, and from a missing-auth 401). Maps to HTTP 403. Use at the service
+// layer when an authz rule must hold regardless of which handler/route the
+// call arrived through, so the rule cannot be bypassed by a future caller.
+//
+//	return errs.Forbidden("platform keys can only be issued by an existing platform key")
+func Forbidden(message string) *DomainError {
+	return &DomainError{
+		Kind:    ErrForbidden,
+		Message: message,
+	}
+}
+
 // Sentinel errors for store and service layers.
 var (
 	ErrNotFound           = errors.New("not found")
@@ -152,6 +166,9 @@ var (
 	ErrDuplicateKey       = errors.New("duplicate key")
 	ErrInvalidState       = errors.New("invalid state")
 	ErrPreconditionFailed = errors.New("precondition failed")
+	// ErrForbidden marks an authorization denial (authenticated but not
+	// permitted). Maps to HTTP 403 via respond.FromError. Prefer errs.Forbidden.
+	ErrForbidden = errors.New("forbidden")
 	// ErrValidation marks an error caused by bad caller input (missing field,
 	// malformed value). New code should prefer errs.Required / errs.Invalid /
 	// errs.AlreadyExists which set Field metadata for the UI. The legacy
