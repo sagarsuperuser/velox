@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,10 +109,27 @@ func (m *memStore) CreateEvent(ctx context.Context, tenantID string, event domai
 }
 
 func (m *memStore) ListEvents(_ context.Context, tenantID string, limit int) ([]domain.WebhookEvent, error) {
-	var result []domain.WebhookEvent
+	// Mirror the postgres store: newest-first (created_at DESC), default 50,
+	// HARD-clamped to 100 regardless of the requested limit. The real store
+	// caps the result set, so an older event ages out of the window — the
+	// retry path must NOT rely on this list to resolve its event.
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	var all []domain.WebhookEvent
 	for _, e := range m.events {
 		if e.TenantID == tenantID {
-			result = append(result, e)
+			all = append(all, e)
+		}
+	}
+	// Events are appended in creation order, so reverse for newest-first.
+	var result []domain.WebhookEvent
+	for i := len(all) - 1; i >= 0; i-- {
+		result = append(result, all[i])
+		if len(result) >= limit {
+			break
 		}
 	}
 	return result, nil
@@ -762,5 +780,202 @@ func TestRotateSecret_GracePeriod(t *testing.T) {
 	header2 := httpClient.lastRequest.Header.Get("Velox-Signature")
 	if c := strings.Count(header2, "v1="); c != 1 {
 		t.Errorf("after expiry, header should have 1 v1= entry, got %d: %s", c, header2)
+	}
+}
+
+// TestRetryPendingDeliveries_OldEventResolvable is the regression guard for
+// the stranded-delivery bug: the retry worker used to resolve the event via
+// ListEvents(tenant, 1000) + linear scan, but the store clamps that list to a
+// bounded newest-window (max 100). A delivery whose event had aged out of the
+// window could never be matched, so it cycled in the pending pool forever and
+// was never re-attempted. The fix point-looks the event up by id, which the
+// store always resolves regardless of age. This test seeds enough newer events
+// to push the target event out of the clamped window, then asserts the due
+// delivery is actually re-attempted.
+func TestRetryPendingDeliveries_OldEventResolvable(t *testing.T) {
+	store := newMemStore()
+	httpClient := &mockHTTPClient{statusCode: 200}
+	svc := NewTestService(store, httpClient)
+	ctx := context.Background()
+
+	ep, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL:    "http://localhost:9999/hook",
+		Events: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("create endpoint: %v", err)
+	}
+
+	// The event we'll attach the pending delivery to — created first, so it's
+	// the OLDEST event in the store.
+	oldEvent, err := store.CreateEvent(ctx, "t1", domain.WebhookEvent{EventType: "invoice.created"})
+	if err != nil {
+		t.Fatalf("create old event: %v", err)
+	}
+
+	// A delivery for that old event, due for retry (NextRetryAt in the past).
+	past := time.Now().UTC().Add(-time.Hour)
+	pending, err := store.CreateDelivery(ctx, "t1", domain.WebhookDelivery{
+		WebhookEndpointID: ep.Endpoint.ID,
+		WebhookEventID:    oldEvent.ID,
+		Status:            domain.DeliveryPending,
+		AttemptCount:      1,
+		Livemode:          oldEvent.Livemode,
+		NextRetryAt:       &past,
+	})
+	if err != nil {
+		t.Fatalf("create pending delivery: %v", err)
+	}
+
+	// Bury the old event under enough newer events to push it out of the
+	// store's hard 100-row ListEvents window — the exact production condition
+	// that stranded the delivery (the retry worker requested 1000 but the
+	// store clamps to 100).
+	for i := 0; i < 120; i++ {
+		if _, err := store.CreateEvent(ctx, "t1", domain.WebhookEvent{EventType: "noise.event"}); err != nil {
+			t.Fatalf("seed noise event: %v", err)
+		}
+	}
+
+	// Sanity: even requesting the max, the old event is NOT in the newest
+	// window — this is exactly the condition that stranded the delivery.
+	recent, err := store.ListEvents(ctx, "t1", 1000)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, e := range recent {
+		if e.ID == oldEvent.ID {
+			t.Fatal("test precondition broken: old event should be outside the clamped window")
+		}
+	}
+
+	if err := svc.RetryPendingDeliveries(ctx); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	// The delivery must have been re-attempted (mock returns 200 → succeeded).
+	var got domain.WebhookDelivery
+	for _, dd := range store.deliveries {
+		if dd.ID == pending.ID {
+			got = dd
+		}
+	}
+	if got.Status != domain.DeliverySucceeded {
+		t.Errorf("delivery status: got %q, want succeeded (event must resolve by id, not via the clamped list)", got.Status)
+	}
+	if httpClient.lastRequest == nil {
+		t.Error("expected an outbound retry request, got none (delivery was stranded)")
+	}
+}
+
+// TestRetryPendingDeliveries_DeletedEventFails verifies the not-found branch:
+// when the event row is genuinely gone, the delivery is marked failed (not
+// left cycling in the pending pool).
+func TestRetryPendingDeliveries_DeletedEventFails(t *testing.T) {
+	store := newMemStore()
+	httpClient := &mockHTTPClient{statusCode: 200}
+	svc := NewTestService(store, httpClient)
+	ctx := context.Background()
+
+	ep, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL:    "http://localhost:9999/hook",
+		Events: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("create endpoint: %v", err)
+	}
+
+	past := time.Now().UTC().Add(-time.Hour)
+	pending, err := store.CreateDelivery(ctx, "t1", domain.WebhookDelivery{
+		WebhookEndpointID: ep.Endpoint.ID,
+		WebhookEventID:    "vlx_whevt_gone", // never created
+		Status:            domain.DeliveryPending,
+		AttemptCount:      1,
+		NextRetryAt:       &past,
+	})
+	if err != nil {
+		t.Fatalf("create pending delivery: %v", err)
+	}
+
+	if err := svc.RetryPendingDeliveries(ctx); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	var got domain.WebhookDelivery
+	for _, dd := range store.deliveries {
+		if dd.ID == pending.ID {
+			got = dd
+		}
+	}
+	if got.Status != domain.DeliveryFailed {
+		t.Errorf("delivery status: got %q, want failed (deleted event must not strand the delivery)", got.Status)
+	}
+	if httpClient.lastRequest != nil {
+		t.Error("no outbound request should be made for a delivery whose event was deleted")
+	}
+}
+
+// TestAssertDialAddrAllowed is the SSRF dial-control regression guard. The
+// delivery client's DialContext rejects private/link-local/loopback/metadata
+// targets at the actual dial address, closing the DNS-rebinding window that
+// CreateEndpoint-time validation alone leaves open.
+func TestAssertDialAddrAllowed(t *testing.T) {
+	blocked := []string{
+		"10.0.0.1",        // RFC 1918
+		"172.16.5.4",      // RFC 1918
+		"192.168.1.1",     // RFC 1918
+		"127.0.0.1",       // loopback
+		"169.254.169.254", // cloud metadata (link-local)
+		"0.0.0.0",         // unspecified
+		"::1",             // IPv6 loopback
+		"fe80::1",         // IPv6 link-local
+		"fd00::1",         // IPv6 ULA (private)
+	}
+	for _, ipStr := range blocked {
+		if err := assertDialAddrAllowed(ipStr); err == nil {
+			t.Errorf("assertDialAddrAllowed(%q) = nil, want blocked", ipStr)
+		}
+	}
+
+	allowed := []string{
+		"8.8.8.8",              // public IPv4
+		"1.1.1.1",              // public IPv4
+		"2606:4700:4700::1111", // public IPv6
+	}
+	for _, ipStr := range allowed {
+		if err := assertDialAddrAllowed(ipStr); err != nil {
+			t.Errorf("assertDialAddrAllowed(%q) = %v, want allowed", ipStr, err)
+		}
+	}
+}
+
+// TestIsBlockedIP covers the predicate directly across IPv4 and IPv6 reserved
+// ranges that the dial control depends on.
+func TestIsBlockedIP(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"10.0.0.1", true},
+		{"172.16.0.1", true},
+		{"192.168.0.1", true},
+		{"127.0.0.1", true},
+		{"169.254.169.254", true},
+		{"0.0.0.0", true},
+		{"::1", true},
+		{"fe80::1", true},
+		{"fc00::1", true},
+		{"8.8.8.8", false},
+		{"203.0.113.10", false},
+		{"2606:4700:4700::1111", false},
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip)
+		if ip == nil {
+			t.Fatalf("bad test IP %q", c.ip)
+		}
+		if got := isBlockedIP(ip); got != c.want {
+			t.Errorf("isBlockedIP(%q) = %v, want %v", c.ip, got, c.want)
+		}
 	}
 }

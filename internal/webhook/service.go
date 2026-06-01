@@ -52,9 +52,75 @@ type HTTPClient interface {
 
 func NewService(store Store, client HTTPClient) *Service {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: ssrfHardenedTransport(),
+		}
 	}
 	return &Service{store: store, client: client, bus: NewEventBus()}
+}
+
+// ssrfHardenedTransport returns an http.Transport whose DialContext rejects
+// connections to private/link-local/loopback/metadata IPs at the actual dial
+// address. validateWebhookURL only resolves at CreateEndpoint time, so a host
+// that resolved publicly then could be re-pointed at an internal address
+// (DNS rebinding) by the time delivery POSTs to the stored URL. Checking the
+// resolved dial target on every connection closes that window.
+func ssrfHardenedTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = ssrfSafeDialContext
+	return t
+}
+
+// ssrfSafeDialContext is the dial predicate wired into the delivery client.
+// It resolves the host portion of addr and refuses to dial if the target
+// address is a blocked (private/internal) IP.
+func ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertDialAddrAllowed(host); err != nil {
+		return nil, err
+	}
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	return d.DialContext(ctx, network, net.JoinHostPort(host, port))
+}
+
+// assertDialAddrAllowed resolves host (an IP literal or hostname) and returns
+// an error if any resolved address is a blocked private/internal IP. A
+// hostname that resolves to multiple addresses is rejected if ANY of them is
+// blocked — a partially-poisoned DNS answer must not slip an internal hop
+// through. Reuses the same isBlockedIP predicate that the CreateEndpoint
+// validation path relies on.
+func assertDialAddrAllowed(host string) error {
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("refusing to dial private/internal address %s", ip)
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("refusing to dial private/internal address %s (resolved from %q)", ip, host)
+		}
+	}
+	return nil
+}
+
+// isBlockedIP returns true if ip is private, link-local, loopback, or
+// otherwise reserved — covering both the IPv4 privateRanges table and the
+// IPv6 equivalents (::1, fe80::/10, fc00::/7) that the IPv4-only table misses.
+func isBlockedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsPrivate() || ip.IsUnspecified() {
+		return true
+	}
+	return isPrivateIP(ip)
 }
 
 // EventBus exposes the in-memory pub/sub backing the SSE stream. The
@@ -632,24 +698,28 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			continue
 		}
 
-		events, err := s.store.ListEvents(dCtx, d.TenantID, 1000)
+		// Point-lookup the event directly. The previous ListEvents+scan
+		// clamped to the newest ~100 rows, so older pending deliveries
+		// (whose event had aged out of that window) were stranded forever.
+		event, err := s.store.GetEvent(dCtx, d.TenantID, d.WebhookEventID)
 		if err != nil {
-			slog.Error("list events for retry", "delivery_id", d.ID, "error", err)
-			continue
-		}
-		var event *domain.WebhookEvent
-		for i := range events {
-			if events[i].ID == d.WebhookEventID {
-				event = &events[i]
-				break
+			if errors.Is(err, errs.ErrNotFound) {
+				// Event genuinely deleted — the delivery can never succeed.
+				// Mark it failed so it stops cycling through the retry pool.
+				now := time.Now().UTC()
+				d.Status = domain.DeliveryFailed
+				d.ErrorMessage = "event not found"
+				d.CompletedAt = &now
+				d.NextRetryAt = nil
+				_, _ = s.store.UpdateDelivery(dCtx, d.TenantID, d)
+				slog.Error("event not found for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID)
+				continue
 			}
-		}
-		if event == nil {
-			slog.Error("event not found for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID)
+			slog.Error("get event for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID, "error", err)
 			continue
 		}
 
-		s.retryDeliver(dCtx, d, ep, *event)
+		s.retryDeliver(dCtx, d, ep, event)
 	}
 
 	return nil
