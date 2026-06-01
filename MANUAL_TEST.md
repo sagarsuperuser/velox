@@ -384,6 +384,15 @@ Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wa
 - [ ] No new invoice generated for the period after cancellation.
 - [ ] Future-dated `cancel_at` variant (set `cancel_at = frozen+200d` on a yearly sub): advance to before → sub still active. Advance past → sub canceled at the simulated `cancel_at` instant.
 
+## FLOW TC8b: Mid-period cancel of an UNPAID in-advance prebill (#22)
+
+Setup: clock-pinned customer on an in_advance plan (e.g. $30/mo), day-1 invoice finalized but left **unpaid** (no payment method / declined). Cancel immediately (`POST /subscriptions/:id/cancel`) mid-period, not at period end.
+
+- [ ] **Partial consumption** (cancel ~halfway through the period): the prebill invoice's **amount due drops to the consumed portion** (e.g. $30 → ~$15) — a credit note for the unused portion is linked on the invoice. Invoice is NOT voided and stays collectible for the consumed amount.
+- [ ] **No consumption** (cancel at/near period start): the prebill invoice **status → voided** (no credit note).
+- [ ] Customer credit balance is **unchanged** on both paths — no balance credit is granted for an invoice that was never paid.
+- [ ] Paid-invoice contrast (mark the prebill paid first, then cancel mid-period): unused portion goes to the **customer credit balance** as before; the invoice is not voided/reduced.
+
 ## FLOW SUB-CARD: Subscription billing-cycle card surface
 
 Locks in the 2026-05-20 "Renews on" annotation + alignment tooltip (Stripe/Lago/Chargebee/Recurly converging UX pattern).

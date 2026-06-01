@@ -65,3 +65,23 @@ Considered: `billing_mode IN ('arrears_only', 'advance_base_arrears_usage', 'adv
 ## Migration
 
 `0084_plans_base_bill_timing` adds the column with default `'in_arrears'` so every existing row keeps its current behaviour. Backout is a clean `DROP COLUMN IF EXISTS base_bill_timing` (a sub created with `in_advance` and billed under the new path would have a credit-note proration on cancel; rolling the schema back wouldn't unwind ledger entries, but the data stays valid because the new code path is silent under the default).
+
+## Amendment 2026-06-01: cancel relief when the in_advance prebill is UNPAID (velox-ops #22)
+
+This ADR's "Negative" list flagged "dunning interaction when the in_advance invoice fails on day 1" as a deferred slice. This amendment resolves it.
+
+**Problem.** `BillOnCancel` only grants the unused-portion credit when the source in_advance invoice was *paid* (correct — you don't gift a customer balance they never funded). But when the invoice was **unpaid**, it did nothing: the full-period invoice stayed open and rode the dunning path. A customer who cancels on day 3 of a 30-day prebilled period was still chased for all 30 days.
+
+**Industry research (2026-06-01).** Verified across Stripe, Orb, Lago, Chargebee, Recurly, Metronome. Convergent rule (4 high-confidence platforms — Stripe, Orb, Lago, Chargebee): on cancel of an unpaid prebill, **settle the invoice down to the consumed portion** — never chase the full amount, never issue an unfunded credit. Two mechanizations: reduce-to-consumed via an adjustment credit note (Chargebee/Orb/Lago) or void-and-reissue (Stripe). AI-native peers (Orb, Lago) reinforce reduce-to-consumed and gate the credit-note type on payment status — the same gate Velox already had at the credit-grant level. The prior leave-in-dunning behavior matched no platform.
+
+**Decision.** Extend `BillOnCancel`'s unpaid branch to act on the invoice itself:
+- **Paid** → unchanged: grant the unused amount to the customer's credit balance.
+- **Unpaid, nothing consumed** (whole remaining receivable unused, nothing paid) → `invoice.Void()` (clean terminal status, full tax reversal). Matches Orb's pure-upfront void.
+- **Unpaid, partially consumed** → adjustment credit note reducing `amount_due` to the consumed portion (reuses `creditnote.Service`; reverses the unused fraction's tax). The net unused base is grossed up by the invoice's `Total/Subtotal` ratio so the credit note covers the unused portion's tax too. No customer-balance credit (no cash was funded).
+- Partial payment present → never void (would annul collected money); reduce instead, clamped to `amount_due`.
+
+**Chose reduce-via-credit-note over void-and-reissue** for the partial case: identical economics, reuses an existing concurrency-hardened primitive (vs synthesizing a new invoice + re-running tax), keeps one invoice for the customer's paper trail, and matches 3 of 4 high-confidence platforms.
+
+**Dunning posture:** the consumed-portion residual stays collectible (it is legitimately owed); dunning's existing terminal `mark_uncollectible` covers the eventual-give-up case. Not paused on cancel.
+
+**Scope held for v1** (per pre-launch scoping): hardcoded default, no `Skip/Reduce/Void/Refund` tenant setting (Chargebee/Lago expose one — revisit on a named DP request). Idempotency relies on `CancelAtomic` refusing to re-cancel an already-canceled sub, so `BillOnCancel` runs once. No new webhook event types; `invoice.voided` / credit-note events from the underlying services cover it. Wiring: `engine.SetInvoiceVoider` / `engine.SetCreditNoteAdjuster` (narrow domain-typed interfaces, mirroring `SetCreditGranter`).
