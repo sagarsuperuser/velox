@@ -21,6 +21,41 @@ func NewPostgresWebhookStore(db *postgres.DB) *PostgresWebhookStore {
 	return &PostgresWebhookStore{db: db}
 }
 
+// WasProcessed reports whether an event with this stripe_event_id has
+// already been ingested for the tenant+livemode. Read-only idempotency
+// pre-check used by HandleWebhook before running side-effects; the dedup
+// row itself is written by IngestEvent only after processing succeeds, so
+// "row present" implies "side-effect committed."
+//
+// The (tenant_id, livemode, stripe_event_id) tuple matches IngestEvent's
+// ON CONFLICT target, so this check sees exactly the rows that would block
+// an insert. A concurrent redelivery that passes this read and races into
+// IngestEvent is still de-duplicated by the ON CONFLICT DO NOTHING there;
+// double-processing is safe because the side-effects are idempotent.
+func (s *PostgresWebhookStore) WasProcessed(ctx context.Context, tenantID, stripeEventID string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	livemode := auth.Livemode(ctx)
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM stripe_webhook_events
+			WHERE tenant_id = $1 AND livemode = $2 AND stripe_event_id = $3
+		)
+	`, tenantID, livemode, stripeEventID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check webhook event processed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 func (s *PostgresWebhookStore) IngestEvent(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) (domain.StripeWebhookEvent, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
