@@ -120,14 +120,23 @@ func (h *Handler) resolve(ctx context.Context, tenantID string, evt apiEvent) (I
 	}
 
 	if evt.Timestamp != nil {
-		var ts interface{}
-		if err := json.Unmarshal(*evt.Timestamp, &ts); err == nil {
-			if tsStr, ok := ts.(string); ok {
-				if parsed, err := parseTimestamp(tsStr); err == nil {
-					input.Timestamp = &parsed
-				}
-			}
+		// A caller that sends a timestamp means it. Silently discarding a
+		// malformed/non-string value and falling back to wall-clock now
+		// back-dates or future-dates usage into the wrong billing period —
+		// reject it instead, matching the Backfill and getSummary paths.
+		var ts any
+		if err := json.Unmarshal(*evt.Timestamp, &ts); err != nil {
+			return IngestInput{}, errs.Invalid("timestamp", "must be an RFC3339 string, e.g. 2026-05-31T12:00:00Z")
 		}
+		tsStr, ok := ts.(string)
+		if !ok {
+			return IngestInput{}, errs.Invalid("timestamp", "must be an RFC3339 string, e.g. 2026-05-31T12:00:00Z")
+		}
+		parsed, err := parseTimestamp(tsStr)
+		if err != nil {
+			return IngestInput{}, errs.Invalid("timestamp", "must be an RFC3339 string, e.g. 2026-05-31T12:00:00Z")
+		}
+		input.Timestamp = &parsed
 	}
 
 	return input, nil
