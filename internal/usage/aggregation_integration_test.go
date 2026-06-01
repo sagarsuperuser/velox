@@ -170,6 +170,45 @@ func TestAggregateByPricingRules(t *testing.T) {
 		})
 	})
 
+	t.Run("last_ever winner excluded from period buckets (no double-count)", func(t *testing.T) {
+		// Regression: an event whose top-priority matching rule is
+		// last_ever must NOT also be aggregated by a lower-priority
+		// period rule (or the unclaimed default). Before the fix, the
+		// period-bounded query filtered last_ever out of the LATERAL
+		// candidate set, so such events fell through to the next rule
+		// AND were claimed again by the last_ever pass — double-counting.
+		tenantID := testutil.CreateTestTenant(t, db, "Agg LE NoDouble")
+		customerID := insertTestCustomer(t, db, tenantID, "cus_le_dbl")
+		meterID := insertTestMeter(t, db, tenantID, "mtr_le_dbl", "tokens_le_dbl")
+		leverRRV := insertTestRatingRule(t, db, tenantID, "rate_le_dbl")
+		sumRRV := insertTestRatingRule(t, db, tenantID, "rate_sum_dbl")
+
+		// High-priority last_ever rule + lower-priority sum rule, both
+		// matching {model: gpt-4}. The events match BOTH; last_ever wins.
+		insertTestPricingRule(t, db, tenantID, meterID, leverRRV,
+			map[string]any{"model": "gpt-4"}, domain.AggLastEver, 100)
+		insertTestPricingRule(t, db, tenantID, meterID, sumRRV,
+			map[string]any{"model": "gpt-4"}, domain.AggSum, 50)
+
+		now := time.Now()
+		from := now.Add(-2 * time.Hour)
+		to := now.Add(1 * time.Hour)
+
+		ingestAt(t, ctx, store, tenantID, customerID, meterID, decimal.NewFromInt(10), map[string]any{"model": "gpt-4"}, now.Add(-90*time.Minute))
+		ingestAt(t, ctx, store, tenantID, customerID, meterID, decimal.NewFromInt(42), map[string]any{"model": "gpt-4"}, now.Add(-5*time.Minute))
+
+		got, err := store.AggregateByPricingRules(ctx, tenantID, customerID, meterID, domain.AggSum, from, to)
+		if err != nil {
+			t.Fatalf("aggregate: %v", err)
+		}
+		// Only the last_ever bucket should exist (latest event qty=42).
+		// The sum rule and the unclaimed default must be absent — the
+		// events belong solely to last_ever.
+		assertRuleAggregations(t, got, map[string]decimal.Decimal{
+			leverRRV: decimal.NewFromInt(42),
+		})
+	})
+
 	t.Run("priority claim prevents double-count when rules overlap", func(t *testing.T) {
 		tenantID := testutil.CreateTestTenant(t, db, "Agg Priority")
 		customerID := insertTestCustomer(t, db, tenantID, "cus_prio")
