@@ -40,7 +40,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 
 Every user-visible ship updates the docs that describe it, in the same PR:
 
-- `CHANGELOG.md` (Keep-a-Changelog) + `web-v2/src/pages/Changelog.tsx` (Linear-style) — what shipped, dated.
+- `CHANGELOG.md` (Keep-a-Changelog) — what shipped, dated.
 - `MANUAL_TEST.md` — add or revise the matching FLOW so the assertions still match observable behavior. If a flow lies, future-you can't run it; that's the rot trigger we already paid for once. Trimmed shape (post-2026-05-02): one observable per checkbox, no preamble prose, drop DB introspection unless it's the actual assertion. Stale flows = delete or rewrite, not leave-and-document.
 - `docs/adr/` if the change is a decision worth re-litigating later.
 - `README.md` "Recently shipped" / "In flight" sections — keep aligned with reality; if a "Roadmap" item is silently descoped, edit the README first, then act.

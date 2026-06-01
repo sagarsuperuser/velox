@@ -89,9 +89,9 @@ Optional:
 | `RUN_MIGRATIONS_ON_BOOT` | `false` | Run migrations on startup |
 | `APP_ENV` | `dev` | `dev`/`staging`/`production`; gates cookie `Secure` flag |
 | `VELOX_DASHBOARD_URL` | `http://localhost:5173` | Used in password-reset and invite emails |
-| `STRIPE_SECRET_KEY` | — | Required for Stripe PaymentIntent flows |
-| `STRIPE_WEBHOOK_SECRET` | — | Required to verify inbound Stripe webhooks |
 | `SMTP_HOST` / `SMTP_PORT` | `localhost:1025` | Outbound email; default points at mailpit |
+
+Stripe is configured per-tenant via the dashboard (`POST /v1/settings/stripe`), not env vars — each tenant connects their own Stripe account.
 
 ## Scaling considerations
 

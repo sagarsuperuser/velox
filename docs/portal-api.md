@@ -98,10 +98,12 @@ Response: the canceled subscription object.
 
 ### Payment method
 
-#### `POST /v1/me/payment-method/update`
+#### `POST /v1/me/payment-methods/setup-session`
 
 Start a Stripe Checkout (setup mode) flow to collect a new payment
-method. Returns a URL the customer redirects to.
+method. Returns a URL the customer redirects to. Lazily creates the
+Stripe Customer if one doesn't exist yet, so this works for true
+self-serve (no operator-driven bootstrap required first).
 
 ```jsonc
 // Request (body optional)
@@ -111,14 +113,15 @@ method. Returns a URL the customer redirects to.
 
 // Response
 {
-  "url": "https://checkout.stripe.com/c/pay/cs_test_..."
+  "url": "https://checkout.stripe.com/c/pay/cs_test_...",
+  "session_id": "cs_test_..."
 }
 ```
 
 **Flow**:
 
 1. Customer clicks "Update payment method" in the DP's UI.
-2. DP calls `POST /v1/me/payment-method/update`.
+2. DP calls `POST /v1/me/payment-methods/setup-session`.
 3. DP redirects the customer to the returned `url`.
 4. Customer enters new card details on Stripe Checkout.
 5. Stripe redirects back to `return_url`.
@@ -129,9 +132,6 @@ method. Returns a URL the customer redirects to.
 
 **Errors**:
 
-- `400 missing_payment_setup`: customer has no Stripe customer
-  record yet. DP must run the initial setup flow (operator-driven
-  `POST /v1/checkout/setup`) before the customer can update.
 - `503 stripe_unavailable`: tenant has no Stripe configuration for
   the active livemode. DP needs to configure Stripe credentials.
 
@@ -140,14 +140,13 @@ method. Returns a URL the customer redirects to.
 #### `GET /v1/me/branding`
 
 Returns the tenant's branding for portal-page rendering: company
-name, logo URL, brand color, support URL. Used by DPs that embed the
-portal API in their own UI to match Velox's email branding.
+name, logo URL, support URL. Used by DPs that embed the portal API in
+their own UI to match Velox's email branding.
 
 ```jsonc
 {
   "company_name": "Acme Corp",
   "logo_url": "https://...",
-  "brand_color": "#1a1a1a",
   "support_url": "https://acme.com/support"
 }
 ```
@@ -191,10 +190,15 @@ Use the returned `token` as `Authorization: Bearer <token>` for all
 For operator-driven actions on behalf of a customer (admin tools, CS
 flows), use the operator API:
 
-- `POST /v1/portal/{customerID}/update-payment-method` — operator
-  initiates a PM update Checkout session. Same Stripe flow as the
-  customer-self-serve `/v1/me/payment-method/update` endpoint, but
-  authenticated with a Bearer key.
+- `POST /v1/customers/{customer_id}/payment-methods/setup-session` —
+  operator mints a PM setup Checkout session URL to hand to the
+  customer. Same Stripe flow as the customer-self-serve
+  `/v1/me/payment-methods/setup-session` endpoint, but authenticated
+  with a Bearer key.
+- `POST /v1/customers/{customer_id}/payment-methods/send-setup-email`
+  — operator emails the setup link to the customer's address on file
+  (industry-primary path; the setup-session above is the copy-link
+  secondary path).
 
 These endpoints accept a Bearer API key and require the operator to
 specify the `customer_id` in the URL. The portal endpoints above
