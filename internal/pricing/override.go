@@ -56,7 +56,11 @@ func (s *PostgresStore) CreateOverride(ctx context.Context, tenantID string, o d
 	if err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
-	_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+	if len(tiersJSON) > 0 {
+		if err := json.Unmarshal(tiersJSON, &o.GraduatedTiers); err != nil {
+			return domain.CustomerPriceOverride{}, fmt.Errorf("unmarshal graduated_tiers: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
@@ -88,7 +92,11 @@ func (s *PostgresStore) GetOverride(ctx context.Context, tenantID, customerID, r
 	if err != nil {
 		return domain.CustomerPriceOverride{}, err
 	}
-	_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+	if len(tiersJSON) > 0 {
+		if err := json.Unmarshal(tiersJSON, &o.GraduatedTiers); err != nil {
+			return domain.CustomerPriceOverride{}, fmt.Errorf("unmarshal graduated_tiers: %w", err)
+		}
+	}
 	return o, nil
 }
 
@@ -126,7 +134,11 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID, customerID 
 			&o.OverageUnitAmountCents, &o.Reason, &o.Active, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal(tiersJSON, &o.GraduatedTiers)
+		if len(tiersJSON) > 0 {
+			if err := json.Unmarshal(tiersJSON, &o.GraduatedTiers); err != nil {
+				return nil, fmt.Errorf("unmarshal graduated_tiers: %w", err)
+			}
+		}
 		overrides = append(overrides, o)
 	}
 	return overrides, rows.Err()
@@ -138,11 +150,11 @@ type CreateOverrideInput struct {
 	CustomerID             string              `json:"customer_id"`
 	RatingRuleVersionID    string              `json:"rating_rule_version_id"`
 	Mode                   domain.PricingMode  `json:"mode"`
-	FlatAmountCents        int64               `json:"flat_amount_cents"`
+	FlatAmountCents        decimal.Decimal     `json:"flat_amount_cents"`
 	GraduatedTiers         []domain.RatingTier `json:"graduated_tiers"`
 	PackageSize            int64               `json:"package_size"`
 	PackageAmountCents     int64               `json:"package_amount_cents"`
-	OverageUnitAmountCents int64               `json:"overage_unit_amount_cents"`
+	OverageUnitAmountCents decimal.Decimal     `json:"overage_unit_amount_cents"`
 	Reason                 string              `json:"reason,omitempty"`
 }
 

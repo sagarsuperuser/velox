@@ -956,13 +956,13 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 			"rrv_api": {
 				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingGraduated,
 				GraduatedTiers: []domain.RatingTier{
-					{UpTo: 1000, UnitAmountCents: 10},
-					{UpTo: 0, UnitAmountCents: 5},
+					{UpTo: 1000, UnitAmountCents: decimal.NewFromInt(10)},
+					{UpTo: 0, UnitAmountCents: decimal.NewFromInt(5)},
 				},
 			},
 			"rrv_storage": {
 				ID: "rrv_storage", RuleKey: "storage_gb", Version: 1, Mode: domain.PricingFlat,
-				FlatAmountCents: 2500,
+				FlatAmountCents: decimal.NewFromInt(2500),
 			},
 		},
 	}
@@ -1395,7 +1395,7 @@ func TestRunCycle_WithPriceOverride(t *testing.T) {
 	pricing.overrides = map[string]domain.CustomerPriceOverride{
 		"cus_1:rrv_api": {
 			ID: "cpo_1", CustomerID: "cus_1", RatingRuleVersionID: "rrv_api",
-			Mode: domain.PricingFlat, FlatAmountCents: 5000,
+			Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5000),
 			Active: true,
 		},
 	}
@@ -1473,8 +1473,8 @@ func TestRunCycle_UnitAmountRoundsBankers(t *testing.T) {
 			"rrv_api": {
 				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingGraduated,
 				GraduatedTiers: []domain.RatingTier{
-					{UpTo: 1, UnitAmountCents: 100},
-					{UpTo: 0, UnitAmountCents: 50},
+					{UpTo: 1, UnitAmountCents: decimal.NewFromInt(100)},
+					{UpTo: 0, UnitAmountCents: decimal.NewFromInt(50)},
 				},
 			},
 		},
@@ -3431,8 +3431,8 @@ func TestRunCycle_SegmentAware_UsageMetersDifferPerSegment(t *testing.T) {
 			"mtr_y": {ID: "mtr_y", Name: "Meter Y", Unit: "unit", Aggregation: "sum", RatingRuleVersionID: "rrv_y"},
 		},
 		rules: map[string]domain.RatingRuleVersion{
-			"rrv_x": {ID: "rrv_x", RuleKey: "x_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: 5},
-			"rrv_y": {ID: "rrv_y", RuleKey: "y_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: 10},
+			"rrv_x": {ID: "rrv_x", RuleKey: "x_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5)},
+			"rrv_y": {ID: "rrv_y", RuleKey: "y_key", Version: 1, Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(10)},
 		},
 	}
 

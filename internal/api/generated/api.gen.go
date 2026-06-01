@@ -941,11 +941,14 @@ type PlanStatus string
 
 // RatingRule defines model for RatingRule.
 type RatingRule struct {
-	Currency        string `json:"currency,omitempty"`
-	FlatAmountCents int64  `json:"flat_amount_cents,omitempty"`
+	Currency string `json:"currency,omitempty"`
+
+	// FlatAmountCents Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units). Arbitrary precision; invoice line amounts and totals still round to whole cents.
+	FlatAmountCents string `json:"flat_amount_cents,omitempty"`
 	GraduatedTiers  []struct {
-		UnitAmountCents int `json:"unit_amount_cents,omitempty"`
-		UpTo            int `json:"up_to,omitempty"`
+		// UnitAmountCents Per-unit rate in cents, as a decimal string (see flat_amount_cents).
+		UnitAmountCents string `json:"unit_amount_cents,omitempty"`
+		UpTo            int    `json:"up_to,omitempty"`
 	} `json:"graduated_tiers,omitempty"`
 	Id      string         `json:"id,omitempty"`
 	Mode    RatingRuleMode `json:"mode,omitempty"`
@@ -1095,17 +1098,23 @@ type PostV1PlansJSONBodyBillingInterval string
 
 // PostV1RatingRulesJSONBody defines parameters for PostV1RatingRules.
 type PostV1RatingRulesJSONBody struct {
-	Currency        string `json:"currency"`
-	FlatAmountCents int    `json:"flat_amount_cents,omitempty"`
+	Currency string `json:"currency"`
+
+	// FlatAmountCents Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units).
+	FlatAmountCents string `json:"flat_amount_cents,omitempty"`
 	GraduatedTiers  []struct {
-		UnitAmountCents int `json:"unit_amount_cents,omitempty"`
-		UpTo            int `json:"up_to,omitempty"`
+		// UnitAmountCents Per-unit rate in cents, as a decimal string.
+		UnitAmountCents string `json:"unit_amount_cents,omitempty"`
+		UpTo            int    `json:"up_to,omitempty"`
 	} `json:"graduated_tiers,omitempty"`
-	Mode               PostV1RatingRulesJSONBodyMode `json:"mode"`
-	Name               string                        `json:"name"`
-	PackageAmountCents int                           `json:"package_amount_cents,omitempty"`
-	PackageSize        int                           `json:"package_size,omitempty"`
-	RuleKey            string                        `json:"rule_key"`
+	Mode PostV1RatingRulesJSONBodyMode `json:"mode"`
+	Name string                        `json:"name"`
+
+	// OverageUnitAmountCents Package-mode per-unit overage rate in cents, as a decimal string. Fixed fees (package_amount_cents) stay integer cents.
+	OverageUnitAmountCents string `json:"overage_unit_amount_cents,omitempty"`
+	PackageAmountCents     int    `json:"package_amount_cents,omitempty"`
+	PackageSize            int    `json:"package_size,omitempty"`
+	RuleKey                string `json:"rule_key"`
 }
 
 // PostV1RatingRulesJSONBodyMode defines parameters for PostV1RatingRules.

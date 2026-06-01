@@ -459,7 +459,14 @@ func scanRatingRule(row rowScanner) (domain.RatingRuleVersion, error) {
 	if err != nil {
 		return domain.RatingRuleVersion{}, err
 	}
-	_ = json.Unmarshal(tiersJSON, &r.GraduatedTiers)
+	// Fail loud on malformed tier JSON rather than silently leaving
+	// GraduatedTiers empty — an empty graduated rule would surface as
+	// ErrInvalidPricingConfig only later at billing time, far from the cause.
+	if len(tiersJSON) > 0 {
+		if err := json.Unmarshal(tiersJSON, &r.GraduatedTiers); err != nil {
+			return domain.RatingRuleVersion{}, fmt.Errorf("unmarshal graduated_tiers for rule %s: %w", r.ID, err)
+		}
+	}
 	return r, nil
 }
 

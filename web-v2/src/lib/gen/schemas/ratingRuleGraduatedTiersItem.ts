@@ -10,5 +10,6 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
 export type RatingRuleGraduatedTiersItem = {
   up_to?: number;
-  unit_amount_cents?: number;
+  /** Per-unit rate in cents, as a decimal string (see flat_amount_cents). */
+  unit_amount_cents?: string;
 };

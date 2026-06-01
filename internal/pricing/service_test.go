@@ -8,6 +8,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/shopspring/decimal"
 )
 
 type memStore struct {
@@ -247,7 +248,7 @@ func TestCreateRatingRule_Flat(t *testing.T) {
 		Name:            "API Calls",
 		Mode:            domain.PricingFlat,
 		Currency:        "usd",
-		FlatAmountCents: 500,
+		FlatAmountCents: decimal.NewFromInt(500),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -276,8 +277,8 @@ func TestCreateRatingRule_Graduated(t *testing.T) {
 		Mode:     domain.PricingGraduated,
 		Currency: "USD",
 		GraduatedTiers: []domain.RatingTier{
-			{UpTo: 100, UnitAmountCents: 10},
-			{UpTo: 0, UnitAmountCents: 5},
+			{UpTo: 100, UnitAmountCents: decimal.NewFromInt(10)},
+			{UpTo: 0, UnitAmountCents: decimal.NewFromInt(5)},
 		},
 	})
 	if err != nil {
@@ -310,10 +311,10 @@ func TestCreateRatingRule_AutoVersioning(t *testing.T) {
 	ctx := context.Background()
 
 	v1, _ := svc.CreateRatingRule(ctx, "tenant1", CreateRatingRuleInput{
-		RuleKey: "api_calls", Name: "V1", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 100,
+		RuleKey: "api_calls", Name: "V1", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(100),
 	})
 	v2, _ := svc.CreateRatingRule(ctx, "tenant1", CreateRatingRuleInput{
-		RuleKey: "api_calls", Name: "V2", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 200,
+		RuleKey: "api_calls", Name: "V2", Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(200),
 	})
 
 	if v1.Version != 1 {
@@ -636,7 +637,7 @@ func seedMeterAndRule(t *testing.T, svc *Service, tenantID string) (meterID, rrv
 	t.Helper()
 	rule, err := svc.CreateRatingRule(context.Background(), tenantID, CreateRatingRuleInput{
 		RuleKey: "tokens_in", Name: "Input tokens", Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 5,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(5),
 	})
 	if err != nil {
 		t.Fatalf("seed rating rule: %v", err)
@@ -783,7 +784,7 @@ func TestListMeterPricingRulesByMeter(t *testing.T) {
 	// Seed a second rating rule so we can attach two pricing rules.
 	rule2, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
 		RuleKey: "tokens_cached", Name: "Cached", Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 1,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("second rating rule: %v", err)

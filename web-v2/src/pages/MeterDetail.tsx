@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api, formatCents, formatDateTime } from '@/lib/api'
+import { api, formatCents, formatRate, formatDateTime } from '@/lib/api'
 import type { MeterPricingRule, MeterAggregationMode, RatingRule } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
@@ -249,7 +249,7 @@ export default function MeterDetailPage() {
 
               {ratingRule.mode === 'flat' && (
                 <div>
-                  <span className="text-3xl font-semibold text-foreground">{formatCents(ratingRule.flat_amount_cents)}</span>
+                  <span className="text-3xl font-semibold text-foreground">{formatRate(ratingRule.flat_amount_cents)}</span>
                   <span className="text-sm text-muted-foreground ml-2">per unit</span>
                 </div>
               )}
@@ -266,7 +266,7 @@ export default function MeterDetailPage() {
                     {ratingRule.graduated_tiers.map((tier, i) => (
                       <TableRow key={i}>
                         <TableCell>{graduatedTierLabel(tier, i, ratingRule.graduated_tiers!)}</TableCell>
-                        <TableCell className="text-right">{formatCents(tier.unit_amount_cents)}</TableCell>
+                        <TableCell className="text-right">{formatRate(tier.unit_amount_cents)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

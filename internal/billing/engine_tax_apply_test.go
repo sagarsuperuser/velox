@@ -11,6 +11,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
+	"github.com/shopspring/decimal"
 )
 
 // taxSettings returns a fixed TenantSettings so engine tests don't need a
@@ -447,7 +448,7 @@ func TestRunCycle_TaxErrorAbortsBeforeInvoiceAndCycleAdvance(t *testing.T) {
 		rules: map[string]domain.RatingRuleVersion{
 			"rrv_api": {
 				ID: "rrv_api", RuleKey: "api_calls", Version: 1, Mode: domain.PricingFlat,
-				FlatAmountCents: 100,
+				FlatAmountCents: decimal.NewFromInt(100),
 			},
 		},
 	}

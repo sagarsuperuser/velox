@@ -56,11 +56,11 @@ type CreateRatingRuleInput struct {
 	Name                   string              `json:"name"`
 	Mode                   domain.PricingMode  `json:"mode"`
 	Currency               string              `json:"currency"`
-	FlatAmountCents        int64               `json:"flat_amount_cents"`
+	FlatAmountCents        decimal.Decimal     `json:"flat_amount_cents"`
 	GraduatedTiers         []domain.RatingTier `json:"graduated_tiers"`
 	PackageSize            int64               `json:"package_size"`
 	PackageAmountCents     int64               `json:"package_amount_cents"`
-	OverageUnitAmountCents int64               `json:"overage_unit_amount_cents"`
+	OverageUnitAmountCents decimal.Decimal     `json:"overage_unit_amount_cents"`
 }
 
 func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input CreateRatingRuleInput) (domain.RatingRuleVersion, error) {
@@ -151,7 +151,7 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 
 	switch input.Mode {
 	case domain.PricingFlat:
-		if input.FlatAmountCents <= 0 {
+		if !input.FlatAmountCents.IsPositive() {
 			return errs.Invalid("flat_amount_cents", "unit price must be greater than 0")
 		}
 	case domain.PricingGraduated:
@@ -159,7 +159,7 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 			return errs.Invalid("graduated_tiers", "at least one pricing tier is required")
 		}
 		for i, tier := range input.GraduatedTiers {
-			if tier.UnitAmountCents <= 0 {
+			if !tier.UnitAmountCents.IsPositive() {
 				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: unit price must be greater than 0", i+1))
 			}
 		}

@@ -3,7 +3,9 @@ package recipe
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
+	"github.com/shopspring/decimal"
 	"gopkg.in/yaml.v3"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -47,20 +49,24 @@ type rawMeter struct {
 }
 
 type rawRatingTier struct {
-	UpTo            int64 `yaml:"up_to"`
-	UnitAmountCents int64 `yaml:"unit_amount_cents"`
+	UpTo int64 `yaml:"up_to"`
+	// Per-unit rate, read as a string so fractional sub-cent rates
+	// (e.g. 0.0003 = $3.00/1M tokens) parse losslessly into decimal.Decimal.
+	UnitAmountCents string `yaml:"unit_amount_cents"`
 }
 
 type rawRatingRule struct {
-	Key                    string          `yaml:"key"`
-	Name                   string          `yaml:"name"`
-	Mode                   string          `yaml:"mode"`
-	Currency               string          `yaml:"currency"`
-	FlatAmountCents        int64           `yaml:"flat_amount_cents"`
+	Key      string `yaml:"key"`
+	Name     string `yaml:"name"`
+	Mode     string `yaml:"mode"`
+	Currency string `yaml:"currency"`
+	// FlatAmountCents / OverageUnitAmountCents are per-unit rates read as
+	// strings (see rawRatingTier) and converted to decimal in parseRecipe.
+	FlatAmountCents        string          `yaml:"flat_amount_cents"`
 	GraduatedTiers         []rawRatingTier `yaml:"graduated_tiers"`
 	PackageSize            int64           `yaml:"package_size"`
 	PackageAmountCents     int64           `yaml:"package_amount_cents"`
-	OverageUnitAmountCents int64           `yaml:"overage_unit_amount_cents"`
+	OverageUnitAmountCents string          `yaml:"overage_unit_amount_cents"`
 }
 
 type rawPricingRule struct {
@@ -120,6 +126,21 @@ var recipeKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // rely on at runtime, and returns the canonical domain.Recipe. Errors are
 // wrapped with the offending field name so a malformed recipe in CI
 // surfaces the exact line at boot.
+// parseRate converts a recipe's string-form per-unit rate into a decimal.
+// Empty is treated as zero (a mode that doesn't use the field). A malformed
+// value fails recipe load loudly rather than silently pricing at zero.
+func parseRate(recipeKey, ruleKey, field, raw string) (decimal.Decimal, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return decimal.Zero, nil
+	}
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("recipe %q: rating_rule %q: invalid %s %q: %w", recipeKey, ruleKey, field, raw, err)
+	}
+	return d, nil
+}
+
 func parseRecipe(data []byte) (domain.Recipe, error) {
 	var raw rawRecipe
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -196,15 +217,27 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 		default:
 			return domain.Recipe{}, fmt.Errorf("recipe %q: rating_rule %q invalid mode %q", raw.Key, r.Key, r.Mode)
 		}
+		flat, err := parseRate(raw.Key, r.Key, "flat_amount_cents", r.FlatAmountCents)
+		if err != nil {
+			return domain.Recipe{}, err
+		}
+		overage, err := parseRate(raw.Key, r.Key, "overage_unit_amount_cents", r.OverageUnitAmountCents)
+		if err != nil {
+			return domain.Recipe{}, err
+		}
 		dr := domain.RecipeRatingRule{
 			Key: r.Key, Name: r.Name, Mode: mode, Currency: r.Currency,
-			FlatAmountCents:        r.FlatAmountCents,
+			FlatAmountCents:        flat,
 			PackageSize:            r.PackageSize,
 			PackageAmountCents:     r.PackageAmountCents,
-			OverageUnitAmountCents: r.OverageUnitAmountCents,
+			OverageUnitAmountCents: overage,
 		}
 		for _, t := range r.GraduatedTiers {
-			dr.GraduatedTiers = append(dr.GraduatedTiers, domain.RatingTier(t))
+			ua, err := parseRate(raw.Key, r.Key, "graduated_tiers.unit_amount_cents", t.UnitAmountCents)
+			if err != nil {
+				return domain.Recipe{}, err
+			}
+			dr.GraduatedTiers = append(dr.GraduatedTiers, domain.RatingTier{UpTo: t.UpTo, UnitAmountCents: ua})
 		}
 		out.RatingRules = append(out.RatingRules, dr)
 	}

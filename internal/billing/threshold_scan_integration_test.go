@@ -88,7 +88,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 
 	rrv, err := pricingSvc.CreateRatingRule(ctx, tenantID, pricing.CreateRatingRuleInput{
 		RuleKey: "calls_flat", Name: "Calls Flat",
-		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: 1,
+		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("create rrv: %v", err)

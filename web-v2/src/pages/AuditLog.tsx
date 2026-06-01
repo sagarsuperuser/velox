@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from 'date-fns-tz'
-import { api, formatDateTime, getTenantTimezone } from '@/lib/api'
+import { api, formatDateTime, formatRate, getTenantTimezone } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
@@ -187,6 +187,11 @@ function formatMetadata(meta: Record<string, unknown> | undefined): { label: str
     const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
     if (typeof val === 'number' && key.includes('cents')) {
       items.push({ label: label.replace(' Cents', ''), value: `$${(val / 100).toFixed(2)}` })
+    } else if (typeof val === 'string' && key.includes('cents') && val !== '' && Number.isFinite(Number(val))) {
+      // Decimal per-unit rates serialize as strings (e.g. "0.0003" cents).
+      // toFixed(2) would collapse sub-cent rates to $0.00 — render at full
+      // precision instead.
+      items.push({ label: label.replace(' Cents', ''), value: formatRate(val) })
     } else if (val !== null && val !== undefined && val !== '') {
       items.push({ label, value: String(val) })
     }

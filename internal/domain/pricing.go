@@ -17,8 +17,15 @@ const (
 )
 
 type RatingTier struct {
-	UpTo            int64 `json:"up_to"`
-	UnitAmountCents int64 `json:"unit_amount_cents"`
+	// UpTo is a tier boundary in whole meter units (never fractional).
+	UpTo int64 `json:"up_to"`
+	// UnitAmountCents is the per-unit price in cents, carried as an
+	// arbitrary-precision decimal so sub-cent unit prices (e.g. $3.00 per
+	// 1,000,000 tokens = 0.0003 cents/token) bill linearly and exactly. This
+	// is the Stripe `unit_amount_decimal` model. Marshals to/from JSON as a
+	// string (shopspring/decimal). Invoice line amounts and totals stay whole
+	// int64 cents — only the per-unit RATE gains precision.
+	UnitAmountCents decimal.Decimal `json:"unit_amount_cents"`
 }
 
 type RatingRuleLifecycle string
@@ -30,20 +37,25 @@ const (
 )
 
 type RatingRuleVersion struct {
-	ID                     string              `json:"id"`
-	TenantID               string              `json:"tenant_id,omitempty"`
-	RuleKey                string              `json:"rule_key"`
-	Name                   string              `json:"name"`
-	Version                int                 `json:"version"`
-	LifecycleState         RatingRuleLifecycle `json:"lifecycle_state,omitempty"`
-	Mode                   PricingMode         `json:"mode"`
-	Currency               string              `json:"currency"`
-	FlatAmountCents        int64               `json:"flat_amount_cents"`
-	GraduatedTiers         []RatingTier        `json:"graduated_tiers"`
-	PackageSize            int64               `json:"package_size"`
-	PackageAmountCents     int64               `json:"package_amount_cents"`
-	OverageUnitAmountCents int64               `json:"overage_unit_amount_cents"`
-	CreatedAt              time.Time           `json:"created_at"`
+	ID             string              `json:"id"`
+	TenantID       string              `json:"tenant_id,omitempty"`
+	RuleKey        string              `json:"rule_key"`
+	Name           string              `json:"name"`
+	Version        int                 `json:"version"`
+	LifecycleState RatingRuleLifecycle `json:"lifecycle_state,omitempty"`
+	Mode           PricingMode         `json:"mode"`
+	Currency       string              `json:"currency"`
+	// FlatAmountCents and OverageUnitAmountCents are PER-UNIT rates (multiplied
+	// by a decimal quantity), so they carry arbitrary-precision decimals for
+	// sub-cent linear pricing (Stripe unit_amount_decimal model). PackageSize
+	// and PackageAmountCents stay whole int64 — a package is a fixed fee for a
+	// whole block, not a per-unit rate.
+	FlatAmountCents        decimal.Decimal `json:"flat_amount_cents"`
+	GraduatedTiers         []RatingTier    `json:"graduated_tiers"`
+	PackageSize            int64           `json:"package_size"`
+	PackageAmountCents     int64           `json:"package_amount_cents"`
+	OverageUnitAmountCents decimal.Decimal `json:"overage_unit_amount_cents"`
+	CreatedAt              time.Time       `json:"created_at"`
 }
 
 type Meter struct {
@@ -202,31 +214,40 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64
 
 	switch rule.Mode {
 	case PricingFlat:
-		if rule.FlatAmountCents < 0 {
+		if rule.FlatAmountCents.IsNegative() {
 			return 0, ErrInvalidPricingConfig
 		}
 		if quantity.IsZero() {
 			return 0, nil
 		}
-		total := quantity.Mul(decimal.NewFromInt(rule.FlatAmountCents))
+		total := quantity.Mul(rule.FlatAmountCents)
 		return decimalToCents(total)
 
 	case PricingGraduated:
 		if len(rule.GraduatedTiers) == 0 {
 			return 0, ErrInvalidPricingConfig
 		}
+		// A catch-all tier (UpTo==0) consumes all remaining quantity and ends
+		// rating, so it must be LAST and unique. A catch-all followed by more
+		// tiers (incl. a second catch-all) makes those tiers dead config and
+		// would silently price overflow quantity at the wrong rate — reject it.
+		for i, t := range rule.GraduatedTiers {
+			if t.UpTo == 0 && i != len(rule.GraduatedTiers)-1 {
+				return 0, ErrInvalidPricingConfig
+			}
+		}
 		remaining := quantity
 		lastUpper := int64(0)
 		amount := decimal.Zero
 		for i, tier := range rule.GraduatedTiers {
-			if tier.UnitAmountCents < 0 || tier.UpTo < 0 {
+			if tier.UnitAmountCents.IsNegative() || tier.UpTo < 0 {
 				return 0, ErrInvalidPricingConfig
 			}
 			if remaining.IsZero() {
 				break
 			}
 			if tier.UpTo == 0 {
-				amount = amount.Add(remaining.Mul(decimal.NewFromInt(tier.UnitAmountCents)))
+				amount = amount.Add(remaining.Mul(tier.UnitAmountCents))
 				remaining = decimal.Zero
 				break
 			}
@@ -245,7 +266,7 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64
 			if consumed.GreaterThan(capDec) {
 				consumed = capDec
 			}
-			amount = amount.Add(consumed.Mul(decimal.NewFromInt(tier.UnitAmountCents)))
+			amount = amount.Add(consumed.Mul(tier.UnitAmountCents))
 			remaining = remaining.Sub(consumed)
 			lastUpper = tier.UpTo
 		}
@@ -255,7 +276,7 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64
 		return decimalToCents(amount)
 
 	case PricingPackage:
-		if rule.PackageSize <= 0 || rule.PackageAmountCents < 0 || rule.OverageUnitAmountCents < 0 {
+		if rule.PackageSize <= 0 || rule.PackageAmountCents < 0 || rule.OverageUnitAmountCents.IsNegative() {
 			return 0, ErrInvalidPricingConfig
 		}
 		if quantity.IsZero() {
@@ -265,7 +286,7 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64
 		fullPackages := quantity.Div(pkgSize).Floor()
 		remainder := quantity.Sub(fullPackages.Mul(pkgSize))
 		total := fullPackages.Mul(decimal.NewFromInt(rule.PackageAmountCents)).
-			Add(remainder.Mul(decimal.NewFromInt(rule.OverageUnitAmountCents)))
+			Add(remainder.Mul(rule.OverageUnitAmountCents))
 		return decimalToCents(total)
 
 	default:
@@ -279,6 +300,14 @@ func ComputeAmountCents(rule RatingRuleVersion, quantity decimal.Decimal) (int64
 // would emit a negative invoice line in production, so this is fail-loud.
 func decimalToCents(d decimal.Decimal) (int64, error) {
 	rounded := d.RoundBank(0)
+	// A negative value is < MaxInt64 so it slips past the overflow guard and
+	// IntPart() would silently emit a negative invoice line — the exact
+	// fail-open this function exists to prevent. Callers only ever reach here
+	// with non-negative amounts (quantity and rates are validated >= 0), so a
+	// negative here is a logic error: fail loud rather than bill a negative.
+	if rounded.IsNegative() {
+		return 0, ErrInvalidPricingConfig
+	}
 	if rounded.GreaterThan(maxInt64Decimal) {
 		return 0, ErrAmountOverflow
 	}
