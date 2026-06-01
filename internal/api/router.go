@@ -943,7 +943,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if rdb != nil {
 		userSvc.SetFailureCounter(user.NewRedisFailureCounter(rdb))
 	}
-	rateLimiter := mw.NewRateLimiter(rdb, 100, time.Minute)
+	rateLimiter := mw.NewRateLimiter(rdb, "general", 100, time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
 	// silently disabling rate limiting (DDoS vector).
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
@@ -959,7 +959,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// requests per visit. 60/min per IP leaves headroom for ~10
 	// simultaneous customers behind a single corporate NAT while keeping
 	// enumerations and scraping bounded.
-	hostedInvoiceRL := mw.NewRateLimiter(rdb, 60, time.Minute)
+	hostedInvoiceRL := mw.NewRateLimiter(rdb, "hosted_invoice", 60, time.Minute)
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		hostedInvoiceRL.SetFailClosed(true)
 	}
@@ -970,7 +970,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// a Redis hiccup shouldn't block a legitimate operator's "send link"
 	// action; the worst case (Redis down + actual double-click) is two
 	// near-identical emails, no money/state at risk.
-	setupLinkCooldown := mw.NewRateLimiter(rdb, 1, time.Minute)
+	setupLinkCooldown := mw.NewRateLimiter(rdb, "setup_link", 1, time.Minute)
 	paymentMethodsH.SetCooldown(setupLinkCooldown)
 
 	r := chi.NewRouter()
