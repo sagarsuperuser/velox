@@ -107,10 +107,11 @@ func Classify(err error) ErrorCode {
 	low := strings.ToLower(msg)
 
 	// Not configured: provider was never connected for the active
-	// mode. Velox's own wrapper produces "no client configured for
-	// livemode=…"; this match must run BEFORE provider_auth because
-	// "configured" can co-occur with "key" / "credential" phrasings
-	// in adjacent provider error variants.
+	// mode. Velox's own wrapper (tax/stripe.go) produces "no Stripe
+	// credentials connected for livemode=…" on Calculate and "no client
+	// for context (livemode=…)" on reverse. This match must run BEFORE
+	// provider_auth because "credentials" can co-occur with "key" /
+	// "credential" phrasings in adjacent provider error variants.
 	if reNotConfigured.MatchString(low) {
 		return ErrCodeProviderNotConfigured
 	}
@@ -153,7 +154,7 @@ var errSentinelContextCanceled = errors.New("context canceled")
 
 var (
 	reNotConfigured = regexp.MustCompile(
-		`no client configured|no credentials configured|provider not connected|not configured for livemode`,
+		`no client configured|no credentials configured|provider not connected|not configured for livemode|credentials connected for livemode|no .*credentials connected|no client for (mode|context)`,
 	)
 	reAuth = regexp.MustCompile(
 		`invalid api key|expired api key|authentication required|unauthorized|invalid_api_key|api_key_invalid`,
