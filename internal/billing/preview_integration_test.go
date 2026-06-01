@@ -179,7 +179,7 @@ func TestCreatePreview_SingleMeterFlatParity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 30*time.Second)
 	defer cancel()
 
-	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-72 * time.Hour)
+	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-120 * time.Hour) // far enough back that 100 hourly events stay in the past (future live ingest is rejected)
 	cycleEnd := cycleStart.Add(30 * 24 * time.Hour)
 
 	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
