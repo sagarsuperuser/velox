@@ -935,18 +935,27 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	} else {
 		slog.Info("REDIS_URL not set, rate limiting will fail open")
 	}
-	// Per-email failed-login counter. Required for the lockout to
-	// actually behave as documented (5 misses then 15-min lock); without
-	// it RecordFailedAttempt is a no-op and accounts never lock. Same
-	// fail-open posture as the rate limiter — if Redis is unreachable
-	// we accept the lockout-not-enforced trade rather than convert a
-	// Redis blip into a DoS for the real user.
-	if rdb != nil {
-		userSvc.SetFailureCounter(user.NewRedisFailureCounter(rdb))
-	}
+	// Per-email failed-login counter — the brute-force throttle behind the
+	// documented "5 misses → 15-min lock". Wired UNCONDITIONALLY (velox-ops
+	// #21): the FallbackFailureCounter uses the shared Redis counter when it's
+	// healthy and degrades to a process-local in-memory counter (with a
+	// circuit breaker) when Redis is down or unset — so the throttle stays
+	// enforced in local dev, in staging, and through a production Redis blip,
+	// instead of silently vanishing as it did before. It does NOT fail closed
+	// (which would turn a Redis blip into a login DoS); during a multi-instance
+	// outage the bound is ~threshold*instances (accepted per OWASP ASVS),
+	// never unlimited. The Postgres lock is the source of truth and is
+	// unaffected by Redis state.
+	userSvc.SetFailureCounter(user.NewFallbackFailureCounter(rdb, clk))
 	rateLimiter := mw.NewRateLimiter(rdb, "general", 100, time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
-	// silently disabling rate limiting (DDoS vector).
+	// silently disabling rate limiting (DDoS vector). The general/IP limiter
+	// deliberately stays fail-open in non-prod: per the industry split (OWASP
+	// ASVS + practitioner consensus) generic API rate limiting should fail
+	// open on a store blip, while the auth brute-force control is the
+	// always-on FallbackFailureCounter above. We do NOT additionally
+	// fail-close /v1/auth's IP limiter — that would re-introduce the
+	// Redis-blip login DoS the #21 design avoids.
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		rateLimiter.SetFailClosed(true)
 	}

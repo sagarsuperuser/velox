@@ -241,3 +241,22 @@ Per `feedback_pre_launch_scoping`:
 - ADR-012 (when SAML/SSO becomes real): WorkOS integration, opt-in via env var.
 - Multi-user account model: invite flow, role differentiation beyond `owner`, audit log entries for "user X added user Y to tenant T."
 - Per-key restricted scopes (Stripe RAK pattern): the v2 item from the API key research; not blocked by this ADR but easier to reason about once the safeguard surface shrinks.
+
+## Amendment 2026-06-01: failed-login counter degrades, it never silently disables (velox-ops #21)
+
+**Context.** The "Login rate-limit + lockout" section above described the failed-login counter as Redis-backed. The implementation wired that counter **only when `REDIS_URL` was set** and the service no-op'd otherwise (`RecordFailedAttempt` returned early when no counter was configured). Consequence: in any deployment without Redis — and during a Redis outage in deployments that had it — the 5-strikes lockout never fired and dashboard login was unthrottled against online password guessing. The original design treated the login counter like the general HTTP rate limiter, which is fail-open in non-prod by design. That conflation is wrong: a request-volume limiter is an availability guard; a failed-login throttle is an **authentication control**, and OWASP ASVS requires auth controls to degrade rather than disappear.
+
+**Decision.** The failed-login counter is now **always-on**, via `user.FallbackFailureCounter`:
+
+- Serves from the shared Redis counter (`RedisFailureCounter`, `INCR` + `EXPIRE NX`) when healthy.
+- Transparently degrades to a **process-local in-memory counter** (`memFailureCounter`) when Redis is unconfigured (`REDIS_URL` unset → `rdb == nil`) or erroring. The in-memory window seeds its TTL only on the 0→1 transition (mirrors `EXPIRE NX`, so a fast attacker can't push the window out), lazily prunes expired entries each increment (bounds the map under distinct-email credential stuffing), and uses the same lower-cased/trimmed email key.
+- A **circuit breaker** trips to local-only after 3 consecutive Redis errors and half-opens after 30s, so a Redis blip doesn't hammer a dead backend on every login, and recovery is automatic. A single WARN logs per trip.
+- Wired **unconditionally** at startup (`SetFailureCounter(NewFallbackFailureCounter(rdb, clk))` in `internal/api/router.go`), replacing the `if rdb != nil` guard.
+
+**Explicitly rejected: fail-closed.** "Redis down → block every login" trades a brute-force gap for a self-inflicted total-auth outage. Degrade-to-local keeps the throttle enforced without that blast radius.
+
+**Source of truth unchanged.** The lock decision (`users.locked_until` in Postgres) was always authoritative and is untouched by Redis/breaker state — an already-locked account never silently unlocks during an outage; the counter only decides *when* to write the lock.
+
+**Known, accepted limit.** Behind N app instances during a Redis outage, the effective global threshold is ~`5 × N` (each instance counts independently). Bounded and acceptable for the threat (online guessing against bcrypt-cost-12 hashes), and vastly better than the prior unbounded gap. If a deployment needs a hard global limit during Redis outages, that's a future toggle, not a v1 requirement.
+
+**Out of scope (unchanged from this ADR's posture):** general/IP HTTP rate limiter keeps fail-open-in-nonprod; no operator-configurable lockout policy; no exponential backoff / CAPTCHA; no per-IP `/v1/auth` throttle.
