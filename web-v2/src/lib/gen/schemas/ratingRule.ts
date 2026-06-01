@@ -17,6 +17,7 @@ export interface RatingRule {
   version?: number;
   mode?: RatingRuleMode;
   currency?: string;
-  flat_amount_cents?: number;
+  /** Per-unit rate in cents, as a decimal string (e.g. "0.0003" = $3.00 per 1,000,000 units). Arbitrary precision; invoice line amounts and totals still round to whole cents. */
+  flat_amount_cents?: string;
   graduated_tiers?: RatingRuleGraduatedTiersItem[];
 }

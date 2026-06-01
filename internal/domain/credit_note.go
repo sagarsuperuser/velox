@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 type CreditNoteStatus string
 
@@ -62,20 +66,20 @@ type CreditNoteLineItem struct {
 }
 
 type CustomerPriceOverride struct {
-	ID                     string       `json:"id"`
-	TenantID               string       `json:"tenant_id,omitempty"`
-	CustomerID             string       `json:"customer_id"`
-	RatingRuleVersionID    string       `json:"rating_rule_version_id"`
-	Mode                   PricingMode  `json:"mode"`
-	FlatAmountCents        int64        `json:"flat_amount_cents"`
-	GraduatedTiers         []RatingTier `json:"graduated_tiers"`
-	PackageSize            int64        `json:"package_size"`
-	PackageAmountCents     int64        `json:"package_amount_cents"`
-	OverageUnitAmountCents int64        `json:"overage_unit_amount_cents"`
-	Reason                 string       `json:"reason,omitempty"`
-	Active                 bool         `json:"active"`
-	CreatedAt              time.Time    `json:"created_at"`
-	UpdatedAt              time.Time    `json:"updated_at"`
+	ID                     string          `json:"id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	CustomerID             string          `json:"customer_id"`
+	RatingRuleVersionID    string          `json:"rating_rule_version_id"`
+	Mode                   PricingMode     `json:"mode"`
+	FlatAmountCents        decimal.Decimal `json:"flat_amount_cents"`
+	GraduatedTiers         []RatingTier    `json:"graduated_tiers"`
+	PackageSize            int64           `json:"package_size"`
+	PackageAmountCents     int64           `json:"package_amount_cents"`
+	OverageUnitAmountCents decimal.Decimal `json:"overage_unit_amount_cents"`
+	Reason                 string          `json:"reason,omitempty"`
+	Active                 bool            `json:"active"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
 // ToRatingRule converts a price override to a RatingRuleVersion for computation.

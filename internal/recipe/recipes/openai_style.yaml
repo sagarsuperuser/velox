@@ -22,9 +22,11 @@ description: |
   prompt_tokens) into additive-disjoint input + cache_read quantities.
   Embedding models charge per input token only (matched by model alone).
 
-  All amounts are in cents per million tokens. Operators override
-  `currency`, the customer-facing `plan_name`, and the slug `plan_code`
-  at instantiation.
+  All flat amounts are cents PER TOKEN, carried as decimals (the meter is
+  denominated in tokens). A published per-million price divides by 1,000,000:
+  $10.00 / 1M = 0.001 cents/token (Stripe `unit_amount_decimal` model — sub-
+  cent rates bill linearly and exactly). Operators override `currency`, the
+  customer-facing `plan_name`, and the slug `plan_code` at instantiation.
 
 overridable:
   - key: currency
@@ -47,85 +49,86 @@ meters:
     aggregation: sum
 
 rating_rules:
-  # gpt-4-turbo — input $10 / output $30 per million; cache read $0.50
+  # gpt-4-turbo — input $10 / output $30 per million; cache read $0.50 (per-token)
   - key: gpt4_turbo_input
     name: GPT-4 Turbo input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1000
+    flat_amount_cents: '0.001'
   - key: gpt4_turbo_cache_read
     name: GPT-4 Turbo cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 50
+    flat_amount_cents: '0.00005'
   - key: gpt4_turbo_output
     name: GPT-4 Turbo output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 3000
+    flat_amount_cents: '0.003'
 
-  # gpt-4o — input $2.50 / output $10 per million; cache read $1.25
+  # gpt-4o — input $2.50 / output $10 per million; cache read $1.25 (per-token)
   - key: gpt4o_input
     name: GPT-4o input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 250
+    flat_amount_cents: '0.00025'
   - key: gpt4o_cache_read
     name: GPT-4o cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 125
+    flat_amount_cents: '0.000125'
   - key: gpt4o_output
     name: GPT-4o output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1000
+    flat_amount_cents: '0.001'
 
-  # gpt-4o-mini — input $0.15 / output $0.60 per million; cache read $0.075
+  # gpt-4o-mini — input $0.15 / output $0.60 per million; cache read $0.075 (per-token).
+  # Decimal carries the exact $0.075/M cache rate (0.0000075), not the old rounded 7c/M.
   - key: gpt4o_mini_input
     name: GPT-4o mini input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 15
+    flat_amount_cents: '0.000015'
   - key: gpt4o_mini_cache_read
     name: GPT-4o mini cache read
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 7
+    flat_amount_cents: '0.0000075'
   - key: gpt4o_mini_output
     name: GPT-4o mini output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 60
+    flat_amount_cents: '0.00006'
 
-  # gpt-3.5-turbo — $0.50 / $1.50 per million (no public cache rate)
+  # gpt-3.5-turbo — $0.50 / $1.50 per million (no public cache rate) (per-token)
   - key: gpt35_turbo_input
     name: GPT-3.5 Turbo input
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 50
+    flat_amount_cents: '0.00005'
   - key: gpt35_turbo_output
     name: GPT-3.5 Turbo output
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 150
+    flat_amount_cents: '0.00015'
 
-  # Embeddings — per million input tokens, no output rate.
+  # Embeddings — per million input tokens, no output rate (per-token).
   - key: embed_3_small
     name: text-embedding-3-small
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 2
+    flat_amount_cents: '0.000002'
   - key: embed_3_large
     name: text-embedding-3-large
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 13
+    flat_amount_cents: '0.000013'
   - key: embed_ada_002
     name: text-embedding-ada-002
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 10
+    flat_amount_cents: '0.00001'
 
 # Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:

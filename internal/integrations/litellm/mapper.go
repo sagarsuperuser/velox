@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -24,9 +25,63 @@ const MeterKeyTokens = "tokens"
 // reads prompt_tokens_details / cache_creation and normalizes them to
 // additive-disjoint quantities.
 const (
-	TokenTypeInput  = "input"
-	TokenTypeOutput = "output"
+	TokenTypeInput     = "input"
+	TokenTypeOutput    = "output"
+	TokenTypeCacheRead = "cache_read"
 )
+
+// modelFamilies maps a normalized model id (lower-cased, provider-prefix
+// stripped) to the canonical FAMILY token that the pricing recipes key their
+// rules on (ADR-044: model normalization lives in the provider mapper, never
+// the matcher). LiteLLM forwards the model string verbatim — a dated snapshot
+// (claude-3-5-sonnet-20241022), a provider-prefixed string (azure/gpt-4o-eu),
+// or a friendly alias — and the matcher does exact `properties @> dimension_match`
+// (the industry-standard primitive: Orb/Lago/OpenMeter/Metronome all match
+// exact strings, none family-match). So we canonicalize HERE: longest-prefix
+// match the normalized id to a family, then emit the family on the `model`
+// dimension (and the raw string on `model_raw` for audit).
+//
+// Entries are detection-prefix → recipe-token. The detection prefix is in real
+// (dashed) API form; the recipe token is whatever the recipe rule uses (note
+// anthropic_style keys "claude-3.5-sonnet" with a DOT). Keep in sync with the
+// anthropic_style / openai_style recipe `dimension_match.model` values.
+var modelFamilies = []struct{ prefix, recipeToken string }{
+	{"claude-3-5-sonnet", "claude-3.5-sonnet"},
+	{"claude-3-opus", "claude-3-opus"},
+	{"claude-3-sonnet", "claude-3-sonnet"},
+	{"claude-3-haiku", "claude-3-haiku"},
+	{"gpt-4o-mini", "gpt-4o-mini"}, // before gpt-4o (longest-prefix wins)
+	{"gpt-4o", "gpt-4o"},
+	{"gpt-4-turbo", "gpt-4-turbo"},
+	{"gpt-3.5-turbo", "gpt-3.5-turbo"},
+	{"text-embedding-3-small", "text-embedding-3-small"},
+	{"text-embedding-3-large", "text-embedding-3-large"},
+	{"text-embedding-ada-002", "text-embedding-ada-002"},
+}
+
+// providerPrefixes are stripped before family matching — LiteLLM prepends the
+// routing provider to the model string for non-OpenAI deployments.
+var providerPrefixes = []string{"azure/", "bedrock/", "vertex_ai/", "openai/", "anthropic/", "anthropic.", "us.", "eu.", "apac."}
+
+// canonicalModel resolves a raw LiteLLM model string to its canonical recipe
+// family token, or "" if no known family matches (caller keeps the raw string
+// and logs loudly — we never invent a family, which would mis-price). Match is
+// longest-prefix so gpt-4o-mini-* beats gpt-4o-*.
+func canonicalModel(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	for _, p := range providerPrefixes {
+		s = strings.TrimPrefix(s, p)
+	}
+	best := ""
+	bestToken := ""
+	for _, f := range modelFamilies {
+		if (s == f.prefix || strings.HasPrefix(s, f.prefix+"-")) && len(f.prefix) > len(best) {
+			best = f.prefix
+			bestToken = f.recipeToken
+		}
+	}
+	return bestToken
+}
 
 // MapPayload converts a single LiteLLM StandardLoggingPayload into
 // zero, one, or two Velox IngestInput events.
@@ -73,9 +128,21 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 		ts = time.Now().UTC()
 	}
 
+	// Canonical model family on `model` (what recipe rules match), raw string
+	// preserved on `model_raw` for audit/reconciliation (ADR-044 model
+	// normalization in the mapper). An unrecognized model keeps its raw string
+	// on `model` and is logged loudly — we never invent a family, which would
+	// mis-price; it simply won't match a recipe rule (rates $0, loud by absence).
+	modelDim := canonicalModel(p.Model)
+	if modelDim == "" {
+		modelDim = p.Model
+		slog.Warn("litellm: unrecognized model — usage won't match recipe pricing rules until an alias is added (see modelFamilies)",
+			"model", p.Model, "litellm_id", p.ID)
+	}
 	dims := map[string]any{
-		"model":    p.Model,
-		"provider": p.CustomLLMProvider,
+		"model":     modelDim,
+		"model_raw": p.Model,
+		"provider":  p.CustomLLMProvider,
 	}
 	// Forward useful operator-set metadata into dimensions for
 	// pricing-rule dispatch. We promote `team_id` and `tags`
@@ -91,20 +158,42 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 		}
 	}
 
-	out := make([]ExternalIngest, 0, 2)
+	out := make([]ExternalIngest, 0, 3)
 
-	// One event per present role on the single `tokens` meter, role carried
-	// as the `token_type` dimension (ADR-044). Dimensions are cloned per role
-	// so each event gets its own token_type without aliasing the shared map.
-	if p.Usage.PromptTokens > 0 {
+	// One event per present role on the single `tokens` meter, role carried as
+	// the `token_type` dimension (ADR-044). Roles are ADDITIVE-DISJOINT:
+	// prompt_tokens INCLUDES cache-read tokens, so uncached input is the
+	// remainder. The mapper does this split (the engine never does role math).
+	// Dimensions are cloned per role so each event gets its own token_type.
+	cacheRead := p.Usage.cachedReadTokens()
+	uncachedInput := p.Usage.PromptTokens - cacheRead
+	if uncachedInput < 0 {
+		// Malformed payload (cached > prompt). Don't emit a negative quantity;
+		// fall back to billing the whole prompt as uncached input.
+		uncachedInput = p.Usage.PromptTokens
+		cacheRead = 0
+	}
+
+	if uncachedInput > 0 {
 		out = append(out, ExternalIngest{
 			ExternalCustomerID: p.User,
 			MeterKey:           MeterKeyTokens,
-			Quantity:           decimal.NewFromInt(p.Usage.PromptTokens),
+			Quantity:           decimal.NewFromInt(uncachedInput),
 			Dimensions:         dimsWithTokenType(dims, TokenTypeInput),
 			IdempotencyKey:     p.ID + ":" + TokenTypeInput,
 			Timestamp:          &ts,
 			Metadata:           buildEventMetadata(p, TokenTypeInput),
+		})
+	}
+	if cacheRead > 0 {
+		out = append(out, ExternalIngest{
+			ExternalCustomerID: p.User,
+			MeterKey:           MeterKeyTokens,
+			Quantity:           decimal.NewFromInt(cacheRead),
+			Dimensions:         dimsWithTokenType(dims, TokenTypeCacheRead),
+			IdempotencyKey:     p.ID + ":" + TokenTypeCacheRead,
+			Timestamp:          &ts,
+			Metadata:           buildEventMetadata(p, TokenTypeCacheRead),
 		})
 	}
 	if p.Usage.CompletionTokens > 0 {
@@ -118,6 +207,19 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 			Metadata:           buildEventMetadata(p, TokenTypeOutput),
 		})
 	}
+
+	// Cache-WRITE tokens (cache_creation) are billable usage LiteLLM exposes,
+	// but it does NOT expose the 5m-vs-1h TTL split the recipes price at
+	// different rates (BerriAI/litellm#15056). Assigning a cache_write_* role
+	// would risk mis-pricing a money path, so cache-write billing is deferred
+	// (ADR-044 follow-up). Log loudly rather than silently drop or guess
+	// (no-silent-fallbacks) so the unbilled usage is visible.
+	if p.Usage.CacheCreationInputTokens > 0 {
+		slog.Warn("litellm: cache-write tokens seen but not billed — LiteLLM does not expose the 5m/1h cache-write TTL split (BerriAI/litellm#15056); cache-write billing deferred (ADR-044)",
+			"cache_creation_tokens", p.Usage.CacheCreationInputTokens,
+			"model", modelDim, "litellm_id", p.ID)
+	}
+
 	return out, nil
 }
 

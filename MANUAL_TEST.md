@@ -152,7 +152,7 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line for the elapsed period (the 6,000 input + 1,750 output tokens priced at the recipe's claude-3.5-sonnet rates — input $3.00/M, output $15.00/M) AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input ≈ 2¢, 1,750 output ≈ 3¢; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
@@ -622,6 +622,18 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 - [ ] 3 line items $33.33+$33.33+$33.34 at 7.25%: `SUM(invoice_line_items.tax_amount_cents) = invoices.tax_amount_cents` exactly (residual absorbed by last line per Stripe Tax's documented pattern).
 - [ ] **Stripe-side high-precision case (NYC):** create an invoice for an NY customer (10118 / Manhattan), Stripe Tax returns `percentage_decimal: "8.875"`. Velox stores `tax_rate=8.8750` verbatim. `subtotal_cents × 8.8750 / 100` round-trips to `tax_amount_cents`.
 - [ ] **Proration math uses integer day-ratio (B7.4):** mid-cycle plan upgrade on a 30-day period with 18 days remaining → proration line item amount = `(new_amount - old_amount) × 18 / 30` exactly (banker's rounded). No `float64` ULP drift visible on amounts up to ~$36M.
+
+## FLOW B2b: Per-unit rate precision (decimal, ADR-045)
+
+Per-unit pricing rates are decimal cents (Stripe `unit_amount_decimal` shape) so
+sub-cent rates bill linearly. Fixed fees and invoice line amounts/totals stay
+whole cents — only the RATE gains precision.
+
+- [ ] Pricing → new flat rating rule, price `$0.000003` per unit → saves (input is not clamped to 2 decimals, not rounded to `$0.00`).
+- [ ] Rule detail renders the sub-cent rate (`$0.000003`), not `$0.00`.
+- [ ] `GET /v1/rating-rules/<id>` → `flat_amount_cents` is a JSON string (`"0.0003"`), not a number.
+- [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — not 0, not 300000000. (The per-unit column may show `$0.00` for a sub-cent rate; the line amount is authoritative — ADR-045.)
+- [ ] Instantiate `anthropic_style` → `c35_sonnet_input` stored as `0.0003` cents/token; 1,000,000 input tokens bill `300`¢, not `$3,000,000`.
 
 ## FLOW B3: Idempotency
 

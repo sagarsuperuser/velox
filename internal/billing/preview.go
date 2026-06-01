@@ -261,7 +261,11 @@ func (e *Engine) previewMeter(ctx context.Context, tenantID, customerID, meterID
 			}
 		}
 
-		desc := fmt.Sprintf("%s - %s %s", meter.Name, agg.Quantity.String(), meter.Unit)
+		// Use the exact description the cycle scan persists (meter + dimension
+		// match, e.g. "Tokens (claude-3.5-sonnet · input)") so a preview line
+		// reads identically to the invoice_line_item it predicts. The quantity
+		// lives in the Quantity field, not the description.
+		desc := usageLineDescription(meter, rulesByID[agg.RuleID])
 
 		lines = append(lines, PreviewLine{
 			LineType:            "usage",

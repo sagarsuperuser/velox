@@ -85,10 +85,56 @@ type StandardLoggingPayload struct {
 }
 
 // Usage is LiteLLM's token-count subset (OpenAI-compatible shape).
+//
+// Prompt-cache fields (ADR-044 cache roles): LiteLLM normalizes every
+// provider's cache accounting into this OpenAI-compatible shape. Two facts the
+// mapper relies on, confirmed against LiteLLM's usage object:
+//   - prompt_tokens INCLUDES cached (read) tokens, so the uncached input is
+//     prompt_tokens − prompt_tokens_details.cached_tokens (additive-disjoint).
+//   - cache_creation (write) tokens are NOT in prompt_tokens — they're a
+//     separate quantity. LiteLLM does not yet expose the 5m-vs-1h cache-write
+//     TTL split (BerriAI/litellm#15056), so the mapper cannot tell
+//     cache_write_5m from cache_write_1h and defers cache-write billing (it
+//     logs loudly when cache_creation tokens appear). cache_read is billable
+//     now; cache_write is the documented follow-up.
 type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
+
+	// PromptTokensDetails carries the OpenAI-shape cache-read count. Present
+	// for OpenAI and for Anthropic-via-LiteLLM (LiteLLM mirrors cache reads
+	// here for cross-provider consistency).
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+
+	// CacheReadInputTokens / CacheCreationInputTokens are Anthropic's top-level
+	// cache fields, surfaced verbatim by LiteLLM. CacheReadInputTokens mirrors
+	// PromptTokensDetails.CachedTokens (we take the max defensively).
+	// CacheCreationInputTokens is the cache-WRITE count (deferred — see above).
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// PromptTokensDetails is the OpenAI-compatible breakdown of prompt tokens.
+type PromptTokensDetails struct {
+	// CachedTokens is the subset of prompt_tokens served from cache (a cache
+	// hit / read). prompt_tokens already includes these.
+	CachedTokens int64 `json:"cached_tokens,omitempty"`
+}
+
+// cachedReadTokens returns the cache-read token count, taking the max of the
+// OpenAI-shape (prompt_tokens_details.cached_tokens) and Anthropic-shape
+// (cache_read_input_tokens) fields — LiteLLM may populate either depending on
+// provider/version, and they represent the same quantity.
+func (u *Usage) cachedReadTokens() int64 {
+	read := u.CacheReadInputTokens
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > read {
+		read = u.PromptTokensDetails.CachedTokens
+	}
+	if read < 0 {
+		return 0
+	}
+	return read
 }
 
 // CostBreakdown is LiteLLM's per-component cost split (cents NOT

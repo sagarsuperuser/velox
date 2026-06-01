@@ -217,6 +217,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 ### Recently shipped
 
 - **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
+- **Decimal per-unit rates** — sub-cent-per-unit pricing (e.g. $3.00 / 1M tokens) bills linearly and exactly via decimal unit prices (Stripe `unit_amount_decimal` model); invoice totals stay whole cents
 - **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`, `b2b_saas_pro`, `marketplace_gmv`; recipe-picker UI; one-click uninstall
 - **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
 - **Embeddable cost dashboard** — `<VeloxCostDashboard customerId={…} />` plus token-authenticated public URL

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -21,7 +23,7 @@ func TestPostgresStore_RatingRules(t *testing.T) {
 	rule, err := store.CreateRatingRule(ctx, tenantID, domain.RatingRuleVersion{
 		RuleKey: "api_calls", Name: "API Calls", Version: 1,
 		LifecycleState: domain.RatingRuleDraft, Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 500,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(500),
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -35,8 +37,8 @@ func TestPostgresStore_RatingRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.FlatAmountCents != 500 {
-		t.Errorf("flat_amount: got %d", got.FlatAmountCents)
+	if !got.FlatAmountCents.Equal(decimal.NewFromInt(500)) {
+		t.Errorf("flat_amount: got %s", got.FlatAmountCents)
 	}
 
 	// Create graduated rule with tiers
@@ -45,8 +47,8 @@ func TestPostgresStore_RatingRules(t *testing.T) {
 		LifecycleState: domain.RatingRuleActive, Mode: domain.PricingGraduated,
 		Currency: "USD",
 		GraduatedTiers: []domain.RatingTier{
-			{UpTo: 100, UnitAmountCents: 10},
-			{UpTo: 0, UnitAmountCents: 5},
+			{UpTo: 100, UnitAmountCents: decimal.NewFromInt(10)},
+			{UpTo: 0, UnitAmountCents: decimal.NewFromInt(5)},
 		},
 	})
 	if err != nil {
@@ -186,7 +188,7 @@ func TestPostgresStore_MeterPricingRules(t *testing.T) {
 	rrv1, err := store.CreateRatingRule(ctx, tenantID, domain.RatingRuleVersion{
 		RuleKey: "tokens_default", Name: "Tokens default", Version: 1,
 		LifecycleState: domain.RatingRuleActive, Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 5,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(5),
 	})
 	if err != nil {
 		t.Fatalf("seed rrv1: %v", err)
@@ -194,7 +196,7 @@ func TestPostgresStore_MeterPricingRules(t *testing.T) {
 	rrv2, err := store.CreateRatingRule(ctx, tenantID, domain.RatingRuleVersion{
 		RuleKey: "tokens_cached", Name: "Tokens cached", Version: 1,
 		LifecycleState: domain.RatingRuleActive, Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 1,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("seed rrv2: %v", err)
@@ -296,7 +298,7 @@ func TestPostgresStore_MeterPricingRules_RLS(t *testing.T) {
 	rrvA, _ := store.CreateRatingRule(ctx, tenantA, domain.RatingRuleVersion{
 		RuleKey: "a_rule", Name: "A", Version: 1,
 		LifecycleState: domain.RatingRuleActive, Mode: domain.PricingFlat,
-		Currency: "USD", FlatAmountCents: 5,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(5),
 	})
 	meterA, _ := store.CreateMeter(ctx, tenantA, domain.Meter{
 		Key: "tokens", Name: "Tokens", Unit: "tokens",

@@ -155,7 +155,7 @@ export const api = {
     apiRequest<{ data: RatingRule[] }>('GET', '/rating-rules'),
   getRatingRule: (id: string) =>
     apiRequest<RatingRule>('GET', `/rating-rules/${id}`),
-  createRatingRule: (data: { rule_key: string; name: string; mode: string; currency: string; flat_amount_cents?: number; graduated_tiers?: { up_to: number; unit_amount_cents: number }[]; package_size?: number; package_amount_cents?: number }) =>
+  createRatingRule: (data: { rule_key: string; name: string; mode: string; currency: string; flat_amount_cents?: string; graduated_tiers?: { up_to: number; unit_amount_cents: string }[]; package_size?: number; package_amount_cents?: number }) =>
     apiRequest<RatingRule>('POST', '/rating-rules', data),
 
   // Invoices
@@ -966,8 +966,11 @@ export interface RatingRule {
   version: number
   mode: string
   currency: string
-  flat_amount_cents: number
-  graduated_tiers?: { up_to: number; unit_amount_cents: number }[]
+  // Per-unit rates are decimal cents serialized as strings (Stripe
+  // unit_amount_decimal model) so sub-cent prices bill exactly. package_size /
+  // package_amount_cents stay whole — a package is a fixed fee for a block.
+  flat_amount_cents: string
+  graduated_tiers?: { up_to: number; unit_amount_cents: string }[]
   package_size: number
   package_amount_cents: number
   created_at: string
@@ -1115,7 +1118,7 @@ export interface RecipePreview {
   objects: {
     products?: { code: string; name: string; description?: string }[]
     meters?: { key: string; name: string; unit: string; aggregation: string }[]
-    rating_rules?: { rule_key: string; mode: string; currency: string; flat_amount_cents?: number }[]
+    rating_rules?: { rule_key: string; mode: string; currency: string; flat_amount_cents?: string }[]
     pricing_rules?: {
       meter_key: string
       rating_rule_key: string
@@ -1595,6 +1598,43 @@ export function formatCents(cents: number, currency?: string): string {
   const abs = Math.abs(cents)
   const symbol = getCurrencySymbol(currency)
   return `${sign}${symbol}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
+}
+
+// formatRate renders a per-unit price that is carried as decimal cents
+// (e.g. "0.0003" cents = $0.000003 per unit, the Stripe unit_amount_decimal
+// model). The rate arrives as a string from the API to preserve precision —
+// formatCents must NOT be used here because it floors to whole cents and would
+// collapse any sub-cent rate to $0.00. We divide by 100 via STRING decimal
+// shift (not parseFloat/toFixed, which round real rates like $0.000000075 =
+// gpt-4o-mini cache_read and can collapse tiny rates to $0.00) so every digit
+// of the rate survives; we keep a minimum of 2 fractional digits and never
+// round a nonzero rate down to "$0.00". Invoice line amounts and totals stay
+// whole cents (formatCents).
+export function formatRate(cents: string | number, currency?: string): string {
+  const symbol = getCurrencySymbol(currency)
+  let s = (typeof cents === 'number' ? String(cents) : cents).trim()
+  const neg = s.startsWith('-')
+  if (neg) s = s.slice(1)
+  if (!/^\d*\.?\d*$/.test(s) || s === '' || s === '.') return `${symbol}0.00`
+  const [intRaw = '', fracRaw = ''] = s.split('.')
+  // value = (intRaw + fracRaw) with the point after intRaw.length digits;
+  // dividing by 100 moves the point two places left.
+  const digits = (intRaw || '') + fracRaw
+  const pointPos = (intRaw.length || 0) - 2
+  let whole: string
+  let frac: string
+  if (pointPos <= 0) {
+    whole = '0'
+    frac = '0'.repeat(-pointPos) + digits
+  } else {
+    whole = digits.slice(0, pointPos)
+    frac = digits.slice(pointPos)
+  }
+  whole = whole.replace(/^0+(?=\d)/, '') || '0'
+  frac = frac.replace(/0+$/, '')
+  if (frac.length < 2) frac = frac.padEnd(2, '0')
+  const sign = neg && !(whole === '0' && /^0*$/.test(frac)) ? '-' : ''
+  return `${sign}${symbol}${whole}.${frac}`
 }
 
 // _tenantTimezone is module-scoped state seeded once at app boot
