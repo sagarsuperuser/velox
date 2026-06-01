@@ -173,31 +173,61 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		subtotal += line.Quantity * line.UnitAmountCents
 	}
 
-	// Validate: total credit notes cannot exceed invoice total.
-	// For unpaid invoices, also cap at current amount_due.
-	existingCNs, err := s.store.List(ctx, ListFilter{TenantID: tenantID, InvoiceID: input.InvoiceID})
+	// Build + insert the credit note under a per-invoice advisory lock so the
+	// over-credit / over-refund caps are evaluated against a snapshot that
+	// can't change underneath us. Two concurrent Create calls for the same
+	// invoice serialize on the lock: the second sees the first's note in
+	// `existingCNs` and is capped correctly, closing the TOCTOU where both
+	// read the same pre-state and both inserted past the invoice total.
+	cn, err := s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
+		// Validate: total credit notes cannot exceed invoice total.
+		// For unpaid invoices, also cap at current amount_due.
+		var existingTotal, existingTaxReversed int64
+		for _, cn := range existingCNs {
+			if cn.Status != domain.CreditNoteVoided {
+				existingTotal += cn.TotalCents
+				existingTaxReversed += cn.TaxAmountCents
+			}
+		}
+		if existingTotal+subtotal > inv.TotalAmountCents {
+			remaining := inv.TotalAmountCents - existingTotal
+			if remaining <= 0 {
+				return domain.CreditNote{}, errs.InvalidState("invoice has already been fully credited")
+			}
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100))
+		}
+		// For unpaid invoices, credit note cannot exceed current amount_due
+		if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
+			return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
+		}
+
+		return s.buildCreditNote(ctx, tenantID, input, inv, subtotal, existingTotal, existingTaxReversed, existingCNs)
+	})
 	if err != nil {
-		return domain.CreditNote{}, fmt.Errorf("list existing credit notes: %w", err)
-	}
-	var existingTotal, existingTaxReversed int64
-	for _, cn := range existingCNs {
-		if cn.Status != domain.CreditNoteVoided {
-			existingTotal += cn.TotalCents
-			existingTaxReversed += cn.TaxAmountCents
-		}
-	}
-	if existingTotal+subtotal > inv.TotalAmountCents {
-		remaining := inv.TotalAmountCents - existingTotal
-		if remaining <= 0 {
-			return domain.CreditNote{}, errs.InvalidState("invoice has already been fully credited")
-		}
-		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount exceeds remaining creditable amount (%.2f)", float64(remaining)/100))
-	}
-	// For unpaid invoices, credit note cannot exceed current amount_due
-	if inv.Status == domain.InvoiceFinalized && subtotal > inv.AmountDueCents {
-		return domain.CreditNote{}, errs.Invalid("lines", fmt.Sprintf("credit note amount (%.2f) exceeds amount due (%.2f)", float64(subtotal)/100, float64(inv.AmountDueCents)/100))
+		return domain.CreditNote{}, err
 	}
 
+	// Create line items
+	for _, line := range input.Lines {
+		_, err := s.store.CreateLineItem(ctx, tenantID, domain.CreditNoteLineItem{
+			CreditNoteID:      cn.ID,
+			InvoiceLineItemID: line.InvoiceLineItemID,
+			Description:       line.Description,
+			Quantity:          line.Quantity,
+			UnitAmountCents:   line.UnitAmountCents,
+			AmountCents:       line.Quantity * line.UnitAmountCents,
+		})
+		if err != nil {
+			return domain.CreditNote{}, fmt.Errorf("create line item: %w", err)
+		}
+	}
+	return cn, nil
+}
+
+// buildCreditNote runs the tax-breakout, three-channel allocation, refund cap,
+// and number generation, returning the credit note to insert. Called inside
+// CreateUnderInvoiceLock with the lock-stable `existingCNs` snapshot.
+func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input CreateInput, inv domain.Invoice, subtotal, existingTotal, existingTaxReversed int64, existingCNs []domain.CreditNote) (domain.CreditNote, error) {
 	// Break out proportional tax from the gross subtotal. The invoice's
 	// tax_amount / total_amount ratio tells us what fraction of the gross
 	// was tax; apply the same ratio to the CN's gross subtotal so a
@@ -315,7 +345,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		cnNumber = fmt.Sprintf("CN-%s-%06d", now.Format("200601"), now.UnixNano()%1000000)
 	}
 
-	cn, err := s.store.Create(ctx, tenantID, domain.CreditNote{
+	return domain.CreditNote{
 		InvoiceID:            input.InvoiceID,
 		CustomerID:           inv.CustomerID,
 		CreditNoteNumber:     cnNumber,
@@ -329,27 +359,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		OutOfBandAmountCents: outOfBandAmount,
 		Currency:             inv.Currency,
 		RefundStatus:         domain.RefundNone,
-	})
-	if err != nil {
-		return domain.CreditNote{}, err
-	}
-
-	// Create line items
-	for _, line := range input.Lines {
-		_, err := s.store.CreateLineItem(ctx, tenantID, domain.CreditNoteLineItem{
-			CreditNoteID:      cn.ID,
-			InvoiceLineItemID: line.InvoiceLineItemID,
-			Description:       line.Description,
-			Quantity:          line.Quantity,
-			UnitAmountCents:   line.UnitAmountCents,
-			AmountCents:       line.Quantity * line.UnitAmountCents,
-		})
-		if err != nil {
-			return domain.CreditNote{}, fmt.Errorf("create line item: %w", err)
-		}
-	}
-
-	return cn, nil
+	}, nil
 }
 
 // RefundInput describes a direct refund against a paid invoice. It bypasses

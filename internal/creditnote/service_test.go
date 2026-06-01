@@ -32,6 +32,20 @@ func (m *memStore) Create(_ context.Context, tenantID string, cn domain.CreditNo
 	return cn, nil
 }
 
+func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	var existing []domain.CreditNote
+	for _, cn := range m.notes {
+		if cn.TenantID == tenantID && cn.InvoiceID == invoiceID {
+			existing = append(existing, cn)
+		}
+	}
+	cn, err := build(existing)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	return m.Create(ctx, tenantID, cn)
+}
+
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.CreditNote, error) {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {

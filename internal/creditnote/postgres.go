@@ -28,6 +28,56 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.insertCreditNoteTx(ctx, tx, tenantID, cn)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.CreditNote{}, err
+	}
+	return created, nil
+}
+
+// CreateUnderInvoiceLock serializes credit-note creation per invoice. It takes
+// a transaction-scoped advisory lock keyed on (tenant, invoice), lists the
+// invoice's existing credit notes inside the same transaction, hands them to
+// `build` (which runs the over-credit / over-refund cap checks and returns the
+// credit note to insert), and inserts it — all atomically. A concurrent Create
+// for the same invoice blocks on the lock until this transaction commits, then
+// sees this credit note in its own list, so the caps can't be bypassed by a
+// time-of-check/time-of-use race. The lock releases automatically on commit.
+func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, tenantID+":"+invoiceID,
+	); err != nil {
+		return domain.CreditNote{}, fmt.Errorf("acquire credit-note invoice lock: %w", err)
+	}
+
+	existing, err := s.listByInvoiceTx(ctx, tx, invoiceID)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	cn, err := build(existing)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	created, err := s.insertCreditNoteTx(ctx, tx, tenantID, cn)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.CreditNote{}, err
+	}
+	return created, nil
+}
+
+func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID string, cn domain.CreditNote) (domain.CreditNote, error) {
 	id := postgres.NewID("vlx_cn")
 	// Honors ctx-bound effective-now (ADR-030) — credit notes against
 	// invoices on clock-pinned subs inherit sim-time. Falls back to
@@ -38,7 +88,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 		metaJSON = []byte("{}")
 	}
 
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO credit_notes (id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
@@ -65,10 +115,42 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 		return domain.CreditNote{}, err
 	}
 	_ = json.Unmarshal(metaJSON, &cn.Metadata)
-	if err := tx.Commit(); err != nil {
-		return domain.CreditNote{}, err
-	}
 	return cn, nil
+}
+
+// listByInvoiceTx lists every credit note for an invoice inside the caller's
+// transaction (used under the advisory lock in CreateUnderInvoiceLock). Mirrors
+// List's column projection.
+func (s *PostgresStore) listByInvoiceTx(ctx context.Context, tx *sql.Tx, invoiceID string) ([]domain.CreditNote, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
+			status, reason, subtotal_cents, tax_amount_cents, total_cents,
+			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+			COALESCE(tax_transaction_id,''),
+			metadata, created_at, updated_at
+		FROM credit_notes WHERE invoice_id = $1`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var notes []domain.CreditNote
+	for rows.Next() {
+		var cn domain.CreditNote
+		var metaJSON []byte
+		if err := rows.Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
+			&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
+			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
+			&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+			&cn.TaxTransactionID,
+			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaJSON, &cn.Metadata)
+		notes = append(notes, cn)
+	}
+	return notes, rows.Err()
 }
 
 func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {
