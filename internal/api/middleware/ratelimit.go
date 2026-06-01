@@ -27,6 +27,13 @@ type RateLimiter struct {
 	limit      redis_rate.Limit
 	rdb        *goredis.Client
 	failClosed bool
+	// name namespaces this limiter's Redis keys. Distinct limiters (general
+	// API, hosted-invoice, setup-link cooldown) share one Redis and key on the
+	// same identifier (e.g. "ip:1.2.3.4"), but each has DIFFERENT GCRA
+	// parameters. Without a per-limiter namespace they'd collide on one bucket
+	// — a request to one surface would consume another's allowance and the
+	// conflicting rate/period would corrupt the smoothing state.
+	name string
 }
 
 // SetFailClosed controls what happens when Redis is unreachable or unconfigured.
@@ -37,12 +44,14 @@ func (rl *RateLimiter) SetFailClosed(v bool) {
 	rl.failClosed = v
 }
 
-// NewRateLimiter creates a Redis-backed GCRA rate limiter.
-// Example: NewRateLimiter(rdb, 100, time.Minute) = 100 requests per minute
-// with smooth distribution (no boundary bursts).
+// NewRateLimiter creates a Redis-backed GCRA rate limiter. name namespaces the
+// limiter's Redis keys so distinct limiters with different parameters don't
+// collide on a shared bucket (e.g. "general", "hosted_invoice", "setup_link").
+// Example: NewRateLimiter(rdb, "general", 100, time.Minute) = 100 requests per
+// minute with smooth distribution (no boundary bursts).
 // If rdb is nil, the limiter fails open (all requests allowed).
-func NewRateLimiter(rdb *goredis.Client, rate int, window time.Duration) *RateLimiter {
-	rl := &RateLimiter{rdb: rdb}
+func NewRateLimiter(rdb *goredis.Client, name string, rate int, window time.Duration) *RateLimiter {
+	rl := &RateLimiter{rdb: rdb, name: name}
 
 	// Convert rate + window to redis_rate.Limit
 	switch {
@@ -113,7 +122,7 @@ func (rl *RateLimiter) AllowKey(ctx context.Context, key string) (int, time.Time
 		}
 		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
 	}
-	res, err := rl.limiter.Allow(ctx, "rl:"+key, rl.limit)
+	res, err := rl.limiter.Allow(ctx, rl.bucketKey(key), rl.limit)
 	if err != nil {
 		if rl.failClosed {
 			slog.Error("rate_limiter: redis error on AllowKey, failing closed", "error", err, "key", key)
@@ -139,7 +148,7 @@ func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool)
 		return rl.limit.Rate - 1, now.Add(rl.limit.Period), true
 	}
 
-	res, err := rl.limiter.Allow(r.Context(), "rl:"+key, rl.limit)
+	res, err := rl.limiter.Allow(r.Context(), rl.bucketKey(key), rl.limit)
 	if err != nil {
 		if rl.failClosed {
 			slog.Error("rate_limiter: redis error, failing closed",
@@ -157,6 +166,12 @@ func (rl *RateLimiter) allow(r *http.Request, key string) (int, time.Time, bool)
 
 	resetAt := now.Add(res.ResetAfter)
 	return res.Remaining, resetAt, res.Allowed > 0
+}
+
+// bucketKey is the Redis key for a logical bucket: the per-limiter namespace
+// (name) keeps limiters with different GCRA parameters from colliding.
+func (rl *RateLimiter) bucketKey(key string) string {
+	return "rl:" + rl.name + ":" + key
 }
 
 // rateLimitKey chooses the most-specific bucket available for this request,
