@@ -618,7 +618,7 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 - [ ] Settings → Tax rate input accepts decimal percent directly (e.g. `8.875`). No bp dance.
 - [ ] Manual provider: set tax 7.25% in Settings → `tenant_settings.tax_rate=7.2500` (no `tax_rate_bp` column exists). <!-- currency-ok: states the column was removed -->
 - [ ] $100 subtotal at 7.25% → `invoices.tax_amount_cents=725, tax_rate=7.2500`.
-- [ ] Manual provider precision: set tax `8.8750` in Settings → 100 × 8.875% = 887.5, banker's rounded to 888 cents = $8.88 (ppm-based integer math preserves the 4-decimal precision without float drift).
+- [ ] Manual provider precision: set tax `8.8750` in Settings, invoice a `$100.00` subtotal → `tax_amount_cents=888` (`$8.88`). Engine math is integer parts-per-million: `8.8750%` = `88,750` ppm, `tax = round(10000¢ × 88750 / 1_000_000) = round(887.5) = 888` (banker's round-half-to-even). No float drift; the 4-decimal rate round-trips exactly.
 - [ ] 3 line items $33.33+$33.33+$33.34 at 7.25%: `SUM(invoice_line_items.tax_amount_cents) = invoices.tax_amount_cents` exactly (residual absorbed by last line per Stripe Tax's documented pattern).
 - [ ] **Stripe-side high-precision case (NYC):** create an invoice for an NY customer (10118 / Manhattan), Stripe Tax returns `percentage_decimal: "8.875"`. Velox stores `tax_rate=8.8750` verbatim. `subtotal_cents × 8.8750 / 100` round-trips to `tax_amount_cents`.
 - [ ] **Proration math uses integer day-ratio (B7.4):** mid-cycle plan upgrade on a 30-day period with 18 days remaining → proration line item amount = `(new_amount - old_amount) × 18 / 30` exactly (banker's rounded). No `float64` ULP drift visible on amounts up to ~$36M.
