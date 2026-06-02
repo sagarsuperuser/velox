@@ -81,16 +81,19 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ## How it fits
 
-|                          | **Velox** | Stripe Billing | Lago        | Orb / Metronome   | OpenMeter        |
-|--------------------------|-----------|----------------|-------------|-------------------|------------------|
-| OSS / self-host          | ✅        | ❌             | ✅          | ❌                | ✅               |
-| AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering only |
-| Full billing engine      | ✅        | ✅             | ✅          | ✅                | ❌               |
-| Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ❌               |
-| Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS              |
-| Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅ (no billing)  |
+|                          | **Velox** | Stripe Billing | Lago        | Orb / Metronome¹  | OpenMeter²        |
+|--------------------------|-----------|----------------|-------------|-------------------|-------------------|
+| OSS / self-host          | ✅        | ❌             | ✅          | ❌                | ✅                |
+| AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering-first |
+| Full billing engine      | ✅        | ✅             | ✅          | ✅                | ⚠️ emerging       |
+| Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ⚠️                |
+| Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS / cloud       |
+| Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅                |
 
-Velox lives in the empty cell: **OSS + self-host + AI-native + full billing engine.** Decision tree: pick **Stripe Billing** for vanilla per-seat SaaS; pick **Lago** for generic OSS metering without an AI-shaped wedge; pick **Orb/Metronome** if you can't self-host and budget for usage-based contracts; pick **Velox** when you need all four.
+¹ Metronome was acquired by Stripe (Jan 2026) — still SaaS-only, so your billing data lives on Stripe's servers either way.
+² OpenMeter (acquired by Kong, Sep 2025) is expanding from metering into billing — closing the engine gap, but not the self-host-with-Stripe-grade-depth one.
+
+Velox lives in the empty cell: **OSS + self-host + AI-native + full billing engine.** Decision tree: pick **Stripe Billing** (or Stripe + Metronome) for hosted SaaS billing; pick **Lago** for generic OSS billing without an AI-shaped wedge; pick **Orb/Metronome** if you can't self-host and budget for usage-based contracts; pick **Velox** when you need AI-native billing that runs in your own VPC.
 
 ---
 
