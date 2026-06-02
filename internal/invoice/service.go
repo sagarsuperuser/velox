@@ -52,6 +52,11 @@ type TaxReverser interface {
 // next to the handler that calls it.
 type TaxRetrier interface {
 	RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error)
+	// ComputeTaxForInvoice computes tax for a draft invoice regardless of
+	// tax_status. Finalize calls this for manual / operator-composed
+	// invoices, which accrue line items incrementally and have no tax until
+	// finalize (Stripe-parity: tax is calculated when the invoice finalizes).
+	ComputeTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error)
 }
 
 // PaymentMethodReader is the narrow lookup the attention classifier
@@ -206,6 +211,12 @@ type CreateInput struct {
 	BillingPeriodEnd   time.Time `json:"billing_period_end"`
 	NetPaymentTermDays int       `json:"net_payment_term_days"`
 	Memo               string    `json:"memo,omitempty"`
+	// LineItems, when present, are created atomically with the invoice
+	// header in a single transaction. The operator composer sends them
+	// this way so a network failure mid-compose can't leave a draft with
+	// a partial set of lines. Omitted (nil) keeps the bare-header create
+	// for callers that add lines incrementally afterwards.
+	LineItems []AddLineItemInput `json:"line_items,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.Invoice, error) {
@@ -249,7 +260,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	issuedAt := now
 	dueAt := now.AddDate(0, 0, netDays)
 
-	return s.store.Create(ctx, tenantID, domain.Invoice{
+	inv := domain.Invoice{
 		CustomerID:         input.CustomerID,
 		SubscriptionID:     input.SubscriptionID,
 		InvoiceNumber:      invoiceNumber,
@@ -262,7 +273,40 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		DueAt:              &dueAt,
 		NetPaymentTermDays: netDays,
 		Memo:               strings.TrimSpace(input.Memo),
-	})
+		// Operator-composed invoices are billing_reason='manual', mirroring
+		// Stripe. The marker drives two behaviours: (1) Finalize computes tax
+		// at finalize-time for these (cycle invoices already carry it), and
+		// (2) auto-finalize-after-tax-retry skips them so the operator keeps
+		// the explicit finalize step while a draft is still being composed.
+		BillingReason: domain.BillingReasonManual,
+	}
+
+	// Bare-header create — caller adds line items incrementally afterwards.
+	if len(input.LineItems) == 0 {
+		return s.store.Create(ctx, tenantID, inv)
+	}
+
+	// Atomic create-with-lines: validate + build every line, sum the
+	// subtotal, and persist header + items in one transaction. This closes
+	// the partial-failure window the old create-then-loop-AddLineItem flow
+	// had (a network drop mid-loop left a draft with some-but-not-all lines).
+	// Tax stays 0 here by design — it's computed at finalize for manual
+	// invoices (see Finalize → ComputeTaxForInvoice). Totals therefore equal
+	// the subtotal; finalize rewrites them once tax is known.
+	items := make([]domain.InvoiceLineItem, 0, len(input.LineItems))
+	var subtotal int64
+	for i, liInput := range input.LineItems {
+		li, err := buildLineItem(liInput, currency)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("line item %d: %w", i+1, err)
+		}
+		subtotal += li.AmountCents
+		items = append(items, li)
+	}
+	inv.SubtotalCents = subtotal
+	inv.TotalAmountCents = subtotal
+	inv.AmountDueCents = subtotal
+	return s.store.CreateWithLineItems(ctx, tenantID, inv, items)
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
@@ -333,6 +377,22 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	}
 	if inv.Status != domain.InvoiceDraft {
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("can only finalize draft invoices, current status: %s", inv.Status))
+	}
+	// Compute tax for operator-composed (manual) invoices at finalize.
+	// Cycle invoices already carry engine-computed tax from build time;
+	// manual invoices accrue line items in the composer and have none
+	// until now. This mirrors Stripe, which calculates tax when an invoice
+	// is finalized rather than at draft-create. The engine resolves the
+	// tenant's provider: 'none' → tax 0; 'manual' → flat-rate tax computed
+	// synchronously; 'stripe' → a calculation that the tax_status block
+	// below may park as pending until the retry worker commits it. Skipped
+	// when no retrier is wired (isolated unit-test fixtures).
+	if s.taxRetrier != nil && isOperatorComposed(inv) {
+		taxed, terr := s.taxRetrier.ComputeTaxForInvoice(ctx, tenantID, id)
+		if terr != nil {
+			return domain.Invoice{}, fmt.Errorf("compute tax at finalize: %w", terr)
+		}
+		inv = taxed
 	}
 	// Block finalize while tax is unresolved. Sending an invoice with
 	// wrong or missing tax creates compliance exposure; we defer until the
@@ -630,6 +690,25 @@ type AddLineItemInput struct {
 
 func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
 	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
+	// Currency is left empty here — AddLineItemAtomic stamps it from the
+	// invoice row it locks. The atomic-create path passes the resolved
+	// currency instead, since the header isn't persisted yet.
+	li, err := buildLineItem(input, "")
+	if err != nil {
+		return domain.InvoiceLineItem{}, err
+	}
+	item, _, err := s.store.AddLineItemAtomic(ctx, tenantID, invoiceID, li)
+	return item, err
+}
+
+// buildLineItem validates an AddLineItemInput and returns the domain line
+// item with its amount computed. Shared by AddLineItem (incremental add) and
+// Create (atomic create-with-lines) so both paths apply identical rules:
+// description required, quantity > 0, unit_amount > 0, line_type defaulting
+// to add_on. currency stamps the per-line currency column the store
+// persists; pass "" when a downstream store call derives it from the
+// invoice.
+func buildLineItem(input AddLineItemInput, currency string) (domain.InvoiceLineItem, error) {
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
 		return domain.InvoiceLineItem{}, errs.Required("description")
@@ -653,15 +732,15 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 
 	amountCents := input.Quantity * input.UnitAmountCents
 
-	item, _, err := s.store.AddLineItemAtomic(ctx, tenantID, invoiceID, domain.InvoiceLineItem{
+	return domain.InvoiceLineItem{
 		LineType:         domain.InvoiceLineItemType(lineType),
 		Description:      desc,
 		Quantity:         input.Quantity,
 		UnitAmountCents:  input.UnitAmountCents,
 		AmountCents:      amountCents,
 		TotalAmountCents: amountCents,
-	})
-	return item, err
+		Currency:         currency,
+	}, nil
 }
 
 func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
@@ -757,10 +836,23 @@ func shouldAutoFinalizeAfterRetry(inv domain.Invoice) bool {
 	if inv.TaxStatus != domain.InvoiceTaxOK {
 		return false
 	}
-	if string(inv.BillingReason) == "" || string(inv.BillingReason) == "manual" {
+	if isOperatorComposed(inv) {
 		return false
 	}
 	return true
+}
+
+// isOperatorComposed reports whether an invoice was created by an operator
+// (the one-off composer / ad-hoc charge path) rather than the billing
+// engine. billing_reason='manual' is the explicit marker Create stamps; the
+// empty string covers legacy drafts written before that stamp existed.
+// Engine invoices (subscription_cycle / create / cancel / threshold) return
+// false. Drives finalize-time tax computation (manual invoices have no tax
+// until finalize) and the auto-finalize-after-retry gate (manual drafts may
+// still be works-in-progress, so we don't finalize them out from under the
+// operator).
+func isOperatorComposed(inv domain.Invoice) bool {
+	return inv.BillingReason == "" || inv.BillingReason == domain.BillingReasonManual
 }
 
 // RetryProviderConfigErrors flushes every invoice in the (tenant,

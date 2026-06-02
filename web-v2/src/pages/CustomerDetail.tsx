@@ -1554,6 +1554,16 @@ const COMPOSER_LINE_TYPES: { value: string; label: string }[] = [
   { value: 'usage', label: 'Usage' },
 ]
 
+// Payment-term presets → net_payment_term_days. Net 30 is the default; the
+// backend computes due_at = issued_at + N at create time.
+const PAYMENT_TERM_OPTIONS: { value: string; label: string }[] = [
+  { value: '0', label: 'Due on receipt' },
+  { value: '7', label: 'Net 7' },
+  { value: '14', label: 'Net 14' },
+  { value: '30', label: 'Net 30' },
+  { value: '60', label: 'Net 60' },
+]
+
 type ComposerLine = {
   description: string
   quantity: string         // string-bound input; coerced at submit time
@@ -1581,6 +1591,10 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   const initialCurrency = (billingProfile?.currency || 'USD').toUpperCase()
   const [currency, setCurrency] = useState(initialCurrency)
   const [memo, setMemo] = useState('')
+  // Payment terms in days from issue → due date. Net 30 is the default;
+  // Net 0 means due on receipt. Passed straight through as
+  // net_payment_term_days (the backend computes due_at = issued_at + N).
+  const [paymentTermDays, setPaymentTermDays] = useState(30)
   const [lines, setLines] = useState<ComposerLine[]>([blankLine()])
   const [errors, setErrors] = useState<{
     lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }>
@@ -1659,11 +1673,12 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
     return cleaned
   }
 
-  // submit creates the draft invoice, attaches every line item in sequence,
-  // and (when finalize=true) finalizes + sends. Failure at any step leaves
-  // the operator with whatever has already been persisted (the draft + any
-  // committed line items) so they can recover by opening the invoice in the
-  // detail view.
+  // submit creates the draft invoice with all its line items in a single
+  // atomic request, then (when action=send) finalizes + emails it. The
+  // create step can no longer half-succeed — header and lines commit
+  // together or not at all. Finalize/send remain separate transitions
+  // (Stripe-parity); if one of those fails after the draft exists, the
+  // partial-success branch below tells the operator what survived.
   const submit = async (action: 'draft' | 'send') => {
     const cleaned = validate()
     if (!cleaned) return
@@ -1673,12 +1688,10 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
       invoice = await api.createInvoice({
         customer_id: customerId,
         currency: currency,
+        net_payment_term_days: paymentTermDays,
         memo: memo.trim() || undefined,
+        line_items: cleaned,
       })
-
-      for (const line of cleaned) {
-        await api.addInvoiceLineItem(invoice.id, line)
-      }
 
       let sent = false
       if (action === 'send') {
@@ -1739,28 +1752,53 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
             <Badge variant="outline">{customer.external_id}</Badge>
           </div>
 
-          {/* Currency */}
-          <div className="space-y-2">
-            <Label htmlFor="composer-currency">Currency</Label>
-            <Select
-              items={GEO_CURRENCIES.map(c => ({ value: c.code, label: `${c.symbol} ${c.code} — ${c.label}` }))}
-              value={currency}
-              onValueChange={(v) => setCurrency((v ?? 'USD').toUpperCase())}
-            >
-              <SelectTrigger id="composer-currency" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {GEO_CURRENCIES.map(c => (
-                  <SelectItem key={c.code} value={c.code}>
-                    {c.symbol} {c.code} — {c.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {billingProfile?.currency && billingProfile.currency.toUpperCase() === currency && (
-              <p className="text-xs text-muted-foreground">From customer billing profile.</p>
-            )}
+          {/* Currency + payment terms */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="composer-currency">Currency</Label>
+              <Select
+                items={GEO_CURRENCIES.map(c => ({ value: c.code, label: `${c.symbol} ${c.code} — ${c.label}` }))}
+                value={currency}
+                onValueChange={(v) => setCurrency((v ?? 'USD').toUpperCase())}
+              >
+                <SelectTrigger id="composer-currency" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GEO_CURRENCIES.map(c => (
+                    <SelectItem key={c.code} value={c.code}>
+                      {c.symbol} {c.code} — {c.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {billingProfile?.currency && billingProfile.currency.toUpperCase() === currency && (
+                <p className="text-xs text-muted-foreground">From customer billing profile.</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="composer-terms">Payment terms</Label>
+              <Select
+                items={PAYMENT_TERM_OPTIONS}
+                value={String(paymentTermDays)}
+                onValueChange={(v) => setPaymentTermDays(Number(v ?? '30'))}
+              >
+                <SelectTrigger id="composer-terms" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_TERM_OPTIONS.map(o => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {paymentTermDays === 0
+                  ? 'Payable on receipt.'
+                  : `Due ${paymentTermDays} days after the invoice is issued.`}
+              </p>
+            </div>
           </div>
 
           {/* Line items */}
