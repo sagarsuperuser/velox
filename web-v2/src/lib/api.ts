@@ -204,6 +204,9 @@ export const api = {
     billing_period_end?: string
     net_payment_term_days?: number
     memo?: string
+    // line_items, when present, are created atomically with the invoice
+    // header in a single request (no follow-up addInvoiceLineItem calls).
+    line_items?: { description: string; line_type: string; quantity: number; unit_amount_cents: number }[]
   }) => apiRequest<Invoice>('POST', '/invoices', data),
   finalizeInvoice: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/finalize`),
