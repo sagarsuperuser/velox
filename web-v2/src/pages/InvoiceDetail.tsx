@@ -189,14 +189,32 @@ export default function InvoiceDetailPage() {
   })
   const timeline = timelineData ?? []
   // Two time-domains must NOT be interleaved in one chronological list:
-  // billing-lifecycle rows ride the customer's (possibly simulated) timeline,
-  // while notification emails are dispatched in real wall-clock time. Sorting
-  // them together makes a real-time "sent" row sort before the simulated event
-  // that triggered it. Split into lanes so each is internally coherent and the
-  // operator sees which clock each date lives on. (source==='email' is the
-  // wall-clock notification lane; everything else is the billing timeline.)
-  const billingTimeline = timeline.filter(e => e.source !== 'email')
-  const notificationTimeline = timeline.filter(e => e.source === 'email')
+  // billing rows ride the customer's (possibly simulated) timeline, while
+  // wall-clock external events (notification emails; Stripe payment-processor
+  // outcomes) happen in real time. Sorting them together makes a real-time row
+  // sort by its wall-clock instant and land out of place among simulated
+  // billing rows — e.g. a "receipt sent" or "payment failed" at today's date
+  // before a finalize at the simulated future cycle date.
+  //
+  // Routing:
+  //   - email rows → always the external lane (a notification log reads
+  //     cleanly on its own; matches Stripe's "email log" placement).
+  //   - stripe rows → external lane ONLY when the invoice is simulated, where
+  //     their wall-clock occurred_at would mis-sort. On a normal (one-clock)
+  //     invoice they stay in Activity, where operators expect payment outcomes
+  //     in the billing story. (Most stripe rows are already folded into the
+  //     simulated paid/dunning rows upstream; only standalone failed/canceled
+  //     events without a dunning twin reach here.)
+  const isExternalRow = (e: typeof timeline[number]) =>
+    e.source === 'email' || (!!invoice?.is_simulated && e.source === 'stripe')
+  const billingTimeline = timeline.filter(e => !isExternalRow(e))
+  const externalTimeline = timeline.filter(isExternalRow)
+  // Honest title: "Notifications" when it's only emails, "Real-time activity"
+  // when it also carries Stripe payment outcomes (a payment event isn't a
+  // "notification").
+  const externalLaneTitle = externalTimeline.some(e => e.source !== 'email')
+    ? 'Real-time activity'
+    : 'Notifications'
 
   // Payment-method snapshot serves two purposes on this page:
   //   1. The success-state card on paid invoices (brand •••• last4).
@@ -1159,36 +1177,45 @@ export default function InvoiceDetailPage() {
         </Card>
       )}
 
-      {/* Notifications — customer-facing emails, in their own lane because
-          they're dispatched in REAL wall-clock time, not the invoice's
-          (possibly simulated) billing timeline. Interleaving them with the
-          Activity rows above would sort a real-time "sent" row before the
+      {/* Real-time lane — wall-clock external events (customer emails;
+          Stripe payment outcomes on a simulated invoice) kept out of the
+          (possibly simulated) billing Activity above so a real-time row
+          doesn't sort by its wall-clock instant and land before the
           simulated event that triggered it. No simulated badge here: these
           timestamps are genuinely wall-clock. */}
-      {notificationTimeline.length > 0 && invoice.status !== 'draft' && (
+      {externalTimeline.length > 0 && invoice.status !== 'draft' && (
         <Card className={cn('mt-6', invoice.status === 'voided' && 'opacity-60')}>
           <CardHeader>
-            <CardTitle className="text-sm">Notifications</CardTitle>
-            <p className="text-xs text-muted-foreground mt-0.5">Emails sent to the customer, in real (wall-clock) time.</p>
+            <CardTitle className="text-sm">{externalLaneTitle}</CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {externalLaneTitle === 'Notifications'
+                ? 'Emails sent to the customer, in real (wall-clock) time.'
+                : 'Emails and payment-processor outcomes, in real (wall-clock) time.'}
+            </p>
           </CardHeader>
           <CardContent>
             <div className="relative">
-              {notificationTimeline.map((event, i) => (
+              {externalTimeline.map((event, i) => (
                 <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
                       'w-2.5 h-2.5 rounded-full mt-1.5',
-                      event.status === 'failed' ? 'bg-destructive' : 'bg-muted-foreground/40',
+                      event.status === 'succeeded' ? 'bg-emerald-500' :
+                      event.status === 'failed' || event.status === 'canceled' ? 'bg-destructive' :
+                      'bg-muted-foreground/40',
                     )} />
-                    {i < notificationTimeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                    {i < externalTimeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-foreground">{event.description}</p>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
-                    {event.error && event.status === 'failed' && (
+                    {event.error && (event.status === 'failed' || event.status === 'canceled') && (
                       <p className="text-xs text-destructive mt-0.5">{event.error}</p>
+                    )}
+                    {event.amount_cents != null && event.amount_cents > 0 && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{formatCents(event.amount_cents, invoice.currency)}</p>
                     )}
                   </div>
                 </div>
