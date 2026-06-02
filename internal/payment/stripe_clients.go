@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/stripe/stripe-go/v82"
 
@@ -12,6 +14,14 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tenantstripe"
 )
+
+// stripeHTTPClient bounds every Stripe API call. stripe-go's default backend
+// uses an http.Client with no Timeout (0 = unbounded), so a stalled Stripe or
+// network call would hang the caller indefinitely — and the background workers
+// (payment reconciler, tax retrier) run on the long-lived process context with
+// no request deadline to bail them out, holding the scheduler's advisory lock
+// and a DB connection. One shared, bounded client fixes that everywhere.
+var stripeHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // StripeCredentials resolves decrypted Stripe secrets for a (tenant, mode).
 // Implemented by *tenantstripe.Service — payment depends only on this
@@ -74,7 +84,7 @@ func (c *StripeClients) For(ctx context.Context, tenantID string, livemode bool)
 	if creds.SecretKey == "" {
 		return nil
 	}
-	return stripe.NewClient(creds.SecretKey)
+	return stripe.NewClient(creds.SecretKey, stripe.WithBackends(stripe.NewBackends(stripeHTTPClient)))
 }
 
 // Has returns true iff a credential fetcher is wired. Used at server
