@@ -5,89 +5,105 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/billing"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/testclock"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
-// TestManualInvoice_IsSimulatedPersistedFromClockBinding is the wire-shape
-// regression guard for the simulated-timestamp badge. It locks the fix for the
-// bug where manual (operator-composed) invoices created on a test clock showed
-// simulated dates but no badge — because the timeline re-derived simulation
-// status from the (nonexistent) subscription instead of an authoritative flag.
+// TestManualInvoice_IsSimulatedFromCustomerPin is the wire-shape regression
+// guard for the simulated-timestamp badge on manual (operator-composed)
+// invoices. It exercises the REAL production path end-to-end:
 //
-// The contract: invoice.is_simulated is captured at write time from the
-// creating context's clock binding (clock.IsSimulated(ctx)), persisted, and
-// round-trips through the store. A clock-bound create stamps true; a
-// wall-clock create stamps false. The timeline + header read this flag
-// verbatim, so locking it here locks the badge.
+//   - The FLAG (invoice.is_simulated) is captured at write time from the
+//     customer's test-clock pin (invoiceSvc.SetCustomerClockReader → the same
+//     authoritative customer.TestClockID check the engine uses on subs). This
+//     is NOT inferred from the ctx clock-binding: bindForCreate binds ctx to
+//     the resolver's effective-now even for UNPINNED customers (it returns
+//     wall-clock), so a binding-based check would mis-flag EVERY manual
+//     invoice as simulated — the bug this test pins shut.
+//   - The TIMESTAMPS (issued_at) ride the resolver-bound frozen time
+//     (invoiceSvc.SetResolver(engine) → EffectiveNowForCustomer).
 //
-// Binding ctx directly via clock.WithEffectiveNow simulates exactly what a
-// clock-pinned customer entry point produces (bindForCreate resolves the
-// customer pin to the same frozen instant); the service has no resolver wired
-// here, so the pre-bound ctx is preserved unchanged.
-func TestManualInvoice_IsSimulatedPersistedFromClockBinding(t *testing.T) {
+// Production wires both: router.go SetResolver + SetCustomerClockReader +
+// engine.SetCustomerReader + engine.SetTestClockReader.
+func TestManualInvoice_IsSimulatedFromCustomerPin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test needs postgres")
 	}
 	db := testutil.SetupTestDB(t)
-	ctx := postgres.WithLivemode(context.Background(), false)
+	ctx := postgres.WithLivemode(context.Background(), false) // test clocks are test-mode only
 
 	customerStore := customer.NewPostgresStore(db)
 	invoiceStore := invoice.NewPostgresStore(db)
 	settingsStore := tenant.NewSettingsStore(db)
-	tenantID := testutil.CreateTestTenant(t, db, "Sim Flag Corp")
+	testClockStore := testclock.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Pinned Manual Corp")
 
-	cust, err := customerStore.Create(ctx, tenantID, domain.Customer{
-		ExternalID: "cus_sim_flag", DisplayName: "Sim Flag Customer",
-	})
+	frozen := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	clk, err := testClockStore.Create(ctx, tenantID, domain.TestClock{Name: "sim", FrozenTime: frozen})
 	if err != nil {
-		t.Fatalf("create customer: %v", err)
+		t.Fatalf("create test clock: %v", err)
 	}
+
+	// Engine as the clock.Resolver — wired like production for the customer-pin
+	// path. Only customers + testClocks are exercised here; other deps unused.
+	engine := billing.NewEngine(nil, nil, nil, nil, nil, settingsStore, nil, nil, clock.Real())
+	engine.SetCustomerReader(customerStore)
+	engine.SetTestClockReader(testClockStore)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
+	invoiceSvc.SetResolver(engine)                   // drives simulated timestamps
+	invoiceSvc.SetCustomerClockReader(customerStore) // drives the is_simulated flag
+
 	line := []invoice.AddLineItemInput{{Description: "Service", Quantity: 1, UnitAmountCents: 1000}}
 
-	// (1) Wall-clock create → is_simulated must be false.
-	wall, err := invoiceSvc.Create(ctx, tenantID, invoice.CreateInput{
-		CustomerID: cust.ID, Currency: "USD", LineItems: line,
+	// (1) PINNED customer → is_simulated=true AND issued_at lands on frozen time.
+	pinned, err := customerStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_pinned", DisplayName: "Pinned Customer", TestClockID: clk.ID,
 	})
 	if err != nil {
-		t.Fatalf("create wall-clock invoice: %v", err)
+		t.Fatalf("create pinned customer: %v", err)
 	}
-	if wall.IsSimulated {
-		t.Error("wall-clock manual invoice: is_simulated=true, want false")
-	}
-
-	// (2) Clock-bound create → is_simulated must be true and round-trip.
-	frozen := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	simCtx := clock.WithEffectiveNow(ctx, frozen)
-	sim, err := invoiceSvc.Create(simCtx, tenantID, invoice.CreateInput{
-		CustomerID: cust.ID, Currency: "USD", LineItems: line,
+	inv, err := invoiceSvc.Create(ctx, tenantID, invoice.CreateInput{
+		CustomerID: pinned.ID, Currency: "USD", LineItems: line,
 	})
 	if err != nil {
-		t.Fatalf("create clock-bound invoice: %v", err)
+		t.Fatalf("create invoice (pinned): %v", err)
 	}
-	if !sim.IsSimulated {
-		t.Error("clock-bound manual invoice: is_simulated=false, want true")
+	if !inv.IsSimulated {
+		t.Error("manual invoice for clock-pinned customer: is_simulated=false, want true (customer-pin reader not consulted / not wired)")
 	}
-	// The domain timestamps must also land on simulated time (sanity: the same
-	// binding that set the flag drives clock.Now).
-	if sim.IssuedAt == nil || !sim.IssuedAt.Equal(frozen) {
-		t.Errorf("issued_at: got %v, want frozen %v", sim.IssuedAt, frozen)
+	if inv.IssuedAt == nil || !inv.IssuedAt.Equal(frozen) {
+		t.Errorf("issued_at: got %v, want frozen %v (resolver did not bind the customer's frozen time)", inv.IssuedAt, frozen)
+	}
+	if reloaded, rerr := invoiceStore.Get(ctx, tenantID, inv.ID); rerr != nil {
+		t.Fatalf("reload: %v", rerr)
+	} else if !reloaded.IsSimulated {
+		t.Error("reloaded pinned-customer invoice: is_simulated=false, want true (did not persist)")
 	}
 
-	// (3) Round-trip: reload from the store (fresh read path) — the flag must
-	// persist, not just live on the create-return value.
-	reloaded, err := invoiceStore.Get(ctx, tenantID, sim.ID)
+	// (2) UNPINNED customer → is_simulated=false. This is the case the
+	// binding-based check got WRONG (bindForCreate binds ctx to wall-clock for
+	// unpinned customers, so a ctx-binding check returned true).
+	plain, err := customerStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_plain", DisplayName: "Plain Customer",
+	})
 	if err != nil {
-		t.Fatalf("reload invoice: %v", err)
+		t.Fatalf("create plain customer: %v", err)
 	}
-	if !reloaded.IsSimulated {
-		t.Error("reloaded clock-bound invoice: is_simulated=false, want true (did not persist)")
+	inv2, err := invoiceSvc.Create(ctx, tenantID, invoice.CreateInput{
+		CustomerID: plain.ID, Currency: "USD", LineItems: line,
+	})
+	if err != nil {
+		t.Fatalf("create invoice (plain): %v", err)
+	}
+	if inv2.IsSimulated {
+		t.Error("manual invoice for unpinned customer: is_simulated=true, want false")
 	}
 }

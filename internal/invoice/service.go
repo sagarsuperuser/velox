@@ -82,6 +82,21 @@ type StripeChecker interface {
 	HasFor(ctx context.Context, tenantID string, livemode bool) bool
 }
 
+// CustomerClockReader reads a customer's test-clock pin so Create can stamp
+// invoice.is_simulated authoritatively at write time — the same direct field
+// check the engine uses for cycle invoices (sub.TestClockID != ""), applied to
+// the customer for manual one-off invoices. Satisfied by
+// *customer.PostgresStore.
+//
+// This is the WRITE-time capture, NOT the read-time snapshot heuristic that
+// ADR-030 bans: we record whether the customer was pinned at the instant the
+// invoice was born, then persist it. (We can't use clock.IsSimulated(ctx) here
+// — bindForCreate binds ctx to the resolver's effective-now even for UNPINNED
+// customers, so "ctx is bound" doesn't mean "on a test clock".)
+type CustomerClockReader interface {
+	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
+}
+
 type Service struct {
 	store          Store
 	clock          clock.Clock
@@ -92,6 +107,7 @@ type Service struct {
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
+	customerClock  CustomerClockReader
 	audit          AuditLogger
 	events         domain.EventDispatcher
 }
@@ -192,6 +208,30 @@ func (s *Service) SetPaymentMethodReader(r PaymentMethodReader) {
 	s.paymentMethods = r
 }
 
+// SetCustomerClockReader wires the customer lookup Create uses to stamp
+// is_simulated from the customer's test-clock pin. Optional — when nil (narrow
+// unit tests), is_simulated defaults false, which is correct for any
+// non-clock-pinned invoice; production always wires it.
+func (s *Service) SetCustomerClockReader(r CustomerClockReader) {
+	s.customerClock = r
+}
+
+// customerOnTestClock reports whether the customer is pinned to a test clock —
+// the authoritative write-time signal for invoice.is_simulated on manual
+// invoices (mirrors the engine's sub.TestClockID check for cycle invoices).
+// Lookup failure / unwired reader → false (safe: an unbadged simulated invoice
+// is better than a badged real one, and the reader is always wired in prod).
+func (s *Service) customerOnTestClock(ctx context.Context, tenantID, customerID string) bool {
+	if s.customerClock == nil || customerID == "" {
+		return false
+	}
+	cust, err := s.customerClock.Get(ctx, tenantID, customerID)
+	if err != nil {
+		return false
+	}
+	return cust.TestClockID != ""
+}
+
 // SetStripeChecker wires the per-tenant Stripe-connected probe used
 // by the attention classifier to distinguish "Stripe not connected"
 // from "Stripe just connected, calculation will retry shortly" on
@@ -279,13 +319,14 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		// (2) auto-finalize-after-tax-retry skips them so the operator keeps
 		// the explicit finalize step while a draft is still being composed.
 		BillingReason: domain.BillingReasonManual,
-		// Persist whether this draft is created on a frozen test clock.
-		// bindForCreate (above) bound ctx to the customer's effective-now when
-		// the customer is clock-pinned; capture it authoritatively now so the
-		// timeline/header badge it without a read-time re-derivation. Manual
-		// invoices have no subscription to look through, so this customer-pin
-		// signal is the only correct source.
-		IsSimulated: clock.IsSimulated(ctx),
+		// Persist whether this draft is born on a frozen test clock, from the
+		// customer's pin (manual invoices have no subscription to look through).
+		// This is the authoritative write-time capture — the same direct field
+		// check the engine uses for cycle invoices (sub.TestClockID) — NOT
+		// clock.IsSimulated(ctx): bindForCreate binds ctx to the resolver's
+		// effective-now even for UNPINNED customers (it returns wall-clock), so
+		// "ctx is bound" would mis-flag every manual invoice as simulated.
+		IsSimulated: s.customerOnTestClock(ctx, tenantID, input.CustomerID),
 	}
 
 	// Bare-header create — caller adds line items incrementally afterwards.
