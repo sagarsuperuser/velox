@@ -41,8 +41,6 @@ func NewSettingsStore(db *postgres.DB) *SettingsStore {
 // and cannot carry a per-tenant context. The tenants table itself has no
 // RLS, so this query runs on the bare pool without a transaction.
 func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	rows, err := s.db.Pool.QueryContext(ctx, `SELECT id FROM tenants`)
 	if err != nil {
 		return nil, err
