@@ -2405,7 +2405,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		// Persist whether this invoice's domain timestamps were stamped on a
 		// frozen test clock (the subscription is pinned), so the activity
 		// timeline + header render the simulated badge without re-deriving
-		// from the mutable test_clock_id at read time. See clock.IsSimulated.
+		// from the mutable test_clock_id at read time. The manual-invoice path
+		// captures the same signal from the customer's pin (invoice.Service).
 		IsSimulated: sub.TestClockID != "",
 	}, lineItems)
 	if err != nil {
