@@ -48,6 +48,35 @@ function humanizeError(msg: string): string {
 // reach the same endpoints with a Bearer header instead, which the
 // server's MiddlewareOrAPIKey accepts as a fallback when the cookie is
 // missing.
+// DEFAULT_REQUEST_TIMEOUT_MS bounds every API call. A request that never
+// receives a response — a stalled dev proxy, a reset/half-open connection, a
+// wedged upstream — must NOT leave the UI spinning forever. We abort after
+// this window so React Query surfaces a recoverable error instead of an
+// infinite loading state. Set a touch above the backend's 30s WriteTimeout so
+// the server's own error wins when the backend is merely slow.
+const DEFAULT_REQUEST_TIMEOUT_MS = 40_000
+
+// fetchWithTimeout wraps fetch with an AbortController so a hung request fails
+// fast instead of pending indefinitely. Used by every API + file call.
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new ApiError(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s — the server didn't respond. Check the API is running and reachable, then retry.`,
+        0,
+        { code: 'timeout' },
+      )
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function apiRequest<T>(method: string, path: string, body?: unknown, opts?: { idempotencyKey?: string }): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -56,7 +85,7 @@ export async function apiRequest<T>(method: string, path: string, body?: unknown
     headers['Idempotency-Key'] = opts.idempotencyKey
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
     method,
     headers,
     credentials: 'include',
@@ -1541,7 +1570,7 @@ export interface UsageAnalyticsResponse {
 }
 
 export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
-  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/pdf`, {
+  const res = await fetchWithTimeout(`${API_BASE}/invoices/${invoiceId}/pdf`, {
     credentials: 'include',
   })
   const blob = await res.blob()
@@ -1554,7 +1583,7 @@ export async function downloadPDF(invoiceId: string, invoiceNumber: string) {
 }
 
 export async function downloadCreditNotePDF(creditNoteId: string, creditNoteNumber: string) {
-  const res = await fetch(`${API_BASE}/credit-notes/${creditNoteId}/pdf`, {
+  const res = await fetchWithTimeout(`${API_BASE}/credit-notes/${creditNoteId}/pdf`, {
     credentials: 'include',
   })
   if (!res.ok) {

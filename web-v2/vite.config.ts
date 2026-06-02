@@ -8,5 +8,34 @@ export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
-  server: { port: 5173, proxy: { '/v1': 'http://localhost:8080' } },
+  server: {
+    port: 5173,
+    proxy: {
+      // Bounded + error-handled so a stalled/reset upstream surfaces as a 502
+      // instead of leaving the browser request "pending" forever (the dev
+      // infinite-spinner). timeout/proxyTimeout sit just above the backend's
+      // 30s WriteTimeout so the backend's own response wins when it's merely
+      // slow; the proxy only fires on a genuinely dead/wedged upstream.
+      '/v1': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        timeout: 35_000,
+        proxyTimeout: 35_000,
+        configure: (proxy) => {
+          proxy.on('error', (err, _req, res) => {
+            // res is a ServerResponse for normal requests (not WS upgrades).
+            const sr = res as unknown as {
+              writeHead?: (s: number, h: Record<string, string>) => void
+              end?: (b?: string) => void
+              headersSent?: boolean
+            }
+            if (sr && typeof sr.writeHead === 'function' && !sr.headersSent) {
+              sr.writeHead(502, { 'Content-Type': 'application/json' })
+              sr.end?.(JSON.stringify({ error: { message: `dev proxy: upstream error or timeout (${(err as NodeJS.ErrnoException).code ?? err.message})` } }))
+            }
+          })
+        },
+      },
+    },
+  },
 })
