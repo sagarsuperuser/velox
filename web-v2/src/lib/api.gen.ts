@@ -2230,6 +2230,15 @@ export interface components {
              *     Velox-native invoices.
              */
             stripe_invoice_id?: string;
+            /**
+             * @description Whether this invoice's domain timestamps (created/issued/due/paid)
+             *     were stamped on a test clock's simulated time rather than
+             *     wall-clock. Captured at write time (engine: the subscription is
+             *     clock-pinned; manual composer: the customer is clock-pinned). The
+             *     dashboard renders a "simulated" badge from this authoritative flag
+             *     instead of inferring it. Always false in live mode.
+             */
+            is_simulated?: boolean;
         };
         /** @description A single line on an invoice. */
         InvoiceLineItem: {

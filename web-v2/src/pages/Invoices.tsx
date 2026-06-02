@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DueBadge } from '@/components/DueBadge'
-import { TestClockBadge } from '@/components/TestClockBadge'
+import { SimulatedBadge } from '@/components/TestClockBadge'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -378,9 +378,11 @@ export default function InvoicesPage() {
                             {inv.invoice_number}
                           </Link>
                           <AttentionDot attention={inv.attention} />
-                          {inv.subscription_id && subTestClockMap[inv.subscription_id] && (
-                            <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
-                          )}
+                          {/* Authoritative per-invoice flag — badges manual
+                              one-off invoices too (no subscription to look
+                              through) and survives a later clock unpin, unlike
+                              the old sub→clock-map lookup. */}
+                          {inv.is_simulated && <SimulatedBadge />}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm">

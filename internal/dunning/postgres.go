@@ -210,7 +210,12 @@ func (s *PostgresStore) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID
 // dedicated atomic-flip path; UpsertPolicy enforces that is_default
 // cannot be set via this call (preserves the invariant).
 func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
-	now := clock.Now(ctx)
+	// A dunning policy is tenant-level operator config, not a per-customer
+	// billing event — its created_at/updated_at must record the real instant
+	// the operator edited it, never a test clock's frozen_time. (Dunning RUN
+	// timestamps elsewhere DO use clock.Now(ctx) — those live on the customer's
+	// simulated timeline; policy config writes escape the simulation boundary.)
+	now := time.Now().UTC() // wall-clock: operator config write (ADR-030 addendum), never frozen_time
 	scheduleJSON, _ := json.Marshal(p.RetrySchedule)
 	if p.ID == "" {
 		// INSERT new policy. is_default stays false; promote later via

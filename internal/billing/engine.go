@@ -2402,6 +2402,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCycle,
+		// Persist whether this invoice's domain timestamps were stamped on a
+		// frozen test clock (the subscription is pinned), so the activity
+		// timeline + header render the simulated badge without re-deriving
+		// from the mutable test_clock_id at read time. See clock.IsSimulated.
+		IsSimulated: sub.TestClockID != "",
 	}, lineItems)
 	if err != nil {
 		// Idempotency: if this invoice already exists (UNIQUE violation on the
@@ -2790,6 +2795,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCreate,
+		IsSimulated:        sub.TestClockID != "",
 	}, lineItems)
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
@@ -3243,6 +3249,7 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCancel,
+		IsSimulated:        sub.TestClockID != "",
 	}, lineItems)
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
