@@ -34,10 +34,6 @@ func NewDB(pool *sql.DB, queryTimeout time.Duration) *DB {
 	return &DB{Pool: pool, QueryTimeout: queryTimeout}
 }
 
-func (db *DB) Ctx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), db.QueryTimeout)
-}
-
 // TxMode controls how a transaction sets RLS session variables.
 type TxMode int
 
