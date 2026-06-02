@@ -9,6 +9,12 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, './src') },
   },
   server: {
+    // Bind all interfaces (IPv4 + IPv6), not the default `localhost` which on
+    // macOS resolves to ::1 and binds IPv6-only — so a browser that resolves
+    // `localhost` to 127.0.0.1 (IPv4, listed first in /etc/hosts) hits a dead
+    // address and the page hangs "pending". host:true makes 127.0.0.1, ::1,
+    // and localhost all reach the dev server.
+    host: true,
     port: 5173,
     proxy: {
       // Bounded + error-handled so a stalled/reset upstream surfaces as a 502
