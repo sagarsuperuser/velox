@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -87,11 +88,13 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	tenantID := postgres.NewID("vlx_ten")
 	now := time.Now().UTC()
 
-	result, err := h.db.Pool.ExecContext(ctx,
+	qctx, cancel := context.WithTimeout(ctx, h.db.QueryTimeout)
+	result, err := h.db.Pool.ExecContext(qctx,
 		`INSERT INTO tenants (id, name, status, created_at, updated_at)
 		SELECT $1, $2, 'active', $3, $3
 		WHERE NOT EXISTS (SELECT 1 FROM tenants LIMIT 1)`,
 		tenantID, req.TenantName, now)
+	cancel()
 	if err != nil {
 		respond.InternalError(w, r)
 		return
