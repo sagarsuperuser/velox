@@ -657,6 +657,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// without the resolver wire, the row never lands in the catchup
 	// window.
 	invoiceSvc.SetResolver(engine)
+	// Customer-pin reader: lets manual-invoice Create stamp is_simulated from
+	// the customer's test_clock_id (the authoritative write-time signal, like
+	// the engine's sub.TestClockID for cycle invoices). Without it, manual
+	// invoices never carry the simulated badge.
+	invoiceSvc.SetCustomerClockReader(customerStore)
 	testClockSvc.SetBillingRunner(engine)
 	// Phase 0.5 (Bug #8): trial expiry — flip status='trialing' subs
 	// to active at trial_end_at when sim time elapses past it, BEFORE

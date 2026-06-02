@@ -332,14 +332,23 @@ customer billing lifecycle never does.
 
 **Read-side rule — persist an authoritative flag, never re-derive:** when a
 read path (timeline, header, list) must render *whether* a row is simulated,
-it reads a flag the write path persisted (`invoices.is_simulated`, stamped
-from `clock.IsSimulated(ctx)` at create — engine: subscription pinned; manual
-composer: customer pinned). Do NOT re-derive from the parent's *current*
-`test_clock_id`: that is a mutable read-time snapshot (it rots when a clock is
-unpinned) and it misses manual one-off invoices, which have no subscription to
-look through. Re-deriving was the exact bug this addendum closes — the
-invoice timeline read `subscription.test_clock_id` at render time, so manual
-invoices on a clock-pinned customer showed simulated dates with no badge.
+it reads a flag the write path persisted (`invoices.is_simulated`, captured at
+create from the owning entity's **`test_clock_id`** — engine: `sub.TestClockID
+!= ""`; manual composer: the customer's `TestClockID != ""`). Do NOT re-derive
+from the parent's *current* `test_clock_id`: that is a mutable read-time
+snapshot (it rots when a clock is unpinned) and it misses manual one-off
+invoices, which have no subscription to look through. Re-deriving was the exact
+bug this addendum closes — the invoice timeline read
+`subscription.test_clock_id` at render time, so manual invoices on a
+clock-pinned customer showed simulated dates with no badge.
+
+**Capture it from the pin, not the ctx binding.** The flag must come from the
+entity's `test_clock_id`, NOT from "is the ctx clock-bound" — because
+`BindEffectiveNow` binds the ctx to the resolver's effective-now even for an
+*unpinned* entity (the resolver returns wall-clock for those, not an error), so
+a binding-based check ("is an effective-now bound?") reports true for *every*
+resolvable entity and would mis-flag every manual invoice as simulated. The
+ctx binding drives the *timestamps*; the `test_clock_id` drives the *flag*.
 
 **UI rule — don't interleave two clocks in one list.** The invoice activity
 timeline is domain-time (possibly simulated); customer-notification emails are
@@ -352,12 +361,12 @@ coherence; the lanes make the boundary visible instead.
 **Implementation (this change):**
 
 - `invoices.is_simulated BOOLEAN NOT NULL DEFAULT false` (migration 0109),
-  stamped at every create site — engine (`sub.TestClockID != ""`) and the
-  manual composer (`clock.IsSimulated(ctx)`).
+  stamped at every create site from the entity's `test_clock_id` — engine
+  (`sub.TestClockID != ""`) and the manual composer (the customer's
+  `TestClockID != ""`, read via `invoice.Service.SetCustomerClockReader`).
 - `internal/invoice/handler.go`: the timeline reads `inv.IsSimulated` for
   lifecycle/dunning rows; the dead `SubscriptionClockReader` snapshot lookup is
   removed.
-- `clock.IsSimulated(ctx)` helper added.
 - `internal/dunning/postgres.go`: policy-config writes flipped to wall-clock
   (run timestamps stay clock-pinned).
 - `web-v2`: invoice header + list render the authoritative `is_simulated`
