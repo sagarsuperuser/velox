@@ -723,6 +723,14 @@ type Invoice struct {
 	// InvoiceNumber Empty until the invoice is finalized.
 	InvoiceNumber string `json:"invoice_number"`
 
+	// IsSimulated Whether this invoice's domain timestamps (created/issued/due/paid)
+	// were stamped on a test clock's simulated time rather than
+	// wall-clock. Captured at write time (engine: the subscription is
+	// clock-pinned; manual composer: the customer is clock-pinned). The
+	// dashboard renders a "simulated" badge from this authoritative flag
+	// instead of inferring it. Always false in live mode.
+	IsSimulated bool `json:"is_simulated,omitempty"`
+
 	// IssuedAt Set when the invoice transitions out of draft.
 	IssuedAt           time.Time              `json:"issued_at,omitempty"`
 	LastPaymentError   string                 `json:"last_payment_error,omitempty"`

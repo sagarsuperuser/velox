@@ -301,3 +301,65 @@ sim-effect answer without conflating them.
 adding a parallel forensics column on business-logic rows forces every
 read path to choose. The audit log IS the forensics table; that's
 where wall-clock lives.
+
+## Addendum (2026-06-02): the boundary taxonomy + read-side authoritative flag
+
+A product-wide audit confirmed the model above is sound (5 of 7 subsystems
+clean) but surfaced two recurring failure modes at the edges. This addendum
+codifies the rule so neither recurs.
+
+**The taxonomy — which clock a timestamp rides:**
+
+- **Clock-pinned** (`clock.Now(ctx)` / `effectiveNow`): records *when a
+  billing-domain event happened on the customer's timeline* — the thing the
+  simulation fast-forwards. Invoice lifecycle (created/issued/due/paid/voided),
+  billing-period boundaries, subscription lifecycle, credit-ledger entries,
+  dunning **run/event** domain times, reconciler `paid_at`.
+- **Wall-clock** (`time.Now()` / SQL `now()`): records a *real-world
+  operational event outside the simulation* — fires in the operator's
+  datacenter regardless of any customer clock. Audit `created_at` (with
+  `sim_effective_at` as the secondary), all infra outbox/dispatch/**retry
+  scheduling**, webhook delivery, auth/session windows, Stripe-sourced times,
+  `usage_events.timestamp` (the metered activity's real instant), and —
+  caught by this audit — **operator-administrative config writes**
+  (`dunning_policy.created_at/updated_at`, test-clock object audit columns).
+
+**The litmus test:** *"If the operator never advanced this clock, would this
+event still need to fire at this real instant?"* Yes → wall-clock. *"Does this
+only make sense relative to the cycle being simulated?"* Yes → clock-pinned.
+Administrative config and infra plumbing always escape the simulation; per-
+customer billing lifecycle never does.
+
+**Read-side rule — persist an authoritative flag, never re-derive:** when a
+read path (timeline, header, list) must render *whether* a row is simulated,
+it reads a flag the write path persisted (`invoices.is_simulated`, stamped
+from `clock.IsSimulated(ctx)` at create — engine: subscription pinned; manual
+composer: customer pinned). Do NOT re-derive from the parent's *current*
+`test_clock_id`: that is a mutable read-time snapshot (it rots when a clock is
+unpinned) and it misses manual one-off invoices, which have no subscription to
+look through. Re-deriving was the exact bug this addendum closes — the
+invoice timeline read `subscription.test_clock_id` at render time, so manual
+invoices on a clock-pinned customer showed simulated dates with no badge.
+
+**UI rule — don't interleave two clocks in one list.** The invoice activity
+timeline is domain-time (possibly simulated); customer-notification emails are
+wall-clock dispatch time. Rendering them in one chronological list sorts a
+real-time "sent" row *before* the simulated event that triggered it. They live
+in separate lanes ("Activity" vs "Notifications"), each internally coherent.
+Email dispatch is genuinely wall-clock — it is NOT clock-pinned to fake
+coherence; the lanes make the boundary visible instead.
+
+**Implementation (this change):**
+
+- `invoices.is_simulated BOOLEAN NOT NULL DEFAULT false` (migration 0109),
+  stamped at every create site — engine (`sub.TestClockID != ""`) and the
+  manual composer (`clock.IsSimulated(ctx)`).
+- `internal/invoice/handler.go`: the timeline reads `inv.IsSimulated` for
+  lifecycle/dunning rows; the dead `SubscriptionClockReader` snapshot lookup is
+  removed.
+- `clock.IsSimulated(ctx)` helper added.
+- `internal/dunning/postgres.go`: policy-config writes flipped to wall-clock
+  (run timestamps stay clock-pinned).
+- `web-v2`: invoice header + list render the authoritative `is_simulated`
+  badge; the activity timeline splits email rows into a real-time
+  "Notifications" lane.

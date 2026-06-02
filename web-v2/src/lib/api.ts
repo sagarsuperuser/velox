@@ -785,6 +785,11 @@ export interface Invoice {
   // finalized invoices (migrated-in but never rotated) carry empty.
   public_token?: string
   created_at: string
+  // is_simulated: this invoice's domain timestamps were stamped on a test
+  // clock's simulated time (authoritative, set at write time). Drives the
+  // "simulated" badge on header dates + the activity timeline. Live invoices
+  // are always false.
+  is_simulated?: boolean
 }
 
 // pollIntervalForInvoice picks a refetch cadence based on the invoice's

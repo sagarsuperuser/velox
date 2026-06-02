@@ -134,6 +134,17 @@ func Now(ctx context.Context) time.Time {
 	return time.Now().UTC()
 }
 
+// IsSimulated reports whether ctx is bound to a test clock's effective-now
+// (via WithEffectiveNow / BindEffectiveNow). True means every clock.Now(ctx)
+// on this ctx returns simulated frozen-time, not wall-clock — so any domain
+// timestamp stamped under this ctx lives on a customer's simulated timeline.
+// Callers persist this at write time (e.g. invoice.is_simulated) so read-side
+// code renders a "simulated" badge without re-deriving from a mutable pin.
+func IsSimulated(ctx context.Context) bool {
+	_, ok := EffectiveNow(ctx)
+	return ok
+}
+
 // Resolver maps an entity reference to its effective-now — frozen_time
 // when the entity is pinned to a test clock, wall-clock otherwise.
 // Used at operator entry points to bind ctx via WithEffectiveNow, and
