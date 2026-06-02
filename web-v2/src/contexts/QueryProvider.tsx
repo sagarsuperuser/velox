@@ -2,11 +2,19 @@ import { useMemo, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useAuth } from '@/contexts/AuthContext'
 
+// Refetch posture (2026-06-02): operator billing data changes on the order of
+// minutes and is refreshed explicitly via invalidateQueries after mutations,
+// so aggressive time/focus-based refetching just churns the single HTTP/1.1
+// dev origin (and prod) with duplicate global queries. staleTime=30s lets
+// normal page-to-page navigation serve from cache; refetchOnWindowFocus=false
+// stops a full re-fetch on every alt-tab. Real-time surfaces (test-clock
+// advancing, invoice payment status) opt into polling via per-query
+// refetchInterval, which is independent of these defaults.
 const queryDefaults = {
   queries: {
-    staleTime: 5_000,
+    staleTime: 30_000,
     retry: 1,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     refetchOnMount: true,
   },
 } as const
