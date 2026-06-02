@@ -279,6 +279,13 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		// (2) auto-finalize-after-tax-retry skips them so the operator keeps
 		// the explicit finalize step while a draft is still being composed.
 		BillingReason: domain.BillingReasonManual,
+		// Persist whether this draft is created on a frozen test clock.
+		// bindForCreate (above) bound ctx to the customer's effective-now when
+		// the customer is clock-pinned; capture it authoritatively now so the
+		// timeline/header badge it without a read-time re-derivation. Manual
+		// invoices have no subscription to look through, so this customer-pin
+		// signal is the only correct source.
+		IsSimulated: clock.IsSimulated(ctx),
 	}
 
 	// Bare-header create — caller adds line items incrementally afterwards.

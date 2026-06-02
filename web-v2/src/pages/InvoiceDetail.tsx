@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
-import { TestClockBadge } from '@/components/TestClockBadge'
+import { TestClockBadge, SimulatedBadge } from '@/components/TestClockBadge'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -188,6 +188,15 @@ export default function InvoiceDetailPage() {
     refetchInterval: pollIntervalForInvoice(invoice as ApiInvoice | undefined),
   })
   const timeline = timelineData ?? []
+  // Two time-domains must NOT be interleaved in one chronological list:
+  // billing-lifecycle rows ride the customer's (possibly simulated) timeline,
+  // while notification emails are dispatched in real wall-clock time. Sorting
+  // them together makes a real-time "sent" row sort before the simulated event
+  // that triggered it. Split into lanes so each is internally coherent and the
+  // operator sees which clock each date lives on. (source==='email' is the
+  // wall-clock notification lane; everything else is the billing timeline.)
+  const billingTimeline = timeline.filter(e => e.source !== 'email')
+  const notificationTimeline = timeline.filter(e => e.source === 'email')
 
   // Payment-method snapshot serves two purposes on this page:
   //   1. The success-state card on paid invoices (brand •••• last4).
@@ -698,6 +707,13 @@ export default function InvoiceDetailPage() {
               domain-code and visually noisy. */}
           <div className="flex items-center gap-2 mt-5">
             <Badge variant={statusVariant(invoice.status)}>{humaniseInvoiceStatus(invoice.status)}</Badge>
+            {/* Invoice-level simulated marker: every domain date below
+                (Issued/Due/Period/Paid/Voided) is test-clock time, so one
+                badge here is clearer than tagging each date. Authoritative
+                is_simulated — covers manual one-off invoices too. */}
+            {invoice.is_simulated && (
+              <SimulatedBadge title="All dates on this invoice are simulated test-clock time, not wall-clock" />
+            )}
             {/* Bare date — the badge already says "Paid"/"Voided", so
                 prefixing the date with the same word is redundant.
                 "Paid Paid May 2, 2026" → "Paid · May 2, 2026". */}
@@ -1075,14 +1091,14 @@ export default function InvoiceDetailPage() {
           Replaces the older "Payment Activity" framing now that
           lifecycle anchors (created, finalized, scheduled) sit
           alongside Stripe + dunning events. */}
-      {timeline.length > 0 && invoice.status !== 'draft' && (
+      {billingTimeline.length > 0 && invoice.status !== 'draft' && (
         <Card className={cn('mt-6', invoice.status === 'voided' && 'opacity-60')}>
           <CardHeader>
             <CardTitle className="text-sm">Activity</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="relative">
-              {timeline.map((event, i) => {
+              {billingTimeline.map((event, i) => {
                 // Simulated chip: backend stamps `is_simulated=true`
                 // on events produced in frozen-time (engine-driven
                 // on a clock-pinned sub). Wall-clock events (stripe
@@ -1102,7 +1118,7 @@ export default function InvoiceDetailPage() {
                       event.status === 'escalated' ? 'bg-violet-500' :
                       'bg-amber-500'
                     )} />
-                    {i < timeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                    {i < billingTimeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
@@ -1138,6 +1154,45 @@ export default function InvoiceDetailPage() {
                 </div>
                 )
               })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Notifications — customer-facing emails, in their own lane because
+          they're dispatched in REAL wall-clock time, not the invoice's
+          (possibly simulated) billing timeline. Interleaving them with the
+          Activity rows above would sort a real-time "sent" row before the
+          simulated event that triggered it. No simulated badge here: these
+          timestamps are genuinely wall-clock. */}
+      {notificationTimeline.length > 0 && invoice.status !== 'draft' && (
+        <Card className={cn('mt-6', invoice.status === 'voided' && 'opacity-60')}>
+          <CardHeader>
+            <CardTitle className="text-sm">Notifications</CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">Emails sent to the customer, in real (wall-clock) time.</p>
+          </CardHeader>
+          <CardContent>
+            <div className="relative">
+              {notificationTimeline.map((event, i) => (
+                <div key={i} className="flex gap-4 pb-2 last:pb-0">
+                  <div className="flex flex-col items-center">
+                    <div className={cn(
+                      'w-2.5 h-2.5 rounded-full mt-1.5',
+                      event.status === 'failed' ? 'bg-destructive' : 'bg-muted-foreground/40',
+                    )} />
+                    {i < notificationTimeline.length - 1 && <div className="w-px flex-1 bg-border mt-1" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-foreground">{event.description}</p>
+                      <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
+                    </div>
+                    {event.error && event.status === 'failed' && (
+                      <p className="text-xs text-destructive mt-0.5">{event.error}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>

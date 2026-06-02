@@ -149,16 +149,6 @@ type getInvoiceServer interface {
 
 var _ getInvoiceServer = (*Handler)(nil)
 
-// SubscriptionClockReader is the narrow read interface used by the
-// timeline composer to detect whether the invoice's owning sub is
-// pinned to a test clock. When set, lifecycle + dunning events get
-// `is_simulated=true` on the wire so the SPA can render the
-// "simulated" chip authoritatively. Implemented by
-// *subscription.PostgresStore.
-type SubscriptionClockReader interface {
-	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
-}
-
 type Handler struct {
 	svc             *Service
 	customers       CustomerGetter
@@ -172,7 +162,6 @@ type Handler struct {
 	webhookEvents   WebhookEventLister
 	emailEvents     EmailEventLister
 	dunningTimeline DunningTimelineFetcher
-	subs            SubscriptionClockReader
 	events          domain.EventDispatcher
 	emailSender     EmailSender
 	refundIssuer    RefundIssuer
@@ -222,15 +211,6 @@ func (h *Handler) SetEmailSender(sender EmailSender) {
 // stripe webhooks, dunning) renders unchanged.
 func (h *Handler) SetEmailEvents(lister EmailEventLister) {
 	h.emailEvents = lister
-}
-
-// SetSubscriptionClockReader wires the narrow sub reader used by the
-// payment timeline to determine whether to stamp is_simulated=true on
-// engine-driven events. Optional — when unwired, the timeline still
-// renders but every event ships is_simulated=false (acceptable
-// degraded behaviour for narrow tests; production always wires).
-func (h *Handler) SetSubscriptionClockReader(r SubscriptionClockReader) {
-	h.subs = r
 }
 
 // SetAuditLogger configures audit logging for financial operations.
@@ -1367,19 +1347,18 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve simulated-time context: if the owning sub is pinned to
-	// a test clock, lifecycle + dunning events on this invoice were
-	// produced in frozen-time and ship `is_simulated=true`. Stripe
-	// webhook + email + audit events stay wall-clock either way.
-	// Lookup failure is non-fatal — we just default to false (the SPA
-	// degrades to no chip, which is correct on every non-clock-pinned
-	// invoice anyway).
-	subOnClock := false
-	if h.subs != nil && inv.SubscriptionID != "" {
-		if sub, err := h.subs.Get(r.Context(), tenantID, inv.SubscriptionID); err == nil {
-			subOnClock = sub.TestClockID != ""
-		}
-	}
+	// is_simulated is the invoice's persisted, authoritative flag — stamped at
+	// write time when the creating context was bound to a frozen test clock
+	// (engine: the subscription is pinned; manual composer: the customer is
+	// pinned). Reading it here, instead of re-deriving from the subscription's
+	// CURRENT test_clock_id, fixes two defects: (1) manual one-off invoices
+	// have no subscription to look through, so the old lookup always returned
+	// false and dropped their badge despite simulated timestamps; (2) the badge
+	// now survives a later clock unpin, since the old sub.Get was a mutable
+	// read-time snapshot (the heuristic feedback_no_heuristic_proxies bans).
+	// Stripe-webhook + email events stay wall-clock either way (real-world
+	// dispatch time), so they don't carry this flag.
+	isSimulated := inv.IsSimulated
 
 	var events []timelineEvent
 
@@ -1394,7 +1373,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		EventType:   "invoice.created",
 		Status:      "succeeded",
 		Description: "Invoice created",
-		IsSimulated: subOnClock,
+		IsSimulated: isSimulated,
 	})
 	if inv.IssuedAt != nil {
 		amt := inv.AmountDueCents
@@ -1406,7 +1385,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			Description: "Invoice finalized",
 			AmountCents: &amt,
 			Currency:    inv.Currency,
-			IsSimulated: subOnClock,
+			IsSimulated: isSimulated,
 		})
 	}
 	// (Removed: synthetic "Payment deadline" event keyed off due_at.
@@ -1421,7 +1400,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			EventType:   "invoice.voided",
 			Status:      "canceled",
 			Description: "Invoice voided",
-			IsSimulated: subOnClock,
+			IsSimulated: isSimulated,
 		})
 	}
 	if inv.PaidAt != nil {
@@ -1435,7 +1414,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			AmountCents: &amt,
 			Currency:    inv.Currency,
 			Detail:      formatPaymentCardDetail(inv.PaymentCardBrand, inv.PaymentCardLast4),
-			IsSimulated: subOnClock,
+			IsSimulated: isSimulated,
 		})
 	}
 
@@ -1588,7 +1567,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 						Description:  desc,
 						Error:        evt.Reason,
 						AttemptCount: evt.AttemptCount,
-						IsSimulated:  subOnClock,
+						IsSimulated:  isSimulated,
 					})
 				}
 			}

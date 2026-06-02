@@ -165,7 +165,8 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason,
 	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
-	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,'')`
+	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,''),
+	is_simulated`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -261,8 +262,8 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
-			stripe_invoice_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41)
+			stripe_invoice_id, is_simulated)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -281,6 +282,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 		postgres.NullableString(inv.TaxErrorCode),
 		postgres.NullableString(string(inv.BillingReason)),
 		postgres.NullableString(inv.StripeInvoiceID),
+		inv.IsSimulated,
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err != nil {
@@ -1385,8 +1387,8 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
-			stripe_invoice_id, public_token_encrypted, public_token_hash, paid_at, voided_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)
+			stripe_invoice_id, public_token_encrypted, public_token_hash, paid_at, voided_at, is_simulated)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -1408,6 +1410,7 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 		postgres.NullableString(inv.StripeInvoiceID),
 		postgres.NullableString(encToken), postgres.NullableString(tokenHash),
 		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
+		inv.IsSimulated,
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err != nil {
@@ -1856,6 +1859,7 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxErrorCode, &inv.TaxNextRetryAt,
 		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
 		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
+		&inv.IsSimulated,
 	}
 }
 
@@ -1871,10 +1875,14 @@ func (s *PostgresStore) SetPublicToken(ctx context.Context, tenantID, invoiceID,
 	defer postgres.Rollback(tx)
 
 	encToken, tokenHash := s.encodeToken(token)
+	// Public-token rotation is an operational metadata write (re-issue a
+	// hosted-invoice URL), not a billing-domain transition — stamp updated_at
+	// wall-clock via SQL now(), matching SetPaymentCard. Domain transitions
+	// (status, tax, paid_at) are the ones that ride the test clock.
 	res, err := tx.ExecContext(ctx, `
-		UPDATE invoices SET public_token_encrypted = $1, public_token_hash = $2, updated_at = $3
-		WHERE id = $4 AND status <> 'draft'
-	`, postgres.NullableString(encToken), postgres.NullableString(tokenHash), clock.Now(ctx), invoiceID)
+		UPDATE invoices SET public_token_encrypted = $1, public_token_hash = $2, updated_at = now()
+		WHERE id = $3 AND status <> 'draft'
+	`, postgres.NullableString(encToken), postgres.NullableString(tokenHash), invoiceID)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			// 256 bits of entropy means collisions are astronomically unlikely,

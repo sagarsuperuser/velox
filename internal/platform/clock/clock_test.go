@@ -252,3 +252,21 @@ func (s *stubResolver) EffectiveNowForCustomer(_ context.Context, _, _ string) (
 	}
 	return s.custFunc()
 }
+
+func TestIsSimulated(t *testing.T) {
+	// Unbound ctx → wall-clock → not simulated.
+	if IsSimulated(context.Background()) {
+		t.Error("IsSimulated on an unbound ctx: got true, want false")
+	}
+	// nil ctx is tolerated (EffectiveNow guards it) → not simulated.
+	//nolint:staticcheck // exercising the nil-ctx guard deliberately
+	if IsSimulated(nil) {
+		t.Error("IsSimulated(nil): got true, want false")
+	}
+	// Bound to a frozen clock → simulated.
+	frozen := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	ctx := WithEffectiveNow(context.Background(), frozen)
+	if !IsSimulated(ctx) {
+		t.Error("IsSimulated on a clock-bound ctx: got false, want true")
+	}
+}

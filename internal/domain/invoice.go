@@ -225,6 +225,17 @@ type Invoice struct {
 	// migration 0063 for the column + index definition and
 	// internal/importstripe/invoice_importer.go for the lookup path.
 	StripeInvoiceID string `json:"stripe_invoice_id,omitempty"`
+
+	// IsSimulated records, at write time, whether this invoice's domain
+	// timestamps (created/issued/due/paid) were stamped on a test clock's
+	// simulated time rather than wall-clock. Set true when the creating
+	// context was bound to a frozen clock (engine: the subscription carries a
+	// test_clock_id; manual composer: the customer is clock-pinned). The
+	// activity timeline and invoice header read this authoritative flag to
+	// render the "simulated" badge — NEVER a timestamp-vs-wall-clock heuristic
+	// or a read-time re-derivation from the (mutable) parent's test_clock_id.
+	// Always false in live mode (test clocks are test-mode only).
+	IsSimulated bool `json:"is_simulated"`
 }
 
 // ItemChangeType classifies per-item proration artifacts so the dedup index

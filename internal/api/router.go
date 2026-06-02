@@ -460,12 +460,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// detail page (Stripe shape — docs.stripe.com/invoicing/send-email
 	// lists email log on the customer page, 30-day window).
 	customerH.SetSentEmailsLister(&customerSentEmailsAdapter{store: emailOutboxStore})
-	// Wire the narrow sub reader so the payment timeline can stamp
-	// is_simulated=true on lifecycle + dunning events when the
-	// invoice's owning sub is pinned to a test clock. Authoritative
-	// signal that replaces the prior client-side timestamp-vs-wall-
-	// clock heuristic.
-	invoiceH.SetSubscriptionClockReader(subStore)
 	// One OutboxSender wired everywhere. The seven typed interface vars
 	// below are the per-domain views that satisfy each consumer's narrow
 	// surface; concretely they're all the same OutboxSender instance.
