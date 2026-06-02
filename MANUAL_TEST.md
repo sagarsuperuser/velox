@@ -152,7 +152,7 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input ≈ 2¢, 1,750 output ≈ 3¢; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
+- [ ] `POST /v1/billing/run` → 1 cycle invoice. Open it: a **Tokens** usage line PER token role (input, output) for the elapsed period, each priced at the recipe's claude-3.5-sonnet decimal rates — input $3.00/M, output $15.00/M (so 6,000 input → 1.8¢ → 2¢, 1,750 output → 2.625¢ → 3¢ after banker's rounding; the line amount is **non-zero**, not $0) — AND the $99 base line covering the UPCOMING period. The base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical). The usage lines must equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
@@ -321,7 +321,7 @@ The headline test-clock use case — verifies the full Stripe-parity dunning sta
 
 - [ ] Setup: clock at `frozen_time=2024-02-01`; pinned customer with Stripe test decline card `4000 0000 0000 0341` attached; active monthly sub. Policy: `grace=3d, retry_schedule=[3d, 5d], max=3, final_action=pause`.
 - [ ] Advance clock past the first cycle close → invoice finalizes → auto-charges → Stripe declines → dunning run created in the **same Advance** (inline from ChargeInvoice, not waiting for the async webhook) with `created_at` and `next_action_at` anchored on the invoice's cycle-close instant (NOT advance-end frozen_time). ADR-035.
-- [ ] **Single-click full walk (Stripe Test Clocks parity)**: from a state where dunning has just started at cycle-close T, advance the clock to T + grace + sum(retry_schedule) + 1d in ONE Advance click. After the advance: run is `state=escalated`, `attempt_count=max`, `resolution=retries_exhausted`, all retry events present in the dunning timeline at distinct simulated-time timestamps (started at T, retry #1 at T+grace, retry #2 at T+grace+retry[0], escalated co-instant with the final retry). NO need to click Advance multiple times — Phase 5 loops until all due retries fire.
+- [ ] **Single-click full walk (Stripe Test Clocks parity)**: from a state where dunning has just started at cycle-close T, advance the clock to T + grace + sum(retry_schedule) + 1d in ONE Advance click. After the advance: run is `state=escalated`, `attempt_count=max`, `resolution=retries_exhausted`, all retry events present in the dunning timeline at distinct simulated-time timestamps (started at T, retry #1 at T+grace, retry #2 at T+grace+retry_schedule[0], escalated co-instant with the final retry). NO need to click Advance multiple times — Phase 5 loops until all due retries fire.
 - [ ] If `final_action=pause` → owning sub `status=paused`, `pause_collection_behavior=keep_as_draft` (Stripe parity).
 - [ ] **Email cadence**: Mailpit shows exactly **N+1 emails per invoice for an N-retry exhausted run** — 1 initial payment-failed + (N-1) dunning-warning ("Attempt k of N") + 1 dunning-escalation. NOT 2 emails per retry (the pre-fix double-send where every `payment_intent.payment_failed` webhook also fired a generic payment-failed email alongside dunning's warning). Verify by querying `SELECT email_type, COUNT(*) FROM email_outbox WHERE payload->>'invoice_number' = '<inv>' GROUP BY email_type`.
 - [ ] **Per-customer dunning policy assignment (ADR-036)** — create a second policy on `/dunning-policies` (e.g. "Enterprise", `grace=7d, retry_schedule=[5d, 5d, 5d, 5d], max=5, final_action=manual_review`). Assign it to a customer via the customer detail "Dunning policy" → Change dropdown. Save → re-trigger a failed-payment cycle for that customer → the resulting dunning run carries `policy_id` = the assigned policy; retries follow the new cadence (Enterprise: 7d grace + four 5d gaps), not the tenant default. Re-assign the customer back to "Tenant default" via the dropdown → next-fired run picks up the default policy.
@@ -350,7 +350,7 @@ the next cycle close. First chargeable period anchors on
 - [ ] Dashboard timeline reads `Created → Trial ends → First charge`. Stat card heading says **Trial period** (not Billing Period) with the trial dates. `isPast` checkmarks honor frozen_time, not wall-clock.
 - [ ] Advance clock to `trial_end_at + 1s` → catchup Phase 0.5 fires: sub.`status=active`, sub.`activated_at = trial_end_at` (exact instant, not advance-end). No cycle invoice yet — `next_billing_at` is the stub's close.
 - [ ] `subscription.trial_ended` webhook fires once, `triggered_by="schedule"`, `ended_at = trial_end_at`.
-- [ ] Continue advance past `next_billing_at` (the first-of-next-month) → catchup Phase 1 bills the stub period prorated. `billing_period_start` = `trial_end_at`, `billing_period_end` = first-of-next-month, `total_amount_cents` = plan base × `stub_days / 30 (or 31)`.
+- [ ] Continue advance past `next_billing_at` (the first-of-next-month) → catchup Phase 1 bills the stub period prorated. `billing_period_start` = `trial_end_at`, `billing_period_end` = first-of-next-month, `total_amount_cents` = plan base × `stub_days / full_cycle_days` (full_cycle_days = days from period_start to the next billing boundary for the plan's interval — 28–31 for monthly).
 
 **Anniversary + monthly + trial:**
 
@@ -586,7 +586,7 @@ Boot warnings on startup (one each when var unset; never fatal):
 
 ## FLOW EX: Streaming CSV exports
 
-- [ ] **EX1 customers**: `curl -OJ $API/v1/exports/customers.csv` → `customers-YYYYMMDD-HHMMSS.csv`. Date filter accepts BOTH RFC3339 (`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`) AND bare YYYY-MM-DD (`?from=2026-01-01&to=2026-12-31` — `from` anchors at UTC 00:00:00, `to` at UTC 23:59:59 inclusive). Invalid `from` → 400 with field-level error. Same contract as the audit-log + usage endpoints via `internal/api/timefilter`. **Row-completeness check**: `wc -l customers-*.csv` ≈ `SELECT COUNT(*) FROM customers WHERE tenant_id='<your tenant>' AND created_at BETWEEN from AND to`. Pre-2026-05-28 the export silently truncated at 50 rows; verify a tenant with >50 customers exports all of them.
+- [ ] **EX1 customers**: `curl -OJ $API/v1/exports/customers.csv` → `customers-YYYYMMDD-HHMMSS.csv`. Date filter accepts BOTH RFC3339 (`?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`) AND bare YYYY-MM-DD (`?from=2026-01-01&to=2026-12-31` — `from` anchors at UTC 00:00:00, `to` at UTC 23:59:59 inclusive). Invalid `from` → 400 with field-level error. Same contract as the audit-log + usage endpoints via `internal/api/timefilter`. **Row-completeness check**: `wc -l customers-*.csv` minus 1 (header row) equals `SELECT COUNT(*) FROM customers WHERE tenant_id='<your tenant>' AND created_at BETWEEN from AND to`. Pre-2026-05-28 the export silently truncated at 50 rows; verify a tenant with >50 customers exports all of them.
 - [ ] **EX2 invoices**: `$API/v1/exports/invoices.csv` → invoice rows incl. amounts, period, lifecycle timestamps. **Row-completeness check**: on a tenant with >100 invoices, `wc -l invoices-*.csv` matches `SELECT COUNT(*) FROM invoices WHERE tenant_id='<your tenant>'`. Pre-2026-05-28 the store's silent over-cap fallback to 50 rows truncated every export at the first page; clamp-to-100 + the matching `exportPageSize` makes the streaming loop iterate all the way through.
 - [ ] **EX3 subscriptions**: `$API/v1/exports/subscriptions.csv` → subs with `plan_ids` (pipe-delimited).
 - [ ] **EX4 usage-events**: requires `from`+`to`; missing → 400. Span >366d → 400.
@@ -618,7 +618,7 @@ matching Stripe Tax's `percentage_decimal` shape. The legacy
 - [ ] Settings → Tax rate input accepts decimal percent directly (e.g. `8.875`). No bp dance.
 - [ ] Manual provider: set tax 7.25% in Settings → `tenant_settings.tax_rate=7.2500` (no `tax_rate_bp` column exists). <!-- currency-ok: states the column was removed -->
 - [ ] $100 subtotal at 7.25% → `invoices.tax_amount_cents=725, tax_rate=7.2500`.
-- [ ] Manual provider precision: set tax `8.8750` in Settings, invoice a `$100.00` subtotal → `tax_amount_cents=888` (`$8.88`). Engine math is integer parts-per-million: `8.8750%` = `88,750` ppm, `tax = round(10000¢ × 88750 / 1_000_000) = round(887.5) = 888` (banker's round-half-to-even). No float drift; the 4-decimal rate round-trips exactly.
+- [ ] Manual provider precision: set tax `8.8750` in Settings, invoice a `$100.00` subtotal → `tax_amount_cents=888` (`$8.88`). Engine math is integer parts-per-million: `8.8750%` = `88750 ppm`, `tax = round(subtotal_cents × 88750 / 1_000_000)` = `round(10000 × 88750 / 1_000_000)` = `round(887.5)` = `888` (banker's round-half-to-even). The `1_000_000` is the ppm base, not a percent divisor. No float drift; the 4-decimal rate round-trips exactly.
 - [ ] 3 line items $33.33+$33.33+$33.34 at 7.25%: `SUM(invoice_line_items.tax_amount_cents) = invoices.tax_amount_cents` exactly (residual absorbed by last line per Stripe Tax's documented pattern).
 - [ ] **Stripe-side high-precision case (NYC):** create an invoice for an NY customer (10118 / Manhattan), Stripe Tax returns `percentage_decimal: "8.875"`. Velox stores `tax_rate=8.8750` verbatim. `subtotal_cents × 8.8750 / 100` round-trips to `tax_amount_cents`.
 - [ ] **Proration math uses integer day-ratio (B7.4):** mid-cycle plan upgrade on a 30-day period with 18 days remaining → proration line item amount = `(new_amount - old_amount) × 18 / 30` exactly (banker's rounded). No `float64` ULP drift visible on amounts up to ~$36M.
@@ -631,8 +631,8 @@ whole cents — only the RATE gains precision.
 
 - [ ] Pricing → new flat rating rule, price `$0.000003` per unit → saves (input is not clamped to 2 decimals, not rounded to `$0.00`).
 - [ ] Rule detail renders the sub-cent rate (`$0.000003`), not `$0.00`.
-- [ ] `GET /v1/rating-rules/<id>` → `flat_amount_cents` is a JSON string (`"0.0003"`), not a number.
-- [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — not 0, not 300000000. (The per-unit column may show `$0.00` for a sub-cent rate; the line amount is authoritative — ADR-045.)
+- [ ] `GET /v1/rating-rules/<id>` → `flat_amount_cents` is a JSON string (`"0.0003"`), not a number. It's a decimal per-unit rate **in cents** — `0.0003`¢/unit — which is what enables sub-cent linear pricing.
+- [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — i.e. `0.0003`¢/unit × 1,000,000 units = `300`¢ (not `0`, which is what rounding the rate to int cents would give; not `300000000`, which is billing `300`¢ *per unit*). (The per-unit column may show `$0.00` for a sub-cent rate; the line amount is authoritative — ADR-045.)
 - [ ] Instantiate `anthropic_style` → `c35_sonnet_input` stored as `0.0003` cents/token; 1,000,000 input tokens bill `300`¢, not `$3,000,000`.
 
 ## FLOW B3: Idempotency
@@ -773,19 +773,19 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Cancel mid-period (e.g. day 15 of a 30-day period) → status `canceled`.
 - [ ] Customer Detail → Credits tab → new ledger entry:
   - `entry_type = grant`
-  - `amount_cents ≈ $24.50` (≈ 15/30 of $49)
+  - `amount_cents=2450` (≈ $24.50 — half a $49 cycle, 15/30 days)
   - Description: `Cancel proration — unused portion of <sub_code> base fee (period <start> to <end>, canceled <today>)`
 - [ ] Cancel at or after `current_period_end` → no proration credit (period was used in full).
 - [ ] Cancel on a pure `in_arrears` sub → no proration credit (nothing was prebilled).
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
 - [ ] **Source invoice unpaid → invoice settled, not credited (#22, ADR-031 amendment):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled`, **NO credit ledger entry** (no cash was funded), and the unpaid invoice is settled down to the consumed portion: partially-consumed → an **adjustment credit note reduces `amount_due`** (log `cancel: reduced unpaid prebill to consumed portion`); cancel before any consumption → invoice **voided** (log `cancel: voided fully-unused unpaid prebill`). It does NOT ride dunning for the full amount. Full coverage in FLOW TC8b.
-- [ ] **Plans > ~$36 base** (regression for the 2026-05-21 int64-overflow fix): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`. Pre-fix the nanosecond-math overflowed int64 for plans > ~$36 and silently returned 0.
+- [ ] **Plans > ~$36 base** (regression for the 2026-05-21 int64-overflow fix): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`. Pre-fix: proration used nanosecond durations (`time.Duration`), so the intermediate `baseFee_cents × unused_nanos` overflowed int64 for plans > ~$36 and silently returned 0. Fixed by day-based math: `baseFee_cents × unused_days / period_days`.
 
 ## FLOW B19: Cancel-flow billing artifacts (PR-9 + PR-10)
 
-- [ ] **Mid-period immediate cancel, `in_arrears` plan (PR-10):** sub `in_arrears` $100/mo created Nov 1, customer logs 50 usage events Nov 1–15, operator clicks Cancel Nov 15 (mid-period). Result: final invoice with `billing_reason='subscription_cancel'`, `billing_period_start=Nov 1`, `billing_period_end=Nov 15`, lines = prorated base ($100 × 14/30 ≈ $46.67) + usage line (50 × $1 = $50). Total $96.67. Pre-PR-10 this invoice didn't exist (customer used 50 units for free).
-- [ ] **Mid-period immediate cancel, `in_advance` plan (PR-10):** sub `in_advance` $100/mo, day-1 invoice paid (B15), 50 usage events Nov 1–15, Cancel Nov 15. Result: TWO artifacts — (a) final invoice `billing_reason='subscription_cancel'` with usage line only (no base — already paid), total $50; (b) credit grant for unused base portion ≈ $53.33 (B17 unchanged). Independent: invoice doesn't pre-apply the credit.
+- [ ] **Mid-period immediate cancel, `in_arrears` plan (PR-10):** sub `in_arrears` $100/mo created Nov 1, customer logs 50 usage events Nov 1–15, operator clicks Cancel Nov 15 (mid-period). Result: final invoice with `billing_reason='subscription_cancel'`, `billing_period_start=Nov 1`, `billing_period_end=Nov 15`, lines = prorated base for the elapsed Nov 1–15 = 14 days (`$100 × 14/30 ≈ $46.67`) + usage line (50 × $1 = $50). Total $96.67. Pre-PR-10 this invoice didn't exist (customer used 50 units for free).
+- [ ] **Mid-period immediate cancel, `in_advance` plan (PR-10):** sub `in_advance` $100/mo, day-1 invoice paid (B15), 50 usage events Nov 1–15, Cancel Nov 15. Result: TWO artifacts — (a) final invoice `billing_reason='subscription_cancel'` with usage line only (no base — already paid), total $50; (b) credit grant for the unused 16 of 30 days (`$100 × 16/30 ≈ $53.33`) (B17 unchanged). Independent: invoice doesn't pre-apply the credit.
 - [ ] **Clean cancel at-or-after period_end:** Cancel Nov 30 with current_period_end=Dec 1 → BillFinalOnImmediateCancel no-op. The cycle close already billed (or will bill) the period; no second final invoice fires. Credit grant also no-op for in_advance (clean cancel, period used in full).
 - [ ] **Scheduled cancel at period_end on `in_advance` (PR-9):** sub `in_advance` $100/mo, operator `schedule-cancel at_period_end=true` mid-Nov. At Dec 1 cycle close: cycle-close invoice contains **NO upcoming-period base line** ($100 NOT charged for Dec 1–Jan 1 that won't be used). Usage line for Nov 1–Dec 1 still bills normally. Then scheduled cancel fires; sub.status=canceled. Pre-PR-9 the customer paid $100 for a period they wouldn't use.
 - [ ] **Scheduled cancel at period_end on `in_arrears`:** same setup with in_arrears plan. Cycle-close invoice for Nov 1–Dec 1 has full base ($100) + usage (correct — customer consumed the just-elapsed period). Cancel fires after. No overcharge — in_arrears was never affected by PR-9.
@@ -805,7 +805,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 Velox accepts `immediate=true` plan-swaps that change the billing interval as long as bill_timing matches on both sides (in_advance↔in_advance or in_arrears↔in_arrears). Industry parity verified 2026-05-22: Stripe / Lago / Orb / Chargebee / Recurly all ship this. Cross-cadence (in_advance↔in_arrears) is rejected — no peer documents it as an in-place plan-swap operation; operator path is cancel + recreate.
 
 - [ ] **In_advance yearly → monthly downgrade (same cadence, cross interval):** clock-pinned sub on `pro-yearly-adv` ($1200/yr in_advance), day-1 invoice paid. On day 90 of the year, `UpdateItem(new_plan_id=pro-monthly-adv, immediate=true)`. Three artifacts appear within the same tick:
-  1. Credit ledger entry: `Plan-swap refund — unused portion of <code> base fee (period <start> to <end>, swapped <today>)`, amount = `$1200 × 275/365 ≈ $904.11`.
+  1. Credit ledger entry: `Plan-swap refund — unused portion of <code> base fee (period <start> to <end>, swapped <today>)`, amount = `$1200 × (365 − 90)/365` = `$1200 × 275/365 ≈ $904.11` (275 days unused of 365).
   2. Subscription's `current_period_start` = today; `current_period_end` = `NextBillingPeriodEnd(today, billing_time, monthly)` (anniversary: today + 1 month; calendar: first-of-next-month).
   3. New invoice for the new in_advance period at the monthly $100 base (stub-prorated if calendar snap shortens it).
 - [ ] **In_advance monthly → yearly upgrade (same cadence, cross interval):** sub on `pro-monthly-adv` ($100/mo in_advance), day-1 invoice paid. On day 15 of a 30-day cycle, swap to `pro-yearly-adv` ($1200/yr). Refund credit `$100 × 15/30 = $50`; period jumps to (today, today + 1 year); new $1200 invoice.
@@ -860,7 +860,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 
 ## FLOW I1: Multiple meters
 
-- [ ] Plan with API ($0.01/call) + Storage ($0.10/GB max). Ingest 2000 calls + 50 GB → invoice has 3 line items: base $29 + API $20 + storage $5.
+- [ ] Plan with **$29 base** + API ($0.01/call) + Storage ($0.10/GB). Ingest 2000 calls + 50 GB → invoice has 3 line items: base $29 + API $20 (2000 × $0.01) + storage $5 (50 × $0.10).
 
 ## FLOW I2: Negative usage
 
@@ -920,7 +920,7 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 - [ ] Force a subscription-cycle invoice into `tax_pending` with `tax_error_code='provider_outage'` and `tax_next_retry_at IS NULL` (e.g. by simulating a Stripe Tax 5xx during finalize). Watch the scheduler tick (default 5min in local) — within one tick the invoice should retry; if the underlying issue resolved, it auto-finalizes.
 - [ ] Same shape with `tax_error_code='customer_data_invalid'` → reconciler does NOT touch it (non-retryable code). Manual operator action still required.
 - [ ] After 8 attempts the row exits the reconciler scan: `psql -tAc "SELECT id, tax_retry_count, tax_next_retry_at FROM invoices WHERE id='vlx_inv_xxx';"` shows `tax_retry_count=8`, `tax_next_retry_at=NULL`. Banner stays live for the operator; worker stops.
-- [ ] Backoff respected: after a single failed retry, `tax_next_retry_at` is ~5min ahead (±10% jitter); after the 5th, ~12 hours ahead. Sub-5-min ticks don't double-process the row.
+- [ ] Backoff respected: the 1st retry is ~5min ahead (±10% jitter), the 5th ~12h ahead (schedule `[5min, 15min, 1h, 4h, 12h, …]`). Sub-5-min ticks don't double-process the row.
 
 ### List + draft cleanup
 - [ ] `/invoices` rows: severity-tinted dot next to invoice number; tooltip surfaces typed reason. Healthy/draft = no dot.
@@ -967,9 +967,10 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW I12: One-off invoice composer
 
-- [ ] Customer detail → "New invoice" → inline composer.
-- [ ] Add line items → totals tick live → Save draft → row in customer's invoice list with `status=draft`, `subscription_id=null`.
-- [ ] Finalize → standard PaymentIntent path.
+- [ ] Customer detail → "New invoice" → composer shows Currency + Payment terms (Net 30 default) + line editor.
+- [ ] Enter three lines at `3333` / `3333` / `3334` cents → Subtotal ticks to $100.00; Tax row reads "Calculated at finalize".
+- [ ] Save draft → exactly ONE `POST /v1/invoices` (no follow-up `add-line-item` calls); row appears with `status=draft`, `subscription_id=null`, `billing_reason=manual`, `tax_amount_cents=0`.
+- [ ] Tenant Tax = manual 7.25%, Finalize → `tax_amount_cents=725`, `SUM(line tax)=725` (residual on last line), `total_amount_cents=10725`, `due_at = issued_at + 30d`.
 
 ## FLOW I10: Hosted invoice page
 
@@ -1215,7 +1216,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] "Remove" disabled (with tooltip) when only one card remains AND it's default — operator must add another card first.
 - [ ] Archived customer → all PM action buttons hidden (parity with other archived-customer UI guards).
 - [ ] AuditLog page renders the send-email action as "Updated {customer name}" with `meta.action=setup_link_sent`, `meta.to=<address>`, actor = the operator's API key name.
-- [ ] Cooldown: clicking "Send email" twice in <60s → second call returns 429 with `Retry-After` header + toast "a setup link was sent to this customer recently — wait before sending again". Wait 60s → next send works.
+- [ ] Cooldown: clicking "Send email" twice in <60s → second call returns 429 with `Retry-After` header + toast "a setup link was sent to this customer recently — wait before sending again". Cooldown is a strict 60s window per customer; the next send succeeds only after it expires.
 - [ ] InvoiceAttention banner (invoice in attention state, e.g. `update_payment_method` action) → clicking "Update Payment Method" opens the SAME dialog as CustomerDetail's Add Card → recipient email pre-filled, note pre-filled with invoice context ("We couldn't process payment for invoice INV-NNN ($X.XX). Please add a payment method using the secure link below."), email path lands a branded "Action required — update payment for invoice INV-NNN" subject in Mailpit; copy-link path mints a Stripe Checkout URL the operator can paste into Slack/SMS.
 - [ ] Engine no-PM-at-finalize email (invoice finalizes for a customer with no PM on file) → branded "Action required — update payment for invoice X" email lands in Mailpit + AuditLog shows a `meta.action=setup_link_sent`, `meta.trigger=finalize_no_pm`, `meta.invoice_id=<id>` row with actor "System" (engine-fired).
 - [ ] Legacy endpoints removed: `curl -X POST .../v1/payment-portal/{id}/update-payment-method` returns 404 (route deleted in the unified-paths cleanup).
@@ -1237,7 +1238,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 ## FLOW P6: Tax deferral metrics
 
 - [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" /metrics | grep velox_tax_outcome_total` → counter registered (the legacy `velox_tax_fallback_total` was renamed when the zero-tax fallback was cut — ADR-041; outcome is now `deferred`). <!-- currency-ok: documents the metric rename -->
-- [ ] Reasons increment correctly: `velox_tax_outcome_total{outcome="deferred",reason=...}` for `no_country` (customer missing country), `no_client_for_mode` (one-mode tenant), `api_error` (invalid Stripe key).
+- [ ] Reasons increment correctly: `velox_tax_outcome_total{outcome="deferred",reason=...}` for `no_country` (customer missing country), `no_client_for_mode` (Stripe not connected for the active livemode), `api_error` (invalid Stripe key).
 - [ ] Happy path → counter unchanged.
 
 ---
@@ -1308,7 +1309,7 @@ Major releases, infra changes, post-mortems.
 ## FLOW X3: Rate limiting
 
 - [ ] 100+ concurrent requests → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
-- [ ] Wait 10s, 20 more → ~16 allowed (GCRA refill 1.67/sec).
+- [ ] Wait 10s, 20 more → ~16 allowed (limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
 - [ ] Tenant A exhausted → Tenant B succeeds (separate buckets).
 - [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → fail-closed.
 - [ ] `/health`, `/health/ready`, `/metrics` not rate-limited.
@@ -1400,7 +1401,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 - [ ] Bare array shape: POST `[<payload1>,<payload2>]` → same handling as `events:[...]`.
 - [ ] Embedding call: `"call_type":"embedding","usage":{"prompt_tokens":500,"completion_tokens":0}` → ONE event (meter `tokens`, `token_type=input`), `accepted=1`.
 - [ ] Dimension promotion: `"metadata":{"team_id":"team_eng","request_tags":["prod"],"x_other":"ignored"}` → emitted events have `dimensions.team_id="team_eng"` and `dimensions.request_tags=["prod"]`; `x_other` stays in the event's `metadata.litellm_metadata.x_other` (NOT promoted to dimensions for pricing dispatch).
-- [ ] Cost surfacing: `cost_breakdown:{input_cost:0.012,output_cost:0.045,total_cost:0.057}` → input event's `metadata.velox.litellm_cost_usd=0.012`, output event's = 0.045. Velox billing math is unaffected — pricing rules drive the invoice amount; LiteLLM's cost is audit-only.
+- [ ] Cost surfacing: `cost_breakdown:{input_cost:0.012,output_cost:0.045,total_cost:0.057}` → input event's `metadata.velox.litellm_cost_usd=0.012`, output event's `metadata.velox.litellm_cost_usd=0.045`. Velox billing math is unaffected — pricing rules drive the invoice amount; LiteLLM's cost is audit-only.
 - [ ] Auth: POST without `Authorization` header → 401. Publishable key (no `usage:write`) → 403.
 - [ ] Audit-trail sanity: each ingested event shows `origin=api` in `usage_events.origin` (no separate "litellm" origin in v1; revisit when an operator asks).
 

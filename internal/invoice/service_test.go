@@ -486,6 +486,20 @@ func (s *stubTaxRetrier) RetryTaxForInvoice(_ context.Context, tenantID, invoice
 	return inv, nil
 }
 
+// ComputeTaxForInvoice mirrors the finalize-time compute: resolve tax to ok
+// on a draft regardless of incoming tax_status. The stub leaves the amount
+// untouched (the real engine runs ApplyTaxToLineItems); tests that assert on
+// computed tax amounts use the real engine via integration coverage.
+func (s *stubTaxRetrier) ComputeTaxForInvoice(_ context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	inv, ok := s.store.invoices[invoiceID]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.TaxStatus = domain.InvoiceTaxOK
+	s.store.invoices[invoiceID] = inv
+	return inv, nil
+}
+
 // ListCustomerDataInvalidErrors — per-customer flush stub mirroring
 // ListProviderConfigErrors. Filters on customer_id + status=draft +
 // tax_status pending|failed + tax_error_code=customer_data_invalid.

@@ -1223,14 +1223,19 @@ func (s *PostgresStore) UpdateTaxAtomic(
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	// Draft-only is the genuine data invariant: tax is mutable while an
+	// invoice is a draft and frozen once finalized. The FOR UPDATE lock above
+	// re-asserts it under concurrency. The narrower "tax_status in (pending,
+	// failed)" restriction is retry-specific POLICY, not an invariant —
+	// RetryTaxForInvoice enforces it at the engine layer before reaching here.
+	// ComputeTaxForInvoice (finalize-time tax for manual invoices) legitimately
+	// runs against a fresh draft whose tax_status is still 'ok', so the store
+	// guards only what it must: draft.
 	if status != domain.InvoiceDraft {
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
-			"tax retry only valid on draft invoices (current: %s)", status))
+			"invoice tax is only mutable on draft invoices (current: %s)", status))
 	}
-	if taxStatus != string(domain.InvoiceTaxPending) && taxStatus != string(domain.InvoiceTaxFailed) {
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
-			"tax retry only valid when tax_status in (pending, failed) (current: %s)", taxStatus))
-	}
+	_ = taxStatus // selected for the FOR UPDATE lock; no longer gated here
 
 	now := clock.Now(ctx)
 
@@ -1280,8 +1285,12 @@ func (s *PostgresStore) UpdateTaxAtomic(
 		invoiceID,
 		update.TaxAmountCents, update.TaxRate,
 		update.TaxName, update.TaxCountry, update.TaxID,
-		postgres.NullableString(update.TaxProvider),
-		postgres.NullableString(update.TaxCalculationID),
+		// tax_provider / tax_calculation_id are NOT NULL DEFAULT '' (the
+		// INSERT path binds them raw). NullableString would map the manual
+		// provider's empty calculation id to SQL NULL and trip the NOT NULL
+		// constraint, so bind raw here too.
+		update.TaxProvider,
+		update.TaxCalculationID,
 		update.TaxReverseCharge, update.TaxExemptReason,
 		string(update.TaxStatus), postgres.NullableTime(update.TaxDeferredAt),
 		update.TaxPendingReason, postgres.NullableString(update.TaxErrorCode),

@@ -3793,9 +3793,12 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 // of whether their fix worked, without waiting on the background
 // retry worker.
 //
-// Gates (defence in depth — postgres re-asserts under FOR UPDATE):
-//   - invoice must be draft
-//   - tax_status must be pending or failed
+// Gates:
+//   - invoice must be draft (postgres re-asserts this under FOR UPDATE in
+//     UpdateTaxAtomic — it's the genuine data invariant)
+//   - tax_status must be pending or failed (retry-specific policy enforced
+//     HERE; the store no longer re-asserts it, since ComputeTaxForInvoice
+//     legitimately computes tax on a draft whose tax_status is still 'ok')
 //   - subscription is loaded if present (so jurisdiction-by-plan-tax-
 //     code logic in ApplyTaxToLineItems sees the same inputs as the
 //     original cycle build)
@@ -3812,7 +3815,43 @@ func (e *Engine) RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID str
 		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
 			"tax retry only valid when tax_status in (pending, failed) (current: %s)", inv.TaxStatus))
 	}
+	return e.computeAndPersistInvoiceTax(ctx, tenantID, invoiceID, inv)
+}
 
+// ComputeTaxForInvoice computes (or recomputes) tax for a DRAFT invoice
+// and persists it atomically — regardless of the current tax_status.
+//
+// This is the finalize-time entry point for manual / operator-composed
+// invoices (BillingReason in {"", manual}). Unlike cycle invoices, which
+// carry engine-computed tax from the moment they're built, manual invoices
+// accrue line items incrementally in the composer and have no tax until the
+// operator finalizes. Computing here mirrors Stripe, which calculates tax
+// when an invoice is finalized rather than at draft-create time.
+//
+// It shares the same compute-and-persist core as RetryTaxForInvoice; the
+// only difference is the gate. RetryTaxForInvoice requires tax_status in
+// (pending, failed) because it backs the operator "Retry" affordance on a
+// stuck invoice. This path runs on a fresh draft whose tax_status is still
+// the create-time default ('ok'), so it gates on draft-only.
+func (e *Engine) ComputeTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error) {
+	inv, err := e.invoices.GetInvoice(ctx, tenantID, invoiceID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if inv.Status != domain.InvoiceDraft {
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"tax compute only valid on draft invoices (current: %s)", inv.Status))
+	}
+	return e.computeAndPersistInvoiceTax(ctx, tenantID, invoiceID, inv)
+}
+
+// computeAndPersistInvoiceTax is the shared core behind RetryTaxForInvoice
+// and ComputeTaxForInvoice. Callers own the gating (draft, tax_status); this
+// re-runs ApplyTaxToLineItems against the invoice's current line items and
+// persists the decision atomically via UpdateTaxAtomic. inv must already be
+// loaded by the caller (the gate reads it) — passed in to avoid a second
+// GetInvoice round-trip.
+func (e *Engine) computeAndPersistInvoiceTax(ctx context.Context, tenantID, invoiceID string, inv domain.Invoice) (domain.Invoice, error) {
 	items, err := e.invoices.ListLineItems(ctx, tenantID, invoiceID)
 	if err != nil {
 		return domain.Invoice{}, fmt.Errorf("list line items: %w", err)
