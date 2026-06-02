@@ -186,8 +186,6 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 func (s *PostgresStore) GetFlag(ctx context.Context, key string) (Flag, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	var f Flag
 	err := s.db.Pool.QueryRowContext(ctx, `
 		SELECT key, enabled, description, created_at, updated_at
@@ -200,8 +198,6 @@ func (s *PostgresStore) GetFlag(ctx context.Context, key string) (Flag, error) {
 }
 
 func (s *PostgresStore) GetOverride(ctx context.Context, key, tenantID string) (FlagOverride, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	var o FlagOverride
 	err := s.db.Pool.QueryRowContext(ctx, `
 		SELECT flag_key, tenant_id, enabled, created_at
@@ -217,8 +213,6 @@ func (s *PostgresStore) GetOverride(ctx context.Context, key, tenantID string) (
 }
 
 func (s *PostgresStore) SetGlobal(ctx context.Context, key string, enabled bool) error {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	res, err := s.db.Pool.ExecContext(ctx, `
 		UPDATE feature_flags SET enabled = $1, updated_at = NOW() WHERE key = $2
 	`, enabled, key)
@@ -233,8 +227,6 @@ func (s *PostgresStore) SetGlobal(ctx context.Context, key string, enabled bool)
 }
 
 func (s *PostgresStore) SetOverride(ctx context.Context, tenantID, key string, enabled bool) error {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	_, err := s.db.Pool.ExecContext(ctx, `
 		INSERT INTO feature_flag_overrides (flag_key, tenant_id, enabled)
 		VALUES ($1, $2, $3)
@@ -244,8 +236,6 @@ func (s *PostgresStore) SetOverride(ctx context.Context, tenantID, key string, e
 }
 
 func (s *PostgresStore) RemoveOverride(ctx context.Context, tenantID, key string) error {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	_, err := s.db.Pool.ExecContext(ctx, `
 		DELETE FROM feature_flag_overrides WHERE flag_key = $1 AND tenant_id = $2
 	`, key, tenantID)
@@ -253,8 +243,6 @@ func (s *PostgresStore) RemoveOverride(ctx context.Context, tenantID, key string
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	rows, err := s.db.Pool.QueryContext(ctx, `
 		SELECT key, enabled, description, created_at, updated_at
 		FROM feature_flags ORDER BY key LIMIT 500
@@ -276,8 +264,6 @@ func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
 }
 
 func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID string) ([]FlagOverride, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
-	defer cancel()
 	rows, err := s.db.Pool.QueryContext(ctx, `
 		SELECT flag_key, tenant_id, enabled, created_at
 		FROM feature_flag_overrides WHERE tenant_id = $1 ORDER BY flag_key LIMIT 500
