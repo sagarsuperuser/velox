@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log/slog"
 	"mime"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"os"
@@ -807,10 +808,14 @@ func (s *Sender) deliver(to string, body []byte) error {
 	// Implicit TLS (port 465 / SMTPS): TLS-from-handshake. net/smtp's
 	// SendMail can't do this; manually dial + start the SMTP client
 	// over the TLS connection.
-	tlsConn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.host})
+	tlsConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{ServerName: s.host})
 	if err != nil {
 		return fmt.Errorf("tls dial: %w", err)
 	}
+	// Bound the whole SMTP exchange so a server that connects but then stalls
+	// mid-dialog can't hang the sender — matters most on the background
+	// dunning-email path, which has no request deadline.
+	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
 	c, err := smtp.NewClient(tlsConn, s.host)
 	if err != nil {
 		_ = tlsConn.Close()

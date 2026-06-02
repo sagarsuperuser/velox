@@ -60,6 +60,13 @@ func (h *Handler) streamEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Disable the server's WriteTimeout for this connection. The stream is
+	// long-lived (clients tail webhook events for hours); the zero deadline
+	// removes the hard cap that would otherwise drop it after WriteTimeout.
+	// The 15s heartbeat below keeps idle proxies from closing it. Best-effort:
+	// SetWriteDeadline only no-ops if the writer can't support it.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 	// SSE headers. Cache-Control:no-cache prevents proxies from
 	// buffering or replaying stale chunks; X-Accel-Buffering disables
 	// nginx's response buffering specifically.
