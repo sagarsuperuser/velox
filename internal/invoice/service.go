@@ -97,6 +97,14 @@ type CustomerClockReader interface {
 	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
 }
 
+// TenantSettingsReader reads tenant settings so a manual invoice with no
+// explicit net term can fall back to the tenant's configured default —
+// mirroring the cycle engine, which reads settings.NetPaymentTerms. Optional;
+// nil falls straight through to the hardcoded 30-day default.
+type TenantSettingsReader interface {
+	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
+}
+
 type Service struct {
 	store          Store
 	clock          clock.Clock
@@ -108,6 +116,7 @@ type Service struct {
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
 	customerClock  CustomerClockReader
+	settings       TenantSettingsReader
 	audit          AuditLogger
 	events         domain.EventDispatcher
 }
@@ -121,6 +130,10 @@ type Service struct {
 type AuditLogger interface {
 	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }
+
+// SetTenantSettingsReader wires the tenant-settings reader used to default a
+// manual invoice's net payment terms when the caller omits them. Optional.
+func (s *Service) SetTenantSettingsReader(r TenantSettingsReader) { s.settings = r }
 
 // SetAuditLogger wires the audit logger.
 func (s *Service) SetAuditLogger(l AuditLogger) { s.audit = l }
@@ -249,8 +262,13 @@ type CreateInput struct {
 	Currency           string    `json:"currency"`
 	BillingPeriodStart time.Time `json:"billing_period_start"`
 	BillingPeriodEnd   time.Time `json:"billing_period_end"`
-	NetPaymentTermDays int       `json:"net_payment_term_days"`
-	Memo               string    `json:"memo,omitempty"`
+	// NetPaymentTermDays is a pointer so the service can distinguish
+	// "omitted" (nil → fall back to the tenant's configured net terms, then
+	// 30) from an explicit 0 ("Due on receipt" — a valid choice the composer
+	// offers). A plain int conflated the two, silently turning Due-on-receipt
+	// into Net 30.
+	NetPaymentTermDays *int   `json:"net_payment_term_days,omitempty"`
+	Memo               string `json:"memo,omitempty"`
 	// LineItems, when present, are created atomically with the invoice
 	// header in a single transaction. The operator composer sends them
 	// this way so a network failure mid-compose can't leave a draft with
@@ -281,9 +299,22 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		currency = "USD"
 	}
 
-	netDays := input.NetPaymentTermDays
-	if netDays <= 0 {
-		netDays = 30
+	// Resolve net payment terms. An explicit value (including 0 = "Due on
+	// receipt") is honored verbatim. When omitted, fall back to the tenant's
+	// configured net terms, then to 30 — mirroring the cycle engine
+	// (billOnePeriod reads settings.NetPaymentTerms, defaulting to 30). A
+	// negative value is clamped to 0.
+	netDays := 30
+	switch {
+	case input.NetPaymentTermDays != nil:
+		netDays = *input.NetPaymentTermDays
+		if netDays < 0 {
+			netDays = 0
+		}
+	case s.settings != nil:
+		if ts, err := s.settings.Get(ctx, tenantID); err == nil && ts.NetPaymentTerms > 0 {
+			netDays = ts.NetPaymentTerms
+		}
 	}
 
 	ctx = s.bindForCreate(ctx, tenantID, input)
