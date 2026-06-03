@@ -180,6 +180,19 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return inv, nil
 }
 
+func (m *memStore) FinalizeWithDates(_ context.Context, tenantID, id string, issuedAt, dueAt time.Time) (domain.Invoice, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv.Status = domain.InvoiceFinalized
+	inv.IssuedAt = &issuedAt
+	inv.DueAt = &dueAt
+	inv.UpdatedAt = time.Now().UTC()
+	m.invoices[id] = inv
+	return inv, nil
+}
+
 func (m *memStore) UpdatePayment(_ context.Context, tenantID, id string, ps domain.InvoicePaymentStatus, stripeID, errMsg string, paidAt *time.Time) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {
