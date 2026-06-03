@@ -299,6 +299,13 @@ type InvoiceDiscountUpdate struct {
 // retry itself failed — the row stays blocked from finalize and the
 // dashboard banner picks up the new error code.
 type InvoiceTaxRetryUpdate struct {
+	// SubtotalCents / DiscountCents carry the net values read off the tax
+	// application. In tax-inclusive mode the provider carves tax out of the
+	// gross, so these are smaller than the operator-entered gross; persisting
+	// them keeps subtotal − discount + tax == gross. In exclusive mode they
+	// equal the stored header values (a no-op write).
+	SubtotalCents    int64
+	DiscountCents    int64
 	TaxAmountCents   int64
 	TaxRate          float64 // ADR-042/043: percent rate (4-decimal precision).
 	TaxName          string

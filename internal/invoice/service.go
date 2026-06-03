@@ -269,6 +269,13 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// index ignores NULLs so two one-off invoices can coexist for the same
 	// (customer, period) without colliding.
 
+	// Uppercase ISO-4217 — the canonical case across the system: the tenant
+	// default currency is "USD" (tenant.DefaultSettings) and the analytics /
+	// dunning revenue-by-currency queries filter with a case-SENSITIVE
+	// `currency = $1` against it, so a stored "usd" would silently drop out
+	// of revenue/at-risk sums. The store insert normalizes again as the
+	// single chokepoint for all callers (incl. the cycle engine's "usd"
+	// fallback); doing it here too keeps the in-memory struct consistent.
 	currency := strings.ToUpper(strings.TrimSpace(input.Currency))
 	if currency == "" {
 		currency = "USD"

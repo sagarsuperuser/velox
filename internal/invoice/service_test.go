@@ -675,6 +675,8 @@ func TestCreate(t *testing.T) {
 		if inv.PaymentStatus != domain.PaymentPending {
 			t.Errorf("got payment_status %q, want pending", inv.PaymentStatus)
 		}
+		// Canonical uppercase ISO-4217 (matches the tenant default "USD" that
+		// analytics/dunning revenue queries filter on); empty-input default.
 		if inv.Currency != "USD" {
 			t.Errorf("got currency %q, want USD", inv.Currency)
 		}

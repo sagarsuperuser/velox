@@ -3871,12 +3871,26 @@ func (e *Engine) computeAndPersistInvoiceTax(ctx context.Context, tenantID, invo
 		return domain.Invoice{}, fmt.Errorf("recompute tax: %w", err)
 	}
 
-	totalWithTax := inv.SubtotalCents - inv.DiscountCents + taxApp.TaxAmountCents
+	// Read the net subtotal/discount OFF the taxApp result, mirroring the
+	// cycle build path (billOnePeriod). In tax-INCLUSIVE mode
+	// ApplyTaxToLineItems carves tax OUT of the gross the operator entered,
+	// so taxApp.SubtotalCents is the net (< inv.SubtotalCents) and
+	// taxApp.TaxAmountCents is the portion already embedded in the gross —
+	// adding it onto inv.SubtotalCents (the gross) would double-count tax
+	// and overstate the total by ~one tax amount. In tax-EXCLUSIVE mode
+	// (the common case) taxApp.SubtotalCents/DiscountCents pass through
+	// unchanged (== inv.*), so this is a no-op there. Persisting the net
+	// subtotal/discount keeps subtotal − discount + tax == gross, the same
+	// invariant the cycle path maintains, and keeps the header consistent
+	// with the per-line net amounts ApplyTaxToLineItems already wrote.
+	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 	if totalWithTax < 0 {
 		totalWithTax = 0
 	}
 
 	update := domain.InvoiceTaxRetryUpdate{
+		SubtotalCents:    taxApp.SubtotalCents,
+		DiscountCents:    taxApp.DiscountCents,
 		TaxAmountCents:   taxApp.TaxAmountCents,
 		TaxRate:          taxApp.TaxRate,
 		TaxName:          taxApp.TaxName,
