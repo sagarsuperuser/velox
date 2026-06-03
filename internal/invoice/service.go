@@ -365,6 +365,14 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice,
 	return s.attachAttention(ctx, inv), nil
 }
 
+// SetAutoChargePending flags a finalized invoice for the scheduler's
+// auto-charge retry loop. Used by the finalize handler's no-payment-method
+// branch so a manual invoice self-heals when the customer attaches a card —
+// the same flag the billing engine sets for cycle invoices.
+func (s *Service) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
+	return s.store.SetAutoChargePending(ctx, tenantID, id, pending)
+}
+
 // attachAttention computes the unified Attention surface from durable
 // invoice fields plus the customer's payment-method status. Internal
 // callers that read straight from the store (engine, scheduler,

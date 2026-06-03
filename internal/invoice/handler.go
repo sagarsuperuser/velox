@@ -48,6 +48,16 @@ type PaymentSetupGetter interface {
 	GetPaymentSetup(ctx context.Context, tenantID, customerID string) (domain.CustomerPaymentSetup, error)
 }
 
+// NoPaymentMethodNotifier emails the customer a payment-update link when a
+// finalized invoice can't be auto-charged because no payment method is on
+// file. Structurally identical to the billing engine's notifier of the same
+// name (wired to the same adapter in router.go) — declared locally so the
+// invoice package doesn't import the billing engine (zero cross-domain
+// imports). Optional; nil means no-PM finalize just queues for retry.
+type NoPaymentMethodNotifier interface {
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
+}
+
 // CreditReverser returns credits to the customer when an invoice is voided.
 type CreditReverser interface {
 	ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
@@ -166,6 +176,7 @@ type Handler struct {
 	emailSender     EmailSender
 	refundIssuer    RefundIssuer
 	auditLogger     *audit.Logger
+	noPMNotifier    NoPaymentMethodNotifier
 }
 
 type HandlerDeps struct {
@@ -203,6 +214,16 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 // SetEmailSender configures email sending for invoice notifications.
 func (h *Handler) SetEmailSender(sender EmailSender) {
 	h.emailSender = sender
+}
+
+// SetNoPaymentMethodNotifier wires the customer-notification dispatcher
+// used when a manually-finalized invoice can't be auto-charged (no PM on
+// file). Mirrors the billing engine's wiring — both receive the same
+// adapter instance — so a manual one-off invoice and a cycle invoice notify
+// the customer identically at finalize. Optional; nil → no-PM finalize
+// still queues for scheduler retry, just without the email.
+func (h *Handler) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
+	h.noPMNotifier = n
 }
 
 // SetEmailEvents wires the email_outbox lister used by the timeline
@@ -443,67 +464,65 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceFinalized, inv)
 
-	// Send invoice email with PDF — inline. Pre-2026-05-30 this ran in a
-	// detached goroutine bounded to 60s. The pattern existed to keep the
-	// HTTP response fast (PDF render is ~1-3s CPU-bound), but it voided
-	// the outbox retry guarantee identically to the receipt-email
-	// goroutine fixed earlier in this audit: a failed enqueue, render,
-	// or SMTP send disappeared past the goroutine's log line. With the
-	// always-on outbox path (ADR-040), SendInvoice is a fast DB INSERT
-	// once the PDF is rendered; the dispatcher owns delivery + retry.
-	// Operator finalize is interactive (one click → 200), so the ~2s
-	// render latency is acceptable in exchange for observable enqueue
-	// failure. If render or enqueue fails, log WARN — the invoice is
-	// already durably finalized, customers can fetch the PDF from the
-	// portal, and the operator gets a signal via the error log instead
-	// of silent loss.
-	cust, custErr := h.customers.Get(r.Context(), tenantID, inv.CustomerID)
-	if custErr != nil || cust.Email == "" {
-		slog.WarnContext(r.Context(), "skip invoice email — cannot resolve customer email",
-			"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", custErr)
-	} else {
-		email := cust.Email
-		name := cust.DisplayName
-		// customers.email is the single canonical recipient (Phase 1
-		// of the dual-email collapse, migration 0100). LegalName
-		// fallback to BP stays — that's a document-display field,
-		// not a send target.
-		if bp, err := h.customers.GetBillingProfile(r.Context(), tenantID, inv.CustomerID); err == nil {
-			if bp.LegalName != "" {
-				name = bp.LegalName
-			}
-		}
-		if _, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, inv.ID); err != nil {
-			slog.WarnContext(r.Context(), "skip invoice email — cannot fetch line items",
-				"invoice_id", inv.ID, "error", err)
-		} else {
-			bt := BillToInfo{Name: name, Email: email}
-			pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, nil, CompanyInfo{})
-			if err != nil {
-				slog.WarnContext(r.Context(), "skip invoice email — PDF render failed",
-					"invoice_id", inv.ID, "error", err)
-			} else if err := h.emailSender.SendInvoice(r.Context(), tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
-				slog.ErrorContext(r.Context(), "failed to enqueue invoice email",
-					"invoice_id", inv.ID, "email", email, "error", err)
-			}
-		}
-	}
+	// No automatic "here's your invoice" email on finalize. Velox
+	// auto-charges the saved card (Stripe charge_automatically model), so
+	// the customer's touchpoint is the payment receipt on success (fired
+	// from the Stripe webhook) or the "set up payment method" email below
+	// when there's no card on file — matching cycle invoices and Stripe's
+	// auto-charge behavior, where finalizing an auto-charged invoice does
+	// NOT email the invoice. Operators can still send it explicitly via
+	// POST /{id}/send.
 
-	// Auto-charge: if customer has a payment method, create PaymentIntent
-	if h.charger != nil && h.paymentSetups != nil && inv.AmountDueCents > 0 {
-		if ps, err := h.paymentSetups.GetPaymentSetup(r.Context(), tenantID, inv.CustomerID); err == nil &&
-			ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
-			if charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID); err != nil {
-				slog.WarnContext(r.Context(), "auto-charge failed, invoice stays finalized",
-					"invoice_id", inv.ID, "error", err)
-			} else {
-				inv = charged
-				slog.InfoContext(r.Context(), "auto-charge initiated", "invoice_id", inv.ID)
-			}
-		}
-	}
+	inv = h.collectAtFinalize(r.Context(), tenantID, inv)
 
 	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// collectAtFinalize runs the post-finalize collection step and returns the
+// possibly-updated invoice. It mirrors the billing engine's cycle-invoice
+// post-finalize block so a manual one-off invoice collects identically:
+//   - payment method ready → auto-charge the saved card (the Stripe webhook
+//     fires the receipt on success; a decline starts dunning).
+//   - no payment method → queue for the scheduler's auto-charge retry (which
+//     charges the moment the customer attaches a card) AND email the customer
+//     a payment-update link. Pre-fix the no-PM case did nothing, so a manual
+//     invoice silently went overdue — customer never told, scheduler never
+//     retried.
+func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv domain.Invoice) domain.Invoice {
+	if h.charger == nil || h.paymentSetups == nil || inv.AmountDueCents <= 0 {
+		return inv
+	}
+	ps, psErr := h.paymentSetups.GetPaymentSetup(ctx, tenantID, inv.CustomerID)
+	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+	if pmReady {
+		if charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID); err != nil {
+			// A failed charge attempt starts dunning (the single retry
+			// owner), so we deliberately do NOT also set auto_charge_pending
+			// here — the scheduler clears that flag for declines anyway and
+			// defers to dunning; setting it would be redundant.
+			slog.WarnContext(ctx, "auto-charge failed, invoice stays finalized; dunning drives collection",
+				"invoice_id", inv.ID, "error", err)
+		} else {
+			inv = charged
+			slog.InfoContext(ctx, "auto-charge initiated", "invoice_id", inv.ID)
+		}
+		return inv
+	}
+	// No payment method on file: no charge is attempted, so dunning never
+	// starts — the scheduler flag is the only retry path.
+	slog.InfoContext(ctx, "no payment method at finalize, queuing for scheduler retry + notifying customer",
+		"invoice_id", inv.ID, "customer_id", inv.CustomerID)
+	if err := h.svc.SetAutoChargePending(ctx, tenantID, inv.ID, true); err != nil {
+		slog.WarnContext(ctx, "failed to mark invoice for auto-charge retry",
+			"invoice_id", inv.ID, "error", err)
+	}
+	if h.noPMNotifier != nil {
+		if err := h.noPMNotifier.NotifyNoPaymentMethod(ctx, tenantID, inv); err != nil {
+			slog.WarnContext(ctx, "no-payment-method notification failed",
+				"invoice_id", inv.ID, "error", err)
+		}
+	}
+	return inv
 }
 
 func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
