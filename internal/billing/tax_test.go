@@ -196,9 +196,12 @@ func TestTaxBP_RoundingEdgeCases(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Line-item tax summing — the engine adjusts the last line item so that
-// per-line taxes sum exactly to the invoice-level tax. This test verifies
-// that property across various line item combinations.
+// Line-item tax summing — per-line taxes must sum exactly to the invoice-level
+// tax. This verifies the *sum invariant* across line-item combinations using a
+// simple last-line reconciliation as a stand-in. The PRODUCTION distribution is
+// largest-remainder (ADR-046), exercised against the real provider in
+// internal/tax/providers_test.go (TestManualProvider_LargestRemainderNoInversion
+// + the property test); the sum invariant proved here holds for either method.
 // ---------------------------------------------------------------------------
 
 func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
@@ -250,7 +253,8 @@ func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 			// Invoice-level tax
 			invoiceTax := computeTaxBP(subtotal, tt.rateBP)
 
-			// Per-line tax (same algorithm as billing engine)
+			// Per-line tax via the rounding primitive (production distributes
+			// the residual by largest remainder; see ADR-046 / internal/tax).
 			lineItems := make([]domain.InvoiceLineItem, len(tt.lineAmts))
 			var lineTaxSum int64
 			for i, amt := range tt.lineAmts {
@@ -264,7 +268,8 @@ func TestTaxBP_LineItemSumEqualsInvoiceTax(t *testing.T) {
 				lineTaxSum += lineTax
 			}
 
-			// Apply the engine's adjustment: correct last line to match invoice tax
+			// Reconcile to the invoice total (last-line stand-in; production uses
+			// largest-remainder — either satisfies the sum invariant asserted here)
 			if len(lineItems) > 0 && lineTaxSum != invoiceTax {
 				diff := invoiceTax - lineTaxSum
 				last := &lineItems[len(lineItems)-1]

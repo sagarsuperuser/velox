@@ -108,6 +108,109 @@ func TestManualProvider_Exclusive(t *testing.T) {
 	}
 }
 
+// TestManualProvider_LargestRemainderNoInversion is the regression for the
+// "biggest line, least tax" artifact. Three near-equal lines
+// ($33.33/$33.33/$33.34) at 7.25% produce a −1¢ residual: naive per-line
+// rounding sums to 726¢ but the exact document tax on $100.00 is 725¢. The old
+// code dumped the −1¢ on the positionally-last line (the $33.34 one), leaving
+// it taxed *less* than its smaller peers. Largest-remainder apportionment must
+// instead dock a line whose remainder is smallest, never inverting base order.
+func TestManualProvider_LargestRemainderNoInversion(t *testing.T) {
+	p := NewManualProvider(7.25, "Sales Tax")
+
+	req := Request{
+		Currency: "USD",
+		LineItems: []RequestLine{
+			{Ref: "line_0", AmountCents: 3333},
+			{Ref: "line_1", AmountCents: 3333},
+			{Ref: "line_2", AmountCents: 3334},
+		},
+	}
+	res, err := p.Calculate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Calculate: %v", err)
+	}
+
+	const wantTotal = int64(725) // 10000¢ × 7.25% = 725.00¢ exactly
+	if res.TotalTaxCents != wantTotal {
+		t.Errorf("TotalTaxCents = %d, want %d", res.TotalTaxCents, wantTotal)
+	}
+
+	var sumTax int64
+	for _, l := range res.Lines {
+		sumTax += l.TaxAmountCents
+	}
+	if sumTax != wantTotal {
+		t.Errorf("sum(line tax) = %d, want %d", sumTax, wantTotal)
+	}
+
+	// No inversion: a line with a >= base must not carry < tax.
+	for i := range res.Lines {
+		for j := range res.Lines {
+			if req.LineItems[i].AmountCents > req.LineItems[j].AmountCents &&
+				res.Lines[i].TaxAmountCents < res.Lines[j].TaxAmountCents {
+				t.Errorf("inversion: line %d (base %d) taxed %d < line %d (base %d) taxed %d",
+					i, req.LineItems[i].AmountCents, res.Lines[i].TaxAmountCents,
+					j, req.LineItems[j].AmountCents, res.Lines[j].TaxAmountCents)
+			}
+		}
+	}
+
+	// Largest base ($33.34, largest fractional remainder) must round up to 242.
+	if got := res.Lines[2].TaxAmountCents; got != 242 {
+		t.Errorf("line_2 ($33.34) tax = %d, want 242 (it should not absorb the −1¢)", got)
+	}
+}
+
+// TestDistributeLargestRemainder_Property fuzzes the apportionment invariants
+// across line counts, rates, bases, AND both exclusive and inclusive modes: the
+// per-line taxes always sum to the provider's reported total, and base order is
+// never inverted (a larger line never carries less tax than a smaller one). The
+// inclusive arm is the regression guard for the inclusive path, which otherwise
+// only has single-line coverage.
+func TestDistributeLargestRemainder_Property(t *testing.T) {
+	rates := []float64{7.25, 18.0, 8.875, 5.0, 9.999}
+	bases := [][]int64{
+		{3333, 3333, 3334},
+		{1, 1, 1, 1, 1},
+		{999999, 1, 50000, 7},
+		{100, 200, 300, 400},
+		{1234, 5678, 999, 4321, 17},
+	}
+	for _, inclusive := range []bool{false, true} {
+		for _, rate := range rates {
+			p := NewManualProvider(rate, "T")
+			for _, bs := range bases {
+				lines := make([]RequestLine, len(bs))
+				for i, b := range bs {
+					lines[i] = RequestLine{Ref: "l", AmountCents: b}
+				}
+				res, err := p.Calculate(context.Background(),
+					Request{Currency: "USD", TaxInclusive: inclusive, LineItems: lines})
+				if err != nil {
+					t.Fatalf("Calculate: %v", err)
+				}
+				var sum int64
+				for _, l := range res.Lines {
+					sum += l.TaxAmountCents
+				}
+				if sum != res.TotalTaxCents {
+					t.Errorf("incl=%v rate=%g bases=%v: sum(line)=%d != total=%d",
+						inclusive, rate, bs, sum, res.TotalTaxCents)
+				}
+				for i := range res.Lines {
+					for j := range res.Lines {
+						if bs[i] > bs[j] && res.Lines[i].TaxAmountCents < res.Lines[j].TaxAmountCents {
+							t.Errorf("incl=%v rate=%g bases=%v: inversion line %d<%d",
+								inclusive, rate, bs, i, j)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestManualProvider_Inclusive verifies gross → net carve-out: the engine's
 // subtotal invariant depends on sum(Net) + tax == sum(original gross).
 func TestManualProvider_Inclusive(t *testing.T) {
