@@ -1192,6 +1192,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Engine auto-fires scheduled cancellation (advance the test clock past cycle close) → AuditLog row: "Canceled <sub>" with meta `canceled_by=schedule`, actor "System".
 - [ ] Operator marks invoice uncollectible → "Marked INV-NNN uncollectible".
 - [ ] Operator records offline payment → "Recorded offline payment on INV-NNN".
+- [ ] Operator clicks **Collect payment** on a finalized invoice → "Collected payment on INV-NNN" (amber/medium severity, `action='collect'`), NOT "Created INV-NNN". Operator clicks **Send** → "Emailed INV-NNN" (`action='send'`, meta `to=<recipient>`). Operator **Refund** → "Refunded INV-NNN" (red/high severity). Operator rotates the hosted-invoice link → "Rotated hosted-invoice link for INV-NNN". None of these render as a green "Created" row.
 - [ ] Operator edits customer (display_name / email / dunning policy) → "Updated <name>".
 - [ ] Operator upserts billing profile (tax status / address / tax ID) → "Updated billing profile for <name>".
 - [ ] Customer adds card via Stripe Checkout → "Added Visa ····4242" (resource_type payment_method, action create, actor "<Customer Name>").
