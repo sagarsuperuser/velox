@@ -76,6 +76,10 @@ function describeAction(entry: AuditEntry): string {
     case 'resume': return `Resumed ${label || 'subscription'}`
     case 'finalize': return `Finalized ${label || 'invoice'}`
     case 'void': return `Voided ${label || 'invoice'}`
+    case 'collect': return `Collected payment on ${label || 'invoice'}`
+    case 'send': return `Emailed ${label || 'invoice'}`
+    case 'refund': return `Refunded ${label || 'invoice'}`
+    case 'retry_tax': return `Retried tax on ${label || 'invoice'}`
     case 'issue': return `Issued ${label || 'credit note'}`
     case 'resolve': return `Resolved ${label || 'dunning run'}`
     case 'grant': return `Granted credits${label ? ` to ${label}` : ''}`
@@ -94,6 +98,7 @@ function describeAction(entry: AuditEntry): string {
       if (entry.resource_type === 'api_key') return `Rotated API key${label ? ` "${label}"` : ''}`
       if (entry.resource_type === 'webhook_endpoint') return `Rotated webhook secret`
       if (entry.resource_type === 'stripe_credentials') return `Rotated Stripe webhook secret`
+      if (entry.resource_type === 'invoice') return `Rotated hosted-invoice link${label ? ` for ${label}` : ''}`
       return `Rotated ${label || entry.resource_type}`
     case 'run': return 'Billing cycle executed'
     case 'change_plan': return `Changed plan${label ? ` for ${label}` : ''}`
@@ -101,8 +106,8 @@ function describeAction(entry: AuditEntry): string {
   }
 }
 
-const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.deduction'])
-const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan', 'subscription.item_updated'])
+const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.deduction', 'refund'])
+const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan', 'subscription.item_updated', 'collect'])
 
 function resourceLink(entry: AuditEntry): string | null {
   // Guard the empty-resource_id case — some audit rows (e.g. tenant-scope
