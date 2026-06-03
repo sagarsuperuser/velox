@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
-import { TestClockBadge, SimulatedBadge } from '@/components/TestClockBadge'
+import { SimulatedBadge } from '@/components/TestClockBadge'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -435,13 +435,6 @@ export default function InvoiceDetailPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-semibold text-foreground">{invoice.invoice_number}</h1>
-            {/* Test-clock chip in the header so operators see at-a-glance
-                that simulated time applies before they read totals or
-                dates below. Matches CustomerDetail and SubscriptionDetail
-                header treatment. */}
-            {subscription?.test_clock_id && (
-              <TestClockBadge testClockId={subscription.test_clock_id} />
-            )}
           </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs font-mono text-muted-foreground">{invoice.id}</span>
