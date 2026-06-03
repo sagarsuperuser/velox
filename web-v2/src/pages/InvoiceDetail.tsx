@@ -156,14 +156,24 @@ export default function InvoiceDetailPage() {
     enabled: !!invoice?.subscription_id,
   })
 
+  // Resolve the test clock this invoice's dates live on. A subscription
+  // invoice inherits the sub's pin; a MANUAL one-off invoice has no
+  // subscription, so fall back to the customer's pin (the customer is
+  // already loaded above, so this is no extra fetch). invoice.is_simulated
+  // is the authoritative "these dates are simulated" flag; the resolved id
+  // just tells the banner which clock's "currently at" time to show.
+  const resolvedTestClockId = subscription?.test_clock_id || customer?.test_clock_id || ''
+
   // Test-clock frozen_time becomes the "now" for relative-time badges
   // (Due in N days) on this page. Without this the badge reads from
-  // wall-clock and understates urgency on simulated invoices —
-  // "Due in 45d" while the engine perceives 15d.
+  // wall-clock and understates urgency on simulated invoices — "Due in
+  // 45d" while the engine perceives 15d. Keyed off the resolved id so it
+  // works for manual simulated invoices too (was sub-only, which made the
+  // DueBadge count against wall-clock while the page claimed simulated).
   const { data: testClock } = useQuery({
-    queryKey: ['test-clock', subscription?.test_clock_id],
-    queryFn: () => api.getTestClock(subscription!.test_clock_id!),
-    enabled: !!subscription?.test_clock_id,
+    queryKey: ['test-clock', resolvedTestClockId],
+    queryFn: () => api.getTestClock(resolvedTestClockId),
+    enabled: !!resolvedTestClockId,
   })
 
   const { data: creditNotesData } = useQuery({
@@ -626,11 +636,15 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
-      {/* Test-clock banner — sets expectation upfront when this
-          invoice's subscription is pinned to a clock. Some dates in
-          the activity feed (finalize, dunning) reflect simulated time. */}
-      {subscription?.test_clock_id && (
-        <TestClockBanner testClockId={subscription.test_clock_id} />
+      {/* Test-clock banner — the page-level "Currently at <sim time>"
+          anchor. Gated on the AUTHORITATIVE invoice.is_simulated (not the
+          subscription's clock id), so manual one-off invoices get the
+          banner too — they were previously left with the "Simulated" chip
+          but no reference point. resolvedTestClockId falls back to the
+          customer's pin; if it's empty (clock since deleted) the banner
+          renders its deleted-clock variant. */}
+      {invoice.is_simulated && (
+        <TestClockBanner testClockId={resolvedTestClockId} />
       )}
 
       {/* Uncollectible status banner — Stripe-parity bad-debt
