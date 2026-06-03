@@ -1124,14 +1124,6 @@ export default function InvoiceDetailPage() {
           <CardContent>
             <div className="relative">
               {billingTimeline.map((event, i) => {
-                // Simulated chip: backend stamps `is_simulated=true`
-                // on events produced in frozen-time (engine-driven
-                // on a clock-pinned sub). Wall-clock events (stripe
-                // webhooks, operator audit actions, email dispatcher)
-                // ship false. Authoritative flag — no client-side
-                // heuristic. See internal/invoice/handler.go +
-                // ADR-030 + feedback_no_heuristic_proxies memory.
-                const isSimulated = !!event.is_simulated
                 return (
                 <div key={i} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
@@ -1147,12 +1139,7 @@ export default function InvoiceDetailPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <p className="text-sm text-foreground">{event.description}</p>
-                        {isSimulated && (
-                          <SimulatedBadge title="This timestamp came from a test-clock simulation, not wall-clock time." />
-                        )}
-                      </div>
+                      <p className="text-sm text-foreground min-w-0">{event.description}</p>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
                     {event.error && event.status === 'failed' && (
