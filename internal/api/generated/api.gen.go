@@ -672,6 +672,13 @@ type Customer struct {
 	ExternalId  string         `json:"external_id,omitempty"`
 	Id          string         `json:"id,omitempty"`
 	Status      CustomerStatus `json:"status,omitempty"`
+
+	// TestClockId Test clock this customer is pinned to (test mode only). When set,
+	// the customer — and any invoices/subscriptions created for it —
+	// run on the clock's simulated time. Empty for live customers. The
+	// dashboard reads it to show the "test clock" badge + simulated-time
+	// banner on the customer and its invoices.
+	TestClockId string `json:"test_clock_id,omitempty"`
 }
 
 // CustomerStatus defines model for Customer.Status.

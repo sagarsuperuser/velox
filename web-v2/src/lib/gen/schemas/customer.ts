@@ -16,4 +16,11 @@ export interface Customer {
   email?: string;
   status?: CustomerStatus;
   created_at?: string;
+  /** Test clock this customer is pinned to (test mode only). When set,
+  the customer — and any invoices/subscriptions created for it —
+  run on the clock's simulated time. Empty for live customers. The
+  dashboard reads it to show the "test clock" badge + simulated-time
+  banner on the customer and its invoices.
+   */
+  test_clock_id?: string;
 }

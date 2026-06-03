@@ -1908,6 +1908,14 @@ export interface components {
             status?: "active" | "archived";
             /** Format: date-time */
             created_at?: string;
+            /**
+             * @description Test clock this customer is pinned to (test mode only). When set,
+             *     the customer — and any invoices/subscriptions created for it —
+             *     run on the clock's simulated time. Empty for live customers. The
+             *     dashboard reads it to show the "test clock" badge + simulated-time
+             *     banner on the customer and its invoices.
+             */
+            test_clock_id?: string;
         };
         Meter: {
             id?: string;
