@@ -16,7 +16,6 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -175,8 +174,16 @@ type Handler struct {
 	events          domain.EventDispatcher
 	emailSender     EmailSender
 	refundIssuer    RefundIssuer
-	auditLogger     *audit.Logger
+	auditLogger     auditWriter
 	noPMNotifier    NoPaymentMethodNotifier
+}
+
+// auditWriter is the narrow audit-write interface the invoice handler uses.
+// *audit.Logger satisfies it; declared as an interface (vs the concrete
+// logger) so the handler's audit rows — action, label, metadata — are
+// unit-testable with a capturing fake.
+type auditWriter interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }
 
 type HandlerDeps struct {
@@ -235,7 +242,7 @@ func (h *Handler) SetEmailEvents(lister EmailEventLister) {
 }
 
 // SetAuditLogger configures audit logging for financial operations.
-func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
+func (h *Handler) SetAuditLogger(l auditWriter) { h.auditLogger = l }
 
 // fireEvent dispatches a webhook event. Synchronous: with the outbox
 // (RES-1) Dispatch is a short DB insert that must persist-before-return,
@@ -806,6 +813,15 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Explicit audit row so an operator-initiated send is recorded as
+	// "Emailed INV-NNN", not the middleware catch-all's generic "create".
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+			"invoice_number": inv.InvoiceNumber,
+			"to":             body.Email,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "sent"})
 }
 
@@ -865,6 +881,18 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Explicit audit row for the money-movement action. Without it the
+	// middleware catch-all records POST /collect as a generic "create"
+	// ("Created INV-NNN"), indistinguishable from the invoice's creation.
+	// MarkHandled (inside Log) suppresses that catch-all.
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCollect, "invoice", charged.ID, charged.InvoiceNumber, map[string]any{
+			"invoice_number": charged.InvoiceNumber,
+			"amount_cents":   inv.AmountDueCents,
+			"currency":       inv.Currency,
+		})
+	}
+
 	respond.JSON(w, r, http.StatusOK, charged)
 }
 
@@ -921,7 +949,13 @@ func (h *Handler) refund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, "", map[string]any{
+		// Label the row with the invoice number so it reads "Refunded
+		// INV-NNN" (a money-out action), matching finalize/void rows.
+		refundLabel := ""
+		if refInv, gErr := h.svc.Get(r.Context(), tenantID, id); gErr == nil {
+			refundLabel = refInv.InvoiceNumber
+		}
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, refundLabel, map[string]any{
 			"invoice_id":          id,
 			"credit_note_id":      cn.ID,
 			"credit_note_number":  cn.CreditNoteNumber,

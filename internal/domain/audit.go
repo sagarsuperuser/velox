@@ -35,6 +35,13 @@ const (
 	AuditActionArchive   = "archive"
 	AuditActionUnarchive = "unarchive"
 	AuditActionRedeem    = "redeem"
+	// AuditActionCollect covers an operator manually charging a finalized
+	// invoice's saved card (POST /invoices/{id}/collect). AuditActionSend
+	// covers operator-initiated invoice emails (POST /invoices/{id}/send).
+	// Both write an explicit audit row so they aren't recorded as a generic
+	// "create" by the middleware catch-all.
+	AuditActionCollect = "collect"
+	AuditActionSend    = "send"
 	// AuditActionRetryTax covers operator-initiated tax recompute on a
 	// pending/failed invoice. Persists the actor + before/after attention
 	// so post-mortems can see who retried what and whether it cleared.
