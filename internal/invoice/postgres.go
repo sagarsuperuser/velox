@@ -235,6 +235,13 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 	}
 	defer postgres.Rollback(tx)
 
+	// Canonical UPPERCASE ISO-4217. This is the single chokepoint both
+	// manual (Service.Create) and cycle (engine, incl. its "usd" fallback)
+	// invoices funnel through, so the stored currency can't vary by origin.
+	// Must match the tenant default ("USD") because analytics/dunning
+	// revenue queries filter with a case-sensitive `currency = $1`.
+	inv.Currency = strings.ToUpper(inv.Currency)
+
 	id := postgres.NewID("vlx_inv")
 	// Honor caller-provided CreatedAt — engine paths pass clk.Now()
 	// so test-clock-driven invoices align with their issued_at /
@@ -1280,6 +1287,8 @@ func (s *PostgresStore) UpdateTaxAtomic(
 			tax_retry_count = tax_retry_count + 1,
 			tax_next_retry_at = $15,
 			total_amount_cents = $16,
+			subtotal_cents = $18,
+			discount_cents = $19,
 			amount_due_cents = GREATEST($16 - amount_paid_cents - credits_applied_cents, 0),
 			updated_at = $17
 		WHERE id = $1
@@ -1298,6 +1307,10 @@ func (s *PostgresStore) UpdateTaxAtomic(
 		update.TaxPendingReason, postgres.NullableString(update.TaxErrorCode),
 		postgres.NullableTime(update.TaxNextRetryAt),
 		update.TotalAmountCents, now,
+		// Net subtotal/discount from the tax application — carved out of the
+		// gross in tax-inclusive mode, pass-through (== stored header) in
+		// exclusive mode. Keeps subtotal − discount + tax == gross.
+		update.SubtotalCents, update.DiscountCents,
 	).Scan(s.scanInvDest(&inv)...)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -1342,6 +1355,14 @@ func (s *PostgresStore) CreateWithLineItemsTx(ctx context.Context, tx *sql.Tx, t
 // differ only in tx ownership.
 func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	id := postgres.NewID("vlx_inv")
+	// Canonical UPPERCASE ISO-4217 (see Create) — normalize the header and
+	// every line so origin (manual vs cycle) can't change the casing and
+	// the stored value matches the tenant default the analytics/dunning
+	// revenue queries filter on case-sensitively.
+	inv.Currency = strings.ToUpper(inv.Currency)
+	for i := range items {
+		items[i].Currency = strings.ToUpper(items[i].Currency)
+	}
 	// Honor caller-provided CreatedAt — engine paths pass clk.Now()
 	// so test-clock-driven invoices align with their issued_at /
 	// due_at on simulation time. Zero falls back to wall-clock.
