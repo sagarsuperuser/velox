@@ -15,6 +15,12 @@ type Store interface {
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.Invoice, int, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
+	// FinalizeWithDates flips status to finalized AND re-stamps issued_at +
+	// due_at to the finalize moment. Used for operator-composed (manual)
+	// invoices so the issue/due dates anchor to issuance, not draft-create
+	// (Stripe finalized_at semantics). Cycle invoices keep their build-time
+	// dates via UpdateStatus.
+	FinalizeWithDates(ctx context.Context, tenantID, id string, issuedAt, dueAt time.Time) (domain.Invoice, error)
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	// MarkPaid flips status='paid', payment_status='succeeded',
 	// amount_paid=amount_due, amount_due=0 in one transaction. Used by
