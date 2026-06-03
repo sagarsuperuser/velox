@@ -875,7 +875,6 @@ export default function CustomerDetailPage() {
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     <Badge variant={statusVariant(sub.status)} className="shrink-0">{sub.status}</Badge>
                     <span className="text-sm font-medium text-foreground truncate">{sub.display_name}</span>
-                    {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">{subMeta(sub)}</span>
                 </Link>
@@ -906,7 +905,6 @@ export default function CustomerDetailPage() {
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <Badge variant={statusVariant(sub.status)} className="shrink-0">{sub.status}</Badge>
                         <span className="text-sm font-medium text-muted-foreground truncate">{sub.display_name}</span>
-                        {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
                       </div>
                       <span className="text-xs text-muted-foreground whitespace-nowrap">{subMeta(sub)}</span>
                     </Link>
@@ -928,19 +926,10 @@ export default function CustomerDetailPage() {
           <CardContent className="p-0">
             <div className="divide-y divide-border">
               {overview?.recent_invoices.map(inv => {
-                // Look up the invoice's subscription to surface a
-                // test-clock chip when applicable; allSubs is the
-                // already-fetched per-customer subscription set.
-                const subClock = inv.subscription_id
-                  ? allSubs?.find(s => s.id === inv.subscription_id)?.test_clock_id
-                  : undefined
                 return (
                   <Link key={inv.id} to={`/invoices/${inv.id}`} className="flex items-center justify-between px-6 py-3 hover:bg-accent/50 transition-colors">
                     <div>
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
-                        {subClock && <TestClockBadge testClockId={subClock} />}
-                      </div>
+                      <p className="text-sm font-medium text-foreground">{inv.invoice_number}</p>
                       <p className="text-xs text-muted-foreground">{formatDate(inv.created_at)}</p>
                     </div>
                     <div className="flex items-center gap-3">
