@@ -813,16 +813,35 @@ export default function InvoiceDetailPage() {
                 )}
               </div>
             </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
-              <p className="text-sm text-foreground">
-                {formatDate(invoice.billing_period_start)} – {formatDate(invoice.billing_period_end)}
-              </p>
-            </div>
+            {/* A billing period is a subscription-cycle concept. A manual
+                one-off invoice has no cycle, so the backend defaults
+                start==end (now→now) to satisfy the NOT NULL columns — which
+                renders as a confusing same-day "Jan 14 – Jan 14". Industry
+                (Stripe/Chargebee/Lago) omit an invoice-level period for
+                one-off charges; show it only when there's a real span. */}
+            {invoice.billing_period_start !== invoice.billing_period_end && (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
+                <p className="text-sm text-foreground">
+                  {formatDate(invoice.billing_period_start)} – {formatDate(invoice.billing_period_end)}
+                </p>
+              </div>
+            )}
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Terms</p>
+              {/* Render the terms THIS invoice was issued with (its own
+                  net_payment_term_days \u2014 the value that produced due_at),
+                  not the current tenant default. The tenant setting only
+                  seeds new invoices; an already-issued invoice keeps the
+                  term it was created with, and Due = Issued + that term.
+                  Reading the live setting here made Terms disagree with
+                  the Due date whenever the default had since changed. */}
               <p className="text-sm text-foreground">
-                {settings?.net_payment_terms ? `Net ${settings.net_payment_terms}` : '\u2014'}
+                {invoice.net_payment_term_days == null
+                  ? '\u2014'
+                  : invoice.net_payment_term_days === 0
+                    ? 'Due on receipt'
+                    : `Net ${invoice.net_payment_term_days}`}
               </p>
             </div>
           </div>
