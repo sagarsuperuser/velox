@@ -662,6 +662,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the engine's sub.TestClockID for cycle invoices). Without it, manual
 	// invoices never carry the simulated badge.
 	invoiceSvc.SetCustomerClockReader(customerStore)
+	// Tenant net-terms fallback: a manual invoice created without an explicit
+	// net_payment_term_days inherits the tenant's configured default (then 30),
+	// mirroring the cycle engine. settingsStore satisfies TenantSettingsReader.
+	invoiceSvc.SetTenantSettingsReader(settingsStore)
 	testClockSvc.SetBillingRunner(engine)
 	// Phase 0.5 (Bug #8): trial expiry — flip status='trialing' subs
 	// to active at trial_end_at when sim time elapses past it, BEFORE
