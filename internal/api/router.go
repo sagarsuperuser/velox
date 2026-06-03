@@ -708,13 +708,18 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Always wired. If paymentUpdateURL is empty the adapter surfaces
 	// the misconfiguration at send time per the boot WARN above —
 	// single send path, no silent skip.
-	engine.SetNoPaymentMethodNotifier(&noPaymentMethodNotifierAdapter{
+	noPMNotifier := &noPaymentMethodNotifierAdapter{
 		email:            paymentSetupEmail,
 		customerEmail:    customerEmailAdapter,
 		paymentUpdateURL: paymentUpdateURL,
 		tokenSvc:         tokenSvc,
 		auditLogger:      auditLogger,
-	})
+	}
+	engine.SetNoPaymentMethodNotifier(noPMNotifier)
+	// Same adapter feeds the manual-invoice finalize path so an
+	// operator-composed one-off invoice notifies the customer + queues for
+	// auto-charge retry on no-PM identically to a cycle invoice.
+	invoiceH.SetNoPaymentMethodNotifier(noPMNotifier)
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
 	// audit trail in tax_calculations. Resolver reads tenant_settings and
