@@ -109,6 +109,17 @@ type ProrationGrantInput struct {
 	SourceChangeType         domain.ItemChangeType
 }
 
+// auditRecorder is the narrow audit interface the subscription handler uses:
+// Log to write operator-action rows and Query to read them back for the
+// activity timeline. *audit.Logger satisfies it. Declared as an interface (vs
+// the concrete logger) so the handler's audit metadata — including the
+// ADR-030 sim-time context on clock-pinned actions — is unit-testable with a
+// capturing fake.
+type auditRecorder interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+	Query(ctx context.Context, tenantID string, filter audit.QueryFilter) ([]domain.AuditEntry, int, error)
+}
+
 type Handler struct {
 	svc         *Service
 	plans       PlanReader
@@ -116,7 +127,7 @@ type Handler struct {
 	credits     ProrationCreditGranter
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
-	auditLogger *audit.Logger
+	auditLogger auditRecorder
 	// Resolver binds effective-now from the sub pin at handler entry
 	// for proration math + changeAt stamping (PR-12, ADR-030 follow-
 	// through). Without it, mid-cycle plan changes on clock-pinned
@@ -139,7 +150,7 @@ func NewHandler(svc *Service) *Handler {
 }
 
 // SetAuditLogger configures audit logging for financial operations.
-func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
+func (h *Handler) SetAuditLogger(l auditRecorder) { h.auditLogger = l }
 
 // SetResolver wires the clock.Resolver used to bind effective-now at
 // proration entry points so wall-clock-time computations on
@@ -975,7 +986,19 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			payload["old_plan_id"] = oldPlanID
 			payload["new_plan_id"] = input.NewPlanID
 		}
-		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, "", payload)
+		// Record the sim-time context (ADR-030) so a clock-pinned plan change
+		// renders the wall-clock click time as the audit row's primary
+		// timestamp and the simulated effect-time as a subline — the same
+		// auditMetaForSub treatment every other subscription audit action gets
+		// (this path was the lone omission, so item-update rows showed no
+		// test-clock chip/subline). Fetch the post-update sub for its current
+		// UpdatedAt (the change instant) + test_clock_id; fall back to the
+		// before-state if the read fails. Mirrors the item-add path above.
+		auditSub := subBefore
+		if s, err := h.svc.Get(ctx, tenantID, subID); err == nil {
+			auditSub = s
+		}
+		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, "", auditMetaForSub(auditSub, payload))
 	}
 
 	// Skip the legacy delta-proration emission when the service used
