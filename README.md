@@ -122,7 +122,10 @@ make dev             # API on :8080
 
 # Operator dashboard (separate terminal)
 cd web-v2 && npm install && npm run dev
-# → http://localhost:5173 — sign in with the email + password from bootstrap
+# → http://127.0.0.1:5173 — sign in with the email + password from bootstrap.
+#   Use 127.0.0.1, NOT localhost: localhost resolves to both IPv4 and IPv6 and
+#   the browser races them (happy-eyeballs), which intermittently stalls dev
+#   requests in SYN_SENT. The dev server now pins IPv4 to avoid this.
 ```
 
 End-to-end demo (creates a customer, ingests usage, runs billing, generates a PDF invoice):
