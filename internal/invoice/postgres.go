@@ -482,6 +482,38 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	return inv, nil
 }
 
+// FinalizeWithDates flips status to finalized and re-stamps issued_at + due_at
+// to the finalize moment in one UPDATE — for operator-composed invoices whose
+// draft may have been created on an earlier (test-clock) instant. Cycle
+// invoices use UpdateStatus and keep their build-time dates.
+func (s *PostgresStore) FinalizeWithDates(ctx context.Context, tenantID, id string, issuedAt, dueAt time.Time) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := clock.Now(ctx)
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		UPDATE invoices SET status = $1, issued_at = $2, due_at = $3, updated_at = $4
+		WHERE id = $5
+		RETURNING `+invCols,
+		domain.InvoiceFinalized, issuedAt, dueAt, now, id,
+	).Scan(s.scanInvDest(&inv)...)
+
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
 func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

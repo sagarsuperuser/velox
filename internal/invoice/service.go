@@ -498,7 +498,22 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	case domain.InvoiceTaxFailed:
 		return domain.Invoice{}, errs.InvalidState("tax calculation failed after retries — operator intervention required")
 	}
-	finalized, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
+	// Anchor issue + due dates to the finalize moment for operator-composed
+	// (manual) invoices, mirroring Stripe's finalized_at: a manual draft is
+	// "issued" when the operator finalizes it — possibly on a later test-clock
+	// instant than draft-create — and Net terms run from issuance. ctx is
+	// already bound to the invoice's clock (bindForInvoice above), so
+	// clock.Now is simulated time for clock-pinned customers. Net term is the
+	// value the draft was created with. Cycle invoices are born finalized at
+	// build time and keep those dates (the UpdateStatus branch).
+	var finalized domain.Invoice
+	if isOperatorComposed(inv) {
+		issuedAt := s.clock.Now(ctx)
+		dueAt := issuedAt.AddDate(0, 0, inv.NetPaymentTermDays)
+		finalized, err = s.store.FinalizeWithDates(ctx, tenantID, id, issuedAt, dueAt)
+	} else {
+		finalized, err = s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceFinalized)
+	}
 	if err != nil {
 		return domain.Invoice{}, err
 	}
