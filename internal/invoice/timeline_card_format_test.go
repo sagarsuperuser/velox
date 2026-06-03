@@ -32,6 +32,37 @@ func TestWithinWindow(t *testing.T) {
 	}
 }
 
+// TestDropCanceledForVoid covers the cancel-vs-void suppression decision,
+// including the clock-pinned case where voidedAt (simulated) and the Stripe
+// event time (wall-clock) are in different time domains.
+func TestDropCanceledForVoid(t *testing.T) {
+	wall := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	sim := time.Date(2053, 6, 8, 3, 16, 0, 0, time.UTC) // simulated test-clock void time
+	ptr := func(tm time.Time) *time.Time { return &tm }
+
+	cases := []struct {
+		name        string
+		voidedAt    *time.Time
+		occurredAt  time.Time
+		isSimulated bool
+		want        bool
+	}{
+		{"no void (PI expiry) → keep", nil, wall, false, false},
+		{"no void on simulated → keep", nil, wall, true, false},
+		{"wall-clock void co-occurs (within 5m) → drop", ptr(wall.Add(30 * time.Second)), wall, false, true},
+		{"wall-clock void long after (1h) → keep", ptr(wall.Add(1 * time.Hour)), wall, false, false},
+		{"simulated void, cross-domain times years apart → drop", ptr(sim), wall, true, true},
+		{"simulated but no void → keep", nil, wall, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dropCanceledForVoid(tc.voidedAt, tc.occurredAt, tc.isSimulated); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFormatPaymentCardDetail covers the sub-line text shown
 // beneath the "Invoice paid" timeline row (ADR-020). Brand is
 // title-cased per Stripe convention; missing fields degrade

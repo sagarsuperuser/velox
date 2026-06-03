@@ -1144,7 +1144,7 @@ export default function InvoiceDetailPage() {
             <div className="relative">
               {billingTimeline.map((event, i) => {
                 return (
-                <div key={i} className="flex gap-4 pb-2 last:pb-0">
+                <div key={`${event.source}:${event.event_type}:${event.timestamp}:${event.payment_intent_id ?? ''}`} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
                       'w-2.5 h-2.5 rounded-full mt-1.5',
@@ -1204,7 +1204,7 @@ export default function InvoiceDetailPage() {
           <CardContent>
             <div className="relative">
               {externalTimeline.map((event, i) => (
-                <div key={i} className="flex gap-4 pb-2 last:pb-0">
+                <div key={`${event.source}:${event.event_type}:${event.timestamp}:${event.payment_intent_id ?? ''}`} className="flex gap-4 pb-2 last:pb-0">
                   <div className="flex flex-col items-center">
                     <div className={cn(
                       'w-2.5 h-2.5 rounded-full mt-1.5',
@@ -1224,6 +1224,12 @@ export default function InvoiceDetailPage() {
                     )}
                     {event.amount_cents != null && event.amount_cents > 0 && (
                       <p className="text-xs text-muted-foreground mt-0.5">{formatCents(event.amount_cents, invoice.currency)}</p>
+                    )}
+                    {/* Sub-line (e.g. "Customer notified by email" folded onto a
+                        standalone Stripe failure) — the billing lane renders this;
+                        the external lane must too or the detail silently vanishes. */}
+                    {event.detail && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{event.detail}</p>
                     )}
                   </div>
                 </div>

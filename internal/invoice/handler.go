@@ -1062,6 +1062,24 @@ func withinWindow(a, b time.Time, window time.Duration) bool {
 	return d <= window
 }
 
+// dropCanceledForVoid reports whether a payment_intent.canceled webhook row
+// should be suppressed from the timeline because it co-occurred with a void
+// (the void cancels the invoice's pending PI — one fact, two angles).
+//
+// A void with no PI cancel, or a PI cancel with no void (24h expiry), must NOT
+// suppress anything — hence the nil guard. For a wall-clock invoice we only
+// drop within a 5-minute window so an unrelated *earlier* PI expiry isn't
+// suppressed by a much-later void. For a clock-pinned (simulated) invoice the
+// window can't apply — voidedAt is test-clock time while occurredAt (Stripe)
+// is wall-clock, so they're years apart and withinWindow never matches; there
+// a void unconditionally implies the pending PI was canceled, so drop.
+func dropCanceledForVoid(voidedAt *time.Time, occurredAt time.Time, isSimulated bool) bool {
+	if voidedAt == nil {
+		return false
+	}
+	return isSimulated || withinWindow(*voidedAt, occurredAt, 5*time.Minute)
+}
+
 // foldEmailIntoStripeFailed collapses a successfully dispatched
 // "Payment-failed email sent to customer" row into its co-occurring
 // Stripe payment_intent.payment_failed row as a Detail sub-line.
@@ -1548,19 +1566,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 				case "payment_intent.canceled":
-					// PI cancel CAN co-occur with a void (operator
-					// voids a finalized invoice with a pending PI)
-					// but can also fire independently (PI 24h-expiry
-					// with no void; void of a draft with no PI).
-					// Use a timestamp window to dedup only the
-					// co-occurrence case — an unconditional drop on
-					// "VoidedAt is non-nil" over-suppresses when a
-					// PI cancels long before an unrelated later
-					// void. 5min covers wall-clock drift between
-					// Stripe's event time and our void time but
-					// doesn't bleed into separate operator events.
-					if inv.VoidedAt != nil &&
-						withinWindow(*inv.VoidedAt, evt.OccurredAt, 5*time.Minute) {
+					if dropCanceledForVoid(inv.VoidedAt, evt.OccurredAt, inv.IsSimulated) {
 						continue
 					}
 				}
