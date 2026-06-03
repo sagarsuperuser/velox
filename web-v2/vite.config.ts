@@ -8,6 +8,37 @@ export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
+  // Pre-bundle ALL app deps up front so Vite never re-optimizes mid-session.
+  //
+  // Root cause of the recurring "pending forever" hang (confirmed by timing:
+  // `/` static = 39ms, but `/src/main.tsx` = 25s on a cold hit, then ~1ms —
+  // and stale `node_modules/.vite/deps_temp_*` dirs from interrupted runs):
+  // Vite HOLDS every module + API request while esbuild (re)optimizes deps. It
+  // re-triggers whenever a dep is discovered that wasn't in the initial entry
+  // scan — e.g. a dependency reachable only through a lazily-imported route
+  // (main.tsx uses React.lazy). Each discovery → re-optimize → 25s pipeline
+  // freeze + full reload. Listing the deps here forces a single complete
+  // optimize at startup, so nothing is discovered late and the freeze never
+  // recurs while you're using the app. (Keep this list in sync with the deps
+  // that show up in `.vite/deps/_metadata.json`.)
+  optimizeDeps: {
+    include: [
+      'react', 'react-dom', 'react-dom/client',
+      'react/jsx-runtime', 'react/jsx-dev-runtime',
+      'react-router-dom',
+      '@tanstack/react-query',
+      'react-hook-form', '@hookform/resolvers/zod', 'zod',
+      'recharts',
+      '@vvo/tzdb', 'date-fns', 'date-fns-tz',
+      'cmdk', 'lucide-react', 'react-day-picker', 'sonner',
+      'class-variance-authority', 'clsx', 'tailwind-merge', '@radix-ui/react-slot',
+      '@base-ui/react/alert-dialog', '@base-ui/react/button', '@base-ui/react/checkbox',
+      '@base-ui/react/dialog', '@base-ui/react/input', '@base-ui/react/menu',
+      '@base-ui/react/merge-props', '@base-ui/react/select', '@base-ui/react/separator',
+      '@base-ui/react/switch', '@base-ui/react/tabs', '@base-ui/react/tooltip',
+      '@base-ui/react/use-render',
+    ],
+  },
   server: {
     // PIN IPv4 end-to-end — do NOT use `localhost` anywhere in the dev path.
     //
