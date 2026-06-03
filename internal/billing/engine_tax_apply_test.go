@@ -363,8 +363,10 @@ func TestApplyTaxToLineItems_Inclusive_ZeroRate(t *testing.T) {
 }
 
 func TestApplyTaxToLineItems_RoundingReconciliation(t *testing.T) {
-	// Three lines at 7.25% produce per-line rounding drift; last line
-	// absorbs the residual so line-tax sums match the invoice-level total.
+	// Three lines at 7.25% produce per-line rounding drift; the residual is
+	// apportioned by largest remainder (ADR-046) so line-tax sums match the
+	// invoice-level total. This test asserts only the sum invariant; the
+	// distribution/no-inversion property is covered in internal/tax.
 	e := newManualEngine(725, "VAT", nil)
 	lineItems := []domain.InvoiceLineItem{
 		{AmountCents: 333, Quantity: 1},
