@@ -2,9 +2,42 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
+import http from 'node:http'
+
+// Keep-alive agent for the /v1 proxy. Without it, http-proxy opens a fresh
+// (non-pooled) connection to the backend per request and stamps the CLIENT
+// response with `Connection: close` — so the browser can't pool API
+// connections at all. With a keep-alive agent the proxy reuses backend
+// sockets and preserves keep-alive end-to-end.
+const backendKeepAlive = new http.Agent({ keepAlive: true, maxSockets: 64 })
+
+// THE dev-hang fix (verified). Node's default Server.keepAliveTimeout is 5s:
+// it closes an idle keep-alive connection after 5s, but browsers hold pooled
+// connections for minutes. So if you sit on a page >5s (e.g. filling the login
+// form) and then make a request, the browser reuses a socket Vite already
+// closed → the request is sent into a dead connection and HANGS with no
+// response (or ECONNRESET) until a long browser timeout. Reproduced directly:
+// reuse-after-6s-idle → ECONNRESET at 5s, OK with keepAliveTimeout=0. This is
+// the actual cause of the recurring "pending forever" — NOT the network stack,
+// dep optimization, or transforms (Vite sits at 0.1% CPU while it happens).
+//
+// 0 disables the idle close so dev connections stay alive as long as the
+// browser wants them. headersTimeout=0 disables the companion guard so it
+// can't trip either. Both are safe for a local single-user dev server.
+function keepConnectionsAlive() {
+  return {
+    name: 'velox-dev-keepalive',
+    configureServer(server: { httpServer: http.Server | null }) {
+      if (server.httpServer) {
+        server.httpServer.keepAliveTimeout = 0
+        server.httpServer.headersTimeout = 0
+      }
+    },
+  }
+}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), keepConnectionsAlive()],
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
@@ -73,6 +106,11 @@ export default defineConfig({
         // target 39ms vs 127.0.0.1 6ms.
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
+        // Keep-alive to the backend so the proxy stops stamping the client
+        // response with `Connection: close` (which prevents the browser from
+        // pooling /v1 connections at all). The backend keep-alives by default
+        // (IdleTimeout 60s); without this agent the proxy threw that away.
+        agent: backendKeepAlive,
         timeout: 35_000,
         proxyTimeout: 35_000,
         configure: (proxy) => {
