@@ -148,3 +148,100 @@ func TestManualInvoice_TaxComputedAtFinalize(t *testing.T) {
 	}
 	t.Logf("manual invoice e2e: $100.00 @ 7.25%% → tax %d¢, per-line sum %d¢ (reconciled)", finalized.TaxAmountCents, lineTaxSum)
 }
+
+// TestManualInvoice_TaxInclusive_TotalEqualsGross guards the tax-inclusive
+// finalize fix. In tax-inclusive mode the operator enters a GROSS amount and
+// the provider carves tax OUT of it, so the invoice total must equal the
+// gross the operator entered — NOT gross + tax. Pre-fix
+// computeAndPersistInvoiceTax computed the total from the stored (gross)
+// header subtotal and added the carved tax back on top, double-counting and
+// overstating the total by ~one tax amount (here $136 instead of $118). The
+// fix reads the net subtotal/discount off the tax application (mirroring the
+// cycle build path) and persists them, restoring subtotal − discount + tax ==
+// gross.
+func TestManualInvoice_TaxInclusive_TotalEqualsGross(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs postgres")
+	}
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	customerStore := customer.NewPostgresStore(db)
+	pricingStore := pricing.NewPostgresStore(db)
+	subStore := subscription.NewPostgresStore(db)
+	invoiceStore := invoice.NewPostgresStore(db)
+	usageStore := usage.NewPostgresStore(db)
+	settingsStore := tenant.NewSettingsStore(db)
+
+	tenantID := testutil.CreateTestTenant(t, db, "Inclusive Tax Corp")
+
+	// Tenant tax = manual flat 18%, TAX-INCLUSIVE.
+	ts, err := settingsStore.Get(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	ts.TaxProvider = "manual"
+	ts.TaxRate = 18.0
+	ts.TaxName = "GST"
+	ts.TaxInclusive = true
+	if _, err := settingsStore.Upsert(ctx, ts); err != nil {
+		t.Fatalf("upsert settings: %v", err)
+	}
+
+	cust, err := customerStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_incl_tax", DisplayName: "Inclusive Tax Customer",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	engine := billing.NewEngine(
+		&subStoreAdapter{subStore},
+		&usageStoreAdapter{usageStore},
+		&pricingStoreAdapter{pricingStore},
+		&invoiceStoreAdapter{invoiceStore},
+		nil, settingsStore, nil, nil, clock.Real(),
+	)
+	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+
+	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
+	invoiceSvc.SetTaxRetrier(engine)
+
+	// Operator enters a GROSS $118.00 line; at 18% inclusive that decomposes
+	// to $100.00 net + $18.00 tax embedded in the price.
+	inv, err := invoiceSvc.Create(ctx, tenantID, invoice.CreateInput{
+		CustomerID: cust.ID,
+		Currency:   "USD",
+		LineItems: []invoice.AddLineItemInput{
+			{Description: "All-inclusive service", Quantity: 1, UnitAmountCents: 11800},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manual invoice: %v", err)
+	}
+
+	finalized, err := invoiceSvc.Finalize(ctx, tenantID, inv.ID)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	const wantGross = 11800
+	const wantNet = 10000
+	const wantTax = 1800
+	if finalized.TaxAmountCents != wantTax {
+		t.Errorf("tax: got %d¢, want %d¢ (carved out of the gross)", finalized.TaxAmountCents, wantTax)
+	}
+	if finalized.SubtotalCents != wantNet {
+		t.Errorf("subtotal: got %d¢, want net %d¢ (carved out of the gross)", finalized.SubtotalCents, wantNet)
+	}
+	if finalized.TotalAmountCents != wantGross {
+		t.Errorf("total: got %d¢, want %d¢ (== gross). Pre-fix this was gross+tax=%d¢ (double-count)",
+			finalized.TotalAmountCents, wantGross, wantGross+wantTax)
+	}
+	// The customer-pays invariant the cycle path also maintains.
+	if got := finalized.SubtotalCents - finalized.DiscountCents + finalized.TaxAmountCents; got != wantGross {
+		t.Errorf("invariant subtotal−discount+tax: got %d¢, want %d¢", got, wantGross)
+	}
+	t.Logf("tax-inclusive manual invoice: gross $118.00 @ 18%% → net %d¢ + tax %d¢ = total %d¢",
+		finalized.SubtotalCents, finalized.TaxAmountCents, finalized.TotalAmountCents)
+}
