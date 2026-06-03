@@ -5,7 +5,7 @@ import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatCents, formatRelativeTime, getTenantTimezone } from '@/lib/api'
 import type { Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
-import { TestClockBadge } from '@/components/TestClockBadge'
+import { SimulatedBadge } from '@/components/TestClockBadge'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -57,16 +57,6 @@ export default function DashboardPage() {
     queryKey: ['dashboard-recent-invoices'],
     queryFn: () => api.listInvoices('limit=5'),
   })
-  // Sub map for test-clock chips on the recent-invoices rows.
-  const { data: subscriptionsData } = useQuery({
-    queryKey: ['subscriptions-for-test-clock-chip'],
-    queryFn: () => api.listSubscriptions(),
-  })
-  const subTestClockMap = useMemo(() => {
-    const m: Record<string, string> = {}
-    ;(subscriptionsData?.data ?? []).forEach(s => { if (s.test_clock_id) m[s.id] = s.test_clock_id })
-    return m
-  }, [subscriptionsData])
 
   const chartData = useMemo(() => chartRes?.data ?? [], [chartRes])
   const error = errorObj instanceof Error ? errorObj.message : errorObj ? String(errorObj) : null
@@ -279,9 +269,10 @@ export default function DashboardPage() {
                             {inv.payment_status}
                           </Badge>
                         )}
-                        {inv.subscription_id && subTestClockMap[inv.subscription_id] && (
-                          <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
-                        )}
+                        {/* Authoritative per-invoice flag — same rule as the
+                            Invoices list; covers manual one-off invoices that
+                            the old sub→clock lookup missed. */}
+                        {inv.is_simulated && <SimulatedBadge />}
                       </div>
                       <div className="flex items-center gap-4 shrink-0">
                         <span className="text-sm tabular-nums text-foreground">
