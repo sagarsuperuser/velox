@@ -1157,12 +1157,7 @@ export default function InvoiceDetailPage() {
                       <div className="flex items-center gap-1.5 min-w-0">
                         <p className="text-sm text-foreground">{event.description}</p>
                         {isSimulated && (
-                          <span
-                            title="Timestamp came from a test-clock-advanced engine run, not wall-clock"
-                            className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
-                          >
-                            simulated
-                          </span>
+                          <SimulatedBadge title="This timestamp came from a test-clock simulation, not wall-clock time." />
                         )}
                       </div>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
