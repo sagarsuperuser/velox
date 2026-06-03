@@ -263,18 +263,18 @@ func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input Cr
 	// originally collected. Zero-tax invoices (tax_amount==0 or no
 	// provider) produce zero tax on the CN, preserving legacy behaviour.
 	//
-	// Smart-bucket residual absorption (Stripe Tax-style, 2026-05-25):
-	// integer-division proportional tax accumulates floor() residuals
-	// across multiple CNs. Sum of per-CN tax can fall short of the
-	// invoice tax by up to (N−1) cents, leaving a small unreversed
-	// residual. To match Stripe Tax's documented behaviour ("rounding
-	// errors are allocated to the last line item"), the CN that
-	// EXHAUSTS the invoice (cumulative CN total reaches the invoice
-	// total) absorbs the residual so the cumulative tax reversed
-	// equals the original tax exactly. Non-exhausting CNs use the
-	// pure proportional formula. The persisted `tax_amount_cents`
-	// on the CN drives both the dashboard display and the upstream
-	// Stripe Tax reversal Reference shape, so both surfaces converge
+	// Cumulative residual true-up (2026-05-25). This is a SEQUENTIAL/temporal
+	// reconciliation, distinct from the per-line apportionment in ADR-046:
+	// integer-division proportional tax accumulates floor() residuals across
+	// multiple CNs issued over time, so the sum of per-CN tax can fall short
+	// of the invoice tax by up to (N−1) cents. Because the CNs are issued one
+	// at a time (not distributed across peer lines at once), the correct fix
+	// is a true-up on the LAST event: the CN that EXHAUSTS the invoice
+	// (cumulative CN total reaches the invoice total) absorbs the residual so
+	// the cumulative tax reversed equals the original tax exactly. Non-
+	// exhausting CNs use the pure proportional formula. The persisted
+	// `tax_amount_cents` on the CN drives both the dashboard display and the
+	// upstream Stripe Tax reversal Reference shape, so both surfaces converge
 	// on the same total.
 	var taxAmount, netSubtotal int64
 	netSubtotal = subtotal
