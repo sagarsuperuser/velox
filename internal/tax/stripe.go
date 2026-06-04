@@ -302,6 +302,12 @@ func (p *StripeTaxProvider) buildParams(req Request) *stripe.TaxCalculationCreat
 		}}
 	}
 
+	// Expand line_items for the per-line amount_tax. We deliberately do NOT
+	// expand line_items.data.tax_breakdown: Stripe leaves the per-line breakdown
+	// null for single-rate calcs regardless, and mapResult seeds each line's
+	// rate + jurisdiction from the document-level tax_breakdown instead (see
+	// docRate there). Revisit if true per-line rates on genuinely
+	// multi-jurisdiction invoices become a requirement.
 	params.AddExpand("line_items")
 	return params
 }
@@ -326,6 +332,7 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 	taxName := ""
 	taxCountry := ""
 	reverseCharge := false
+	lastReason := ""
 	var breakdowns []Breakdown
 	for _, tb := range calc.TaxBreakdown {
 		if tb == nil {
@@ -355,12 +362,28 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 		if tb.TaxabilityReason == "reverse_charge" {
 			reverseCharge = true
 		}
+		lastReason = string(tb.TaxabilityReason)
 		breakdowns = append(breakdowns, Breakdown{
 			Jurisdiction: juris,
 			Name:         name,
 			Rate:         rate,
 			AmountCents:  tb.Amount,
 		})
+	}
+
+	// Single document-level rate, for the per-line fallback below. Stripe puts
+	// the verbatim percentage_decimal + jurisdiction in the DOCUMENT-level
+	// tax_breakdown; the PER-LINE tax_breakdown is frequently null (Stripe only
+	// populates it when line_items.data.tax_breakdown is expanded, and not
+	// reliably even then). When there is exactly one document-level rate it
+	// applies uniformly to every taxed line, so we seed the line from it —
+	// otherwise the line falls back to the rounded effectiveRate with an empty
+	// jurisdiction, silently dropping Stripe's true rate (e.g. NYC 8.8750
+	// displayed as 8.88, jurisdiction lost). Mixed-rate invoices (len > 1) can't
+	// attribute one rate per line here and still rely on the per-line breakdown.
+	docRate, docJuris, docReason := float64(0), "", ""
+	if len(breakdowns) == 1 {
+		docRate, docJuris, docReason = breakdowns[0].Rate, breakdowns[0].Jurisdiction, lastReason
 	}
 
 	// Map per-line results back to input Ref so the engine matches them to
@@ -423,6 +446,18 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 				// jurisdiction) needs no legend at all. Treated as an opaque
 				// string — Stripe may add new reasons over time.
 				lines[idx].TaxabilityReason = string(bd.TaxabilityReason)
+			} else if docRate > 0 && sli.AmountTax != 0 {
+				// Per-line breakdown absent (see docRate note above): seed this
+				// taxed line from the single document-level rate so Stripe's
+				// verbatim percentage_decimal + jurisdiction are preserved
+				// instead of the rounded effectiveRate / empty jurisdiction.
+				lines[idx].TaxRate = docRate
+				if docJuris != "" {
+					lines[idx].Jurisdiction = docJuris
+				}
+				if docReason != "" {
+					lines[idx].TaxabilityReason = docReason
+				}
 			}
 			if li := req.LineItems[idx]; li.TaxCode != "" {
 				lines[idx].TaxCode = li.TaxCode
