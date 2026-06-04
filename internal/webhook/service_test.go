@@ -504,6 +504,7 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:9999/hook"})
+	before := time.Now()
 	_ = svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
 	// Delivery is synchronous in test mode
 
@@ -524,10 +525,15 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 		t.Fatal("next_retry_at should be set for retry")
 	}
 	// The first retry must use the FIRST backoff (1m), not the second (5m).
-	// jitter adds 0–30s, so the gap lands in [1m, 1m30s).
-	gap := time.Until(*store.deliveries[0].NextRetryAt)
-	if gap < retryBackoffs[0] || gap >= retryBackoffs[0]+31*time.Second {
-		t.Errorf("next_retry_at gap = %v, want within [1m, 1m30s) — first backoff must not be skipped", gap)
+	// next_retry_at = stamp + 1m + jitter(0–30s), where stamp ∈ [before, now].
+	// Bound it against the captured dispatch window rather than time.Until at
+	// read time: the latter subtracts the microseconds elapsed since stamping
+	// and flaked at 59.9999s (just under 1m) whenever jitter landed near 0.
+	gotRetry := *store.deliveries[0].NextRetryAt
+	minRetry := before.Add(retryBackoffs[0])
+	maxRetry := time.Now().Add(retryBackoffs[0] + 30*time.Second)
+	if gotRetry.Before(minRetry) || gotRetry.After(maxRetry) {
+		t.Errorf("next_retry_at = %v, want within [%v, %v] — first backoff must not be skipped", gotRetry, minRetry, maxRetry)
 	}
 }
 
