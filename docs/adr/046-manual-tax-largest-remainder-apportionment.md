@@ -74,14 +74,21 @@ largest remainder.**
   Since this provider is the *manual* one, top-down is the right default
   and the contained change.)
 
-- **Axis 2 — largest-remainder apportionment.** New helper
+- **Axis 2 — largest-remainder apportionment.** This is the textbook
+  **Largest Remainder Method** (a.k.a. *Hamilton's method*, or
+  *Hare–Niemeyer* in proportional-representation contexts) — the same
+  algorithm used to apportion legislative seats to parties by vote share,
+  applied here to cents instead of seats. New helper
   `distributeLargestRemainder(total, nums, den)` in `internal/tax/manual.go`:
   each line gets `floor(nums[i] / den)`, then the leftover cents
   (`total − Σfloor`, mathematically in `[0, n]`) are handed out one at a
   time to the lines with the **largest fractional remainders**, ties
-  broken by **lowest index**. Applied to both the exclusive and
-  inclusive paths (the exact per-line share is `base × ppm / 1_000_000`
-  exclusive, `grossBase × ppm / denom` inclusive).
+  broken by **lowest index**. It satisfies the *quota rule* — every line
+  receives either the floor or the ceiling of its exact share (no line
+  more than 1¢ off), which is exactly the within-1¢ / no-inversion
+  guarantee below. Applied to both the exclusive and inclusive paths (the
+  exact per-line share is `base × ppm / 1_000_000` exclusive,
+  `grossBase × ppm / denom` inclusive).
 
 Guarantees:
 - `Σ(line tax) == totalTax` (the invariant the old code also held).
