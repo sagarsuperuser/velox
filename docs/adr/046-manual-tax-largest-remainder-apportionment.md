@@ -139,11 +139,15 @@ position. The old behavior was the outlier.
 
 ## Revisit trigger
 
-- A design partner needs **bottom-up** totals (per-line tax is the
-  source of truth, document tax = their sum → 726¢ for the example).
-  That's a tenant-level rounding-mode setting (Stripe exposes exactly
-  this for manual rates); add it as a `tenant_settings` option rather
-  than changing the default. Until a DP asks, top-down is the default.
+- A design partner is in a **line-level rounding** jurisdiction (per-line
+  tax is the source of truth; the document total = the sum of rounded
+  lines → 726¢ for the example). This is the document-level-vs-line-level
+  axis detailed in the **Addendum** below — it is jurisdiction-mandated,
+  not a preference. The fix is a per-tenant rounding-mode setting
+  (`document` | `line`), exactly as Stripe and Avalara expose; add it as a
+  `tenant_settings` option rather than changing the default. Until a DP in
+  a line-level jurisdiction uses the *manual* provider, document-level is
+  the default.
 - Multi-jurisdiction manual rates (per-line different rates) — the
   apportionment would run per rate group, not across the whole document.
   Out of scope while the manual provider is single-rate.
@@ -156,3 +160,49 @@ position. The old behavior was the outlier.
 - `feedback_verify_real_path_not_shortcut`: the old reconciliation
   passed the sum-invariant test but its *placement* was never tested;
   the new tests assert the real provider path + no-inversion.
+
+## Addendum (2026-06-04): document-level vs line-level rounding is jurisdiction-dependent
+
+"Axis 1" above (what the authoritative document total is) is the
+industry's **document-level vs line-level rounding** choice. A follow-up
+multi-platform review confirmed it is **jurisdiction-mandated**, not a
+mere preference:
+
+- **Line-level (bottom-up):** round each line's tax, then sum; the
+  invoice tax is whatever the rounded lines add up to. Required where each
+  line item is its own taxable sale / separate GL posting — several **US
+  sales-tax** states.
+- **Document-level (top-down):** sum the lines, apply the rate to the
+  subtotal, round once. Closest to the mathematically exact tax; favored
+  by **EU VAT** and much of APAC, where the *invoice* is the taxable unit.
+
+The two methods can disagree on the **invoice total itself**, not just
+the per-line split:
+
+| input @ 7.25% | line-level (Σ rounded lines) | document-level (round once) |
+|---|---|---|
+| 3333 / 3333 / 3334¢ | 242 + 242 + 242 = **726¢** | round(725.00) = **725¢** |
+| ten × 7¢ | 10 × round(0.5075) = **10¢** | round(5.075) = **5¢** |
+
+The second row shows the gap is **not** bounded at 1¢: many small lines
+that each round up make line-level over-collect substantially.
+
+**Velox's manual provider hardcodes document-level** (top-down total +
+largest-remainder split — Axis 1 + Axis 2 above). That is a valid,
+legally-accepted method, and `stripe_tax` already selects the correct
+per-jurisdiction method automatically — so the hardcode only under-serves
+a tenant who is in a **line-level jurisdiction**, uses the **manual**
+provider, AND needs strict per-line compliance.
+
+**Deferred (not built):** a per-tenant `tax_rounding_level`
+(`document` | `line`) setting, exactly as **Stripe** (line-item vs
+invoice-level rounding for manual rates) and **Avalara** (document vs line
+level rounding) expose. Trigger = the first design partner who hits the
+line-level case above. Until then, document-level is the deliberate
+default and this is a documented, intentional divergence — not a latent
+bug.
+
+Sources (verified 2026-06-04): Avalara "Document vs Line level rounding"
+FAQ; Stripe manual-rate rounding (line-item vs invoice level); Microsoft
+Dynamics 365 / NetSuite tax-rounding-level settings; TaxJar on
+per-jurisdiction line-vs-invoice rounding requirements.
