@@ -1,5 +1,8 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+# Pin the exact patch (not the floating 1.25 tag) so the shipped binary always
+# carries the patched stdlib — the build cache otherwise reuses an older 1.25.x
+# layer and the image ships CVEs the Grype gate (critical) then rejects.
+FROM golang:1.25.11-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
