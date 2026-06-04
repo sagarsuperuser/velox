@@ -87,8 +87,10 @@ Guarantees:
 - `Σ(line tax) == totalTax` (the invariant the old code also held).
 - Every line is within 1¢ of its exact share.
 - **No base-order inversion**: a line with a larger base never carries
-  smaller tax than a smaller line. (For the example: `242 / 241 / 242` —
-  the `$33.34` line keeps 242¢; a `$33.33` line absorbs the −1¢.)
+  smaller tax than a smaller line. (For the example: floors are
+  `241 / 241 / 241`; the two leftover cents go to the largest remainders —
+  the `$33.34` line at .7150 and one `$33.33` line at .6425 — giving
+  `242 / 241 / 242`. The `$33.34` line is promoted, never left behind.)
 
 `stripe_tax` is unaffected — Stripe returns per-line tax amounts and a
 total directly; the engine copies them verbatim
