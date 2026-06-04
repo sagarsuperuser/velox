@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 )
 
@@ -230,6 +231,36 @@ func TestAudit_Create_FillsResourceIDFromResponseBody(t *testing.T) {
 
 // Non-mutating methods must bypass the middleware entirely — no buffering,
 // no settings lookup, no audit write.
+// TestAudit_MarkSkip_SuppressesCatchAll proves a read-only POST handler that
+// calls audit.MarkSkip produces no catch-all audit row, while its response is
+// still flushed. This is the path invoice/recipe *preview* endpoints use so
+// the middleware doesn't log a spurious "create" for a dry-run that writes
+// nothing.
+func TestAudit_MarkSkip_SuppressesCatchAll(t *testing.T) {
+	writer := &stubAuditWriter{err: errors.New("should not be called")}
+	mw := auditLogWith(writer, &stubSettings{})
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		audit.MarkSkip(r.Context())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"preview":true}`))
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/invoices/create_preview", strings.NewReader(`{}`))
+	req = tenantCtx(t, req, "t1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "preview") {
+		t.Errorf("handler body not flushed: %q", rec.Body.String())
+	}
+	if writer.calls != 0 {
+		t.Errorf("MarkSkip must suppress the catch-all audit write; got %d calls", writer.calls)
+	}
+}
+
 func TestAudit_GET_Bypassed(t *testing.T) {
 	writer := &stubAuditWriter{err: errors.New("should not be called")}
 	settings := &stubSettings{lookupErr: errors.New("should not be called")}

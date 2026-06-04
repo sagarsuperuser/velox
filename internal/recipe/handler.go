@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -80,6 +81,11 @@ type previewRequest struct {
 }
 
 func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
+	// Read-only: renders the recipe with overrides and writes nothing. Opt
+	// out of the audit middleware's catch-all so it doesn't record a
+	// spurious "Created recipe" row for what is a dry-run inspection.
+	audit.MarkSkip(r.Context())
+
 	key := chi.URLParam(r, "key")
 	var req previewRequest
 	if r.ContentLength > 0 {
