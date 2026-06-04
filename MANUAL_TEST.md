@@ -835,7 +835,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 ## FLOW R1: List + preview
 
 - [ ] `GET /v1/recipes` → 3 entries (anthropic_style, openai_style, replicate_style) — all AI-native after the Phase 2 wedge-alignment trim.
-- [ ] `POST /v1/recipes/{key}/preview` → projected products/prices/meters/dunning/webhooks (no DB writes).
+- [ ] `POST /v1/recipes/{key}/preview` → projected products/prices/meters/dunning/webhooks (no DB writes). No `audit_log` row is written (read-only preview, not a "Created recipe").
 - [ ] Unknown key → 404.
 
 ## FLOW R2: Instantiate
@@ -967,6 +967,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 ## FLOW I11: `create_preview`
 
 - [ ] `POST /v1/invoices/create_preview {subscription_id}` → invoice shape with `id=null`, no DB row.
+- [ ] No `audit_log` row from a preview: open a customer detail page (the upcoming-invoice card fires `create_preview` on load), then open `/audit-log` → **no** new "Created invoice" row. Pre-fix each page-open logged a phantom "Created invoice" whose **View** link → `/invoices/create_preview` → 405 Method Not Allowed.
 - [ ] Plan-change confirmation dialog renders preview before commit.
 - [ ] Cost-dashboard projection populated when engine returns a value.
 - [ ] **`in_advance` preview** (ADR-031): for a sub on an `in_advance` plan, preview's `billing_period_start/end` is the **upcoming** period (matches what the cycle invoice will stamp). Base line description carries the "in advance for upcoming period" suffix. Usage line totals match the elapsed period (per the engine's stamping). Totals identical to in_arrears preview — only the period labels differ.

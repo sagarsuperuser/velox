@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -72,6 +73,13 @@ type createPreviewWirePeriod struct {
 //   - Customer not found / subscription not found → 404.
 //   - customer_has_no_subscription → 422 with code (no active sub).
 func (h *CreatePreviewHandler) create(w http.ResponseWriter, r *http.Request) {
+	// Read-only: this POST computes a dry-run preview and writes nothing.
+	// Opt out of the audit middleware's catch-all so it doesn't record a
+	// spurious "Created invoice" row (resource_id="create_preview") whose
+	// "View" link 405s on this POST-only route. Fired automatically by the
+	// dashboard's upcoming-invoice card on every customer page-open.
+	audit.MarkSkip(r.Context())
+
 	tenantID := auth.TenantID(r.Context())
 
 	body, err := io.ReadAll(r.Body)

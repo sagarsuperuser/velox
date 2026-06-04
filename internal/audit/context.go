@@ -15,13 +15,18 @@ const (
 	ipKey
 )
 
-// requestState lets a handler that makes an explicit Log call signal the
-// AuditLog middleware to suppress its catch-all write — otherwise a single
-// user action produces two audit rows (one generic from the middleware, one
-// rich from the handler). Kept as a pointer so the mutation is visible back
-// to the middleware frame through the ctx value lookup.
+// requestState lets a handler signal the AuditLog middleware to suppress its
+// catch-all write. Two reasons set it:
+//   - MarkHandled: the handler wrote its own richer audit row, so the generic
+//     middleware row would be a duplicate.
+//   - MarkSkip: the request performs no auditable mutation (a read-only POST
+//     such as an invoice or recipe *preview*), so there is nothing to audit at
+//     all — like a GET, which the middleware already bypasses.
+//
+// Kept as a pointer so the mutation is visible back to the middleware frame
+// through the ctx value lookup.
 type requestState struct {
-	handled atomic.Bool
+	suppressed atomic.Bool
 }
 
 // WithRequestState seeds a fresh bookkeeping cell on the request context.
@@ -35,14 +40,29 @@ func WithRequestState(ctx context.Context) context.Context {
 // request. The AuditLog middleware checks this to avoid a duplicate row.
 func MarkHandled(ctx context.Context) {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
-		s.handled.Store(true)
+		s.suppressed.Store(true)
 	}
 }
 
-// WasHandled reports whether MarkHandled has been called on this ctx.
+// MarkSkip records that this request performs no auditable mutation — e.g. a
+// read-only POST such as an invoice or recipe *preview* that reads data but
+// writes nothing. The AuditLog middleware otherwise classifies every
+// successful non-GET request as a mutation (POST→create), which would record
+// a spurious row (and, for invoices, a "View" link that 405s on the
+// POST-only create_preview route). Read-only handlers call this so the
+// catch-all write is skipped, exactly as it is for GET.
+func MarkSkip(ctx context.Context) {
+	if s, ok := ctx.Value(stateKey).(*requestState); ok {
+		s.suppressed.Store(true)
+	}
+}
+
+// WasHandled reports whether the catch-all middleware write should be
+// suppressed — because a handler wrote its own row (MarkHandled) or opted out
+// as non-mutating (MarkSkip).
 func WasHandled(ctx context.Context) bool {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
-		return s.handled.Load()
+		return s.suppressed.Load()
 	}
 	return false
 }
