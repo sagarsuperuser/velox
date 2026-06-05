@@ -98,6 +98,37 @@ func TestMapResult_TaxabilityReason_EmptyWhenNoBreakdown(t *testing.T) {
 	}
 }
 
+// TestTaxTypeDisplayName pins the Stripe tax_type → customer-facing label map.
+// Stripe returns raw snake_case enums ("sales_tax"); rendered verbatim the
+// invoice reads "sales_tax (8.875%)". The map (all 15 stripe-go v82 tax_type
+// values) yields "Sales Tax", preferring Stripe's display_name when present and
+// title-casing any unmapped future enum so a raw token never reaches the PDF.
+func TestTaxTypeDisplayName(t *testing.T) {
+	cases := []struct {
+		displayName string
+		taxType     string
+		want        string
+	}{
+		{"", "sales_tax", "Sales Tax"},
+		{"", "vat", "VAT"},
+		{"", "gst", "GST"},
+		{"", "qst", "QST"},
+		{"", "igst", "IGST"},
+		{"", "retail_delivery_fee", "Retail Delivery Fee"},
+		// Stripe's own localized display_name wins when supplied (per-line path).
+		{"Value-added tax (VAT)", "vat", "Value-added tax (VAT)"},
+		// Unmapped future enum → graceful title-case, never raw snake_case.
+		{"", "some_future_tax", "Some Future Tax"},
+		// Both empty → unset.
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := taxTypeDisplayName(c.displayName, c.taxType); got != c.want {
+			t.Errorf("taxTypeDisplayName(%q, %q) = %q, want %q", c.displayName, c.taxType, got, c.want)
+		}
+	}
+}
+
 // TestMapResult_DocLevelRateFallback is the regression for the NYC precision
 // loss found in invoice vlx_inv_d8gomormajdhcl08grvg. Stripe returns the
 // verbatim percentage_decimal ("8.875") + jurisdiction in the DOCUMENT-level
@@ -140,6 +171,9 @@ func TestMapResult_DocLevelRateFallback(t *testing.T) {
 	}
 	if len(res.Lines) != 1 {
 		t.Fatalf("Lines len = %d, want 1", len(res.Lines))
+	}
+	if res.TaxName != "Sales Tax" {
+		t.Errorf("TaxName = %q, want \"Sales Tax\" (mapped from tax_type=sales_tax, not the raw enum)", res.TaxName)
 	}
 	l := res.Lines[0]
 	if l.TaxRate != 8.875 {
