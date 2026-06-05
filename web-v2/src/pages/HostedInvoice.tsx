@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { formatCents, formatDate } from '@/lib/api'
+import { formatCents, formatDate, formatTaxRate } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -424,7 +424,7 @@ export default function HostedInvoicePage() {
                       {invoice.tax_name || 'Tax'}
                       {invoice.tax_rate > 0 && (
                         <span className="ml-1 text-xs">
-                          ({invoice.tax_rate.toFixed(2)}%)
+                          ({formatTaxRate(invoice.tax_rate)}%)
                         </span>
                       )}
                     </dt>

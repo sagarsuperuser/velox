@@ -1637,6 +1637,15 @@ export function formatCents(cents: number, currency?: string): string {
   return `${sign}${symbol}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
 }
 
+// formatTaxRate renders a tax-rate percent (without the % sign) at up to 4
+// decimal places, trailing zeros trimmed: 8.875 → "8.875", 18 → "18",
+// 9.975 → "9.975". The tax rate is a NUMERIC(7,4) statutory rate (ADR-042/043);
+// toFixed(2) silently truncates real 4-decimal rates (8.875 → "8.88"), which
+// misstates the rate on customer-facing invoices. Callers append "%".
+export function formatTaxRate(rate: number): string {
+  return rate.toFixed(4).replace(/\.?0+$/, '')
+}
+
 // formatRate renders a per-unit price that is carried as decimal cents
 // (e.g. "0.0003" cents = $0.000003 per unit, the Stripe unit_amount_decimal
 // model). The rate arrives as a string from the API to preserve precision —

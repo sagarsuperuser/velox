@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/signintech/gopdf"
@@ -497,7 +498,7 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 			taxLabel = inv.TaxName
 		}
 		if inv.TaxRate > 0 {
-			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, inv.TaxRate)
+			taxLabel = fmt.Sprintf("%s (%s%%)", taxLabel, formatTaxRate(inv.TaxRate))
 		}
 		if inv.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, inv.TaxCountry)
@@ -776,6 +777,17 @@ func formatCityStatePostal(city, state, postal string) string {
 	return line
 }
 
+// formatTaxRate renders a tax-rate percent with up to 4 decimal places,
+// trailing zeros trimmed: 8.8750 → "8.875", 18 → "18", 9.975 → "9.975".
+// fmt's %g uses *significant figures*, which silently drops precision on rates
+// ≥ 10 (13.875 → "13.88"); the NUMERIC(7,4) tax rate needs fixed-decimal
+// formatting so the statutory rate prints verbatim.
+func formatTaxRate(rate float64) string {
+	s := strconv.FormatFloat(rate, 'f', 4, 64)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimRight(s, ".")
+}
+
 func formatCents(cents int64) string {
 	if cents == 0 {
 		return pdfCurrencySymbol + "0.00"
@@ -842,7 +854,7 @@ func aggregateTaxByJurisdiction(lineItems []domain.InvoiceLineItem) []jurisdicti
 	for _, k := range order {
 		label := k.jurisdiction
 		if k.rate > 0 {
-			label = fmt.Sprintf("%s (%.4g%%)", label, k.rate)
+			label = fmt.Sprintf("%s (%s%%)", label, formatTaxRate(k.rate))
 		}
 		rows = append(rows, jurisdictionTaxRow{label: label, amount: agg[k]})
 	}

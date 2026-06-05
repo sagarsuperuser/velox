@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, setActiveCurrency, setTenantTimezone, formatCents, type StripeProviderCredentials } from '@/lib/api'
+import { api, setActiveCurrency, setTenantTimezone, formatCents, formatTaxRate, type StripeProviderCredentials } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { useAuth } from '@/contexts/AuthContext'
@@ -738,14 +738,14 @@ export default function SettingsPage() {
                           <AlertCircle size={14} className="shrink-0 mt-0.5" />
                           {form.tax_inclusive ? (
                             <span>
-                              Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {form.tax_rate.toFixed(2)}%.
+                              Example: {symbol}100.00 sticker price includes {form.tax_name || 'tax'} at {formatTaxRate(form.tax_rate)}%.
                               Net subtotal = <strong>{formatCents(Math.round(10000 * 10000 / (10000 + form.tax_rate * 100)), form.default_currency || 'USD')}</strong>.
                               Customer pays <strong>{formatCents(10000, form.default_currency || 'USD')}</strong>.
                             </span>
                           ) : (
                             <span>
                               Example: {symbol}100.00 subtotal {form.tax_name ? `+ ${form.tax_name} ` : '+ tax '}
-                              {form.tax_rate.toFixed(2)}% = <strong>{formatCents(10000 + Math.round(10000 * (form.tax_rate * 100) / 10000), form.default_currency || 'USD')}</strong> total.
+                              {formatTaxRate(form.tax_rate)}% = <strong>{formatCents(10000 + Math.round(10000 * (form.tax_rate * 100) / 10000), form.default_currency || 'USD')}</strong> total.
                             </span>
                           )}
                         </p>
