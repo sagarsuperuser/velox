@@ -851,11 +851,12 @@ func TestAddItem_ProratesMidCycle(t *testing.T) {
 	if inv.SubscriptionID != subID {
 		t.Errorf("invoice subscription_id: got %q, want %q", inv.SubscriptionID, subID)
 	}
-	// Factor is ~0.5 (seeded period is ±15 days, now is midpoint), so the
-	// prorated amount on a $20 plan should be roughly $10. Accept 800-1200
-	// to absorb any near-midnight drift.
-	if inv.SubtotalCents < 800 || inv.SubtotalCents > 1200 {
-		t.Errorf("invoice subtotal: got %d, want ~1000 (half of 2000)", inv.SubtotalCents)
+	// Period is an exact 30-day span (now ± 15 days) with now at the midpoint,
+	// so remainingPeriodRatio is exactly 15/30: RoundHalfToEven(2000×15, 30) =
+	// 1000. Deterministic — no midnight snapping, and sub-second clock skew
+	// can't move the 15-day rounding.
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("invoice subtotal: got %d, want 1000 ($20 × 15/30)", inv.SubtotalCents)
 	}
 	if inv.AmountDueCents <= 0 {
 		t.Errorf("invoice amount_due: got %d, want > 0", inv.AmountDueCents)
@@ -910,8 +911,8 @@ func TestUpdateItem_QuantityIncreaseProratesAsInvoice(t *testing.T) {
 	if inv.SourceSubscriptionItemID != itemID {
 		t.Errorf("invoice item_id: got %q, want %q", inv.SourceSubscriptionItemID, itemID)
 	}
-	if inv.SubtotalCents < 800 || inv.SubtotalCents > 1200 {
-		t.Errorf("invoice subtotal: got %d, want ~1000 (half of 2000 delta)", inv.SubtotalCents)
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("invoice subtotal: got %d, want 1000 (2000 delta × 15/30)", inv.SubtotalCents)
 	}
 	if len(credits.grantCalls) != 0 {
 		t.Errorf("grantCalls: got %d, want 0 — qty increase should bill not credit", len(credits.grantCalls))
@@ -967,8 +968,8 @@ func TestUpdateItem_QuantityDecreaseProratesAsCredit(t *testing.T) {
 	if call.SourceChangeType != domain.ItemChangeTypeQuantity {
 		t.Errorf("credit SourceChangeType: got %q, want %q", call.SourceChangeType, domain.ItemChangeTypeQuantity)
 	}
-	if call.AmountCents < 800 || call.AmountCents > 1200 {
-		t.Errorf("credit amount: got %d, want ~1000", call.AmountCents)
+	if call.AmountCents != 1000 {
+		t.Errorf("credit amount: got %d, want 1000 ($20 × 15/30)", call.AmountCents)
 	}
 }
 
@@ -1019,9 +1020,9 @@ func TestRemoveItem_ProratesAsCredit(t *testing.T) {
 	if call.SourceSubscriptionItemID != firstItemID {
 		t.Errorf("credit item_id: got %q, want %q", call.SourceSubscriptionItemID, firstItemID)
 	}
-	// plan_a is $20/period, half-period → ~$10 credit.
-	if call.AmountCents < 800 || call.AmountCents > 1200 {
-		t.Errorf("credit amount: got %d, want ~1000", call.AmountCents)
+	// plan_a is $20/period; exact 15/30 half-period → RoundHalfToEven(2000×15, 30) = 1000.
+	if call.AmountCents != 1000 {
+		t.Errorf("credit amount: got %d, want 1000 ($20 × 15/30)", call.AmountCents)
 	}
 }
 
