@@ -107,6 +107,42 @@ func (s *PostgresStore) Record(ctx context.Context, tenantID, invoiceID string, 
 	return id, nil
 }
 
+// LinkInvoice backfills invoice_id on the audit row(s) for a calculation
+// once the invoice that triggered it has been persisted. RecordCalculation
+// runs during tax application — before the invoice row exists — so it writes
+// a NULL invoice_id and the only durable link is provider_ref (the upstream
+// Stripe tax_calculation id, mirrored onto invoices.tax_calculation_id).
+// CommitTax calls this with the now-known invoice id so audit queries can
+// join on invoice_id, and so the expiry-guard lookup (which filters on
+// invoice_id) matches.
+//
+// Idempotent and additive-only: it touches rows with a NULL invoice_id,
+// never overwriting an existing link. A no-op when providerRef is empty
+// (manual / none providers have no durable ref to match on). The tx is
+// opened with TxTenant so RLS permits the update.
+func (s *PostgresStore) LinkInvoice(ctx context.Context, tenantID, invoiceID, providerRef string) error {
+	if tenantID == "" || invoiceID == "" || providerRef == "" {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return fmt.Errorf("tax: begin tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tax_calculations
+		SET invoice_id = $2
+		WHERE tenant_id = $1 AND provider_ref = $3 AND invoice_id IS NULL
+	`, tenantID, invoiceID, providerRef); err != nil {
+		return fmt.Errorf("tax: link invoice to tax_calculations: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("tax: commit tx: %w", err)
+	}
+	return nil
+}
+
 // LookupCalculationCreatedAt returns the created_at of the
 // tax_calculations row that matches (tenant, invoice, provider_ref).
 // When the same invoice has been retried (RetryTaxForInvoice writes a

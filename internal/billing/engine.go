@@ -390,6 +390,11 @@ type TaxProviderResolver interface {
 type TaxCalculationWriter interface {
 	Record(ctx context.Context, tenantID, invoiceID string, req tax.Request, res *tax.Result) (string, error)
 	LookupCalculationCreatedAt(ctx context.Context, tenantID, invoiceID, providerRef string) (time.Time, error)
+	// LinkInvoice backfills invoice_id on the audit row once the invoice
+	// exists. Record runs before the invoice is persisted (invoice_id NULL);
+	// CommitTax calls this with the known id so audit joins + the expiry
+	// guard's invoice_id filter resolve.
+	LinkInvoice(ctx context.Context, tenantID, invoiceID, providerRef string) error
 }
 
 // taxCalculationMaxAge is the Stripe Tax calculation window. Stripe's
@@ -450,6 +455,16 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 	// row IS the source of truth for calc creation time, and tests
 	// without it shouldn't be gated by a guard they didn't opt into.
 	if e.taxCalcStore != nil && calculationID != "" {
+		// Backfill invoice_id on the audit row now that the invoice is
+		// persisted — Record wrote it during tax application before the
+		// invoice existed. Best-effort: a failure here only degrades the
+		// expiry-guard lookup below to "not found → skip", never blocks
+		// finalize.
+		if linkErr := e.taxCalcStore.LinkInvoice(ctx, tenantID, invoiceID, calculationID); linkErr != nil {
+			slog.Warn("tax: failed to link invoice to tax_calculations row",
+				"error", linkErr, "tenant_id", tenantID, "invoice_id", invoiceID,
+				"calculation_id", calculationID)
+		}
 		createdAt, lookupErr := e.taxCalcStore.LookupCalculationCreatedAt(ctx, tenantID, invoiceID, calculationID)
 		if lookupErr == nil {
 			if age := clock.Now(ctx).Sub(createdAt); age > taxCalculationMaxAge {
