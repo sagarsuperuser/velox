@@ -679,6 +679,7 @@ whole cents — only the RATE gains precision.
 - [ ] In_arrears sub upgrade immediately → no immediate proration invoice/credit; cycle close emits per-segment lines (FLOW B20).
 - [ ] In_arrears sub downgrade immediately → no immediate credit grant; cycle close emits per-segment lines.
 - [ ] In_advance sub upgrade immediately + source invoice paid → immediate proration invoice for the delta lands in customer's invoices.
+- [ ] **Exact integer day-ratio amount (ADR-042)**: on a clock-pinned in_advance sub whose 30-day period (Jun 1 → Jul 1) base invoice is paid, advance the clock to Jun 13 (18 of 30 days remain), then immediately upgrade Starter ($20.00) → Pro ($50.00). The proration invoice's single line is **exactly $18.00** — `(5000−2000)×18 ÷ 30 = 1800`¢, banker's-rounded, no float drift. With Pro at $50.01 the line is **$18.01** (`3001×18 ÷ 30 = 1800.6`, rounds up); downgrading Pro → Starter at 18/30 yields a **−$18.00** credit (not an invoice).
 - [ ] In_advance sub downgrade immediately + source invoice paid → immediate credit grant lands in `customer_credit_ledger`.
 - [ ] In_advance sub upgrade/downgrade immediately + source invoice **unpaid** → no immediate artifact (operator must wait for source invoice to clear OR void it).
 - [ ] Scheduled plan change (`immediate=false`) → no immediate artifact; engine emits closing invoice under OUTGOING plan at period boundary (FLOW B20).
