@@ -133,6 +133,56 @@ invoice-level rate.
   per-jurisdiction breakdown (already rendered when >1 jurisdiction) carries the
   real per-rate detail.
 
+## Revisit trigger
+
+**The first design partner who registers in a multi-component tax jurisdiction
+and needs a compliant itemized invoice.** Concretely: **Canada** —
+Quebec/BC/Manitoba/Saskatchewan, where federal **GST** and provincial
+**QST/PST** are levied and administered separately — or **domestic India**
+(intra-state **CGST + SGST**). For one customer in one geographic jurisdiction,
+Stripe returns a **multi-entry** `tax_breakdown` array (e.g. Quebec: GST 5% +
+QST 9.975%). Today the engine collapses that to the **blended effective rate**
+(~14.975%): the amount is correct (Stripe sums the components into the per-line
+`amount_tax`, copied verbatim) but the components are not itemized. US sales tax
+(combined into one entry) and India OIDAR/digital (IGST, single 18%) stay
+single-entry and are unaffected — this is **not** triggered by them.
+
+The fix is **additive — a new per-line tax-components collection, not a rewrite
+of the scalar model**:
+
+1. **Storage.** Add a child `invoice_line_tax_components` table (or a JSONB
+   column on the line) holding `[{tax_name, jurisdiction, rate, amount_cents}]`
+   per line — mirroring Stripe's `tax_breakdown` (Stripe supports up to 10 tax
+   rates per line item). Additive migration; the existing scalar
+   `invoice_line_items.{tax_rate, tax_jurisdiction, tax_amount_cents}` stay as
+   the blended summary, so nothing downstream breaks.
+2. **`invoices.tax_rate` is unchanged.** It remains the summary scalar;
+   `displayTaxRate` already returns the blended effective rate for the
+   multi-component case, which is the correct header value. No semantic break to
+   this ADR's decision — components are *additional* detail, not a replacement.
+3. **Mapping.** In `mapResult`, map the **full** per-line `tax_breakdown` array
+   into the new collection instead of reading only `tax_breakdown[0]` — this is
+   the latent `[0]`-only read called out in the **Risks** above; it MUST be
+   fixed in the same change or the new path silently drops the second component
+   (QST/SGST). Revisit the deliberate decision **not** to expand
+   `line_items.data.tax_breakdown` (we rely on the document-level breakdown
+   today, see `stripe.go`); either flip the expand and harden against its
+   per-calc error mode, or derive components from the document-level array.
+4. **Rounding.** Each component rounds to the cent; the components must still
+   reconcile to the line's `tax_amount_cents` (and the invoice total) — apply
+   the largest-remainder apportionment from ADR-046 *per component* so the sum
+   invariant holds.
+5. **Display.** Render itemized component lines ("GST (5%)", "QST (9.975%)")
+   instead of the single combined tax line, on the invoice PDF, credit-note PDF,
+   hosted invoice page, and operator detail. `aggregateTaxByJurisdiction`
+   (`internal/invoice/pdf.go`) generalizes to aggregate by component; the
+   hosted page (which today shows no per-rate breakdown) gains one.
+
+What does **not** change: the tax amount (already correct), the provider
+abstraction, and this ADR's statutory-vs-effective rule for the scalar field.
+The manual provider stays single-rate (it applies one flat tenant rate) unless a
+separate decision adds multi-rate manual support.
+
 ## References
 
 - ADR-042 / ADR-043: tax rate as `NUMERIC(7,4)` (the 4-dp precision this relies on).
