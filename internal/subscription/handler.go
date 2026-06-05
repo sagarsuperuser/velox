@@ -22,7 +22,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
-	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -1555,16 +1554,11 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		}
 	}
 
+	// Integer day-ratio proration per ADR-042 — pure-integer banker's
+	// rounding, no float64 in the cents path. See prorationCents.
 	oldAmount := oldPlan.BaseAmountCents * spec.oldQuantity
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
-	// Integer day-ratio proration per ADR-042. Pre-fix used float64
-	// `diff * prorationFactor` then `math.RoundToEven` — introduced
-	// ULP error on large amounts. money.RoundHalfToEven keeps the
-	// rounding semantics (banker's) while staying in integer math.
-	proratedCents := money.RoundHalfToEven(
-		(newAmount-oldAmount)*spec.remainingDays,
-		spec.totalDays,
-	)
+	proratedCents := prorationCents(oldAmount, newAmount, spec.remainingDays, spec.totalDays)
 
 	if proratedCents == 0 {
 		return nil, nil
