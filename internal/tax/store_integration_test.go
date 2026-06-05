@@ -98,6 +98,93 @@ func TestPostgresStore_Record(t *testing.T) {
 	}
 }
 
+// TestPostgresStore_LinkInvoice verifies the backfill that CommitTax runs once
+// the invoice exists: Record writes the row with a NULL invoice_id (calc
+// happens before the invoice is persisted), then LinkInvoice stamps the id by
+// matching provider_ref. Without this, audit queries by invoice_id and the
+// CommitTax expiry-guard lookup (which filters on invoice_id) silently miss.
+func TestPostgresStore_LinkInvoice(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	tenantID := testutil.CreateTestTenant(t, db, "Tax Store Link")
+
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 10*time.Second)
+	defer cancel()
+
+	// invoice_id carries a FK to invoices, so the backfill target must be a
+	// real persisted invoice — mirroring production, where CommitTax runs only
+	// after the invoice row exists. Seed a minimal customer + invoice.
+	var invoiceID string
+	func() {
+		tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+		if err != nil {
+			t.Fatalf("begin setup tx: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		var custID string
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO customers (tenant_id, external_id, display_name)
+			VALUES ($1, 'ext_link', 'Link Test Co') RETURNING id
+		`, tenantID).Scan(&custID); err != nil {
+			t.Fatalf("insert customer: %v", err)
+		}
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO invoices (tenant_id, customer_id, invoice_number, billing_period_start, billing_period_end)
+			VALUES ($1, $2, 'INV-LINK-1', now(), now()) RETURNING id
+		`, tenantID, custID).Scan(&invoiceID); err != nil {
+			t.Fatalf("insert invoice: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit setup: %v", err)
+		}
+	}()
+
+	store := tax.NewPostgresStore(db)
+	req := tax.Request{LineItems: []tax.RequestLine{{Ref: "line_0", AmountCents: 10000}}}
+	res := &tax.Result{Provider: "stripe_tax", CalculationID: "calc_link_xyz", TotalTaxCents: 888}
+
+	if _, err := store.Record(ctx, tenantID, "", req, res); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	if err := store.LinkInvoice(ctx, tenantID, invoiceID, "calc_link_xyz"); err != nil {
+		t.Fatalf("LinkInvoice: %v", err)
+	}
+
+	readInvoiceID := func() string {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+		if err != nil {
+			t.Fatalf("begin read tx: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		var got string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(invoice_id,'') FROM tax_calculations WHERE provider_ref = $1
+		`, "calc_link_xyz").Scan(&got); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		return got
+	}
+
+	if got := readInvoiceID(); got != invoiceID {
+		t.Fatalf("invoice_id = %q, want %q (LinkInvoice did not backfill)", got, invoiceID)
+	}
+
+	// Idempotent + non-clobbering: a second call with a different id must NOT
+	// overwrite the existing link (the WHERE invoice_id IS NULL guard).
+	if err := store.LinkInvoice(ctx, tenantID, "vlx_inv_other", "calc_link_xyz"); err != nil {
+		t.Fatalf("LinkInvoice (second): %v", err)
+	}
+	if got := readInvoiceID(); got != invoiceID {
+		t.Errorf("invoice_id = %q after second link, want unchanged %q (must not clobber)", got, invoiceID)
+	}
+
+	// Empty providerRef is a no-op (manual / none providers) — no error, no panic.
+	if err := store.LinkInvoice(ctx, tenantID, invoiceID, ""); err != nil {
+		t.Errorf("LinkInvoice with empty providerRef: %v, want nil no-op", err)
+	}
+}
+
 // TestPostgresStore_Record_TenantIsolation verifies RLS prevents cross-tenant
 // reads of tax_calculations — critical because calculation payloads can
 // include customer addresses, tax IDs, and jurisdiction detail other tenants
