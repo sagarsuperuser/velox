@@ -3094,10 +3094,11 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		if len(granter.grants) != 1 {
 			t.Fatalf("expected 1 credit grant, got %d", len(granter.grants))
 		}
-		// Mar 1 → Apr 1 = 31 days; (Mar 16, Apr 1) = 16 unused days
-		// $60 × 16/31 ≈ $30.97 ≈ 3097¢. Tolerance ±2¢ for rounding.
-		if cents < 3095 || cents > 3100 {
-			t.Errorf("unused refund cents: got %d, want ~3097 ($60 × 16/31)", cents)
+		// Mar 1 → Apr 1 = 31 days; (Mar 16, Apr 1) = 16 unused days.
+		// RoundHalfToEven(6000×16, 31) = RoundHalfToEven(96000, 31) = 3097
+		// (96000 = 31×3096 + 24; 2×24 = 48 > 31 → round up). Exact, not ~.
+		if cents != 3097 {
+			t.Errorf("unused refund cents: got %d, want 3097 ($60 × 16/31, banker's)", cents)
 		}
 		if cents != granter.grants[0].AmountCents {
 			t.Errorf("return cents (%d) must match granter cents (%d)", cents, granter.grants[0].AmountCents)
@@ -3180,12 +3181,12 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
 		}
-		// Stub paid amount = $60 × 8/31 ≈ $15.48. Swap at period start:
-		// all 8 stub days unused. Expected refund = $60 × 8/31 ≈
-		// 1548 cents. fullCycleDays = 31 (Mar 24 → Apr 24 monthly
-		// roll). Pre-fix this would have refunded $60 × 8/8 = $60.
-		if cents < 1540 || cents > 1560 {
-			t.Errorf("stub refund cents: got %d, want ~1548 ($60 × 8/31 stub-prorated); pre-fix would have been ~6000 (over-refund)", cents)
+		// Stub = 8 days, all unused (swap at period start). fullCycleDays
+		// = 31 (Mar 24 → Apr 24 monthly roll). RoundHalfToEven(6000×8, 31)
+		// = RoundHalfToEven(48000, 31) = 1548 (48000 = 31×1548 + 12; 2×12
+		// = 24 < 31 → round down). Pre-fix would have refunded $60 × 8/8.
+		if cents != 1548 {
+			t.Errorf("stub refund cents: got %d, want 1548 ($60 × 8/31 stub-prorated)", cents)
 		}
 	})
 
@@ -3348,12 +3349,13 @@ func TestRunCycle_SegmentAware_InArrears_MidPeriodPlanChange(t *testing.T) {
 	}
 
 	inv := invoices.invoices[0]
-	// March has 31 days. Segment 1: [Mar 1, Mar 15) = 14 days × pln_a
-	// ($30/31 × 14) ≈ 1355¢. Segment 2: [Mar 15, Apr 1) = 17 days
-	// × pln_b ($60/31 × 17) ≈ 3290¢. Total ≈ 4645¢. Tolerance 4500-
-	// 4800 absorbs day-rounding edges.
-	if inv.SubtotalCents < 4500 || inv.SubtotalCents > 4800 {
-		t.Errorf("segment-aware total: got %d cents, want ~4645 (14d @ pln_a $30 + 17d @ pln_b $60)", inv.SubtotalCents)
+	// March has 31 days. Segment 1: [Mar 1, Mar 15) = 14 days × pln_a:
+	// RoundHalfToEven(3000×14, 31) = 1355 (42000 = 31×1354 + 26; round up).
+	// Segment 2: [Mar 15, Apr 1) = 17 days × pln_b:
+	// RoundHalfToEven(6000×17, 31) = 3290 (102000 = 31×3290 + 10; round down).
+	// Total = 1355 + 3290 = 4645, exact.
+	if inv.SubtotalCents != 4645 {
+		t.Errorf("segment-aware total: got %d cents, want 4645 (14d @ pln_a $30 = 1355 + 17d @ pln_b $60 = 3290)", inv.SubtotalCents)
 	}
 
 	// Two base-fee lines expected: one per segment.

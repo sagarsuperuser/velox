@@ -629,12 +629,11 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	if grant.ID == "" {
 		t.Fatal("BillOnCancel produced no credit grant entry")
 	}
-	// July 16 cancel of a July 1 - August 1 period: 16 unused days
-	// out of 31. 4900 * 16/31 = 2529 cents (rounded). Allow ±1 for
-	// banker's-rounding edge cases.
-	expected := int64(4900 * 16 / 31) // 2529
-	if grant.AmountCents < expected-1 || grant.AmountCents > expected+1 {
-		t.Errorf("cancel proration credit: got %d cents, want ~%d", grant.AmountCents, expected)
+	// July 16 cancel of a July 1 - August 1 period: 16 unused days out of
+	// 31. RoundHalfToEven(4900×16, 31) = RoundHalfToEven(78400, 31) = 2529
+	// (78400 = 31×2529 + 1; 2×1 = 2 < 31 → round down). Exact, no tolerance.
+	if grant.AmountCents != 2529 {
+		t.Errorf("cancel proration credit: got %d cents, want 2529 (4900 × 16/31, banker's)", grant.AmountCents)
 	}
 
 	t.Logf("in_advance E2E passed — day-1 inv: $%.2f, cycle base period: %v, cancel credit: $%.2f",
