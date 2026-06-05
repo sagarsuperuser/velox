@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -391,7 +392,7 @@ func RenderPDF(
 			taxLabel = orig.TaxName
 		}
 		if orig.TaxRate > 0 {
-			taxLabel = fmt.Sprintf("%s (%.4g%%)", taxLabel, orig.TaxRate)
+			taxLabel = fmt.Sprintf("%s (%s%%)", taxLabel, cnFormatTaxRate(orig.TaxRate))
 		}
 		if orig.TaxCountry != "" {
 			taxLabel = fmt.Sprintf("%s [%s]", taxLabel, orig.TaxCountry)
@@ -523,6 +524,16 @@ func cnFormatCityStatePostal(city, state, postal string) string {
 		line += postal
 	}
 	return line
+}
+
+// cnFormatTaxRate renders a tax-rate percent with up to 4 decimal places,
+// trailing zeros trimmed (8.8750 → "8.875"). Mirrors the invoice PDF's
+// formatTaxRate — %g uses significant figures and drops precision on rates
+// ≥ 10, so fixed-decimal formatting prints the statutory rate verbatim.
+func cnFormatTaxRate(rate float64) string {
+	s := strconv.FormatFloat(rate, 'f', 4, 64)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimRight(s, ".")
 }
 
 func cnFormatCents(cents int64, symbol string) string {
