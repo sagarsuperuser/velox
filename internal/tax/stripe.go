@@ -342,7 +342,9 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 		rate := float64(0)
 		juris := ""
 		if tb.TaxRateDetails != nil {
-			name = string(tb.TaxRateDetails.TaxType)
+			// Document-level breakdown has no display_name (stripe-go v82), so
+			// map the tax_type enum to a clean label.
+			name = taxTypeDisplayName("", string(tb.TaxRateDetails.TaxType))
 			if tb.TaxRateDetails.Country != "" {
 				juris = tb.TaxRateDetails.Country
 				if tb.TaxRateDetails.State != "" {
@@ -422,10 +424,8 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 			if len(sli.TaxBreakdown) > 0 {
 				bd := sli.TaxBreakdown[0]
 				if bd.TaxRateDetails != nil {
-					if bd.TaxRateDetails.DisplayName != "" {
-						lines[idx].TaxName = bd.TaxRateDetails.DisplayName
-					} else if bd.TaxRateDetails.TaxType != "" {
-						lines[idx].TaxName = string(bd.TaxRateDetails.TaxType)
+					if n := taxTypeDisplayName(bd.TaxRateDetails.DisplayName, string(bd.TaxRateDetails.TaxType)); n != "" {
+						lines[idx].TaxName = n
 					}
 					if bd.TaxRateDetails.PercentageDecimal != "" {
 						lines[idx].TaxRate = parseStripeRate(bd.TaxRateDetails.PercentageDecimal)
@@ -495,6 +495,57 @@ func parseStripeRate(pct string) float64 {
 		return 0
 	}
 	return v
+}
+
+// stripeTaxTypeNames maps Stripe Tax's tax_type enum to a clean, customer-
+// facing label. Stripe returns the raw snake_case enum (e.g. "sales_tax") in
+// tax_rate_details.tax_type; rendered verbatim the invoice tax line reads
+// "sales_tax (8.875%)". The document-level tax_breakdown carries NO
+// display_name (only the per-line and shipping breakdowns do — stripe-go v82),
+// so for the common case (per-line breakdown null → name taken from the
+// document level) this map is the only source of a readable label. Covers all
+// 15 TaxCalculationTaxBreakdownTaxRateDetailsTaxType values; acronyms
+// uppercased, words title-cased.
+var stripeTaxTypeNames = map[string]string{
+	"amusement_tax":       "Amusement Tax",
+	"communications_tax":  "Communications Tax",
+	"gst":                 "GST",
+	"hst":                 "HST",
+	"igst":                "IGST",
+	"jct":                 "JCT",
+	"lease_tax":           "Lease Tax",
+	"pst":                 "PST",
+	"qst":                 "QST",
+	"retail_delivery_fee": "Retail Delivery Fee",
+	"rst":                 "RST",
+	"sales_tax":           "Sales Tax",
+	"service_tax":         "Service Tax",
+	"vat":                 "VAT",
+}
+
+// taxTypeDisplayName resolves the customer-facing tax label. It prefers
+// Stripe's own display_name when present (per-line / shipping breakdowns carry
+// a localized one, e.g. "Value-added tax (VAT)"), then the verified enum map,
+// then a graceful title-case of any future enum Stripe adds before we map it —
+// so a tax line never leaks a raw snake_case token. Returns "" only when both
+// inputs are empty (caller leaves the field unset).
+func taxTypeDisplayName(displayName, taxType string) string {
+	if displayName != "" {
+		return displayName
+	}
+	if n, ok := stripeTaxTypeNames[taxType]; ok {
+		return n
+	}
+	if taxType == "" {
+		return ""
+	}
+	parts := strings.Split(taxType, "_")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // parseLineRef extracts the index from a reference like "line_2". Used when
