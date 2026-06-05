@@ -9,6 +9,31 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
+// TestFormatTaxRate guards the fixed-decimal formatter that replaced %g on the
+// invoice + credit-note PDFs. %g uses significant figures and silently drops
+// precision on rates ≥ 10 (13.875 → "13.88"); the statutory NUMERIC(7,4) rate
+// must print verbatim with trailing zeros trimmed.
+func TestFormatTaxRate(t *testing.T) {
+	cases := []struct {
+		rate float64
+		want string
+	}{
+		{8.875, "8.875"},   // NYC — the motivating case
+		{8.8750, "8.875"},  // stored 4-dp form, trailing zero trimmed
+		{18, "18"},         // whole percent, no decimal point
+		{9.975, "9.975"},   // Quebec — 3-dp
+		{13.875, "13.875"}, // ≥ 10 with 3-dp — the %g precision-loss case
+		{7.25, "7.25"},
+		{8.8, "8.8"},
+		{0, "0"},
+	}
+	for _, c := range cases {
+		if got := formatTaxRate(c.rate); got != c.want {
+			t.Errorf("formatTaxRate(%v) = %q, want %q", c.rate, got, c.want)
+		}
+	}
+}
+
 func TestRenderPDF(t *testing.T) {
 	now := time.Now().UTC()
 	dueAt := now.AddDate(0, 0, 30)

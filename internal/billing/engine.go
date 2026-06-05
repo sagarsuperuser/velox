@@ -944,6 +944,39 @@ func truncateReason(s string, max int) string {
 	return s[:max]
 }
 
+// displayTaxRate picks the rate to persist as invoice-level invoices.tax_rate.
+// When every taxed line shares one rate (the common single-jurisdiction case)
+// that statutory rate is authoritative — it is the real rate the customer was
+// charged and what an auditor expects to read on the invoice. Only when lines
+// carry genuinely different rates (a multi-jurisdiction invoice, where no
+// single statutory rate exists) do we fall back to the blended effective rate
+// (tax ÷ subtotal). Untaxed/exempt lines (TaxAmountCents == 0) are skipped so
+// a mix of taxed + exempt lines still counts as single-rate.
+//
+// This unifies stripe_tax with the manual provider, which already reports its
+// configured statutory rate as the effective rate. Stripe computes effective
+// as tax÷subtotal, so a $100 NYC invoice would otherwise store 8.88 (888÷10000)
+// instead of the 8.8750 its line items carry — a display/audit defect, never a
+// mischarge (the amount is always Stripe's verbatim figure). See ADR-047.
+func displayTaxRate(lines []tax.ResultLine, effectiveRate float64) float64 {
+	rate := -1.0
+	for _, l := range lines {
+		if l.TaxAmountCents == 0 {
+			continue
+		}
+		switch {
+		case rate < 0:
+			rate = l.TaxRate
+		case math.Abs(l.TaxRate-rate) > 1e-9:
+			return effectiveRate // genuinely mixed rates → blended effective
+		}
+	}
+	if rate <= 0 {
+		return effectiveRate // no taxed line carried a positive rate
+	}
+	return rate
+}
+
 // ApplyTaxToLineItems resolves the tenant's configured tax provider, calls
 // Calculate, and stamps the per-line + invoice-level results back onto the
 // supplied domain types. Shared by the main billing path and proration so
@@ -1107,7 +1140,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	}
 
 	app.TaxAmountCents = res.TotalTaxCents
-	app.TaxRate = res.EffectiveRate
+	app.TaxRate = displayTaxRate(res.Lines, res.EffectiveRate)
 	if res.TaxName != "" {
 		app.TaxName = res.TaxName
 	}

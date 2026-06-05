@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate, formatDateTime, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
+import { api, downloadPDF, formatCents, formatDate, formatDateTime, formatTaxRate, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
 import { SimulatedBadge } from '@/components/TestClockBadge'
@@ -943,7 +943,7 @@ export default function InvoiceDetailPage() {
               {invoice.tax_amount_cents > 0 && (
                 <>
                   <div className={cn('flex justify-between text-sm', invoice.status === 'voided' && 'text-muted-foreground')}>
-                    <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate > 0 ? ` (${invoice.tax_rate.toFixed(2)}%)` : ''}</span>
+                    <span>{invoice.tax_name || 'Tax'}{invoice.tax_rate > 0 ? ` (${formatTaxRate(invoice.tax_rate)}%)` : ''}</span>
                     <span className="font-mono tabular-nums">{formatCents(invoice.tax_amount_cents, invoice.currency)}</span>
                   </div>
                   {(() => {
