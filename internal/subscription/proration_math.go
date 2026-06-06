@@ -56,6 +56,40 @@ func prorationCents(oldAmount, newAmount, remainingDays, totalDays int64) int64 
 	return money.RoundHalfToEven((newAmount-oldAmount)*remainingDays, totalDays)
 }
 
+// splitUpgradeProration partitions a positive net upgrade proration into the
+// two display lines the industry-standard invoice shows (ADR-048 Phase C,
+// Stripe/Recurly/Chargebee/Orb convergence): a NEGATIVE credit for the unused
+// time on the OLD plan and a POSITIVE charge for the remaining time on the NEW
+// plan. It is a pure PARTITION of the already-computed net and its tax:
+//
+//	creditCents = -round(oldAmount × remaining ÷ denom)   // unused old, negative
+//	chargeCents = netCents − creditCents                  // remaining new (residual)
+//	creditTax   = round(taxCents × creditCents ÷ netCents) // tax reversed on the old slice, negative
+//	chargeTax   = taxCents − creditTax                     // residual
+//
+// Deriving the charge half (and its tax) as the residual — not by independently
+// rounding both halves — guarantees creditCents+chargeCents == netCents and
+// creditTax+chargeTax == taxCents EXACTLY (int64), so the invoice
+// subtotal/tax/total are unchanged by construction; the single rounded net is
+// the source of truth and the split can never drift ±1 cent from it. Caller
+// passes netCents > 0 (the proratedCents>0 upgrade branch); taxCents is the
+// already-computed invoice tax on that net (0 for none/manual/deferred).
+//
+// Overflow: the tax-apportionment numerator taxCents×creditCents stays in int64
+// up to ~$30M on a single proration line (a base-fee mid-cycle delta is orders
+// below that — a much lower ceiling than prorationCents's ~$250T numerator, but
+// still far beyond any real single-line base fee). Realistic invoices never
+// approach it; flagged here for parity with prorationCents's overflow note.
+func splitUpgradeProration(oldAmount, remainingDays, denomDays, netCents, taxCents int64) (creditCents, chargeCents, creditTax, chargeTax int64) {
+	creditCents = -money.RoundHalfToEven(oldAmount*remainingDays, denomDays)
+	chargeCents = netCents - creditCents
+	if netCents != 0 {
+		creditTax = money.RoundHalfToEven(taxCents*creditCents, netCents)
+	}
+	chargeTax = taxCents - creditTax
+	return
+}
+
 // grossUpByInvoiceRatio scales a net (tax-exclusive) amount up to the gross
 // (tax-inclusive) amount the customer actually paid, using the source
 // invoice's own Total/Subtotal ratio. Identity when the invoice carried no tax

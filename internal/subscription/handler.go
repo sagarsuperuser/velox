@@ -1770,6 +1770,57 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		}
 		netProrated := taxResult.SubtotalCents - taxResult.DiscountCents + taxResult.TaxAmountCents
 
+		// ADR-048 Phase C: present a PLAN upgrade as the industry-standard
+		// two-line shape (Stripe/Recurly/Chargebee/Orb all converge on it): a
+		// NEGATIVE credit for the unused time on the OLD plan + a POSITIVE
+		// charge for the remaining time on the NEW plan. A single "$18.00 plan
+		// upgrade proration" line is opaque ("I upgraded to $50, why $18?"); the
+		// credit-unused + charge-remaining pair shows the arithmetic.
+		//
+		// Tax was computed ONCE on the net above (the provider never sees a
+		// negative line — Stripe Tax rejects negative amounts and manual clamps
+		// them, which is why we split AFTER the tax call), so the invoice
+		// subtotal/tax/total stay byte-identical to the single-line invoice. We
+		// only partition the stored lines: charge = net − credit, chargeTax =
+		// T − creditTax, so the two lines reconstruct the net exactly.
+		//
+		// Gated to: (1) a real plan change (add-item / quantity change have no
+		// distinct old plan to name as "unused time on …" — they keep the
+		// single net line), and (2) the net not being carved by inclusive-mode
+		// tax (taxResult.SubtotalCents == proratedCents) — in the rare
+		// inclusive case the carved net ≠ proratedCents, so we fall back to the
+		// single net line rather than risk a subtotal/line mismatch.
+		if spec.changeType == domain.ItemChangeTypePlan && taxResult.SubtotalCents == proratedCents {
+			creditCents, chargeCents, creditTax, chargeTax := splitUpgradeProration(
+				oldAmount, remainingDays, denomDays, proratedCents, taxResult.TaxAmountCents)
+
+			// Use the tax-applied single line as the template so each split
+			// line inherits the per-line tax DISPLAY fields (rate, jurisdiction,
+			// code) the provider stamped; override the amounts, quantity,
+			// label, and per-line tax with the partitioned values.
+			tmpl := lineItems[0]
+			oldQty := max64(spec.oldQuantity, 1)
+			newQty := max64(spec.newQuantity, 1)
+
+			creditLine := tmpl
+			creditLine.Description = upgradeCreditLabel(oldPlan, spec.changeAt)
+			creditLine.Quantity = oldQty
+			creditLine.AmountCents = creditCents
+			creditLine.UnitAmountCents = creditCents / oldQty
+			creditLine.TaxAmountCents = creditTax
+			creditLine.TotalAmountCents = creditCents + creditTax
+
+			chargeLine := tmpl
+			chargeLine.Description = upgradeChargeLabel(newPlan, spec.changeAt)
+			chargeLine.Quantity = newQty
+			chargeLine.AmountCents = chargeCents
+			chargeLine.UnitAmountCents = chargeCents / newQty
+			chargeLine.TaxAmountCents = chargeTax
+			chargeLine.TotalAmountCents = chargeCents + chargeTax
+
+			lineItems = []domain.InvoiceLineItem{creditLine, chargeLine}
+		}
+
 		changeAt := spec.changeAt
 		invoice := domain.Invoice{
 			CustomerID:     sub.CustomerID,
@@ -2008,6 +2059,19 @@ func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string 
 		return fmt.Sprintf("Item remove proration: %s (qty %d)", oldPlan.Name, spec.oldQuantity)
 	}
 	return "Item change proration"
+}
+
+// upgradeCreditLabel / upgradeChargeLabel are the customer-facing line labels
+// for the two-line PLAN upgrade proration (ADR-048 Phase C), matching the
+// Stripe "Unused time on … / Remaining time on …" convention with the
+// proration boundary date. The date is the change instant; finance/ops read
+// these on the invoice, so no engineering jargon.
+func upgradeCreditLabel(oldPlan domain.Plan, at time.Time) string {
+	return fmt.Sprintf("Unused time on %s (after %s)", oldPlan.Name, at.Format("Jan 2, 2006"))
+}
+
+func upgradeChargeLabel(newPlan domain.Plan, at time.Time) string {
+	return fmt.Sprintf("Remaining time on %s (after %s)", newPlan.Name, at.Format("Jan 2, 2006"))
 }
 
 // clawbackReason maps a downgrade change type to the credit-note `reason`

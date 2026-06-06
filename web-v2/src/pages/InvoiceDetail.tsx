@@ -95,7 +95,11 @@ function aggregateTaxByJurisdiction(items: LineItem[]): { label: string; amount:
   const totals = new Map<string, number>()
   for (const item of items) {
     const amount = item.tax_amount_cents || 0
-    if (amount <= 0) continue
+    // Skip only zero-tax lines; INCLUDE negative-tax lines (a two-line upgrade
+    // proration's credit line reverses tax on the unused old slice — ADR-048
+    // Phase C). Mirrors the PDF's `== 0` skip so the per-jurisdiction rows sum
+    // to invoice.tax_amount_cents on both surfaces.
+    if (amount === 0) continue
     const label = item.tax_jurisdiction || ''
     if (!label) continue
     if (!totals.has(label)) order.push(label)

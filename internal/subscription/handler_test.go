@@ -409,6 +409,12 @@ type prorationTaxApplierMock struct {
 	commitCalls     int
 	commitInvoiceID string
 	commitCalcID    string
+	// receivedLineCount / receivedNegative capture what the handler passed to
+	// the provider at call time — the ADR-048 Phase C two-line split must run
+	// AFTER tax, so the provider always sees a SINGLE positive net line (never
+	// a negative credit line, which Stripe Tax rejects).
+	receivedLineCount int
+	receivedNegative  bool
 }
 
 func (m *prorationTaxApplierMock) CommitTax(_ context.Context, _, invoiceID, calculationID string) error {
@@ -420,6 +426,12 @@ func (m *prorationTaxApplierMock) CommitTax(_ context.Context, _, invoiceID, cal
 
 func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _ string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error) {
 	m.calls++
+	m.receivedLineCount = len(lineItems)
+	for _, li := range lineItems {
+		if li.AmountCents < 0 {
+			m.receivedNegative = true
+		}
+	}
 	if m.err != nil {
 		return ProrationTaxResult{}, m.err
 	}
@@ -429,7 +441,15 @@ func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _
 		lineItems[0].TaxAmountCents = m.result.TaxAmountCents
 		lineItems[0].TotalAmountCents = lineItems[0].AmountCents + m.result.TaxAmountCents
 	}
-	return m.result, nil
+	// Mirror the real engine adapter, which seeds app.SubtotalCents = subtotal
+	// (the net it was asked to tax) on the exclusive path. Tests that want the
+	// inclusive carve-out can set result.SubtotalCents explicitly.
+	r := m.result
+	if r.SubtotalCents == 0 {
+		r.SubtotalCents = subtotal
+	}
+	r.DiscountCents = discount
+	return r, nil
 }
 
 // TestUpdateItem_ProrationAppliesTax locks in COR-2: proration invoices must
