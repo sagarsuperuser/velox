@@ -316,5 +316,6 @@ func (c *LiveStripeClient) GetPaymentIntent(ctx context.Context, paymentIntentID
 		ID:           pi.ID,
 		Status:       string(pi.Status),
 		ClientSecret: pi.ClientSecret,
+		Purpose:      pi.Metadata["velox_purpose"],
 	}, nil
 }
