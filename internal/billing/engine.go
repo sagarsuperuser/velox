@@ -4021,13 +4021,12 @@ func nextTaxRetry(ctx context.Context, status domain.InvoiceTaxStatus, errCode s
 // **Cycle-close MUST use domain.NextBillingPeriodEnd instead** — that
 // helper honors billing_time so calendar-billing subs auto-re-anchor
 // after plan-interval changes drift the anchor day-of-month.
+// advanceBillingPeriod is the anniversary interval advance used for stub
+// proration denominators (fullCycleDays). Delegates to domain.AddBillingInterval
+// so the engine and the subscription handler share one definition and can't
+// drift. NOT the calendar cycle-close advance — that's domain.NextBillingPeriodEnd.
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval) time.Time {
-	switch interval {
-	case domain.BillingYearly:
-		return from.AddDate(1, 0, 0)
-	default:
-		return from.AddDate(0, 1, 0)
-	}
+	return domain.AddBillingInterval(from, interval)
 }
 
 // tenantLocation resolves the tenant's preferred timezone for cycle-
