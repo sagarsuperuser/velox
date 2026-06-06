@@ -349,7 +349,11 @@ func (s *PostgresStore) GetActiveRunByInvoice(ctx context.Context, tenantID, inv
 			COALESCE(reason,''), attempt_count, last_attempt_at, next_action_at,
 			paused, resolved_at, COALESCE(resolution,''), created_at, updated_at
 		FROM invoice_dunning_runs
-		WHERE invoice_id = $1 AND state NOT IN ('resolved', 'escalated')
+		-- Exclude only already-resolved runs. Escalated (retries-exhausted) runs
+		-- MUST still be returned so ResolveByInvoice can resolve them when the
+		-- customer pays out-of-band after escalation; otherwise the run is stuck
+		-- in 'escalated' forever and never emits dunning.resolved.
+		WHERE invoice_id = $1 AND state != 'resolved'
 		LIMIT 1
 	`, invoiceID).Scan(&run.ID, &run.TenantID, &run.InvoiceID, &run.CustomerID, &run.PolicyID,
 		&run.State, &run.Reason, &run.AttemptCount, &run.LastAttemptAt, &run.NextActionAt,
