@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 type InvoiceStatus string
 
@@ -333,19 +337,26 @@ type InvoiceTaxRetryUpdate struct {
 }
 
 type InvoiceLineItem struct {
-	ID              string              `json:"id"`
-	InvoiceID       string              `json:"invoice_id"`
-	TenantID        string              `json:"tenant_id,omitempty"`
-	LineType        InvoiceLineItemType `json:"line_type"`
-	MeterID         string              `json:"meter_id,omitempty"`
-	Description     string              `json:"description"`
-	Quantity        int64               `json:"quantity"`
-	UnitAmountCents int64               `json:"unit_amount_cents"`
-	AmountCents     int64               `json:"amount_cents"`
-	TaxRate         float64             `json:"tax_rate"` // Percent rate (4-decimal precision). ADR-042/043.
-	TaxAmountCents  int64               `json:"tax_amount_cents"`
-	TaxJurisdiction string              `json:"tax_jurisdiction,omitempty"`
-	TaxCode         string              `json:"tax_code,omitempty"`
+	ID          string              `json:"id"`
+	InvoiceID   string              `json:"invoice_id"`
+	TenantID    string              `json:"tenant_id,omitempty"`
+	LineType    InvoiceLineItemType `json:"line_type"`
+	MeterID     string              `json:"meter_id,omitempty"`
+	Description string              `json:"description"`
+	Quantity    int64               `json:"quantity"`
+	// QuantityDecimal is the exact (possibly fractional) usage quantity. The
+	// integer Quantity above is it truncated, kept for back-compat (Stripe
+	// `quantity_decimal` / Chargebee `quantity_in_decimal` parity). Zero means
+	// "no decimal quantity — use Quantity" (base-fee/proration/manual lines).
+	// The line amount stays whole cents (AmountCents); this only restores the
+	// quantity × unit = amount reconciliation for fractional usage.
+	QuantityDecimal decimal.Decimal `json:"quantity_decimal"`
+	UnitAmountCents int64           `json:"unit_amount_cents"`
+	AmountCents     int64           `json:"amount_cents"`
+	TaxRate         float64         `json:"tax_rate"` // Percent rate (4-decimal precision). ADR-042/043.
+	TaxAmountCents  int64           `json:"tax_amount_cents"`
+	TaxJurisdiction string          `json:"tax_jurisdiction,omitempty"`
+	TaxCode         string          `json:"tax_code,omitempty"`
 	// TaxabilityReason carries the Stripe-canonical structured reason
 	// (e.g. "standard_rated", "reverse_charge", "not_collecting",
 	// "customer_exempt", "product_exempt", "zero_rated"). The dashboard

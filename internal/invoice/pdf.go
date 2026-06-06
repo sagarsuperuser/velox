@@ -455,7 +455,7 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 			desc = string([]rune(desc)[:47]) + "..."
 		}
 		textAt(colX[0], y, desc)
-		rightAlignAt(colX[1], y, colX[2]-colX[1], formatQuantity(item.Quantity, item.LineType))
+		rightAlignAt(colX[1], y, colX[2]-colX[1], formatQuantity(item))
 		rightAlignAt(colX[2], y, colX[3]-colX[2], formatCents(item.UnitAmountCents))
 		rightAlignAt(colX[3], y, colEnd-colX[3], formatCents(item.AmountCents))
 		y += 18
@@ -802,11 +802,21 @@ func formatCents(cents int64) string {
 	return fmt.Sprintf("%s%s%s.%02d", sign, pdfCurrencySymbol, formatNumber(dollars), remainder)
 }
 
-func formatQuantity(qty int64, lineType domain.InvoiceLineItemType) string {
-	if lineType == domain.LineTypeBaseFee {
+func formatQuantity(item domain.InvoiceLineItem) string {
+	if item.LineType == domain.LineTypeBaseFee {
 		return "1"
 	}
-	return formatNumber(qty)
+	// Usage lines may carry a fractional quantity (e.g. 1.5 GPU-hours). Show the
+	// exact decimal when set so quantity × unit reconciles to the amount; whole
+	// quantities keep thousands separators. Falls back to the integer for rows
+	// written before quantity_decimal existed.
+	if !item.QuantityDecimal.IsZero() {
+		if item.QuantityDecimal.IsInteger() {
+			return formatNumber(item.QuantityDecimal.IntPart())
+		}
+		return item.QuantityDecimal.String()
+	}
+	return formatNumber(item.Quantity)
 }
 
 func formatNumber(n int64) string {
