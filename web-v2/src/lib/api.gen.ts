@@ -2259,6 +2259,8 @@ export interface components {
             description: string;
             /** Format: int64 */
             quantity: number;
+            /** @description Exact (possibly fractional) usage quantity as a decimal string (e.g. "1.5"). The integer `quantity` is this truncated, kept for back-compat (Stripe quantity_decimal parity). "0" means none — use `quantity`. Line amounts stay whole cents. */
+            quantity_decimal?: string;
             /** Format: int64 */
             unit_amount_cents: number;
             /** Format: int64 */

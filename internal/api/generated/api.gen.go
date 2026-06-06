@@ -838,23 +838,26 @@ type InvoiceBillingReason string
 
 // InvoiceLineItem A single line on an invoice.
 type InvoiceLineItem struct {
-	AmountCents         int64                  `json:"amount_cents"`
-	BillingPeriodEnd    time.Time              `json:"billing_period_end,omitempty"`
-	BillingPeriodStart  time.Time              `json:"billing_period_start,omitempty"`
-	CreatedAt           time.Time              `json:"created_at"`
-	Currency            string                 `json:"currency"`
-	Description         string                 `json:"description"`
-	Id                  string                 `json:"id"`
-	InvoiceId           string                 `json:"invoice_id"`
-	LineType            InvoiceLineType        `json:"line_type"`
-	Metadata            map[string]interface{} `json:"metadata,omitempty"`
-	MeterId             string                 `json:"meter_id,omitempty"`
-	PricingMode         string                 `json:"pricing_mode,omitempty"`
-	Quantity            int64                  `json:"quantity"`
-	RatingRuleVersionId string                 `json:"rating_rule_version_id,omitempty"`
-	TaxAmountCents      int64                  `json:"tax_amount_cents"`
-	TaxCode             string                 `json:"tax_code,omitempty"`
-	TaxJurisdiction     string                 `json:"tax_jurisdiction,omitempty"`
+	AmountCents        int64                  `json:"amount_cents"`
+	BillingPeriodEnd   time.Time              `json:"billing_period_end,omitempty"`
+	BillingPeriodStart time.Time              `json:"billing_period_start,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	Currency           string                 `json:"currency"`
+	Description        string                 `json:"description"`
+	Id                 string                 `json:"id"`
+	InvoiceId          string                 `json:"invoice_id"`
+	LineType           InvoiceLineType        `json:"line_type"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
+	MeterId            string                 `json:"meter_id,omitempty"`
+	PricingMode        string                 `json:"pricing_mode,omitempty"`
+	Quantity           int64                  `json:"quantity"`
+
+	// QuantityDecimal Exact (possibly fractional) usage quantity as a decimal string (e.g. "1.5"). The integer `quantity` is this truncated, kept for back-compat (Stripe quantity_decimal parity). "0" means none — use `quantity`. Line amounts stay whole cents.
+	QuantityDecimal     string `json:"quantity_decimal,omitempty"`
+	RatingRuleVersionId string `json:"rating_rule_version_id,omitempty"`
+	TaxAmountCents      int64  `json:"tax_amount_cents"`
+	TaxCode             string `json:"tax_code,omitempty"`
+	TaxJurisdiction     string `json:"tax_jurisdiction,omitempty"`
 
 	// TaxRate Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043.
 	TaxRate float64 `json:"tax_rate"`
