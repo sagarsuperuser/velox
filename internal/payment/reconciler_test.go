@@ -13,6 +13,10 @@ import (
 type mockReconcileStore struct {
 	unknowns []domain.Invoice
 	byID     map[string]*domain.Invoice
+	// getResult, when set for an id, overrides Get's return — used to simulate
+	// a webhook winning the race during the GetPaymentIntent round-trip (the
+	// sweep listed a stale snapshot; Get re-reads the now-settled invoice).
+	getResult map[string]domain.Invoice
 }
 
 func newMockReconcileStore(unknowns ...domain.Invoice) *mockReconcileStore {
@@ -54,6 +58,29 @@ func (m *mockReconcileStore) MarkPaid(_ context.Context, _, id string, piID stri
 	inv.StripePaymentIntentID = piID
 	inv.PaidAt = &paidAt
 	inv.AmountDueCents = 0
+	return *inv, nil
+}
+
+func (m *mockReconcileStore) ListProcessingPayments(_ context.Context, _ time.Time, _ int) ([]domain.Invoice, error) {
+	var out []domain.Invoice
+	for _, inv := range m.unknowns {
+		if inv.PaymentStatus == domain.PaymentProcessing {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockReconcileStore) Get(_ context.Context, _, id string) (domain.Invoice, error) {
+	if m.getResult != nil {
+		if inv, ok := m.getResult[id]; ok {
+			return inv, nil
+		}
+	}
+	inv, ok := m.byID[id]
+	if !ok {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
 	return *inv, nil
 }
 

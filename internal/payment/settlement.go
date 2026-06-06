@@ -37,6 +37,22 @@ const (
 // inline (ADR-049 Phase 1); the webhook handler now resolves the invoice and
 // delegates here.
 func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, source SettlementSource) error {
+	// Idempotency guard, symmetric with SettleFailed's out-of-order guard:
+	// skip if the invoice is already settled paid. The webhook path resolves a
+	// `processing` invoice (guard passes), but a non-webhook source — the
+	// reconciler recovering a success the webhook already delivered — would
+	// otherwise re-fire the receipt email + payment.succeeded event. MarkPaid
+	// itself is a no-op on a paid invoice; this guard additionally suppresses
+	// the duplicate side-effects.
+	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
+		slog.Info("payment already settled; skipping duplicate success settlement",
+			"invoice_id", inv.ID,
+			"payment_intent_id", paymentIntentID,
+			"source", source,
+		)
+		return nil
+	}
+
 	// Bind effective-now from the invoice so paid_at lands in simulated time
 	// on clock-pinned invoices. Stripe's webhook fires in wall-clock 2026 even
 	// when the invoice belongs to a clock frozen at 2024-04 — without binding,
