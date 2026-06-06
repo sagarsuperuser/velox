@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 )
 
 // TestFullBillingCycleDays pins the proration denominator to the full
@@ -240,6 +241,80 @@ func TestClawbackReason(t *testing.T) {
 	for _, c := range cases {
 		if got := clawbackReason(c.ct); got != c.want {
 			t.Errorf("clawbackReason(%q) = %q, want %q", c.ct, got, c.want)
+		}
+	}
+}
+
+// TestSplitUpgradeProration verifies the two-line upgrade partition (ADR-048
+// Phase C): credit (unused old, negative) + charge (remaining new, residual)
+// sum to the net EXACTLY, and the apportioned tax sums to the net's tax
+// EXACTLY, with the credit carrying the negative reversed slice.
+func TestSplitUpgradeProration(t *testing.T) {
+	cases := []struct {
+		name                                        string
+		oldAmount, remaining, denom, net, tax       int64
+		wantCredit, wantCharge, wantCTax, wantChTax int64
+	}{
+		// Starter $20 -> Pro $50, 15/30: net = 3000*15/30 = 1500.
+		{"clean no tax", 2000, 15, 30, 1500, 0, -1000, 2500, 0, 0},
+		// Same with 10% tax (150): creditTax = round(150*-1000/1500) = -100.
+		{"clean 10% tax", 2000, 15, 30, 1500, 150, -1000, 2500, -100, 250},
+		// 18/30 reference: net = 3000*18/30 = 1800; credit = -2000*18/30 = -1200.
+		{"18/30 no tax", 2000, 18, 30, 1800, 0, -1200, 3000, 0, 0},
+		// Odd tax that forces a residual on the charge side: tax 151 → creditTax = round(151*-1200/1800) = round(-100.67) = -101; chargeTax = 252.
+		{"residual tax", 2000, 18, 30, 1800, 151, -1200, 3000, -101, 252},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			credit, charge, ctax, chtax := splitUpgradeProration(c.oldAmount, c.remaining, c.denom, c.net, c.tax)
+			if credit != c.wantCredit || charge != c.wantCharge {
+				t.Errorf("amounts: got credit=%d charge=%d, want %d/%d", credit, charge, c.wantCredit, c.wantCharge)
+			}
+			if ctax != c.wantCTax || chtax != c.wantChTax {
+				t.Errorf("tax: got creditTax=%d chargeTax=%d, want %d/%d", ctax, chtax, c.wantCTax, c.wantChTax)
+			}
+			// The hard invariant: the split is an exact partition of net + tax.
+			if credit+charge != c.net {
+				t.Errorf("credit+charge = %d, want net %d (must be exact)", credit+charge, c.net)
+			}
+			if ctax+chtax != c.tax {
+				t.Errorf("creditTax+chargeTax = %d, want tax %d (must be exact)", ctax+chtax, c.tax)
+			}
+		})
+	}
+}
+
+// TestSplitUpgradeProration_PartitionInvariant fuzzes a matrix of inputs and
+// asserts ONLY the non-negotiable invariant — the split always reconstructs the
+// net and its tax exactly, regardless of rounding — so no fixture drift can hide
+// a ±1-cent leak.
+func TestSplitUpgradeProration_PartitionInvariant(t *testing.T) {
+	olds := []int64{1, 999, 2000, 5999, 100000}
+	rems := []int64{1, 7, 13, 18, 29, 30}
+	denoms := []int64{28, 30, 31, 365}
+	taxes := []int64{0, 1, 88, 150, 151, 8875}
+	for _, oldA := range olds {
+		for _, r := range rems {
+			for _, d := range denoms {
+				if r > d {
+					continue
+				}
+				// net is whatever the upgrade math produces for some new>old; use a
+				// plausible positive net derived from a +3000/period delta.
+				net := money.RoundHalfToEven(3000*r, d)
+				if net == 0 {
+					continue
+				}
+				for _, tx := range taxes {
+					credit, charge, ctax, chtax := splitUpgradeProration(oldA, r, d, net, tx)
+					if credit+charge != net {
+						t.Fatalf("partition leak: old=%d r=%d d=%d net=%d → credit=%d charge=%d (sum %d)", oldA, r, d, net, credit, charge, credit+charge)
+					}
+					if ctax+chtax != tx {
+						t.Fatalf("tax partition leak: net=%d tax=%d → ctax=%d chtax=%d (sum %d)", net, tx, ctax, chtax, ctax+chtax)
+					}
+				}
+			}
 		}
 	}
 }
