@@ -56,7 +56,7 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, s.activated_at), $2) AS d,
 		       COALESCE(SUM(
-		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * si.quantity) / 12
 		                ELSE p.base_amount_cents * si.quantity
 		           END
 		       ), 0)
@@ -94,7 +94,7 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	rows, err = tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, s.canceled_at), $2) AS d,
 		       COALESCE(SUM(
-		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+		           CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * si.quantity) / 12
 		                ELSE p.base_amount_cents * si.quantity
 		           END
 		       ), 0)
@@ -128,10 +128,10 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	rows, err = tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, c.changed_at), $2) AS d,
 		       (
-		           (CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents / 12
-		                 ELSE pto.base_amount_cents END) * c.to_quantity
-		         - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents / 12
-		                 ELSE pfrom.base_amount_cents END) * c.from_quantity
+		           (CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents * c.to_quantity / 12
+		                 ELSE pto.base_amount_cents * c.to_quantity END)
+		         - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents * c.from_quantity / 12
+		                 ELSE pfrom.base_amount_cents * c.from_quantity END)
 		       ) AS delta
 		FROM subscription_item_changes c
 		JOIN subscriptions s ON s.id = c.subscription_id
