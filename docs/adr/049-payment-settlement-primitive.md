@@ -42,7 +42,9 @@ Because all four route through the *same* primitive, a backstop-recovered settle
 - **Phase 1** — extract `SettleSucceeded` / `SettleFailed` and refactor the two webhook handlers onto them. **Behavior-preserving**; the existing webhook tests are the pin. **Shipped** (#188).
 - **Phase 2** — wire the reconciler onto the primitive (fixes the silent under-collection for `unknown` *today*) and generalize its sweep to stale `processing` with its own cool-off (30m default) + a pre-write fresh-read race guard. The reconciler replicates the webhook's email-suppression from the PI `velox_purpose` (plumbed onto `GetPaymentIntent`). **Shipped** (#189).
 - **Phase 3** — settle synchronously from the charge `result.Status` (fixes the test-clock symptom and all charge initiators at once, since they share `ChargeInvoice`). **Shipped** (#190).
-- **Phase 4** — honest surfacing: age-aware `processing` attention (Info → Warning past an expected-settle window), wire the on-demand "Check provider" action, correct the banner copy so it never promises auto-resolution it can't deliver.
+- **Phase 4** — honest surfacing. **Shipped** (#191): the `processing` banner is age-aware (Info under the expected-settle window; Warning past it, pointing at Stripe and *not* promising auto-resolution for the stuck case), aged off wall-clock `updated_at` (no new column — deferred per below) and guarded to non-simulated invoices (a clock-pinned invoice's age is sim-time, not a real-world duration). The banner copy on both the `processing` and `unconfirmed` banners now states the truth that Phases 2+3 made real — Velox confirms/reconciles automatically.
+
+  **Deviation from the original plan:** the on-demand "Check provider" action is **deferred**, not wired. Phases 2 (reconciler backstop) + 3 (synchronous inline settle) mean a `processing` invoice now resolves on its own (inline, or within the reconciler window); the manual re-check button — which never had a backend endpoint and shipped greyed-out — lost its necessity. The dead disabled button was **removed** rather than shipped non-functional (a greyed-out button is itself a small UI lie). Re-add trigger: a real production stuck-PI that inline-settle + the 30m reconciler don't clear, i.e. genuine operator pressure to force a re-query.
 
 ## Deferred (named triggers — the triggering surface does not exist yet)
 
@@ -50,6 +52,8 @@ Because all four route through the *same* primitive, a backstop-recovered settle
 - **Dispute / late-failure handling** (`charge.dispute.*`, post-success reversal → counter-booking, à la Recurly). Trigger: an async method or dispute webhooks enabled.
 - **Method-specific expected-settle windows** (cards: hours; ACH: ~5–8 business days). Trigger: first async method. Until then a single short card-appropriate window is correct.
 - **A standalone daily List-Events drift cron.** Velox stores the PI id per invoice, so a targeted `GetPaymentIntent` reconcile already covers the payment path; a full event-stream scan only matters once a second webhook-driven side-effect has no per-row reconcile.
+- **On-demand "Check provider" action** (operator-triggered single-invoice reconcile endpoint + button). Trigger: real stuck-PI pressure the auto-resolution doesn't clear (see Phase 4 deviation).
+- **Dedicated `payment_processing_since` column.** The age banner runs off `updated_at` today; add the column only when an async method or a mid-`processing` mutation path makes `updated_at` provably wrong (same trigger as method-specific windows).
 
 These are documented decisions, not silent gaps; the code would be dead until the trigger fires.
 

@@ -425,7 +425,12 @@ func (s *Service) SetAutoChargePending(ctx context.Context, tenantID, id string,
 // shows up — but that's safe: tests that exercise specific reasons
 // override the field anyway.
 func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domain.Invoice {
-	atc := domain.AttentionContext{}
+	// Wall-clock now ages the in-flight payment banner (Info → Warning past the
+	// expected-settle window). Deliberately NOT s.clock.Now(ctx): processing
+	// staleness is a real-world duration (the provider settles in wall-clock),
+	// and the classifier guards on !IsSimulated so a clock-pinned invoice never
+	// escalates on a wall-clock age it can't satisfy.
+	atc := domain.AttentionContext{Now: time.Now().UTC()} // wall-clock: processing-staleness is a real-world duration (provider settles in wall-clock); classifier guards on !IsSimulated
 	if s.paymentMethods != nil && inv.CustomerID != "" {
 		ps, err := s.paymentMethods.GetPaymentSetup(ctx, inv.TenantID, inv.CustomerID)
 		if err == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
