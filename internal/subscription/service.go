@@ -649,6 +649,18 @@ type ProrationDetail struct {
 	// credit-path (downgrade) prorations and manual/none providers.
 	TaxProvider      string `json:"-"`
 	TaxCalculationID string `json:"-"`
+	// Clawback* carry a downgrade clawback that must be issued as a tax-
+	// reversing credit note AFTER the atomic tx commits — the credit-note
+	// service is not tx-aware and its tax reversal is an external Stripe call,
+	// so it can't ride the DB tx (a rollback would orphan a committed CN +
+	// balance grant). Set only on the downgrade-credit path when the CN issuer
+	// is wired and a PAID source invoice was resolved (ADR-048); empty
+	// otherwise (legacy net-grant fallback, upgrade/invoice path). Internal —
+	// not API surface.
+	ClawbackInvoiceID  string `json:"-"`
+	ClawbackGrossCents int64  `json:"-"`
+	ClawbackReason     string `json:"-"`
+	ClawbackMemo       string `json:"-"`
 }
 
 func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, input AddItemInput) (domain.SubscriptionItem, error) {

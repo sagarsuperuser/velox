@@ -109,6 +109,21 @@ type ProrationTaxApplier interface {
 	CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error
 }
 
+// CreditNoteIssuer issues a tax-reversing adjustment credit note against a
+// PAID source invoice for a downgrade clawback (ADR-048). On a paid invoice the
+// credit-note primitive credits the GROSS the customer paid for the unused
+// slice (net + the proportional tax) to their balance AND reverses the
+// proportional output tax against the invoice's committed tax transaction —
+// neither of which the bare net ledger grant did. *creditnote.Service
+// satisfies it directly (same method as billing.CreditNoteAdjuster).
+//
+// Optional: when unwired (narrow unit tests; production always wires it via
+// SetCreditNoteIssuer) or when no paid source invoice was resolved, the
+// downgrade path falls back to the legacy net ledger grant.
+type CreditNoteIssuer interface {
+	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
+}
+
 // ProrationGrantInput carries the downgrade/removal/reduction credit payload
 // plus the provenance fields required for dedup. SourceChangeType
 // distinguishes plan-downgrade from qty-reduction from item-remove when the
@@ -139,6 +154,7 @@ type Handler struct {
 	plans       PlanReader
 	invoices    ProrationInvoiceCreator
 	credits     ProrationCreditGranter
+	creditNotes CreditNoteIssuer
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
 	auditLogger auditRecorder
@@ -241,6 +257,14 @@ func (h *Handler) SetProrationDeps(plans PlanReader, invoices ProrationInvoiceCr
 // SetProrationTaxApplier configures tax resolution on proration invoices.
 func (h *Handler) SetProrationTaxApplier(a ProrationTaxApplier) {
 	h.tax = a
+}
+
+// SetCreditNoteIssuer wires the tax-reversing credit-note primitive used by the
+// downgrade clawback path (ADR-048). When unset, downgrade credits fall back to
+// the legacy net ledger grant (no tax reversal). Implemented by
+// *creditnote.Service; wired from router.go.
+func (h *Handler) SetCreditNoteIssuer(i CreditNoteIssuer) {
+	h.creditNotes = i
 }
 
 // fireEvent dispatches a subscription lifecycle event. Synchronous by design:
@@ -1372,6 +1396,10 @@ func (h *Handler) atomicAddItemWithProration(
 	// Stripe call and must not ride the DB tx (a rollback would orphan the
 	// committed tax transaction). No-op unless a stripe_tax calculation exists.
 	h.commitProrationTax(ctx, tenantID, detail)
+	// Issue the downgrade clawback credit note AFTER the tx is durable (same
+	// rationale: the CN service isn't tx-aware + tax reversal is external).
+	// No-op for the add path (upgrades charge, never claw back), kept uniform.
+	h.issueClawbackCreditNote(ctx, tenantID, detail)
 	return item, nil
 }
 
@@ -1447,6 +1475,10 @@ func (h *Handler) atomicUpdateItemWithProration(
 	// Commit proration tax AFTER the tx is durable (external Stripe call;
 	// must not ride the DB tx). No-op unless a stripe_tax calculation exists.
 	h.commitProrationTax(ctx, tenantID, detail)
+	// Issue the downgrade clawback credit note AFTER the tx is durable (ADR-048):
+	// a plan-downgrade or quantity-decrease credits the GROSS via a tax-reversing
+	// CN. No-op on upgrades / quantity increases (those bill via the invoice path).
+	h.issueClawbackCreditNote(ctx, tenantID, detail)
 	return result, nil
 }
 
@@ -1491,9 +1523,13 @@ func (h *Handler) atomicRemoveItemWithProration(
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit atomic removeItem tx: %w", err)
 	}
-	// Remove proration is a credit (no invoice/tax) so this no-ops, but keep
-	// the post-tx commit uniform across the atomic wrappers.
+	// Remove proration is a credit (no invoice/tax) so commitProrationTax
+	// no-ops, but keep the post-tx commit uniform across the atomic wrappers.
 	h.commitProrationTax(ctx, tenantID, detail)
+	// Issue the item-removal clawback credit note AFTER the tx is durable
+	// (ADR-048): removing an item mid-cycle claws back the unused prebill as a
+	// tax-reversing CN against the paid source invoice.
+	h.issueClawbackCreditNote(ctx, tenantID, detail)
 	return nil
 }
 
@@ -1511,6 +1547,35 @@ func (h *Handler) commitProrationTax(ctx context.Context, tenantID string, detai
 	if err := h.tax.CommitTax(ctx, tenantID, detail.InvoiceID, detail.TaxCalculationID); err != nil {
 		slog.WarnContext(ctx, "tax: commit failed after proration invoice",
 			"error", err, "tenant_id", tenantID, "invoice_id", detail.InvoiceID)
+	}
+}
+
+// issueClawbackCreditNote issues the tax-reversing adjustment credit note for a
+// downgrade clawback recorded on the detail (ADR-048). Issued AFTER the atomic
+// tx is durable — the credit-note service is not tx-aware and its tax reversal
+// is an external Stripe call, so it must not ride the DB tx (a rollback would
+// orphan a committed CN + balance grant). The downgrade branch calls it inline
+// on the non-atomic path. No-op unless that branch recorded a clawback (CN
+// issuer wired + PAID source invoice resolved).
+//
+// On error the item change is already durable but the customer was not
+// credited — log at error level so it surfaces for reconciliation. The
+// operation still reports success: the downgrade itself committed, and a client
+// retry is rejected at Service.UpdateItem's no-op gate (so we never double-
+// issue), so returning an error here would be misleading and unrecoverable by
+// retry anyway. The source invoice's over-credit cap bounds any aggregate
+// over-credit.
+func (h *Handler) issueClawbackCreditNote(ctx context.Context, tenantID string, detail *ProrationDetail) {
+	if h.creditNotes == nil || detail == nil || detail.ClawbackInvoiceID == "" || detail.ClawbackGrossCents <= 0 {
+		return
+	}
+	if _, err := h.creditNotes.CreateAndIssueAdjustment(ctx, tenantID, detail.ClawbackInvoiceID, detail.ClawbackGrossCents, detail.ClawbackReason, detail.ClawbackMemo); err != nil {
+		slog.ErrorContext(ctx, "downgrade clawback credit note failed after item change committed; customer not yet credited, reconcile manually",
+			"error", err,
+			"tenant_id", tenantID,
+			"source_invoice_id", detail.ClawbackInvoiceID,
+			"gross_cents", detail.ClawbackGrossCents,
+			"reason", detail.ClawbackReason)
 	}
 }
 
@@ -1575,8 +1640,16 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		)
 		return nil, nil
 	}
+	// src is the resolved PAID in_advance source invoice for the current
+	// period; haveSrc records whether one was found. The downgrade-credit
+	// branch below grosses the clawback up against this invoice's tax ratio
+	// and anchors the tax-reversing credit note to it (ADR-048). In
+	// production h.invoices is always wired and this gate runs, so a downgrade
+	// only reaches the credit branch with haveSrc == true.
+	var src domain.Invoice
+	var haveSrc bool
 	if h.invoices != nil && sub.CurrentBillingPeriodStart != nil {
-		src, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
+		resolved, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
 		if lookupErr != nil {
 			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not found for current period",
 				"subscription_id", sub.ID,
@@ -1587,16 +1660,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			)
 			return nil, nil
 		}
-		if src.PaymentStatus != domain.PaymentSucceeded {
+		if resolved.PaymentStatus != domain.PaymentSucceeded {
 			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not paid",
 				"subscription_id", sub.ID,
 				"item_id", spec.itemID,
 				"change_type", spec.changeType,
-				"source_invoice_id", src.ID,
-				"source_payment_status", src.PaymentStatus,
+				"source_invoice_id", resolved.ID,
+				"source_payment_status", resolved.PaymentStatus,
 			)
 			return nil, nil
 		}
+		src = resolved
+		haveSrc = true
 	}
 
 	// Integer day-ratio proration per ADR-042 — pure-integer banker's
@@ -1816,6 +1891,50 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		)
 	} else {
 		creditAmount := -proratedCents
+
+		// ADR-048: on a PAID, taxed in_advance source invoice with the CN
+		// issuer wired, credit the GROSS the customer paid for the unused
+		// slice (net + the proportional tax) via the tax-reversing credit-note
+		// primitive — which also reverses the proportional output tax against
+		// the original invoice's committed tax transaction — rather than the
+		// bare net ledger grant that dropped the tax. The CN service is not
+		// tx-aware and its tax reversal is an external Stripe call, so it can't
+		// ride this tx; stash the work on the detail and issue it AFTER the tx
+		// commits (atomic path, via the atomic wrapper's issueClawbackCreditNote)
+		// or inline (non-atomic path).
+		//
+		// Retry safety without a schema migration: a client retry of the same
+		// downgrade is rejected at Service.UpdateItem's no-op gate (the item is
+		// already on the new plan / new qty), so the CN is never issued twice;
+		// the source invoice's over-credit cap is the hard backstop. The
+		// residual crash window (item committed, CN not yet issued) is logged
+		// loudly for reconciliation — same risk profile as the post-commit tax
+		// commit (#183).
+		if h.creditNotes != nil && haveSrc {
+			grossCredit := grossUpByInvoiceRatio(creditAmount, src.SubtotalCents, src.TotalAmountCents)
+			detail.Type = "credit"
+			detail.AmountCents = grossCredit
+			detail.ClawbackInvoiceID = src.ID
+			detail.ClawbackGrossCents = grossCredit
+			detail.ClawbackReason = clawbackReason(spec.changeType)
+			detail.ClawbackMemo = memo
+			if tx == nil {
+				h.issueClawbackCreditNote(ctx, tenantID, detail)
+			}
+			slog.InfoContext(ctx, "downgrade clawback routed to tax-reversing credit note",
+				"subscription_id", sub.ID,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
+				"source_invoice_id", src.ID,
+				"net_cents", creditAmount,
+				"gross_cents", grossCredit,
+			)
+			return detail, nil
+		}
+
+		// Fallback: CN issuer unwired (narrow unit tests) or no paid source
+		// invoice resolved — grant the bare net amount to the credit ledger as
+		// before (no tax reversal).
 		if h.credits != nil {
 			grantInput := ProrationGrantInput{
 				CustomerID:               sub.CustomerID,
@@ -1889,6 +2008,22 @@ func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string 
 		return fmt.Sprintf("Item remove proration: %s (qty %d)", oldPlan.Name, spec.oldQuantity)
 	}
 	return "Item change proration"
+}
+
+// clawbackReason maps a downgrade change type to the credit-note `reason`
+// (free-text, machine-categorical — same style as the engine's cancel/swap
+// clawback reasons in ADR-048). Plan-downgrade, quantity-decrease, and
+// item-remove each get a distinct reason; the human-readable detail lives in
+// the CN description (the proration memo).
+func clawbackReason(ct domain.ItemChangeType) string {
+	switch ct {
+	case domain.ItemChangeTypeRemove:
+		return "subscription_item_removed"
+	case domain.ItemChangeTypeQuantity:
+		return "subscription_quantity_decrease"
+	default:
+		return "subscription_downgrade"
+	}
 }
 
 // remainingPeriodFactor returns the fraction of the current billing period

@@ -777,6 +777,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// billing.TaxApplication and subscription.ProrationTaxResult.
 	subH.SetProrationTaxApplier(&prorationTaxApplierAdapter{engine: engine})
 
+	// ADR-048: route downgrade clawbacks (plan downgrade / quantity decrease /
+	// item remove) on a PAID in_advance invoice through the tax-reversing
+	// credit-note primitive instead of a bare net ledger grant — credits the
+	// GROSS the customer paid for the unused slice AND reverses the proportional
+	// output tax. *creditnote.Service satisfies CreditNoteIssuer directly.
+	subH.SetCreditNoteIssuer(creditNoteSvc)
+
 	billingH := billing.NewHandler(engine, subStore)
 	// create_preview composes customer / subscription resolution on top of
 	// the engine's preview path. Mounted at /v1/invoices/create_preview

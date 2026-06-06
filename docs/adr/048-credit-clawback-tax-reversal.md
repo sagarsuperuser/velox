@@ -37,4 +37,12 @@ Cash-neutral and tax-correct, and strictly better than today: the customer gets 
 
 - A clawback now produces a **credit note** (a tax document) instead of a bare ledger grant. Operator-visible artifact changes; the customer's spendable balance outcome is preserved (and corrected upward by the tax they overpaid).
 - Each clawback CN must be anchored to the resolved source invoice id so the over-credit cap + cumulative tax true-up see prior clawbacks.
-- Rolled out in phases: (A) engine cancel + plan-swap, (B) downgrade proration (new `CreditNoteIssuer` dependency on the subscription handler + relocate the proration-source dedup onto the CN), (C) the two-line upgrade display. Tracked in #184.
+- Rolled out in phases: (A) engine cancel + plan-swap — **shipped** (#185); (B) downgrade proration — **shipped** (#186); (C) the two-line upgrade display — pending. Tracked in #184.
+
+## Phase B notes (downgrade / quantity-decrease / item-remove)
+
+The subscription handler gained a narrow `CreditNoteIssuer` dependency (`*creditnote.Service` satisfies it directly — same method as `billing.CreditNoteAdjuster`, no adapter). The downgrade-credit branch grosses the net clawback up by the resolved paid source invoice's `Total/Subtotal` ratio and issues the tax-reversing CN against it; the legacy bare-net `GrantProration` remains only as the fallback when the issuer is unwired (narrow tests) or no paid source invoice was resolved.
+
+The CN is issued **after** the atomic item-change tx commits — `creditnote.Service` is not tx-aware and its tax reversal is an external Stripe call, so it can't ride the DB tx (a rollback would orphan a committed CN + balance grant). This mirrors the post-commit tax-commit established in #183.
+
+**Dedup without a schema migration** (this is where the plan changed from the original "relocate the proration-source dedup onto the CN"): a client retry of the same downgrade is rejected at `Service.UpdateItem`'s no-op gate (the item is already on the new plan / new quantity), so the CN is never issued twice. The source invoice's per-invoice over-credit cap is the hard backstop against any aggregate over-credit. No new column / index was needed. The residual crash window (item committed, CN not yet issued, retry blocked by the no-op gate) leaves the customer un-credited until reconciliation — logged at error level; same risk class as #183's post-commit tax commit, accepted rather than carrying a heavier tx-aware credit-note refactor pre-launch.
