@@ -1,6 +1,26 @@
 package subscription
 
-import "github.com/sagarsuperuser/velox/internal/platform/money"
+import (
+	"math"
+	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
+)
+
+// fullBillingCycleDays is the whole-day length of ONE full billing interval
+// anchored at periodStart — the correct proration denominator.
+//
+// Proration divides the (new − old) period delta by the FULL cycle, never by
+// the current period length. On a stub/partial period (mid-cycle signup) the
+// current period is shorter than a cycle, so dividing by it over-charges
+// upgrades / over-credits downgrades. Derived from the shared
+// domain.AddBillingInterval so this matches the engine's day-1 stub base-fee
+// proration (segDays/fullCycleDays) and BillOnPlanSwapImmediate exactly.
+func fullBillingCycleDays(periodStart time.Time, interval domain.BillingInterval) int64 {
+	end := domain.AddBillingInterval(periodStart, interval)
+	return int64(math.Round(end.Sub(periodStart).Hours() / 24))
+}
 
 // prorationCents computes the immediate plan-change proration amount, in cents,
 // for an in_advance subscription item changed mid-period.

@@ -17,6 +17,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // ---------------------------------------------------------------------------
@@ -122,14 +123,33 @@ func (m *creditsMock) GetByProrationSource(_ context.Context, _, _, _ string, _ 
 	return m.lookupEntry, nil
 }
 
-// seedSubWithItem creates an active subscription on `plan_old` for the given
-// tenant and returns the subscription ID plus the seeded item ID. The billing
-// period spans 30 days centered on now so proration_factor > 0.
+// Deterministic reference window for proration-AMOUNT tests: a full 30-day
+// calendar month (June 2026) with "now" at the midpoint, so day-counts and the
+// full-cycle proration denominator are exact regardless of wall-clock. (The old
+// now±15d seed silently depended on the current month's length — once proration
+// divides by the full cycle, that made the amounts vary 28–31 days.) Pair these
+// with a ctx bound via clock.WithEffectiveNow(proNow).
+var (
+	proPeriodStart = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	proPeriodEnd   = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)  // exact 30-day month
+	proNow         = time.Date(2026, 6, 16, 0, 0, 0, 0, time.UTC) // 15 of 30 days remain
+)
+
+// seedSubWithItem creates an active subscription on `initialPlan` with a
+// 30-day period centered on now. Use for behavioral tests that don't assert an
+// exact proration amount; for amount assertions use seedSubWithItemAt with the
+// deterministic pro* window above.
 func seedSubWithItem(t *testing.T, store *memStore, tenantID, custID, initialPlan string) (string, string) {
 	t.Helper()
 	now := time.Now().UTC()
-	periodStart := now.Add(-15 * 24 * time.Hour)
-	periodEnd := now.Add(15 * 24 * time.Hour)
+	return seedSubWithItemAt(t, store, tenantID, custID, initialPlan, now.Add(-15*24*time.Hour), now.Add(15*24*time.Hour))
+}
+
+// seedSubWithItemAt is seedSubWithItem with an explicit billing period, for
+// deterministic proration-amount assertions. Pair with a ctx bound to a fixed
+// instant inside [periodStart, periodEnd] via clock.WithEffectiveNow.
+func seedSubWithItemAt(t *testing.T, store *memStore, tenantID, custID, initialPlan string, periodStart, periodEnd time.Time) (string, string) {
+	t.Helper()
 	sub, err := store.Create(context.Background(), tenantID, domain.Subscription{
 		Code:        fmt.Sprintf("sub-%d", len(store.subs)+1),
 		DisplayName: "Test Sub", CustomerID: custID,
@@ -812,11 +832,11 @@ func removeItemURL(ctx context.Context, subID, itemID string) *http.Request {
 // proration gates require both (in_arrears defers to cycle close;
 // in_advance unpaid also defers — see TestAddItem_DefersProration_*).
 func TestAddItem_ProratesMidCycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
 	tenantID := "t1"
 
 	store := newMemStore()
-	subID, _ := seedSubWithItem(t, store, tenantID, "cus_1", "plan_existing")
+	subID, _ := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_existing", proPeriodStart, proPeriodEnd)
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
@@ -870,11 +890,11 @@ func TestAddItem_ProratesMidCycle(t *testing.T) {
 // increase emits an invoice for the partial-period delta. Prior behaviour was
 // silent skip, leaving the customer on the new qty with no delta billed.
 func TestUpdateItem_QuantityIncreaseProratesAsInvoice(t *testing.T) {
-	ctx := context.Background()
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
 	tenantID := "t1"
 
 	store := newMemStore()
-	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_seats")
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_seats", proPeriodStart, proPeriodEnd)
 	svc := NewService(store, nil)
 
 	plans := &plansMock{plans: map[string]domain.Plan{
@@ -919,14 +939,60 @@ func TestUpdateItem_QuantityIncreaseProratesAsInvoice(t *testing.T) {
 	}
 }
 
+// TestUpdateItem_PlanChange_StubPeriod_UsesFullCycleDenominator is the
+// end-to-end regression guard for the stub-period proration overcharge found
+// in production (DEMO-012094). A mid-month upgrade on a 14-day stub of a 30-day
+// monthly cycle must prorate the $30 delta against the FULL 30-day cycle —
+// $13.00 for the 13 remaining days — NOT the 14-day stub ($27.86).
+func TestUpdateItem_PlanChange_StubPeriod_UsesFullCycleDenominator(t *testing.T) {
+	tenantID := "t1"
+	// 14-day stub: Apr 16 18:30 → Apr 30 18:30 (2027); the upgrade fires at
+	// Apr 17 06:36, leaving 13 days of the 30-day monthly cycle.
+	periodStart := time.Date(2027, 4, 16, 18, 30, 0, 0, time.UTC)
+	periodEnd := time.Date(2027, 4, 30, 18, 30, 0, 0, time.UTC)
+	changeAt := time.Date(2027, 4, 17, 6, 36, 0, 0, time.UTC)
+	ctx := clock.WithEffectiveNow(context.Background(), changeAt)
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_starter", periodStart, periodEnd)
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_starter": {ID: "plan_starter", Name: "Start 20", BaseAmountCents: 2000, Currency: "USD", BaseBillTiming: domain.BillInAdvance, BillingInterval: domain.BillingMonthly},
+		"plan_pro":     {ID: "plan_pro", Name: "Pro 50", BaseAmountCents: 5000, Currency: "USD", BaseBillTiming: domain.BillInAdvance, BillingInterval: domain.BillingMonthly},
+	}}
+	invoices := &invoicesMock{sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded}}
+	credits := &creditsMock{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_pro", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("createdInvoices: got %d, want 1", len(invoices.createdInvoices))
+	}
+	// (5000-2000) × 13 / 30 = 1300. The stub-denominator bug billed 2786.
+	if got := invoices.createdInvoices[0].SubtotalCents; got != 1300 {
+		t.Errorf("stub-period upgrade proration: got %d, want 1300 ($30 delta × 13/30, full cycle); stub-denominator bug = 2786", got)
+	}
+}
+
 // TestUpdateItem_QuantityDecreaseProratesAsCredit verifies a mid-cycle qty
 // reduction issues a credit for the unused portion of the removed seats.
 func TestUpdateItem_QuantityDecreaseProratesAsCredit(t *testing.T) {
-	ctx := context.Background()
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
 	tenantID := "t1"
 
 	store := newMemStore()
-	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_seats")
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_seats", proPeriodStart, proPeriodEnd)
 	svc := NewService(store, nil)
 	// Start at qty=3 so we can drop to 1.
 	startQty := int64(3)
@@ -977,11 +1043,11 @@ func TestUpdateItem_QuantityDecreaseProratesAsCredit(t *testing.T) {
 // customer for the unused portion of the already-paid period. Seeds a 2-item
 // subscription so RemoveItem's "last item" guard doesn't trip.
 func TestRemoveItem_ProratesAsCredit(t *testing.T) {
-	ctx := context.Background()
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
 	tenantID := "t1"
 
 	store := newMemStore()
-	subID, firstItemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_a")
+	subID, firstItemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_a", proPeriodStart, proPeriodEnd)
 	svc := NewService(store, nil)
 	if _, err := svc.AddItem(ctx, tenantID, subID, AddItemInput{PlanID: "plan_b", Quantity: 1}); err != nil {
 		t.Fatalf("seed second item: %v", err)
