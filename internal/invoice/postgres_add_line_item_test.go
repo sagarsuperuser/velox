@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -144,6 +146,49 @@ func TestPostgresLineItem_TaxabilityReasonRoundTrip(t *testing.T) {
 		if gotReasons[i] != w {
 			t.Errorf("line %d TaxabilityReason = %q, want %q (column must round-trip the Stripe-canonical reason)", i, gotReasons[i], w)
 		}
+	}
+}
+
+// TestPostgresLineItem_QuantityDecimalRoundTrip is the regression test for the
+// fractional-usage quantity fix: a usage line's exact decimal quantity (e.g.
+// 1.5 GPU-hours) must survive the store round-trip, while the integer Quantity
+// column keeps the truncated value for back-compat (Stripe quantity_decimal
+// parity). The line amount stays whole cents.
+func TestPostgresLineItem_QuantityDecimalRoundTrip(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	store := invoice.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "QtyDecimal RoundTrip")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	qty := decimal.RequireFromString("1.5")
+	if _, err := store.CreateLineItem(ctx, tenantID, domain.InvoiceLineItem{
+		InvoiceID:        invID,
+		LineType:         domain.LineTypeUsage,
+		Description:      "GPU-hours",
+		Quantity:         qty.IntPart(), // 1 (truncated, back-compat)
+		QuantityDecimal:  qty,           // 1.5 (exact)
+		UnitAmountCents:  1000,
+		AmountCents:      1500,
+		TotalAmountCents: 1500,
+		Currency:         "USD",
+	}); err != nil {
+		t.Fatalf("create usage line item: %v", err)
+	}
+
+	got, err := store.ListLineItems(ctx, tenantID, invID)
+	if err != nil {
+		t.Fatalf("list line items: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListLineItems returned %d items, want 1", len(got))
+	}
+	if !got[0].QuantityDecimal.Equal(qty) {
+		t.Errorf("QuantityDecimal = %s, want 1.5 (decimal quantity must round-trip, not truncate to %d)", got[0].QuantityDecimal, got[0].Quantity)
+	}
+	if got[0].Quantity != 1 {
+		t.Errorf("Quantity = %d, want 1 (truncated int kept for back-compat)", got[0].Quantity)
 	}
 }
 
