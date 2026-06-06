@@ -284,7 +284,23 @@ type AttentionContext struct {
 	// scheduler hasn't ticked. Banner now reads "calculation queued"
 	// + "Retry now" so the operator gets agency without waiting.
 	StripeConnected bool
+
+	// Now is wall-clock now, used only to age the in-flight payment banner
+	// (processing → Info under the expected-settle window, Warning past it).
+	// Staleness is a REAL-WORLD duration (the provider settles in wall-clock),
+	// so this is wall-clock, not resolver-bound sim-time. Zero value disables
+	// the age escalation (the banner stays Info) — safe for callers that don't
+	// set it.
+	Now time.Time
 }
+
+// processingStaleAfter is how long a payment may sit `processing` before the
+// in-flight banner escalates from Info to Warning. Cards confirm in seconds
+// (inline, ADR-049 Phase 3) or within the reconciler's window (Phase 2), so a
+// card past this is genuinely anomalous — point the operator at Stripe. Tunable;
+// will need to go method-specific (cards: hours; ACH/SEPA: days) when an async
+// method is enabled (ADR-049 deferred tail).
+const processingStaleAfter = 6 * time.Hour
 
 // docBaseURL is the doc site root for operator-facing error pages. Kept
 // as a const so the SDK and the dashboard agree without env coupling.
@@ -342,7 +358,7 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	case inv.PaymentStatus == PaymentUnknown:
 		return classifyPaymentUnconfirmed(inv)
 	case inv.PaymentStatus == PaymentProcessing:
-		return classifyPaymentProcessing(inv)
+		return classifyPaymentProcessing(inv, atc)
 	// no_payment_method beats payment_scheduled: when both flags are
 	// set (engine queued for retry but PM is still missing), the
 	// scheduler will keep skipping until a PM is attached. The
@@ -504,16 +520,19 @@ func classifyPaymentFailure(inv Invoice) *Attention {
 
 func classifyPaymentUnconfirmed(inv Invoice) *Attention {
 	since := inv.UpdatedAt
+	// No operator action: the reconciler re-queries the provider on the next
+	// tick and now settles the outcome COMPLETELY — mark + dunning + email +
+	// event, identical to the webhook (ADR-049 Phase 2). The prior disabled
+	// "Check provider" button was non-functional (no endpoint); an on-demand
+	// re-check is deferred until real stuck-payment pressure (ADR-049), so the
+	// dead button is removed rather than shipped greyed-out.
 	return &Attention{
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonPaymentUnconfirmed,
 		Code:     "payment.unconfirmed",
-		Message:  "Payment outcome unconfirmed by the provider — the reconciler will resolve this automatically.",
+		Message:  "Payment outcome unconfirmed by the provider — Velox resolves this automatically on the next reconcile.",
 		DocURL:   docBaseURL + "payment-unconfirmed",
-		Actions: []AttentionActionItem{
-			{Code: AttentionActionReconcilePayment, Label: "Check provider"},
-		},
-		Since: &since,
+		Since:    &since,
 	}
 }
 
@@ -532,16 +551,38 @@ func classifyOverdue(inv Invoice) *Attention {
 	}
 }
 
-// classifyPaymentProcessing surfaces the in-flight charge state. Self-
-// resolves on the next provider callback; no operator action is
-// possible. Mirrors Stripe's `processing` PaymentIntent state.
-func classifyPaymentProcessing(inv Invoice) *Attention {
+// classifyPaymentProcessing surfaces the in-flight charge state. Velox now
+// confirms it automatically — inline from the synchronous charge response
+// (ADR-049 Phase 3) or via the reconciler backstop if the provider callback is
+// delayed/dropped (Phase 2) — so the healthy state needs no operator action.
+//
+// Age-aware: a REAL (non-simulated) invoice still `processing` past
+// processingStaleAfter is anomalous for a card (it should have settled inline
+// or via the reconciler), so escalate Info → Warning and point the operator at
+// the provider — without falsely promising auto-resolution for the stuck case.
+// Simulated invoices never escalate: their "age" is sim-time, not a real-world
+// duration, so a wall-clock age check would false-positive (atc.Now is
+// wall-clock). Zero atc.Now also keeps it Info (callers that don't set it).
+func classifyPaymentProcessing(inv Invoice, atc AttentionContext) *Attention {
 	since := inv.UpdatedAt
+
+	stale := !inv.IsSimulated && !atc.Now.IsZero() && atc.Now.Sub(inv.UpdatedAt) > processingStaleAfter
+	if stale {
+		return &Attention{
+			Severity: AttentionSeverityWarning,
+			Reason:   AttentionReasonPaymentProcessing,
+			Code:     "payment.processing",
+			Message:  "Payment has been awaiting confirmation at the provider for an unusually long time — check this payment in Stripe.",
+			DocURL:   docBaseURL + "payment-processing",
+			Since:    &since,
+		}
+	}
+
 	return &Attention{
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonPaymentProcessing,
 		Code:     "payment.processing",
-		Message:  "Payment is in flight at the provider — awaiting confirmation.",
+		Message:  "Payment is in flight at the provider — Velox confirms it automatically when the provider responds.",
 		DocURL:   docBaseURL + "payment-processing",
 		Since:    &since,
 	}

@@ -456,3 +456,70 @@ func TestClassifyInvoiceAttention_EmptyPaymentErrorFallsBackToGeneric(t *testing
 		t.Errorf("expected non-empty fallback message")
 	}
 }
+
+// TestClassify_PaymentProcessing_AgeAware locks ADR-049 Phase 4: a fresh
+// in-flight payment is Info ("resolves automatically"), but a REAL invoice
+// stuck processing past the expected-settle window escalates to Warning and
+// points the operator at Stripe — while a SIMULATED invoice never escalates
+// (its age is sim-time, not a real-world duration) and a zero Now stays Info.
+func TestClassify_PaymentProcessing_AgeAware(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	base := func(updatedAgo time.Duration, simulated bool) Invoice {
+		return Invoice{
+			ID: "vlx_inv_test", Status: InvoiceFinalized,
+			PaymentStatus: PaymentProcessing, TaxStatus: InvoiceTaxOK,
+			UpdatedAt: now.Add(-updatedAgo), IsSimulated: simulated,
+		}
+	}
+
+	t.Run("fresh real → Info, auto-resolve copy", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(base(1*time.Hour, false), AttentionContext{Now: now})
+		if att == nil || att.Severity != AttentionSeverityInfo {
+			t.Fatalf("att = %+v, want Info", att)
+		}
+		if !strings.Contains(att.Message, "automatically") {
+			t.Errorf("fresh copy = %q, want it to mention automatic confirmation", att.Message)
+		}
+	})
+
+	t.Run("stale real → Warning, points to Stripe", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(base(7*time.Hour, false), AttentionContext{Now: now})
+		if att == nil || att.Severity != AttentionSeverityWarning {
+			t.Fatalf("att = %+v, want Warning past the stale window", att)
+		}
+		if !strings.Contains(att.Message, "Stripe") {
+			t.Errorf("stale copy = %q, want it to point at Stripe (no false auto-resolve promise)", att.Message)
+		}
+	})
+
+	t.Run("stale but simulated → stays Info", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(base(7*time.Hour, true), AttentionContext{Now: now})
+		if att == nil || att.Severity != AttentionSeverityInfo {
+			t.Errorf("simulated invoice escalated on a wall-clock age: %+v", att)
+		}
+	})
+
+	t.Run("zero Now → stays Info", func(t *testing.T) {
+		att := ClassifyInvoiceAttention(base(7*time.Hour, false), AttentionContext{})
+		if att == nil || att.Severity != AttentionSeverityInfo {
+			t.Errorf("zero Now must not escalate: %+v", att)
+		}
+	})
+}
+
+// TestClassify_PaymentUnconfirmed_NoDeadAction: the unconfirmed banner no longer
+// ships a non-functional "Check provider" button — the reconciler resolves it
+// automatically (ADR-049 Phase 2); an on-demand action is deferred.
+func TestClassify_PaymentUnconfirmed_NoDeadAction(t *testing.T) {
+	inv := Invoice{
+		ID: "vlx_inv_test", Status: InvoiceFinalized,
+		PaymentStatus: PaymentUnknown, TaxStatus: InvoiceTaxOK,
+	}
+	att := ClassifyInvoiceAttention(inv, AttentionContext{})
+	if att == nil || att.Code != "payment.unconfirmed" {
+		t.Fatalf("att = %+v, want payment.unconfirmed", att)
+	}
+	if len(att.Actions) != 0 {
+		t.Errorf("unconfirmed banner carries %d actions, want 0 (dead disabled button removed)", len(att.Actions))
+	}
+}
