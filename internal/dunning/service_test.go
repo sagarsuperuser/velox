@@ -141,7 +141,9 @@ func (m *memStore) GetRun(_ context.Context, _, id string) (domain.InvoiceDunnin
 
 func (m *memStore) GetActiveRunByInvoice(_ context.Context, _, invoiceID string) (domain.InvoiceDunningRun, error) {
 	for _, r := range m.runs {
-		if r.InvoiceID == invoiceID && r.State != domain.DunningResolved && r.State != domain.DunningEscalated {
+		// Mirror the store: exclude only resolved runs. Escalated runs are
+		// still returnable so they can be resolved on out-of-band payment.
+		if r.InvoiceID == invoiceID && r.State != domain.DunningResolved {
 			return r, nil
 		}
 	}
@@ -333,6 +335,33 @@ func TestProcessDueRuns(t *testing.T) {
 	}
 	if updated.State != domain.DunningActive {
 		t.Errorf("state: got %q, want scheduled", updated.State)
+	}
+}
+
+// TestResolveByInvoice_ResolvesEscalatedRun guards the fix for escalated runs
+// being unresolvable: when a customer pays out-of-band AFTER retries exhaust
+// (state=escalated), ResolveByInvoice must still transition the run to resolved.
+// Pre-fix GetActiveRunByInvoice excluded 'escalated', so the run got stuck.
+func TestResolveByInvoice_ResolvesEscalatedRun(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	ctx := context.Background()
+
+	run, _ := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", time.Now())
+	run.State = domain.DunningEscalated // retries exhausted
+	run.Resolution = domain.ResolutionRetriesExhausted
+	store.runs[run.ID] = run
+
+	if err := svc.ResolveByInvoice(ctx, "t1", "inv_1", domain.ResolutionPaymentRecovered); err != nil {
+		t.Fatalf("ResolveByInvoice: %v", err)
+	}
+
+	updated := store.runs[run.ID]
+	if updated.State != domain.DunningResolved {
+		t.Errorf("state: got %q, want resolved — an escalated run must resolve on out-of-band payment", updated.State)
+	}
+	if updated.Resolution != domain.ResolutionPaymentRecovered {
+		t.Errorf("resolution: got %q, want payment_recovered", updated.Resolution)
 	}
 }
 

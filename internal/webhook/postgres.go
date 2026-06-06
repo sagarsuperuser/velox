@@ -565,6 +565,19 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 	return deliveries, tx.Commit()
 }
 
+// endpointSuccessRate is the delivered-success percentage over COMPLETED
+// deliveries only (succeeded + failed). Pending deliveries — still in flight or
+// awaiting retry — are excluded from the denominator so in-flight traffic
+// doesn't artificially depress an endpoint's success rate. Returns 0 when
+// nothing has completed yet.
+func endpointSuccessRate(succeeded, failed int) float64 {
+	completed := succeeded + failed
+	if completed == 0 {
+		return 0
+	}
+	return float64(succeeded) / float64(completed) * 100
+}
+
 func (s *PostgresStore) GetEndpointStats(ctx context.Context, tenantID string) ([]EndpointStats, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -591,9 +604,7 @@ func (s *PostgresStore) GetEndpointStats(ctx context.Context, tenantID string) (
 		if err := rows.Scan(&s.EndpointID, &s.TotalDeliveries, &s.Succeeded, &s.Failed); err != nil {
 			return nil, err
 		}
-		if s.TotalDeliveries > 0 {
-			s.SuccessRate = float64(s.Succeeded) / float64(s.TotalDeliveries) * 100
-		}
+		s.SuccessRate = endpointSuccessRate(s.Succeeded, s.Failed)
 		stats = append(stats, s)
 	}
 	return stats, rows.Err()

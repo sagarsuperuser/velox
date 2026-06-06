@@ -509,7 +509,7 @@ func (s *PostgresStore) GetBalance(ctx context.Context, tenantID, customerID str
 		SELECT
 			COALESCE(SUM(amount_cents), 0),
 			COALESCE(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN amount_cents < 0 THEN ABS(amount_cents) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN entry_type = 'usage' THEN ABS(amount_cents) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN entry_type = 'expiry' THEN ABS(amount_cents) ELSE 0 END), 0)
 		FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2
 	`, tenantID, customerID).Scan(&b.BalanceCents, &b.TotalGranted, &b.TotalUsed, &b.TotalExpired)
@@ -529,7 +529,7 @@ func (s *PostgresStore) ListBalances(ctx context.Context, tenantID string) ([]do
 			customer_id,
 			COALESCE(SUM(amount_cents), 0),
 			COALESCE(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN amount_cents < 0 THEN ABS(amount_cents) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN entry_type = 'usage' THEN ABS(amount_cents) ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN entry_type = 'expiry' THEN ABS(amount_cents) ELSE 0 END), 0)
 		FROM customer_credit_ledger
 		WHERE tenant_id = $1
