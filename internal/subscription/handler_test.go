@@ -403,9 +403,19 @@ func TestUpdateItem_ProrationDedup_DowngradeReturnsExisting(t *testing.T) {
 // verify the proration handler threads tax fields onto the invoice when an
 // applier is wired.
 type prorationTaxApplierMock struct {
-	calls  int
-	result ProrationTaxResult
-	err    error
+	calls           int
+	result          ProrationTaxResult
+	err             error
+	commitCalls     int
+	commitInvoiceID string
+	commitCalcID    string
+}
+
+func (m *prorationTaxApplierMock) CommitTax(_ context.Context, _, invoiceID, calculationID string) error {
+	m.commitCalls++
+	m.commitInvoiceID = invoiceID
+	m.commitCalcID = calculationID
+	return nil
 }
 
 func (m *prorationTaxApplierMock) ApplyTaxToLineItems(_ context.Context, _, _, _ string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error) {

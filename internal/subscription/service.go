@@ -643,6 +643,12 @@ type ProrationDetail struct {
 	AmountCents     int64   `json:"amount_cents"`
 	Type            string  `json:"type"` // "invoice" or "credit"
 	InvoiceID       string  `json:"invoice_id,omitempty"`
+	// TaxProvider / TaxCalculationID are internal (not API surface) — they
+	// route the post-commit Stripe Tax transaction creation up to the atomic
+	// caller, which can only commit after its tx is durable. Empty for
+	// credit-path (downgrade) prorations and manual/none providers.
+	TaxProvider      string `json:"-"`
+	TaxCalculationID string `json:"-"`
 }
 
 func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, input AddItemInput) (domain.SubscriptionItem, error) {
