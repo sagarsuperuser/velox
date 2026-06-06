@@ -700,78 +700,12 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
 
-	// Bind effective-now from the invoice so paid_at lands in
-	// simulated time on clock-pinned invoices. Stripe's webhook fires
-	// in wall-clock 2026 even when the invoice belongs to a clock
-	// frozen at 2024-04 — without binding, paid_at would leak
-	// wall-clock and the dashboard would show "Paid on 2026-05-08"
-	// for a simulation-2024 invoice.
-	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
-	now := clock.Now(ctx)
-
-	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at
-	if _, err := s.invoices.MarkPaid(ctx, tenantID, inv.ID, event.PaymentIntentID, now); err != nil {
-		return fmt.Errorf("mark invoice paid: %w", err)
-	}
-
-	slog.Info("payment succeeded",
-		"invoice_id", inv.ID,
-		"payment_intent_id", event.PaymentIntentID,
-	)
-
-	// Stamp the card actually charged onto the invoice so the
-	// activity timeline can show "Invoice paid · via Visa •••• 4242"
-	// (ADR-020). Best-effort — a missing CardFetcher, a non-card
-	// PM, or a transient Stripe API error all fall through to
-	// "Invoice paid · $29.00" with no sub-line. Lookup goes
-	// directly through Stripe (not our paymentmethods table) so
-	// one-off Checkout cards the customer never saved still show.
-	if s.cardFetcher != nil {
-		card, cardErr := s.cardFetcher.FetchCardForPaymentIntent(ctx, event.PaymentIntentID)
-		if cardErr != nil {
-			slog.Warn("payment succeeded: card resolve failed (timeline sub-line will be empty)",
-				"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID, "error", cardErr)
-		} else if card.Brand != "" || card.Last4 != "" {
-			if err := s.invoices.SetPaymentCard(ctx, tenantID, inv.ID, card.Brand, card.Last4); err != nil {
-				slog.Warn("payment succeeded: persist card details failed",
-					"invoice_id", inv.ID, "error", err)
-			}
-		}
-	}
-
-	s.fireEvent(ctx, tenantID, domain.EventPaymentSucceeded, map[string]any{
-		"invoice_id":        inv.ID,
-		"customer_id":       inv.CustomerID,
-		"payment_intent_id": event.PaymentIntentID,
-		"amount_cents":      inv.TotalAmountCents,
-		"currency":          inv.Currency,
-	})
-
-	// Enqueue payment receipt email inline. Pre-2026-05-29 this ran
-	// in a detached goroutine — the goroutine pattern existed to
-	// avoid request-ctx cancellation tearing down a slow direct-SMTP
-	// send, but it also voided every retry guarantee: a transient
-	// failure (Postmark 5xx, SMTP timeout) silently dropped the
-	// receipt because nothing observed the error past the goroutine's
-	// log line. s.emailReceipt is always *OutboxSender now (ADR-040
-	// cut the direct-SMTP-from-producer path), so SendPaymentReceipt
-	// is a fast DB INSERT and the dispatcher's retry loop owns delivery
-	// + backoff. Failure here logs but doesn't fail the webhook — the
-	// payment already committed, and returning an error would make
-	// Stripe retry the whole event (re-firing MarkPaid + double-firing
-	// the customer-facing event).
-	if s.emailReceipt != nil && s.customerEmail != nil {
-		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
-		if err != nil || email == "" {
-			slog.Warn("skip payment receipt email — cannot resolve customer email",
-				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
-			slog.Error("failed to enqueue payment receipt email",
-				"invoice_id", inv.ID, "email", email, "error", err)
-		}
-	}
-
-	return nil
+	// Webhook is one of the discover-then-settle entry points (ADR-049): it
+	// resolves the invoice, then hands the terminal outcome to the shared
+	// settlement primitive so the side-effects (mark paid, card stamp,
+	// payment.succeeded event, receipt email) are identical to every other
+	// settler.
+	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, SourceWebhook)
 }
 
 func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
@@ -788,131 +722,22 @@ func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event
 		return fmt.Errorf("find invoice for PI %s: %w", event.PaymentIntentID, err)
 	}
 
-	// Ignore an out-of-order failure for an already-settled invoice. Stripe
-	// delivers webhooks at-least-once and without ordering guarantees, so a
-	// stale payment_intent.payment_failed can arrive AFTER the invoice was
-	// already marked paid (a retried PI failed upstream but a different PI
-	// succeeded first, or the success webhook simply landed first). Applying it
-	// would flip payment_status back to 'failed', null paid_at, relink the
-	// stale PI, and kick off dunning on a paid invoice. Treat it as a no-op.
-	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
-		slog.Info("ignoring out-of-order payment_failed for already-settled invoice",
-			"invoice_id", inv.ID,
-			"invoice_status", inv.Status,
-			"payment_status", inv.PaymentStatus,
-			"event_payment_intent_id", event.PaymentIntentID,
-		)
-		return nil
-	}
-
-	// Bind effective-now so dunning's StartDunning (called below) and
-	// any UpdatePayment-side stamps land in simulated time on
-	// clock-pinned invoices.
-	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
-
-	failureMsg := event.FailureMessage
-	if failureMsg == "" {
-		failureMsg = "payment failed"
-	}
-
-	if _, err := s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
-		domain.PaymentFailed, event.PaymentIntentID, failureMsg, nil); err != nil {
-		return fmt.Errorf("update payment status: %w", err)
-	}
-
-	slog.Info("payment failed",
-		"invoice_id", inv.ID,
-		"payment_intent_id", event.PaymentIntentID,
-		"failure_message", failureMsg,
-	)
-
-	s.fireEvent(ctx, tenantID, domain.EventPaymentFailed, map[string]any{
-		"invoice_id":        inv.ID,
-		"customer_id":       inv.CustomerID,
-		"payment_intent_id": event.PaymentIntentID,
-		"failure_message":   failureMsg,
-		"amount_cents":      inv.TotalAmountCents,
-		"currency":          inv.Currency,
-	})
-
-	// Auto-start dunning for failed payments.
-	//
-	// failureAt is the simulated cycle-close instant — the moment in the
-	// invoice's own time domain when this charge "should" have happened.
-	// For clock-pinned invoices under catchup, frozen_time (= advance-end)
-	// is days or months after the actual cycle close; anchoring dunning's
-	// next_action_at there pushes the first retry past advance-end and
-	// the operator's Advance click fires zero retries.
-	//
-	// Derive failureAt as the latest invoice period boundary at or before
-	// IssuedAt. For in_arrears the cycle fires at BillingPeriodEnd (e.g.
-	// May 1 for an Apr 1–May 1 elapsed period). For in_advance it fires
-	// at BillingPeriodStart (e.g. May 1 for a May 1–May 31 upcoming
-	// period). Picking the latest boundary ≤ IssuedAt gives the right
-	// answer in both directions. For manual invoices with no period
-	// fields, falls back to IssuedAt or the current clock — both
-	// wall-clock-equivalent in production.
-	if s.dunning != nil {
-		failureAt := simulatedFailureAt(inv)
-		if err := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
-			slog.Error("payment_intent.payment_failed StartDunning failed after retries — dunning will NOT auto-retry; operator must start manually from invoice attention banner",
-				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else {
-			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
-		}
-	}
-
-	// Suppress the customer-facing email when the decline came from an
-	// interactive Pay flow (customer is on the hosted invoice page and
-	// already saw "Your card was declined" inline). Sending an email
-	// telling them what they just saw is noise. Auto-charge declines
-	// (no velox_purpose, or velox_purpose != hosted_invoice_pay)
-	// still send — the customer wasn't watching.
+	// Suppress the customer-facing email for two flows; the event + dunning
+	// still fire (they happen inside the primitive before the email step):
+	//   - hosted_invoice_pay: an interactive Pay flow — the customer is on the
+	//     hosted invoice page and already saw "Your card was declined" inline;
+	//     an email telling them what they just saw is noise.
+	//   - dunning_retry: this PI was created by the dunning retrier, which
+	//     already sent its own per-attempt warning/escalation email; firing the
+	//     generic payment-failed email too would double-notify for the same
+	//     attempt (Stripe Smart Retries / Lago shape: one email per attempt).
 	purpose := piPurposeFromPayload(event.Payload)
-	if purpose == "hosted_invoice_pay" {
-		slog.Info("skip post-decline email — interactive Pay flow",
-			"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID)
-		return nil
-	}
-	if purpose == "dunning_retry" {
-		// This webhook is for a PI created by the dunning retrier.
-		// Dunning has already sent its own dunning_warning (per retry)
-		// or dunning_escalation (on the final retry that triggered
-		// exhaustRun) email inline. Firing payment_failed here too
-		// would double-notify the customer for the same charge
-		// attempt — they'd see "Payment failed for invoice X" right
-		// next to "Action required — payment retry for invoice X
-		// (Attempt N of M)" describing the same fact. Industry shape
-		// (Stripe Smart Retries, Lago): one email per failed attempt
-		// carrying the retry-of-N context, not a generic payment-
-		// failed plus a separate retry-warning pair.
-		slog.Info("skip post-decline email — dunning retry (warning/escalation already sent)",
-			"invoice_id", inv.ID, "payment_intent_id", event.PaymentIntentID)
-		return nil
-	}
+	suppressEmail := purpose == "hosted_invoice_pay" || purpose == "dunning_retry"
 
-	// Enqueue the payment-failed email inline. Same fix as the
-	// receipt path above (2026-05-29): detached goroutine voided
-	// outbox retry guarantees by burying SendPaymentFailed errors
-	// past the goroutine's log line. With OutboxSender, the call
-	// is a fast DB INSERT and the dispatcher owns delivery retry.
-	// Failure logs but doesn't fail the webhook — invoice state
-	// already committed, returning error would re-fire the whole
-	// event (re-marking PaymentFailed + double-firing dunning).
-	if s.emailPaymentFailed != nil {
-		if s.customerEmail == nil {
-			slog.Error("payment failed email — customer email resolver not wired",
-				"invoice_id", inv.ID)
-		} else if email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
-			slog.Warn("skip payment failed email — cannot resolve customer email",
-				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
-			slog.Error("failed to enqueue payment failed email",
-				"invoice_id", inv.ID, "email", email, "error", err)
-		}
-	}
-
-	return nil
+	// Discover-then-settle (ADR-049): hand the terminal outcome to the shared
+	// primitive, which owns the out-of-order guard, mark-failed, payment.failed
+	// event, dunning auto-start, and the (possibly suppressed) failure email.
+	return s.SettleFailed(ctx, tenantID, inv, event.PaymentIntentID, event.FailureMessage, suppressEmail, SourceWebhook)
 }
 
 // piPurposeFromPayload extracts data.object.metadata.velox_purpose from
