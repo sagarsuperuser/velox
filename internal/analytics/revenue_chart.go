@@ -29,6 +29,15 @@ func (h *Handler) revenueChart(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Scope to the tenant default currency — summing mixed currencies into one
+	// total is meaningless (matches the overview/MRR currency scoping).
+	currency, err := defaultCurrencyFor(ctx, tx)
+	if err != nil {
+		slog.Error("analytics revenue-chart: default currency", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
 	dateFmt := "YYYY-MM-DD"
 	if period.Trunc == "month" {
 		dateFmt = "YYYY-MM"
@@ -39,10 +48,10 @@ func (h *Handler) revenueChart(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(SUM(total_amount_cents), 0) AS revenue_cents,
 		       COUNT(*) AS invoice_count
 		FROM invoices
-		WHERE status = 'paid' AND paid_at >= $3 AND paid_at < $4
+		WHERE status = 'paid' AND currency = $5 AND paid_at >= $3 AND paid_at < $4
 		GROUP BY 1
 		ORDER BY 1
-	`, period.Trunc, dateFmt, period.Start, period.End)
+	`, period.Trunc, dateFmt, period.Start, period.End, currency)
 	if err != nil {
 		slog.Error("analytics revenue-chart: query", "error", err)
 		respond.InternalError(w, r)
