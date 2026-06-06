@@ -913,9 +913,11 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 ### Warning
 - [ ] **tax pending**: amber banner with same code/actions, severity warning.
 - [ ] **overdue**: past `due_at` → amber banner code `lifecycle.overdue`, actions **Charge now** + **Send reminder**.
+- [ ] **payment_processing stale (ADR-049 Phase 4)**: a REAL (non-simulated) invoice left `payment_status=processing` for more than ~6h → the in-flight banner escalates Info → **amber Warning**, message points the operator at Stripe (does NOT promise auto-resolution). A clock-pinned (simulated) invoice stays **Info** no matter how "old" its sim-time is (the age is wall-clock, guarded on `!is_simulated`).
 
 ### Info
-- [ ] **payment_processing**: muted banner, no actions.
+- [ ] **payment_processing (fresh)**: muted banner, **no actions**, copy says Velox confirms it automatically (true via the synchronous inline settle / reconciler backstop — ADR-049 Phases 2–3).
+- [ ] **payment_unconfirmed**: muted banner, **no actions** — copy says Velox resolves it on the next reconcile. The previously-greyed-out "Check provider" button is gone (it had no endpoint; on-demand re-check deferred per ADR-049).
 - [ ] **payment_scheduled**: `auto_charge_pending=true` → muted banner, action **Charge now**.
 - [ ] **awaiting_payment**: muted banner, actions **Charge now** + **Send reminder**.
 
