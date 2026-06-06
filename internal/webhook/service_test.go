@@ -232,9 +232,7 @@ func (m *memStore) GetEndpointStats(_ context.Context, tenantID string) ([]Endpo
 	}
 	var result []EndpointStats
 	for _, s := range counts {
-		if s.TotalDeliveries > 0 {
-			s.SuccessRate = float64(s.Succeeded) / float64(s.TotalDeliveries) * 100
-		}
+		s.SuccessRate = endpointSuccessRate(s.Succeeded, s.Failed)
 		result = append(result, *s)
 	}
 	return result, nil
@@ -274,6 +272,28 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// TestEndpointSuccessRate guards that success rate is computed over COMPLETED
+// deliveries only — pending deliveries (never passed in) don't depress it.
+func TestEndpointSuccessRate(t *testing.T) {
+	cases := []struct {
+		name              string
+		succeeded, failed int
+		want              float64
+	}{
+		{"10 ok, 0 failed (5 pending excluded) → 100%", 10, 0, 100},
+		{"5 ok, 5 failed → 50%", 5, 5, 50},
+		{"0 ok, 4 failed → 0%", 0, 4, 0},
+		{"nothing completed yet → 0%", 0, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := endpointSuccessRate(tc.succeeded, tc.failed); got != tc.want {
+				t.Errorf("endpointSuccessRate(%d, %d) = %g, want %g", tc.succeeded, tc.failed, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestCreateEndpoint(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
