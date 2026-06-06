@@ -409,12 +409,15 @@ func (h *Handler) downloadInvoicePDF(w http.ResponseWriter, r *http.Request) {
 
 // payInvoice triggers an immediate charge against the customer's
 // default PM for a finalized-but-unpaid invoice. Industry parity:
-// Stripe portal "Pay invoice" button, Chargebee "Pay now". The
-// charge is async on Stripe's side; this endpoint returns 202
-// Accepted with the updated invoice (now carrying the
-// PaymentIntentID), and the payment_intent.succeeded/failed
-// webhook flips the final status. The caller polls or refreshes
-// invoices to see resolution.
+// Stripe portal "Pay invoice" button, Chargebee "Pay now". Returns
+// 202 Accepted with the updated invoice carrying the PaymentIntentID.
+// For a card that confirms synchronously (the common case) the
+// returned invoice is already `succeeded` — settled inline by the
+// charge path (ADR-049 Phase 3) — so the SPA shows paid immediately
+// (it keeps a short trailing poll for the receipt/card rows). For a
+// genuinely in-flight charge (async method / SCA) the invoice is
+// `processing` and the payment_intent.succeeded/failed webhook (or
+// the reconciler backstop) settles it; the SPA polls until then.
 //
 // Failure modes (all 4xx, none leak whether the resource exists):
 //   - invoice not found (or belongs to another customer) → 404
@@ -505,10 +508,11 @@ func (h *Handler) payInvoice(w http.ResponseWriter, r *http.Request) {
 			"amount_due":  inv.AmountDueCents,
 		})
 	}
-	// 202 Accepted — the charge is async; webhook reconciles the
-	// terminal state. The response carries the (now-processing)
-	// invoice with the PaymentIntentID stamped so the SPA can
-	// optimistic-update + poll.
+	// 202 Accepted — the response carries the invoice with its CURRENT
+	// status: `succeeded` when the card confirmed synchronously (settled
+	// inline, ADR-049 Phase 3), or `processing` when genuinely in flight
+	// (the webhook + reconciler settle it). The SPA reads payment_status to
+	// decide whether to keep polling.
 	respond.JSON(w, r, http.StatusAccepted, toPortalInvoice(charged))
 }
 

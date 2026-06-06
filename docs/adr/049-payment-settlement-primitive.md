@@ -41,7 +41,7 @@ Because all four route through the *same* primitive, a backstop-recovered settle
 - **Phase 0** — this ADR.
 - **Phase 1** — extract `SettleSucceeded` / `SettleFailed` and refactor the two webhook handlers onto them. **Behavior-preserving**; the existing webhook tests are the pin. **Shipped** (#188).
 - **Phase 2** — wire the reconciler onto the primitive (fixes the silent under-collection for `unknown` *today*) and generalize its sweep to stale `processing` with its own cool-off (30m default) + a pre-write fresh-read race guard. The reconciler replicates the webhook's email-suppression from the PI `velox_purpose` (plumbed onto `GetPaymentIntent`). **Shipped** (#189).
-- **Phase 3** — settle synchronously from the charge `result.Status` (fixes the test-clock symptom and all charge initiators at once, since they share `ChargeInvoice`).
+- **Phase 3** — settle synchronously from the charge `result.Status` (fixes the test-clock symptom and all charge initiators at once, since they share `ChargeInvoice`). **Shipped** (#190).
 - **Phase 4** — honest surfacing: age-aware `processing` attention (Info → Warning past an expected-settle window), wire the on-demand "Check provider" action, correct the banner copy so it never promises auto-resolution it can't deliver.
 
 ## Deferred (named triggers — the triggering surface does not exist yet)

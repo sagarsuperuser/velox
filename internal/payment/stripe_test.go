@@ -15,11 +15,12 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockStripeClient struct {
-	lastParams PaymentIntentParams
-	shouldFail bool
-	failErr    error // when set, overrides the default card_declined failure
-	piID       string
-	piStates   map[string]PaymentIntentResult // reconciler lookups by PI ID
+	lastParams   PaymentIntentParams
+	shouldFail   bool
+	failErr      error // when set, overrides the default card_declined failure
+	piID         string
+	chargeStatus string                         // CreatePaymentIntent result.Status; defaults to "requires_capture"
+	piStates     map[string]PaymentIntentResult // reconciler lookups by PI ID
 }
 
 func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params PaymentIntentParams) (PaymentIntentResult, error) {
@@ -30,9 +31,13 @@ func (m *mockStripeClient) CreatePaymentIntent(_ context.Context, params Payment
 		}
 		return PaymentIntentResult{}, &PaymentError{Message: "card_declined", DeclineCode: "card_declined"}
 	}
+	status := m.chargeStatus
+	if status == "" {
+		status = "requires_capture"
+	}
 	return PaymentIntentResult{
 		ID:           m.piID,
-		Status:       "requires_capture",
+		Status:       status,
 		ClientSecret: "pi_secret_test",
 	}, nil
 }

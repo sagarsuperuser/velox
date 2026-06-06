@@ -511,7 +511,7 @@ The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 ve
 ## FLOW CP6: Customer pays an invoice from the portal
 
 - [ ] Finalized-but-unpaid invoice with PM on file → portal row shows primary **Pay now** button.
-- [ ] `POST /v1/me/invoices/{id}/pay` → 202 Accepted, response is the invoice with `payment_status=processing` and `stripe_payment_intent_id` stamped. Stripe `payment_intent.succeeded` webhook flips status to `paid` shortly after.
+- [ ] `POST /v1/me/invoices/{id}/pay` with a card that confirms synchronously → 202 Accepted, response invoice is already `payment_status=succeeded` / `status=paid` with `paid_at` + `stripe_payment_intent_id` stamped (settled inline, ADR-049 Phase 3 — no webhook wait); the SPA shows paid (keeps a short trailing poll for the receipt/card rows). For a genuinely in-flight charge (async method / SCA) the response is `payment_status=processing` and the `payment_intent.succeeded` webhook (or reconciler backstop) flips it to paid shortly after.
 - [ ] Already-paid invoice → 409 `invoice_already_paid`.
 - [ ] Invoice with `payment_status=processing` (charge in flight) → 409 `payment_in_flight`. UI button shows "Processing…" disabled state.
 - [ ] Voided / draft invoice → 409 `invoice_not_payable`.
