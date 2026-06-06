@@ -81,13 +81,17 @@ func (m *Metrics) ComputeDashboard(ctx context.Context, tenantID string, plans m
 				continue
 			}
 
-			perMonth := plan.BaseAmountCents
-			if plan.BillingInterval == domain.BillingYearly {
-				perMonth = plan.BaseAmountCents / 12
-			} else if plan.BillingInterval != domain.BillingMonthly {
+			// Multiply by quantity BEFORE dividing by 12 so the yearly
+			// normalization doesn't truncate per-unit then scale the error
+			// (e.g. $100/yr × 10 = 8333¢/mo, not (10000/12)×10 = 8330¢).
+			if plan.BillingInterval != domain.BillingYearly && plan.BillingInterval != domain.BillingMonthly {
 				continue
 			}
-			d.MRRCents += perMonth * it.Quantity
+			lineMRR := plan.BaseAmountCents * it.Quantity
+			if plan.BillingInterval == domain.BillingYearly {
+				lineMRR /= 12
+			}
+			d.MRRCents += lineMRR
 		}
 	}
 	d.TotalCustomers = len(customerSet)

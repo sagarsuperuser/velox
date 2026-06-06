@@ -40,6 +40,30 @@ func (m *mockMetricsTTFI) TenantCreatedAt(_ context.Context, _ string) (time.Tim
 	return m.tenantCreatedAt, m.tenantErr
 }
 
+// TestComputeDashboard_YearlyMRR_MultiplyBeforeDivide guards the yearly MRR
+// normalization order of operations: quantity must multiply BEFORE the /12, or
+// the per-unit truncation gets scaled by quantity. $100/yr × 10 = 8333¢/mo,
+// not (10000/12)×10 = 8330¢. (The qty=1 case in TestComputeDashboard can't
+// catch this — old and new coincide there.)
+func TestComputeDashboard_YearlyMRR_MultiplyBeforeDivide(t *testing.T) {
+	subs := &mockMetricsSubs{
+		subs: []domain.Subscription{
+			{ID: "sub_1", CustomerID: "cus_1", Status: domain.SubscriptionActive,
+				Items: []domain.SubscriptionItem{{PlanID: "pln_yearly", Quantity: 10}}},
+		},
+	}
+	plans := map[string]domain.Plan{
+		"pln_yearly": {ID: "pln_yearly", BaseAmountCents: 10000, BillingInterval: domain.BillingYearly},
+	}
+	d, err := NewMetrics(subs, &mockMetricsInvoices{}, &mockMetricsTTFI{}).ComputeDashboard(context.Background(), "t1", plans)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d.MRRCents != 8333 {
+		t.Errorf("yearly MRR: got %d, want 8333 ((10000×10)/12); divide-before-multiply bug = 8330", d.MRRCents)
+	}
+}
+
 func TestComputeDashboard(t *testing.T) {
 	subs := &mockMetricsSubs{
 		subs: []domain.Subscription{

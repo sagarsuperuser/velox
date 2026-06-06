@@ -85,10 +85,8 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	// aggregate (revenue, outstanding AR, avg invoice value) is scoped to it
 	// so the dashboard never sums amounts across currencies into a corrupt
 	// total. Defaults to USD when settings are unset (fresh tenant).
-	defaultCurrency := "USD"
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(NULLIF(default_currency, ''), 'USD') FROM tenant_settings LIMIT 1`,
-	).Scan(&defaultCurrency); err != nil && err != sql.ErrNoRows {
+	defaultCurrency, err := defaultCurrencyFor(ctx, tx)
+	if err != nil {
 		slog.Error("analytics overview: default currency", "error", err)
 		respond.InternalError(w, r)
 		return
@@ -137,11 +135,11 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 			`SELECT COALESCE(SUM(amount_due_cents), 0) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded' AND currency = $1`,
 			[]any{defaultCurrency}},
 		{"avg_invoice", &resp.AvgInvoiceValue,
-			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid' AND currency = $1`,
-			[]any{defaultCurrency}},
+			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3`,
+			[]any{defaultCurrency, period.Start, period.End}},
 		{"paid_invoices", &resp.PaidInvoices,
-			`SELECT COUNT(*) FROM invoices WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2`,
-			[]any{period.Start, period.End}},
+			`SELECT COUNT(*) FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3`,
+			[]any{defaultCurrency, period.Start, period.End}},
 		{"failed_payments", &resp.FailedPayments,
 			`SELECT COUNT(*) FROM invoices WHERE payment_status = 'failed' AND created_at >= $1 AND created_at < $2`,
 			[]any{period.Start, period.End}},
@@ -210,7 +208,7 @@ func currentMRR(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var v int64
 	err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * si.quantity) / 12
 			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
@@ -275,7 +273,7 @@ func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any) (int64, error) {
 			GROUP BY c.subscription_id, c.subscription_item_id
 		)
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * i.quantity
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * i.quantity) / 12
 			     ELSE p.base_amount_cents * i.quantity
 			END
 		), 0)
@@ -289,6 +287,21 @@ func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any) (int64, error) {
 		  AND (s.canceled_at IS NULL OR s.canceled_at > $1)
 	`, t).Scan(&v)
 	return v, err
+}
+
+// defaultCurrencyFor returns the tenant's configured default currency, or
+// "USD" when unset. Analytics money totals are scoped to this currency —
+// invoices in other currencies are excluded rather than summed into a corrupt
+// mixed-currency total. Returns a non-nil error only on a real DB failure (a
+// missing settings row falls back to USD).
+func defaultCurrencyFor(ctx context.Context, tx *sql.Tx) (string, error) {
+	cur := "USD"
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(NULLIF(default_currency, ''), 'USD') FROM tenant_settings LIMIT 1`,
+	).Scan(&cur); err != nil && err != sql.ErrNoRows {
+		return "USD", err
+	}
+	return cur, nil
 }
 
 func sumPaidRevenue(ctx context.Context, tx *sql.Tx, start, end any, currency string) (int64, error) {
@@ -315,7 +328,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMov
 	// New MRR: items of subscriptions activated in [start, end).
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * si.quantity) / 12
 			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
@@ -330,7 +343,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMov
 	// Churned MRR: items of subscriptions canceled in [start, end).
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents / 12) * si.quantity
+			CASE WHEN p.billing_interval = 'yearly' THEN (p.base_amount_cents * si.quantity) / 12
 			     ELSE p.base_amount_cents * si.quantity
 			END
 		), 0)
@@ -351,10 +364,10 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any) (MRRMov
 			COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0)
 		FROM (
 			SELECT (
-				(CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents / 12
-				      ELSE pto.base_amount_cents END) * c.to_quantity
-			  - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents / 12
-				      ELSE pfrom.base_amount_cents END) * c.from_quantity
+				(CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents * c.to_quantity / 12
+				      ELSE pto.base_amount_cents * c.to_quantity END)
+			  - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents * c.from_quantity / 12
+				      ELSE pfrom.base_amount_cents * c.from_quantity END)
 			) AS delta
 			FROM subscription_item_changes c
 			JOIN subscriptions s ON s.id = c.subscription_id
