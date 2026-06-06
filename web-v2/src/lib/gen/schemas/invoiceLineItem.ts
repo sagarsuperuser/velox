@@ -22,6 +22,9 @@ export interface InvoiceLineItem {
   meter_id?: string;
   description: string;
   quantity: number;
+  /** Exact (possibly fractional) usage quantity as a decimal string (e.g. "1.5"). The integer `quantity` is this truncated, kept for back-compat (Stripe quantity_decimal parity). "0" means none — use `quantity`. Line amounts stay whole cents.
+   */
+  quantity_decimal?: string;
   unit_amount_cents: number;
   amount_cents: number;
   /** Tax rate as a percent (18.50 = 18.50%), up to 4-decimal precision. ADR-042/043. */
