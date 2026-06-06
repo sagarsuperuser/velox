@@ -3,7 +3,60 @@ package subscription
 import (
 	"math/big"
 	"testing"
+	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+// TestFullBillingCycleDays pins the proration denominator to the full
+// anniversary cycle from periodStart, regardless of how short the current
+// (stub) period is. Month length varies, so the value depends on periodStart.
+func TestFullBillingCycleDays(t *testing.T) {
+	utc := time.UTC
+	cases := []struct {
+		name     string
+		start    time.Time
+		interval domain.BillingInterval
+		want     int64
+	}{
+		{"monthly anchored mid-month (Apr 16 → May 16 = 30)", time.Date(2027, 4, 16, 18, 30, 0, 0, utc), domain.BillingMonthly, 30},
+		{"monthly anchored Jan 1 (→ Feb 1 = 31)", time.Date(2026, 1, 1, 0, 0, 0, 0, utc), domain.BillingMonthly, 31},
+		{"monthly anchored Feb 1 non-leap (→ Mar 1 = 28)", time.Date(2026, 2, 1, 0, 0, 0, 0, utc), domain.BillingMonthly, 28},
+		{"monthly anchored Feb 1 leap (→ Mar 1 = 29)", time.Date(2028, 2, 1, 0, 0, 0, 0, utc), domain.BillingMonthly, 29},
+		{"yearly anchored Jan 1 (→ Jan 1 = 365)", time.Date(2026, 1, 1, 0, 0, 0, 0, utc), domain.BillingYearly, 365},
+		{"yearly anchored in a leap year (366)", time.Date(2028, 1, 1, 0, 0, 0, 0, utc), domain.BillingYearly, 366},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fullBillingCycleDays(tc.start, tc.interval); got != tc.want {
+				t.Errorf("fullBillingCycleDays(%v, %s) = %d, want %d", tc.start, tc.interval, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProration_StubPeriod_DividesByFullCycle is the regression guard for the
+// stub-period overcharge: an upgrade on a 14-day stub of a 30-day monthly
+// cycle must prorate the delta against the FULL 30-day cycle, not the 14-day
+// stub. Models the exact real-data case (Start $20 → Pro $50, 13 of 14 stub
+// days remaining): correct $13.00, NOT the buggy $27.86.
+func TestProration_StubPeriod_DividesByFullCycle(t *testing.T) {
+	periodStart := time.Date(2027, 4, 16, 18, 30, 0, 0, time.UTC) // 14-day stub to Apr 30
+	fullCycle := fullBillingCycleDays(periodStart, domain.BillingMonthly)
+	if fullCycle != 30 {
+		t.Fatalf("fullCycle = %d, want 30", fullCycle)
+	}
+	const oldAmt, newAmt, remaining = int64(2000), int64(5000), int64(13)
+
+	got := prorationCents(oldAmt, newAmt, remaining, fullCycle)
+	if got != 1300 {
+		t.Errorf("stub upgrade proration = %d, want 1300 ((5000-2000)×13/30)", got)
+	}
+	// Document the bug being prevented: dividing by the 14-day stub gives $27.86.
+	if buggy := prorationCents(oldAmt, newAmt, remaining, 14); buggy != 2786 {
+		t.Errorf("sanity: stub-denominator value = %d, want 2786 (the overcharge this fix removes)", buggy)
+	}
+}
 
 // TestProrationCents_ExactCents pins the immediate plan-change proration amount
 // to exact cents (no tolerance ranges) — including the B7.4 reference case:

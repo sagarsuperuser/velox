@@ -1556,20 +1556,35 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 	// Integer day-ratio proration per ADR-042 — pure-integer banker's
 	// rounding, no float64 in the cents path. See prorationCents.
+	//
+	// Denominator is the FULL billing cycle, NOT spec.totalDays (the current
+	// period). On a stub/partial period (mid-cycle signup) spec.totalDays is
+	// the short stub length, and dividing by it over-charges upgrades /
+	// over-credits downgrades — the customer paid old × stub/fullCycle for the
+	// period, so the delta for the remaining portion is (new−old) ×
+	// remaining/fullCycle. This matches the engine's day-1 stub base fee and
+	// BillOnPlanSwapImmediate (both divide by fullCycleDays).
 	oldAmount := oldPlan.BaseAmountCents * spec.oldQuantity
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
-	proratedCents := prorationCents(oldAmount, newAmount, spec.remainingDays, spec.totalDays)
+	denomDays := spec.totalDays
+	if sub.CurrentBillingPeriodStart != nil {
+		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval); fc > 0 {
+			denomDays = fc
+		}
+	}
+	remainingDays := min(spec.remainingDays, denomDays)
+	proratedCents := prorationCents(oldAmount, newAmount, remainingDays, denomDays)
 
 	if proratedCents == 0 {
 		return nil, nil
 	}
 
-	// Derive display-only factor from the integer day-ratio for the
-	// ProrationDetail payload (operator-visible event metadata). Source
-	// of truth for the cents math is spec.remainingDays / spec.totalDays.
+	// Display-only factor for the ProrationDetail payload (operator-visible
+	// event metadata). Source of truth for the cents math is the integer
+	// remainingDays / fullCycle denominator above.
 	var displayFactor float64
-	if spec.totalDays > 0 {
-		displayFactor = float64(spec.remainingDays) / float64(spec.totalDays)
+	if denomDays > 0 {
+		displayFactor = float64(remainingDays) / float64(denomDays)
 	}
 	detail := &ProrationDetail{
 		OldPlanID:       spec.oldPlanID,

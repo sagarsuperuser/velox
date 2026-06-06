@@ -94,6 +94,30 @@ func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTi
 	return periodEnd.AddDate(0, 1, 0)
 }
 
+// AddBillingInterval returns t advanced by exactly one billing interval —
+// the anniversary advance: +1 year for yearly, otherwise +1 month. It is the
+// SINGLE source of truth for "one full cycle from an anchor".
+//
+// This is the denominator proration MUST divide by — the FULL cycle length,
+// NOT the current period length. On a stub/partial period (mid-cycle signup,
+// e.g. a 14-day period of a 30-day monthly cycle) the current period is
+// shorter than a cycle, so dividing by it over-charges upgrades and
+// over-credits downgrades. The engine's day-1 stub base fee is prorated against
+// this same full cycle (segDays/fullCycleDays), and the subscription handler's
+// immediate plan-change proration now derives its denominator from here too —
+// so the two paths can never disagree (the defect class that produced the
+// stub-period proration mischarge).
+//
+// Deliberately calendar-agnostic. For the calendar-snapping cycle-CLOSE
+// advance (which re-anchors to the 1st of the next month in tenant TZ), use
+// NextBillingPeriodEnd instead.
+func AddBillingInterval(t time.Time, interval BillingInterval) time.Time {
+	if interval == BillingYearly {
+		return t.AddDate(1, 0, 0)
+	}
+	return t.AddDate(0, 1, 0)
+}
+
 // PauseCollectionBehavior controls what the engine does with the invoice it
 // would normally finalize during a paused-collection cycle. v1 supports
 // only KeepAsDraft; the other Stripe modes (mark_uncollectible, void) need
