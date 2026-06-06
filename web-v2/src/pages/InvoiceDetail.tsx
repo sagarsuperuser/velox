@@ -912,7 +912,11 @@ export default function InvoiceDetailPage() {
                           </div>
                         )}
                       </TableCell>
-                      <TableCell className="text-right font-mono tabular-nums text-sm">{item.quantity.toLocaleString()}</TableCell>
+                      <TableCell className="text-right font-mono tabular-nums text-sm">
+                        {item.quantity_decimal && Number(item.quantity_decimal) !== 0
+                          ? Number(item.quantity_decimal).toLocaleString(undefined, { maximumFractionDigits: 12 })
+                          : item.quantity.toLocaleString()}
+                      </TableCell>
                       <TableCell className="text-right font-mono tabular-nums text-sm">{formatCents(item.unit_amount_cents, invoice.currency)}</TableCell>
                       <TableCell className="text-right font-mono tabular-nums text-sm font-medium">{formatCents(item.amount_cents, invoice.currency)}</TableCell>
                     </TableRow>
