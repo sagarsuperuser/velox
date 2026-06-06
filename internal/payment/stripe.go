@@ -460,7 +460,37 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	)
 	mw.RecordPaymentCharge("succeeded")
 
-	// Update invoice with PI reference and set to processing
+	// Honor the synchronous confirmation outcome (ADR-049 Phase 3,
+	// discover-then-settle). With Confirm:true + OffSession:true, Stripe
+	// returns the terminal status in the create RESPONSE for cards — a
+	// `succeeded` PI is authoritative WITHOUT waiting for the webhook. Settle
+	// inline so the invoice resolves in-request — and, on a test clock, inside
+	// the operator's Advance on the simulated timeline — instead of sitting in
+	// `processing` until a wall-clock webhook that may never arrive in local
+	// dev. The webhook + reconciler stay idempotent backstops (SettleSucceeded
+	// skips an already-paid invoice). Genuinely-async statuses (processing /
+	// requires_action / requires_confirmation / requires_capture — delayed
+	// methods, or rare off-session SCA) stay `processing` and await the webhook.
+	if result.Status == "succeeded" {
+		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, SourceChargeResponse); serr != nil {
+			return domain.Invoice{}, fmt.Errorf("settle succeeded inline: %w", serr)
+		}
+		// Return the freshly-settled row so callers (dunning retrier, portal,
+		// operator charge-now) observe the paid state immediately. On a re-read
+		// error the settle already committed — return a patched copy rather
+		// than a misleading error.
+		settled, gerr := s.invoices.Get(ctx, tenantID, inv.ID)
+		if gerr != nil {
+			inv.PaymentStatus = domain.PaymentSucceeded
+			inv.Status = domain.InvoicePaid
+			inv.StripePaymentIntentID = result.ID
+			return inv, nil
+		}
+		return settled, nil
+	}
+
+	// Still in flight — record the PI and set processing; the webhook (and the
+	// reconciler backstop) will settle it.
 	return s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
 		domain.PaymentProcessing, result.ID, "", nil)
 }
