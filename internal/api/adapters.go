@@ -662,15 +662,24 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		return subscription.ProrationTaxResult{}, err
 	}
 	return subscription.ProrationTaxResult{
-		TaxAmountCents: r.TaxAmountCents,
-		TaxRate:        r.TaxRate,
-		TaxName:        r.TaxName,
-		TaxCountry:     r.TaxCountry,
-		TaxID:          r.TaxID,
-		SubtotalCents:  r.SubtotalCents,
-		DiscountCents:  r.DiscountCents,
-		TaxStatus:      r.TaxStatus,
+		TaxAmountCents:   r.TaxAmountCents,
+		TaxRate:          r.TaxRate,
+		TaxName:          r.TaxName,
+		TaxCountry:       r.TaxCountry,
+		TaxID:            r.TaxID,
+		TaxProvider:      r.TaxProvider,
+		TaxCalculationID: r.TaxCalculationID,
+		SubtotalCents:    r.SubtotalCents,
+		DiscountCents:    r.DiscountCents,
+		TaxStatus:        r.TaxStatus,
 	}, nil
+}
+
+// CommitTax commits a provider tax calculation into a reportable tax
+// transaction, delegating to the same engine method the cycle/create paths
+// use. No-op for manual/none providers (no calculation id).
+func (a *prorationTaxApplierAdapter) CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error {
+	return a.engine.CommitTax(ctx, tenantID, invoiceID, calculationID)
 }
 
 // pmCustomerLookupAdapter bridges customer.PostgresStore →

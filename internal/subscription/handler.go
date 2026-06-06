@@ -76,8 +76,16 @@ type ProrationTaxResult struct {
 	TaxName        string
 	TaxCountry     string
 	TaxID          string
-	SubtotalCents  int64
-	DiscountCents  int64
+	// TaxProvider / TaxCalculationID carry the provider provenance so the
+	// proration invoice records WHICH engine computed the tax and (for
+	// stripe_tax) the calculation id needed to commit a reportable tax
+	// transaction. Dropping these was the bug: the proration invoice showed
+	// a tax amount but blank tax_provider, and the Stripe Tax calculation
+	// was never committed — so the tax was charged but never reported.
+	TaxProvider      string
+	TaxCalculationID string
+	SubtotalCents    int64
+	DiscountCents    int64
 	// TaxStatus signals whether the provider's tax calculation
 	// succeeded (ok) or was deferred (pending / failed). Drives the
 	// proration invoice's finalized-vs-draft decision via
@@ -89,9 +97,16 @@ type ProrationTaxResult struct {
 }
 
 // ProrationTaxApplier resolves and applies tax against a proration invoice's
-// single line item.
+// single line item, and commits the resulting provider calculation into a
+// reportable tax transaction — the same calculate-then-commit contract the
+// engine runs for cycle/create invoices, so proration tax is reported and
+// remitted, not just charged.
 type ProrationTaxApplier interface {
 	ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, currency string, subtotal, discount int64, lineItems []domain.InvoiceLineItem) (ProrationTaxResult, error)
+	// CommitTax turns a provider tax calculation into a committed tax
+	// transaction (Stripe Tax). No-op for manual/none providers. Called
+	// after the proration invoice row is durable.
+	CommitTax(ctx context.Context, tenantID, invoiceID, calculationID string) error
 }
 
 // ProrationGrantInput carries the downgrade/removal/reduction credit payload
@@ -1345,13 +1360,18 @@ func (h *Handler) atomicAddItemWithProration(
 		newPlanID:     item.PlanID,
 		newQuantity:   item.Quantity,
 	}
-	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+	detail, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx)
+	if err != nil {
 		return domain.SubscriptionItem{}, fmt.Errorf("proration in atomic addItem tx: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return domain.SubscriptionItem{}, fmt.Errorf("commit atomic addItem tx: %w", err)
 	}
+	// Commit proration tax AFTER the tx is durable — CommitTax is an external
+	// Stripe call and must not ride the DB tx (a rollback would orphan the
+	// committed tax transaction). No-op unless a stripe_tax calculation exists.
+	h.commitProrationTax(ctx, tenantID, detail)
 	return item, nil
 }
 
@@ -1416,13 +1436,17 @@ func (h *Handler) atomicUpdateItemWithProration(
 			newQuantity:   result.Item.Quantity,
 		}
 	}
-	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+	detail, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx)
+	if err != nil {
 		return ItemChangeResult{}, fmt.Errorf("proration in atomic updateItem tx: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return ItemChangeResult{}, fmt.Errorf("commit atomic updateItem tx: %w", err)
 	}
+	// Commit proration tax AFTER the tx is durable (external Stripe call;
+	// must not ride the DB tx). No-op unless a stripe_tax calculation exists.
+	h.commitProrationTax(ctx, tenantID, detail)
 	return result, nil
 }
 
@@ -1459,14 +1483,35 @@ func (h *Handler) atomicRemoveItemWithProration(
 		newPlanID:     "",
 		newQuantity:   0,
 	}
-	if _, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx); err != nil {
+	detail, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx)
+	if err != nil {
 		return fmt.Errorf("proration in atomic removeItem tx: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit atomic removeItem tx: %w", err)
 	}
+	// Remove proration is a credit (no invoice/tax) so this no-ops, but keep
+	// the post-tx commit uniform across the atomic wrappers.
+	h.commitProrationTax(ctx, tenantID, detail)
 	return nil
+}
+
+// commitProrationTax turns the proration invoice's provider tax calculation
+// into a reportable tax transaction (Stripe Tax), mirroring the engine's
+// post-finalize CommitTax for cycle/create invoices. No-op unless a provider
+// produced a calculation id (stripe_tax) — manual/none and credit-path
+// (downgrade) prorations carry no calculation. Non-fatal: the invoice is
+// already authoritative; a transient commit failure is logged, like the
+// engine's convention, and can be reconciled later.
+func (h *Handler) commitProrationTax(ctx context.Context, tenantID string, detail *ProrationDetail) {
+	if h.tax == nil || detail == nil || detail.TaxProvider == "" || detail.TaxCalculationID == "" {
+		return
+	}
+	if err := h.tax.CommitTax(ctx, tenantID, detail.InvoiceID, detail.TaxCalculationID); err != nil {
+		slog.WarnContext(ctx, "tax: commit failed after proration invoice",
+			"error", err, "tenant_id", tenantID, "invoice_id", detail.InvoiceID)
+	}
 }
 
 func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec, tx *sql.Tx) (*ProrationDetail, error) {
@@ -1669,6 +1714,8 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			TaxName:            taxResult.TaxName,
 			TaxCountry:         taxResult.TaxCountry,
 			TaxID:              taxResult.TaxID,
+			TaxProvider:        taxResult.TaxProvider,
+			TaxCalculationID:   taxResult.TaxCalculationID,
 			TaxAmountCents:     taxResult.TaxAmountCents,
 			TaxStatus:          taxResult.TaxStatus,
 			TotalAmountCents:   netProrated,
@@ -1747,6 +1794,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		detail.InvoiceID = inv.ID
 		detail.Type = "invoice"
+		// Carry the provider provenance so tax can be committed once the
+		// invoice row is durable. On the non-atomic path (tx == nil) the
+		// row is already committed by CreateInvoiceWithLineItems, so commit
+		// here; on the atomic path (tx != nil) the row isn't durable until
+		// the caller's tx.Commit, so the atomic wrapper commits afterward
+		// (committing a Stripe Tax transaction for a row that might roll
+		// back would orphan it). Mirrors the engine's post-finalize commit.
+		detail.TaxProvider = inv.TaxProvider
+		detail.TaxCalculationID = inv.TaxCalculationID
+		if tx == nil {
+			h.commitProrationTax(ctx, tenantID, detail)
+		}
 
 		slog.InfoContext(ctx, "proration invoice created",
 			"invoice_id", inv.ID,
