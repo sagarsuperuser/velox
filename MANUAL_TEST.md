@@ -398,7 +398,7 @@ Setup: clock-pinned customer on an in_advance plan (e.g. $30/mo), day-1 invoice 
 - [ ] **Partial consumption** (cancel ~halfway through the period): the prebill invoice's **amount due drops to the consumed portion** (e.g. $30 → ~$15) — a credit note for the unused portion is linked on the invoice. Invoice is NOT voided and stays collectible for the consumed amount.
 - [ ] **No consumption** (cancel at/near period start): the prebill invoice **status → voided** (no credit note).
 - [ ] Customer credit balance is **unchanged** on both paths — no balance credit is granted for an invoice that was never paid.
-- [ ] Paid-invoice contrast (mark the prebill paid first, then cancel mid-period): unused portion goes to the **customer credit balance** as before; the invoice is not voided/reduced.
+- [ ] Paid-invoice contrast (mark the prebill paid first, then cancel mid-period): unused portion goes to the **customer credit balance**; the invoice is not voided/reduced. **On a taxed prebill (ADR-048):** the clawback is issued as a **credit note** against the paid invoice — the balance credit is the **gross** unused (net + the tax the customer paid on it), and the credit note carries the proportional reversed tax (a Stripe Tax reversal is filed for `stripe_tax`). Pre-fix only the net was credited (customer short by the tax slice). Zero-tax prebills are unchanged (gross == net). The same applies to an immediate **plan swap** of a paid in_advance period.
 
 ## FLOW SUB-CARD: Subscription billing-cycle card surface
 
