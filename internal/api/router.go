@@ -374,6 +374,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// spend an extra API call.
 	paymentReconciler := payment.NewReconciler(stripeClient, invoiceStore, 60*time.Second)
 	paymentReconciler.SetBreaker(stripeBreaker)
+	// ADR-049 Phase 2: route recovered terminals through the shared settlement
+	// primitive (so a dropped-webhook recovery dunns + notifies + emits the
+	// event, not just flips payment_status), and sweep stale 'processing'
+	// invoices in addition to 'unknown' as the dropped-webhook backstop. The
+	// 30m processing cool-off keeps the webhook winning the common race (a
+	// healthy card PI settles in seconds) while resolving a genuinely-dropped
+	// webhook within ~one extra tick.
+	paymentReconciler.SetSettler(stripeAdapter)
+	paymentReconciler.SetProcessingReconcileAfter(30 * time.Minute)
 	// Engine isn't constructed yet at this point — paymentReconciler's
 	// resolver is wired below at line ~640 alongside dunningSvc and
 	// stripeAdapter. Keep this declaration near the constructor; the

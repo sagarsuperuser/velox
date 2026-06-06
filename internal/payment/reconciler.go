@@ -18,8 +18,35 @@ import (
 // can be wired independently of the hot charge / webhook paths.
 type ReconcileInvoiceStore interface {
 	ListUnknownPayments(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error)
+	// ListProcessingPayments returns invoices stuck in payment_status
+	// 'processing' older than the (longer) processing cool-off — the dropped-
+	// webhook backstop (ADR-049 Phase 2). A healthy card PI resolves in seconds
+	// via webhook and async methods legitimately sit in processing for days, so
+	// this window is much longer than the unknown one to keep the webhook
+	// winning the common race.
+	ListProcessingPayments(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error)
+	// Get re-reads an invoice fresh immediately before settling, so a webhook
+	// that won the race during the GetPaymentIntent round-trip is observed
+	// (the snapshot from the sweep list may be stale).
+	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 	UpdatePayment(ctx context.Context, tenantID, id string, ps domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
+}
+
+// Settler is the shared payment-settlement primitive (ADR-049): it owns the
+// complete terminal-transition side-effects (mark + sim-time, card stamp,
+// payment.succeeded/failed event, dunning, customer email) plus the
+// out-of-order guard. Implemented by *Stripe. The reconciler routes its
+// recovered terminals through it so a dropped-webhook recovery fires the SAME
+// consequences as the webhook — closing the silent-under-collection gap.
+//
+// Optional (nil-tolerant): when unwired — narrow unit tests only; production
+// always wires it via SetSettler — the reconciler falls back to the legacy bare
+// MarkPaid / UpdatePayment writes (no dunning/event/email). The fallback exists
+// solely so status-discovery tests need not construct a full Stripe adapter.
+type Settler interface {
+	SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, source SettlementSource) error
+	SettleFailed(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID, failureMsg string, suppressCustomerEmail bool, source SettlementSource) error
 }
 
 // Reconciler resolves invoices stuck in PaymentUnknown by asking Stripe for
@@ -34,9 +61,18 @@ type ReconcileInvoiceStore interface {
 type Reconciler struct {
 	client    StripeClient
 	invoices  ReconcileInvoiceStore
-	olderThan time.Duration
-	now       func() time.Time // injectable for tests
-	breaker   *breaker.Breaker // optional; skip reconcile ticks when breaker is open
+	olderThan time.Duration // cool-off for the 'unknown' sweep (short)
+	// olderThanProcessing is the cool-off for the stale-'processing' sweep —
+	// much longer than olderThan so the webhook wins the common race and
+	// async methods (which legitimately sit in processing for days) aren't
+	// hammered every tick. Defaults to 30m (ADR-049 Phase 2).
+	olderThanProcessing time.Duration
+	now                 func() time.Time // injectable for tests
+	breaker             *breaker.Breaker // optional; skip reconcile ticks when breaker is open
+	// settler routes recovered terminals through the shared settlement
+	// primitive so they fire the full side-effects (dunning/event/email).
+	// Nil-tolerant: see Settler.
+	settler Settler
 	// resolver binds ctx to effective-now from the invoice's pin before
 	// MarkPaid so clock-pinned invoices stamp `paid_at` in simulated
 	// time. Wired via SetResolver from router.go (same pattern as
@@ -47,16 +83,33 @@ type Reconciler struct {
 	resolver clock.Resolver
 }
 
-// NewReconciler constructs a Reconciler. If olderThan <= 0, defaults to 60s.
+// NewReconciler constructs a Reconciler. If olderThan <= 0, defaults to 60s
+// (the 'unknown' cool-off). The stale-'processing' cool-off defaults to 30m;
+// override with SetProcessingReconcileAfter.
 func NewReconciler(client StripeClient, invoices ReconcileInvoiceStore, olderThan time.Duration) *Reconciler {
 	if olderThan <= 0 {
 		olderThan = 60 * time.Second
 	}
 	return &Reconciler{
-		client:    client,
-		invoices:  invoices,
-		olderThan: olderThan,
-		now:       func() time.Time { return time.Now().UTC() },
+		client:              client,
+		invoices:            invoices,
+		olderThan:           olderThan,
+		olderThanProcessing: 30 * time.Minute,
+		now:                 func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// SetSettler wires the shared settlement primitive (production: *Stripe). When
+// unset, recovered terminals fall back to legacy bare writes (test-only).
+func (r *Reconciler) SetSettler(s Settler) { r.settler = s }
+
+// SetProcessingReconcileAfter overrides the stale-'processing' cool-off. The
+// caller picks it relative to the scheduler tick so the webhook wins the common
+// race: long enough that a healthy card PI always resolves via webhook first,
+// short enough that a dropped webhook resolves within an acceptable window.
+func (r *Reconciler) SetProcessingReconcileAfter(d time.Duration) {
+	if d > 0 {
+		r.olderThanProcessing = d
 	}
 }
 
@@ -76,14 +129,27 @@ func (r *Reconciler) SetBreaker(b *breaker.Breaker) {
 // payment.Stripe.SetResolver + dunning.Handler.SetResolver.
 func (r *Reconciler) SetResolver(res clock.Resolver) { r.resolver = res }
 
-// Run scans for unresolved PaymentUnknown invoices older than the cool-off
-// window and reconciles each one against Stripe. Returns the number
-// resolved (succeeded or failed) and any per-invoice errors.
+// Run reconciles unresolved in-flight invoices against Stripe in two sweeps:
+//   - 'unknown' (ambiguous charge outcomes) past the short cool-off, and
+//   - stale 'processing' (the dropped-webhook backstop, ADR-049 Phase 2) past
+//     the longer processing cool-off.
+//
+// Both route recovered terminals through the same path (reconcileOne →
+// settler), so a backstop-recovered settlement fires the full side-effects.
+// Returns the number resolved (succeeded or failed) and any per-invoice errors.
 func (r *Reconciler) Run(ctx context.Context, limit int) (int, []error) {
-	before := r.now().Add(-r.olderThan)
-	invoices, err := r.invoices.ListUnknownPayments(ctx, before, limit)
+	n1, e1 := r.sweep(ctx, "unknown", r.invoices.ListUnknownPayments, r.olderThan, limit)
+	n2, e2 := r.sweep(ctx, "processing", r.invoices.ListProcessingPayments, r.olderThanProcessing, limit)
+	return n1 + n2, append(e1, e2...)
+}
+
+// sweep lists invoices in one non-terminal state older than the given cool-off
+// and reconciles each against Stripe.
+func (r *Reconciler) sweep(ctx context.Context, label string, list func(context.Context, time.Time, int) ([]domain.Invoice, error), olderThan time.Duration, limit int) (int, []error) {
+	before := r.now().Add(-olderThan)
+	invoices, err := list(ctx, before, limit)
 	if err != nil {
-		return 0, []error{fmt.Errorf("list unknown payments: %w", err)}
+		return 0, []error{fmt.Errorf("list %s payments: %w", label, err)}
 	}
 
 	var (
@@ -103,28 +169,29 @@ func (r *Reconciler) Run(ctx context.Context, limit int) (int, []error) {
 	return resolved, errs
 }
 
-// reconcileOne queries Stripe for the PI and transitions the invoice to
-// succeeded / failed / still-unknown based on the returned status.
+type terminalKind int
+
+const (
+	terminalSucceeded terminalKind = iota
+	terminalFailed
+)
+
+// reconcileOne queries Stripe for the PI and, on a TERMINAL status, settles the
+// invoice through the shared primitive (succeeded / failed). A still-in-flight
+// status is left for the webhook. Covers both the 'unknown' and stale-
+// 'processing' sweeps.
 func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool, error) {
 	// Stamp the invoice's tenant onto ctx so the per-tenant Stripe client
 	// resolver can look up credentials. Background ctx has no auth.
 	ctx = auth.WithTenantID(ctx, inv.TenantID)
 
 	if inv.StripePaymentIntentID == "" {
-		// No PI ID was returned with the ambiguous error — we cannot query
-		// Stripe. Mark the invoice failed so the operator / dunning flow
-		// can decide the next step; a safe subsequent retry will generate
-		// a new PI (original idempotency key is unchanged, so Stripe will
-		// return the same result if it somehow did succeed — but without
-		// the PI ID we cannot discover that here).
-		_, err := r.invoices.UpdatePayment(ctx, inv.TenantID, inv.ID,
-			domain.PaymentFailed, "", "unknown outcome: no payment_intent_id to reconcile", nil)
-		if err != nil {
-			return false, fmt.Errorf("mark failed (no pi): %w", err)
-		}
-		slog.Warn("reconciled unknown → failed (no PI to query)",
+		// No PI ID to query (an 'unknown' invoice whose ambiguous charge error
+		// carried no PI). Settle failed so dunning/operator can decide; a safe
+		// retry generates a new PI.
+		slog.Warn("reconcile: no PI to query, settling failed",
 			"invoice_id", inv.ID, "tenant_id", inv.TenantID)
-		return true, nil
+		return r.settle(ctx, inv, "", false, "unknown outcome: no payment_intent_id to reconcile", terminalFailed)
 	}
 
 	var res PaymentIntentResult
@@ -148,41 +215,20 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 	}
 	if err != nil {
 		// Stripe itself returned 5xx on the reconcile query — leave the
-		// invoice unknown, try again next tick.
+		// invoice in its current state, try again next tick.
 		return false, fmt.Errorf("get payment intent %s: %w", inv.StripePaymentIntentID, err)
 	}
 
 	switch res.Status {
 	case "succeeded":
-		// Bind effective-now from the invoice's pin so `paid_at` lands
-		// in simulated time on clock-pinned invoices. Without this bind,
-		// paid_at leaked wall-clock — visible on the activity timeline
-		// + invoice CSV export as a today-stamped paid_at next to
-		// simulated billing-period dates. ADR-030 cross-flow audit
-		// 2026-05-28.
-		markCtx := ctx
-		if r.resolver != nil {
-			markCtx, _ = clock.BindEffectiveNow(markCtx, r.resolver, clock.Pin{TenantID: inv.TenantID, InvoiceID: inv.ID})
-		}
-		now := clock.Now(markCtx)
-		if _, err := r.invoices.MarkPaid(markCtx, inv.TenantID, inv.ID, res.ID, now); err != nil {
-			return false, fmt.Errorf("mark paid: %w", err)
-		}
-		slog.Info("reconciled unknown → succeeded",
-			"invoice_id", inv.ID, "stripe_payment_intent_id", res.ID)
-		return true, nil
+		return r.settle(ctx, inv, res.ID, false, "", terminalSucceeded)
 
 	case "canceled", "requires_payment_method":
-		// Stripe confirms the charge did NOT succeed. Safe to mark failed;
-		// the existing handlePaymentFailed flow (dunning, email) runs via
-		// webhook in parallel and will be idempotent via webhook dedup.
-		if _, err := r.invoices.UpdatePayment(ctx, inv.TenantID, inv.ID,
-			domain.PaymentFailed, res.ID, "reconciled: "+res.Status, nil); err != nil {
-			return false, fmt.Errorf("mark failed: %w", err)
-		}
-		slog.Info("reconciled unknown → failed",
-			"invoice_id", inv.ID, "stripe_payment_intent_id", res.ID, "stripe_status", res.Status)
-		return true, nil
+		// Replicate the webhook's customer-email suppression from the PI
+		// purpose: a dunning-retry PI already sent its own per-attempt email,
+		// and a hosted-pay PI's decline was shown inline. Other failures send.
+		suppressEmail := res.Purpose == "hosted_invoice_pay" || res.Purpose == "dunning_retry"
+		return r.settle(ctx, inv, res.ID, suppressEmail, "reconciled: "+res.Status, terminalFailed)
 
 	case "processing", "requires_action", "requires_confirmation", "requires_capture":
 		// Still in flight on Stripe's side — give the webhook more time.
@@ -192,5 +238,73 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 
 	default:
 		return false, fmt.Errorf("unexpected stripe PI status %q", res.Status)
+	}
+}
+
+// settle re-reads the invoice fresh (race guard: a webhook may have settled it
+// during the GetPaymentIntent round-trip) and routes the terminal transition
+// through the settlement primitive so it fires the full side-effects (dunning,
+// event, email, card stamp) — identical to the webhook (ADR-049 Phase 2).
+// Falls back to legacy bare writes when no settler is wired (test-only).
+func (r *Reconciler) settle(ctx context.Context, inv domain.Invoice, piID string, suppressEmail bool, failMsg string, kind terminalKind) (bool, error) {
+	// Fresh re-read so a webhook that won the race during the round-trip is
+	// observed (the sweep-list snapshot may be stale). On read error, proceed
+	// with the snapshot — the primitive's own guards still apply.
+	fresh := inv
+	if got, gerr := r.invoices.Get(ctx, inv.TenantID, inv.ID); gerr == nil {
+		fresh = got
+	}
+	// Already settled by another path during the round-trip — the webhook won;
+	// skip to avoid a duplicate receipt (succeeded) or a duplicate
+	// dunning-advance + email (failed).
+	if fresh.Status == domain.InvoicePaid ||
+		fresh.PaymentStatus == domain.PaymentSucceeded ||
+		fresh.PaymentStatus == domain.PaymentFailed {
+		slog.Info("reconcile: invoice already settled by another path, skipping",
+			"invoice_id", inv.ID, "payment_status", fresh.PaymentStatus, "invoice_status", fresh.Status)
+		return false, nil
+	}
+
+	if r.settler != nil {
+		switch kind {
+		case terminalSucceeded:
+			if err := r.settler.SettleSucceeded(ctx, inv.TenantID, fresh, piID, SourceReconciler); err != nil {
+				return false, fmt.Errorf("settle succeeded: %w", err)
+			}
+		default:
+			if err := r.settler.SettleFailed(ctx, inv.TenantID, fresh, piID, failMsg, suppressEmail, SourceReconciler); err != nil {
+				return false, fmt.Errorf("settle failed: %w", err)
+			}
+		}
+		return true, nil
+	}
+
+	// Legacy fallback (no settler wired). Bare writes — no dunning/event/email.
+	// Production ALWAYS wires the settler (router.go calls SetSettler right
+	// after construction), so this branch is reachable only in narrow unit
+	// tests. Log loudly rather than silently under-settling: if this ever fires
+	// outside a test it means a misconfigured reconciler is dropping the
+	// dunning/notification side-effects (the silent-under-collection this phase
+	// exists to fix). Not an error return — the bare write still records the
+	// terminal state, which is strictly better than leaving the invoice stuck.
+	slog.Warn("reconcile: settler not wired — settling with INCOMPLETE side-effects (no dunning/event/email); production must SetSettler",
+		"invoice_id", inv.ID, "terminal_succeeded", kind == terminalSucceeded)
+	switch kind {
+	case terminalSucceeded:
+		markCtx := ctx
+		if r.resolver != nil {
+			markCtx, _ = clock.BindEffectiveNow(markCtx, r.resolver, clock.Pin{TenantID: inv.TenantID, InvoiceID: inv.ID})
+		}
+		now := clock.Now(markCtx)
+		if _, err := r.invoices.MarkPaid(markCtx, inv.TenantID, inv.ID, piID, now); err != nil {
+			return false, fmt.Errorf("mark paid (legacy): %w", err)
+		}
+		return true, nil
+	default:
+		if _, err := r.invoices.UpdatePayment(ctx, inv.TenantID, inv.ID,
+			domain.PaymentFailed, piID, failMsg, nil); err != nil {
+			return false, fmt.Errorf("mark failed (legacy): %w", err)
+		}
+		return true, nil
 	}
 }

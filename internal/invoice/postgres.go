@@ -1654,6 +1654,22 @@ func (s *PostgresStore) MarkPaidBatch(ctx context.Context, tenantID, id string, 
 // whose last update is older than `olderThan` — the reconciler's cooling
 // window before querying Stripe for the authoritative outcome.
 func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	return s.listInflightPayments(ctx, domain.PaymentUnknown, olderThan, limit)
+}
+
+// ListProcessingPayments returns invoices stuck in payment_status 'processing'
+// older than the cool-off — the dropped-webhook backstop (ADR-049 Phase 2).
+// Same tenant-crossing + livemode-scoped shape as ListUnknownPayments.
+func (s *PostgresStore) ListProcessingPayments(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	return s.listInflightPayments(ctx, domain.PaymentProcessing, olderThan, limit)
+}
+
+// listInflightPayments lists invoices in one non-terminal payment_status older
+// than the cool-off, for the reconciler sweep. TxBypass crosses tenants for the
+// sweep; the livemode filter prevents test-mode rows from being reconciled
+// under a live ctx (see #13). Status is a trusted internal enum (not user
+// input), interpolated into the predicate.
+func (s *PostgresStore) listInflightPayments(ctx context.Context, status domain.InvoicePaymentStatus, olderThan time.Time, limit int) ([]domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
 		return nil, err
@@ -1664,16 +1680,14 @@ func (s *PostgresStore) ListUnknownPayments(ctx context.Context, olderThan time.
 		limit = 50
 	}
 
-	// TxBypass crosses tenants for reconciler sweep; livemode filter prevents
-	// test-mode unknowns from being reconciled under live ctx (see #13).
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices
-		WHERE payment_status = 'unknown'
-		  AND updated_at < $1
-		  AND livemode = $2
+		WHERE payment_status = $1
+		  AND updated_at < $2
+		  AND livemode = $3
 		ORDER BY updated_at ASC
-		LIMIT $3
-	`, olderThan, postgres.Livemode(ctx), limit)
+		LIMIT $4
+	`, string(status), olderThan, postgres.Livemode(ctx), limit)
 	if err != nil {
 		return nil, err
 	}

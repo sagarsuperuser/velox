@@ -131,6 +131,11 @@ type PaymentIntentResult struct {
 	ID           string
 	Status       string
 	ClientSecret string
+	// Purpose is the velox_purpose PI metadata (e.g. "dunning_retry",
+	// "hosted_invoice_pay"). Populated by GetPaymentIntent so the reconciler
+	// can replicate the webhook's customer-email suppression when it recovers a
+	// failure (ADR-049 Phase 2). Empty for the create response / when unset.
+	Purpose string
 }
 
 // InvoiceUpdater updates invoice payment status.
