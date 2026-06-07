@@ -46,6 +46,21 @@ Because all four route through the *same* primitive, a backstop-recovered settle
 
   **Deviation from the original plan:** the on-demand "Check provider" action is **deferred**, not wired. Phases 2 (reconciler backstop) + 3 (synchronous inline settle) mean a `processing` invoice now resolves on its own (inline, or within the reconciler window); the manual re-check button — which never had a backend endpoint and shipped greyed-out — lost its necessity. The dead disabled button was **removed** rather than shipped non-functional (a greyed-out button is itself a small UI lie). Re-add trigger: a real production stuck-PI that inline-settle + the 30m reconciler don't clear, i.e. genuine operator pressure to force a re-query.
 
+### Phase 3 note: synchronous settle vs webhook-as-source-of-truth (verified 2026-06-07)
+
+The inline settle is a deliberate, bounded **optimization layered on top of** the webhook — not a claim that "settle on the synchronous response" is the industry-recommended pattern. Verified across Stripe's own docs + billing peers:
+
+- **Stripe's headline recommendation is webhook-as-source-of-truth**, not the confirm response: *"Don't attempt to handle order fulfilment on the client side... use webhooks to monitor the `payment_intent.succeeded` event and handle its completion asynchronously"* ([verifying-status](https://docs.stripe.com/payments/payment-intents/verifying-status)). Inspectable peers agree — **Lago** persists the payment `pending` and flips it on the inbound webhook; **Orb** keys off `invoice.payment_succeeded`. None settle primarily on the synchronous response.
+- **BUT for a server-side off-session card confirm** (`confirm=true, off_session=true` — Velox's exact pattern) Stripe officially supports trusting the response: the Confirm API *"Returns the resulting PaymentIntent after all possible transitions are applied"*, and Stripe ships an entire **"Accept card payments without webhooks"** integration. So a `2xx` with `status=succeeded` from our own server call is authoritative **for a card**. The webhook guidance is aimed at client-side confirmation (browser can navigate away) and async methods (status arrives later) — neither applies here.
+
+Velox is therefore in the **defensible shape**, not the discouraged synchronous-**only** anti-pattern, because all three safety conditions hold:
+
+1. **Cards only** — inline settle fires solely on `result.Status == "succeeded"`; `processing`/`requires_action`/etc. fall through to await the webhook, so no async method is mis-settled.
+2. **Idempotency key on every create** (`velox_inv_<id>_…`) — a lost/timed-out response replays the original PI rather than double-charging.
+3. **Lost-response recovery is explicit, not blind-retry** — a 5xx/timeout maps to `payment_status = unknown` (never `failed`); the reconciler then `GetPaymentIntent`s and settles through the same primitive. So a charge that succeeded-but-whose-response-was-lost is recovered, not missed.
+
+The webhook + reconciler remain idempotent backstops routing through the one primitive, so a backstop-recovered settlement is byte-identical to the inline one by construction. The only residual gap — post-success **disputes / reversals** — is the deferred async/dispute tail below, and is not a regression (webhook-only billers miss disputes too unless they subscribe to `charge.dispute.*`).
+
 ## Deferred (named triggers — the triggering surface does not exist yet)
 
 - **Async payment methods** (ACH / SEPA / BACS direct debit). Trigger: first design partner who needs bank debit.
