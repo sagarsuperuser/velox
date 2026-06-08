@@ -206,3 +206,58 @@ Sources (verified 2026-06-04): Avalara "Document vs Line level rounding"
 FAQ; Stripe manual-rate rounding (line-item vs invoice level); Microsoft
 Dynamics 365 / NetSuite tax-rounding-level settings; TaxJar on
 per-jurisdiction line-vs-invoice rounding requirements.
+
+## Addendum (2026-06-08): the rounding tie-break MODE is banker's (half-to-even), deliberately
+
+The decision above fixed *where* rounding happens (document-level, Axis 1)
+and *which line* absorbs the residual (largest-remainder, Axis 2), but never
+recorded the **tie-break mode** of the rounding step itself. Stating it, since
+an e2e tax-parity audit (2026-06-07) found it unstated and it is a real,
+defensible choice — not an accident.
+
+**What the code does.** Both the document total
+(`money.RoundHalfToEven(taxableBase × ratePPM, 1_000_000)`) and the
+largest-remainder share math use **banker's rounding (round-half-to-even)** —
+the `internal/platform/money` package default — on the manual tax path, the
+same mode used for proration and discount distribution across the engine.
+
+**Why half-to-even, not statutory half-up.** Most indirect-tax authorities
+specify round-**half-up** per transaction (HMRC VAT Notice 700 §17.5: "0.5 of
+one penny or more … rounded up"; US SSUTA: third decimal > 4 rounds up). Velox
+deliberately diverges to half-to-even, for the reason documented at
+`internal/platform/money/round.go`: *half-up introduces a systematic positive
+bias over large batches of monetary amounts — a measurable accounting drift
+auditors flag; half-to-even averages to zero bias (IEEE 754 / Python `round()`
+/ .NET `decimal` / GAAP-adjacent default).* Two defensible audit positions
+exist — statutory per-transaction half-up vs anti-bias half-to-even — and Velox
+takes the anti-bias one **consistently across the whole money path** (tax,
+proration, discounts). Flipping only the tax path to half-up would reintroduce
+exactly the bias `money/round.go` exists to avoid and desync tax rounding from
+the rest of the engine.
+
+**Impact is tiny.** The two modes differ only on an **exact half-cent tie**
+(remainder = denom/2), which is rare; on every other input they agree. On such
+a tie banker's can land 1¢ opposite to statutory half-up.
+
+**Disposition: keep half-to-even; this addendum is the record.** No code
+change. If a future remittance-correctness need ever requires statutory
+per-transaction half-up (e.g. the manual provider gains a real filing path, or
+a DP's jurisdiction audits to the ½-cent), that becomes its own ADR-level
+decision that must reconcile with `money/round.go`'s anti-bias rationale and the
+cross-path consistency — **not** a silent patch to `manual.go`. Same disposition
+shape as the deferred `tax_rounding_level` setting above: a documented,
+intentional choice with a named re-open trigger.
+
+**Precision note on the "matches every reference engine" framing (Axis 2).**
+The fully-verified claim is that the residual goes to the **smallest-error
+line, never a positional one** — the old positional-last-line behavior was the
+outlier. Of the surveyed engines, **Sovos** (highest-remainder, ties → first
+line) is the *verbatim* match to Velox's largest-remainder + lowest-index tie-
+break; Avalara/Dynamics "minimum percentage change" is the same minimum-
+distortion *intent* that largest-remainder approximates (it minimizes absolute
+cent error, not percentage change). Convergent principle, not four-way
+bit-identical apportionment.
+
+Source (verified 2026-06-07): `internal/platform/money/round.go` rationale;
+HMRC VAT Notice 700 §17.5; Streamlined Sales and Use Tax Agreement rounding
+rule; Sovos / Avalara / Dynamics residual-distribution docs.
