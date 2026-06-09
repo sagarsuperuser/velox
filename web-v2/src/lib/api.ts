@@ -775,6 +775,10 @@ export interface Invoice {
   credits_applied_cents: number
   billing_period_start: string
   billing_period_end: string
+  // Inclusive last-day period string ("Jun 1, 2028 – Jun 30, 2028"), authored
+  // by the backend in the tenant TZ (ADR-050). Render verbatim; do NOT
+  // recompute from the half-open start/end. Empty/omitted for one-off invoices.
+  billing_period_display?: string
   stripe_payment_intent_id?: string
   last_payment_error?: string
   issued_at?: string

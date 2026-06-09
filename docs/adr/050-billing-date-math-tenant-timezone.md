@@ -53,6 +53,10 @@ When the tenant timezone is unconfigured the helpers fall back to UTC (the prior
 - One existing test (`TestPeriod_DayGradeSnap`) asserted the *buggy* UTC-computed anniversary end; corrected to the tenant-anchored value.
 - New regression tests assert **provenance-independence** (same instant, UTC- vs Local-located, yields the same tenant-anchored result) and the month-end / leap cases — the existing suite built every input in UTC and was blind to the class.
 
-## Deferred (follow-up, not this change)
+## Follow-up: inclusive-last-day display convention (shipped)
 
-- **Display convention.** Industry standard (verified across Stripe/Zuora/Recurly/Chargebee/Lago) is to *show* the **inclusive last covered day** ("Jun 1 – Jun 30") at the render layer, while storing the half-open `[start, end)` boundary. Velox currently shows the exclusive end. This is a render-layer change (dashboard/PDF/hosted), tracked separately — it would have made this off-by-one visible on the invoice.
+Industry standard (verified across Stripe/Zuora/Recurly/Chargebee/Lago) is to *show* the **inclusive last covered day** ("Jun 1 – Jun 30") at the render layer, while storing the half-open `[start, end)` boundary. Velox previously showed the exclusive end ("Jun 1 – Jul 1") — which is what made this very off-by-one hard to spot on the invoice.
+
+Shipped for the **invoice** period: `domain.FormatInclusivePeriod(start, end, loc)` renders the inclusive last day, date-only, in the tenant TZ (snap end to civil midnight in `loc`, then step back one CALENDAR day — never a 24h instant subtraction, the same trap as the period math above). The invoice read path sets the computed `billing_period_display` string; the PDF / hosted / portal paths (which fetch via `GetByPublicToken`, bypassing the read decorator) author it from the *same* helper — so PDF, hosted, dashboard, and list all show one identical string, no cross-runtime drift. Raw half-open `billing_period_start/end` stay unchanged (SDK contract). One-off / no-period invoices omit the period.
+
+**Still deferred:** the *subscription* "current period" displays (SubscriptionDetail, CostDashboard, CustomerDetail, PlanDetail, Portal) are TS-only and still render the exclusive end via `formatDate`; a follow-up will route them through a shared `dates.ts` inclusive-end helper. Lower stakes (not the billing document).
