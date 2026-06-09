@@ -987,8 +987,10 @@ func displayTaxRate(lines []tax.ResultLine, effectiveRate float64) float64 {
 //  2. Resolve the Provider (NoneProvider / ManualProvider / StripeTaxProvider).
 //  3. Build a tax.Request from the line items, billing profile, and plan-level
 //     tax codes collected by the caller via InvoiceLineItem.TaxCode.
-//  4. Call Provider.Calculate; on error warn and fall through to zero tax so
-//     billing is never blocked by a tax backend outage.
+//  4. Call Provider.Calculate; on a provider error, DEFER the invoice — persist
+//     it with tax_status=pending (placeholder zero-tax lines) + a classified
+//     pending reason, and leave finalize blocked until a retry worker re-runs
+//     calculation. Never silently charges zero tax (ADR-041).
 //  5. Mutate line items in place with the per-line results. In inclusive
 //     mode the provider returns carved net amounts; the engine rewrites
 //     AmountCents to that net value so Subtotal - Discount + Tax == gross.

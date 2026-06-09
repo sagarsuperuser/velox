@@ -869,30 +869,6 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 	return items, rows.Err()
 }
 
-// HasSucceededInvoice reports whether the customer has any invoice with
-// payment_status = 'succeeded'. EXISTS + LIMIT 1 so the query hits the index
-// on (tenant_id, customer_id, payment_status) without scanning history.
-func (s *PostgresStore) HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return false, err
-	}
-	defer postgres.Rollback(tx)
-
-	var found bool
-	err = tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM invoices
-			WHERE customer_id = $1 AND payment_status = 'succeeded'
-			LIMIT 1
-		)
-	`, customerID).Scan(&found)
-	if err != nil {
-		return false, err
-	}
-	return found, nil
-}
-
 // GetOutstandingBalance computes the customer's AR exposure: sum of
 // amount_due_cents + count across all finalized invoices in
 // payment_status pending/failed/unknown, excluding voided +

@@ -79,15 +79,6 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.Invoice,
 	return result, len(result), nil
 }
 
-func (m *memStore) HasSucceededInvoice(_ context.Context, tenantID, customerID string) (bool, error) {
-	for _, inv := range m.invoices {
-		if inv.TenantID == tenantID && inv.CustomerID == customerID && inv.PaymentStatus == domain.PaymentSucceeded {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (m *memStore) GetOutstandingBalance(_ context.Context, tenantID, customerID string) (OutstandingBalance, error) {
 	var out OutstandingBalance
 	for _, inv := range m.invoices {
