@@ -99,3 +99,41 @@ func TestNextBillingPeriodEnd_TenantTZAnchored(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatInclusivePeriod pins the inclusive last-day display (ADR-050
+// follow-up): the exclusive period_end is shown as the previous CALENDAR day in
+// the tenant TZ — NOT a 24h instant subtraction (which mis-lands across DST /
+// non-midnight ends), and tenant-TZ-anchored so an offset tenant and a UTC
+// tenant legitimately differ on the same instant.
+func TestFormatInclusivePeriod(t *testing.T) {
+	ist := mustLoc(t, "Asia/Kolkata")
+	// Period [Jun 1 00:00 IST, Jul 1 00:00 IST) — stored end = 2026-06-30 18:30 UTC.
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, ist).UTC()
+	end := time.Date(2026, 7, 1, 0, 0, 0, 0, ist).UTC()
+
+	if got := FormatInclusivePeriod(start, end, ist); got != "Jun 1, 2026 – Jun 30, 2026" {
+		t.Errorf("IST inclusive period = %q, want \"Jun 1, 2026 – Jun 30, 2026\"", got)
+	}
+	// Same instants under a UTC tenant: start civil = May 31 18:30 (snap May 31),
+	// end civil = Jun 30 18:30 (snap Jun 30, minus one = Jun 29).
+	if got := FormatInclusivePeriod(start, end, time.UTC); got != "May 31, 2026 – Jun 29, 2026" {
+		t.Errorf("UTC inclusive period = %q, want \"May 31, 2026 – Jun 29, 2026\" (tenant-TZ-anchored divergence)", got)
+	}
+	// One-off / no-period invoice (start == end): omit entirely.
+	now := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+	if got := FormatInclusivePeriod(now, now, ist); got != "" {
+		t.Errorf("one-off period = %q, want \"\" (omit)", got)
+	}
+	// Single covered day [Jun 1 00:00, Jun 2 00:00) IST → "Jun 1 – Jun 1".
+	d1 := time.Date(2026, 6, 1, 0, 0, 0, 0, ist).UTC()
+	d2 := time.Date(2026, 6, 2, 0, 0, 0, 0, ist).UTC()
+	if got := FormatInclusivePeriod(d1, d2, ist); got != "Jun 1, 2026 – Jun 1, 2026" {
+		t.Errorf("single-day period = %q, want \"Jun 1, 2026 – Jun 1, 2026\"", got)
+	}
+	// Sub-day stub (start != end but < 1 day) must clamp, never invert.
+	s := time.Date(2026, 6, 1, 9, 0, 0, 0, ist).UTC()
+	e := time.Date(2026, 6, 1, 18, 0, 0, 0, ist).UTC()
+	if got := FormatInclusivePeriod(s, e, ist); got != "Jun 1, 2026 – Jun 1, 2026" {
+		t.Errorf("sub-day stub = %q, want clamped \"Jun 1, 2026 – Jun 1, 2026\" (no inversion)", got)
+	}
+}

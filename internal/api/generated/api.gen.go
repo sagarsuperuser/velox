@@ -710,10 +710,13 @@ type Invoice struct {
 	// always derived. Omitted entirely when the invoice is healthy
 	// (matches Stripe's `last_finalization_error: null` ergonomic).
 	// See ADR-009.
-	Attention          Attention `json:"attention,omitempty"`
-	AutoChargePending  bool      `json:"auto_charge_pending,omitempty"`
-	BillingPeriodEnd   time.Time `json:"billing_period_end"`
-	BillingPeriodStart time.Time `json:"billing_period_start"`
+	Attention         Attention `json:"attention,omitempty"`
+	AutoChargePending bool      `json:"auto_charge_pending,omitempty"`
+
+	// BillingPeriodDisplay Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-050). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period.
+	BillingPeriodDisplay string    `json:"billing_period_display,omitempty"`
+	BillingPeriodEnd     time.Time `json:"billing_period_end"`
+	BillingPeriodStart   time.Time `json:"billing_period_start"`
 
 	// BillingReason Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
 	// that produced the invoice. Stamped at create time and never mutated.

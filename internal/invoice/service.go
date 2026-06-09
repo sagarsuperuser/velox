@@ -446,7 +446,28 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 		atc.StripeConnected = s.stripeChecker.HasFor(ctx, inv.TenantID, postgres.Livemode(ctx))
 	}
 	inv.Attention = domain.ClassifyInvoiceAttention(inv, atc)
+
+	// Compute the inclusive display end ("Jun 1 – Jun 30") in the tenant TZ on
+	// the read path (ADR-050 follow-up). Storage stays half-open; this is the
+	// single backend-authored value every render surface (PDF, hosted,
+	// dashboard, list) shows, so the inclusive end can't drift across runtimes.
+	inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(
+		inv.BillingPeriodStart, inv.BillingPeriodEnd, s.invoiceLocation(ctx, inv.TenantID))
 	return inv
+}
+
+// invoiceLocation resolves the tenant billing timezone for display math, UTC
+// when no settings reader is wired or the tenant has no timezone configured —
+// matching ADR-050 / engine.tenantLocation.
+func (s *Service) invoiceLocation(ctx context.Context, tenantID string) *time.Location {
+	if s.settings == nil {
+		return time.UTC
+	}
+	ts, err := s.settings.Get(ctx, tenantID)
+	if err != nil {
+		return time.UTC
+	}
+	return domain.LoadLocationOrUTC(ts.Timezone)
 }
 
 // HasSucceededInvoice is the implementation of coupon.CustomerHistoryLookup.

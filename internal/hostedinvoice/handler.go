@@ -414,6 +414,11 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 				TaxID:        ts.TaxID,
 				TaxIDType:    invoice.SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
 			}
+			// Inclusive-last-day period string (ADR-050 follow-up): the hosted
+			// path fetches via GetByPublicToken, bypassing the service read
+			// decorator that sets it, so author it here from the same domain
+			// helper + tenant TZ the dashboard uses.
+			inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(inv.BillingPeriodStart, inv.BillingPeriodEnd, domain.LoadLocationOrUTC(ts.Timezone))
 		}
 	}
 

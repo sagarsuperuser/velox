@@ -47,6 +47,68 @@ func BeginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
 	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc).UTC()
 }
 
+// LoadLocationOrUTC resolves an IANA timezone name to a *time.Location,
+// falling back to UTC on empty/invalid input — the shared tenant-TZ resolution
+// used at render boundaries (PDF) and anywhere a tenant_settings.Timezone needs
+// turning into a Location for ADR-050 calendar math.
+func LoadLocationOrUTC(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// InclusiveDisplayEnd converts a half-open period_end (the EXCLUSIVE boundary,
+// = the next period's start) into the last calendar day FULLY covered by the
+// period, in the tenant timezone `loc` — the industry-standard inclusive
+// display end ("Jun 1 – Jun 30", not the exclusive "Jun 1 – Jul 1"). Storage
+// stays half-open; this is render-only.
+//
+// It snaps the exclusive end to civil midnight in `loc`, then steps back ONE
+// CALENDAR day. The calendar step (not a 24h instant subtraction) is essential:
+// 24h-before an instant at a DST boundary, or a non-midnight end, lands on the
+// wrong civil date — the same off-by-one class as ADR-050. loc=nil → UTC.
+// Returns a loc-located civil-midnight time; format it with loc-reading layouts
+// (e.g. "Jan 2, 2006") — never via UTC fields.
+func InclusiveDisplayEnd(periodEnd time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := periodEnd.In(loc)
+	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return midnight.AddDate(0, 0, -1)
+}
+
+// FormatInclusivePeriod renders the human period string
+// "<start> – <inclusiveEnd>" using inclusive display dates in loc — the single
+// backend-authored value every render surface (PDF, hosted, dashboard, list)
+// shows verbatim, so the period cannot drift across the Go and TS runtimes (and
+// the subtle ADR-050 civil-day math lives in exactly one place). Both ends are
+// rendered date-only in the tenant timezone. Returns "" when start == end (a
+// one-off / no-period invoice — Stripe/Chargebee/Lago all omit the period
+// there) so callers show no period row. Clamps the inclusive end to >= the
+// start's civil day so a sub-day stub never renders an inverted range.
+func FormatInclusivePeriod(start, end time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if start.Equal(end) {
+		return ""
+	}
+	startLocal := start.In(loc)
+	startCivil := time.Date(startLocal.Year(), startLocal.Month(), startLocal.Day(), 0, 0, 0, 0, loc)
+	inc := InclusiveDisplayEnd(end, loc)
+	if inc.Before(startCivil) {
+		inc = startCivil
+	}
+	const layout = "Jan 2, 2006"
+	return startCivil.Format(layout) + " – " + inc.Format(layout)
+}
+
 // NextBillingPeriodEnd computes the next period's end boundary at
 // cycle close, honoring billing_time + interval. The semantics:
 //
