@@ -71,8 +71,8 @@ func (h *Handler) OverrideRoutes() chi.Router {
 
 // MeterPricingRuleRoutes is the sub-router for
 // /v1/meters/{meter_id}/pricing-rules. Reads use the read perm; upsert and
-// delete need write. Pattern mirrors coupon.CustomerAssignmentRoutes so
-// the router can compose perms in the same place — see router.go.
+// delete need write. The pattern lets the router compose perms in the
+// same place — see router.go.
 func (h *Handler) MeterPricingRuleRoutes(requireRead, requireWrite func(http.Handler) http.Handler) chi.Router {
 	r := chi.NewRouter()
 	r.With(requireRead).Get("/", h.listMeterPricingRules)

@@ -179,10 +179,6 @@ func (a *invoiceStoreAdapter) ListLineItems(ctx context.Context, tenantID, invoi
 	return a.store.ListLineItems(ctx, tenantID, invoiceID)
 }
 
-func (a *invoiceStoreAdapter) ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
-	return a.store.ApplyDiscountAtomic(ctx, tenantID, invoiceID, update, lineItems)
-}
-
 func (a *invoiceStoreAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
 	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }

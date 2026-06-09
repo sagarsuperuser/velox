@@ -1080,8 +1080,8 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	// explicit skip here is the only safe guard.
 	if !atomic && prorationEligible && prorationRemainingDays > 0 && h.invoices != nil && !result.OrchestratedCrossAxis {
 		// Re-hydrate the subscription post-change so the Items slice reflects
-		// the swapped plan/quantity — handleProration walks it to resolve
-		// coupon plan eligibility. Fall back to subBefore on error so the
+		// the swapped plan/quantity — handleProration walks it to price the
+		// change (currency/naming). Fall back to subBefore on error so the
 		// handler still responds, but use the fresh Items when available.
 		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
@@ -1285,7 +1285,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 
 	// Legacy non-atomic proration emission path — only when atomic wasn't taken.
 	if !atomic && prorationRemainingDays > 0 && removedPlanID != "" {
-		// Re-fetch for coupon plan eligibility over the remaining items.
+		// Re-fetch to price the proration over the remaining items.
 		subAfter, getErr := h.svc.Get(ctx, tenantID, subID)
 		if getErr != nil {
 			subAfter = subBefore
@@ -1631,7 +1631,7 @@ func (h *Handler) issueClawbackCreditNote(ctx context.Context, tenantID string, 
 
 func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec, tx *sql.Tx) (*ProrationDetail, error) {
 	// Resolve plans needed for pricing and naming. The "effective" plan drives
-	// currency and coupon eligibility — for a remove it's the old plan; for
+	// currency and pricing — for a remove it's the old plan; for
 	// anything else it's the new plan.
 	var oldPlan, newPlan domain.Plan
 	if spec.oldPlanID != "" {

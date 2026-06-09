@@ -345,10 +345,6 @@ type InvoiceWriter interface {
 	// reference (Stripe: tx_xxx) after CommitTax succeeds. Required for
 	// later reversal when a credit note is issued against the invoice.
 	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
-	// ApplyDiscountAtomic stamps a coupon discount + recomputed tax
-	// snapshot onto a draft invoice in one tx. Used by
-	// Engine.ApplyCouponToInvoice for the apply-coupon-after-issue flow.
-	ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
 	// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
 	// retry. Used by Engine.RetryTaxForInvoice to persist the recomputed
 	// per-line and invoice-level tax fields atomically.

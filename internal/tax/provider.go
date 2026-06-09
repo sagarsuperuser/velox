@@ -1,7 +1,7 @@
 // Package tax defines the tenant-selectable tax calculation backend and
 // three concrete implementations: NoneProvider (skip tax), ManualProvider
-// (flat tenant-level rate), and StripeTaxProvider (Stripe Tax API with a
-// manual fallback on errors).
+// (flat tenant-level rate), and StripeTaxProvider (Stripe Tax API; defers
+// the invoice to tax_status=pending for retry on error).
 //
 // Every tenant picks one Provider via tenant_settings.tax_provider; the
 // billing engine calls Calculate at invoice build time and, for

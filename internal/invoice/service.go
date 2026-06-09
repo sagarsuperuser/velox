@@ -48,8 +48,7 @@ type TaxReverser interface {
 
 // TaxRetrier is the narrow view into tax recompute + persistence the
 // retry-tax endpoint depends on. Satisfied by billing.Engine in
-// production. Same rationale as CouponApplier — the contract lives
-// next to the handler that calls it.
+// production — the contract lives next to the handler that calls it.
 type TaxRetrier interface {
 	RetryTaxForInvoice(ctx context.Context, tenantID, invoiceID string) (domain.Invoice, error)
 	// ComputeTaxForInvoice computes tax for a draft invoice regardless of
@@ -199,7 +198,7 @@ func (s *Service) bindForCreate(ctx context.Context, tenantID string, input Crea
 
 // bindForInvoice binds effective-now from an invoice id. Used by
 // every per-invoice mutation entry point (Finalize, Void,
-// RecordPayment, ApplyDiscount, RetryTax, etc.) so downstream stamps
+// RecordPayment, RetryTax, etc.) so downstream stamps
 // inherit simulated time.
 func (s *Service) bindForInvoice(ctx context.Context, tenantID, invoiceID string) context.Context {
 	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: invoiceID})
