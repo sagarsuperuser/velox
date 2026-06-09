@@ -517,7 +517,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// at the natural cycle end with whatever residual usage accumulated.
 	if sub.BillingThresholds.ResetBillingCycle {
 		nextPeriodStart := now
-		nextPeriodEnd := advanceBillingPeriod(now, plans[sub.Items[0].PlanID].BillingInterval)
+		nextPeriodEnd := advanceBillingPeriod(now, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
 		if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
 			// Cycle advance failure is non-fatal at the count level: the
 			// invoice already exists, so we return fired=true and let the

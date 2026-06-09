@@ -1058,7 +1058,10 @@ func TestPeriod_DayGradeSnap(t *testing.T) {
 	}
 
 	// Anniversary billing: same snap rule — 14:00 signup → 00:00
-	// start in tenant TZ, period covers 30 days from there.
+	// start in tenant TZ. For a May 1 IST start the next anniversary is
+	// June 1 IST (May has 31 days), identical to the calendar boundary —
+	// computed in the TENANT zone (ADR-050), NOT a UTC AddDate on the
+	// UTC-located start (which lands a day early on May 31 IST).
 	sub, err = svc.Create(ctx, "t1", CreateInput{
 		Code: "sub-snap-anniversary", DisplayName: "Snap Anniversary",
 		CustomerID:  "cus_1",
@@ -1072,7 +1075,7 @@ func TestPeriod_DayGradeSnap(t *testing.T) {
 	if sub.CurrentBillingPeriodStart == nil || !sub.CurrentBillingPeriodStart.Equal(expectedStart) {
 		t.Errorf("anniversary periodStart: got %v, want %v", sub.CurrentBillingPeriodStart, expectedStart)
 	}
-	annivExpectedEnd := expectedStart.AddDate(0, 1, 0)
+	annivExpectedEnd := expectedEnd // June 1 IST — same as the calendar boundary for a 1st-of-month start
 	if sub.CurrentBillingPeriodEnd == nil || !sub.CurrentBillingPeriodEnd.Equal(annivExpectedEnd) {
 		t.Errorf("anniversary periodEnd: got %v, want %v", sub.CurrentBillingPeriodEnd, annivExpectedEnd)
 	}

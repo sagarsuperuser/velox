@@ -124,6 +124,16 @@ type CreditNoteIssuer interface {
 	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
 }
 
+// TenantLocator resolves the tenant's billing timezone so the proration
+// denominator (fullBillingCycleDays) advances the cycle in the same zone the
+// engine computes period boundaries in (ADR-050). *billing.Engine satisfies it
+// (TenantLocation). Optional: when unwired (narrow tests) the day-math falls
+// back to UTC — correct for UTC tenants; the only deployments that diverge are
+// offset-TZ tenants, which production always wires.
+type TenantLocator interface {
+	TenantLocation(ctx context.Context, tenantID string) *time.Location
+}
+
 // ProrationGrantInput carries the downgrade/removal/reduction credit payload
 // plus the provenance fields required for dedup. SourceChangeType
 // distinguishes plan-downgrade from qty-reduction from item-remove when the
@@ -155,6 +165,7 @@ type Handler struct {
 	invoices    ProrationInvoiceCreator
 	credits     ProrationCreditGranter
 	creditNotes CreditNoteIssuer
+	tzLocator   TenantLocator
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
 	auditLogger auditRecorder
@@ -257,6 +268,19 @@ func (h *Handler) SetProrationDeps(plans PlanReader, invoices ProrationInvoiceCr
 // SetProrationTaxApplier configures tax resolution on proration invoices.
 func (h *Handler) SetProrationTaxApplier(a ProrationTaxApplier) {
 	h.tax = a
+}
+
+// SetTenantLocator wires the tenant-billing-timezone resolver (the billing
+// engine) so proration day-math anchors its denominator in the tenant zone
+// (ADR-050). When unset, fullBillingCycleDays falls back to UTC.
+func (h *Handler) SetTenantLocator(l TenantLocator) { h.tzLocator = l }
+
+// tenantLoc resolves the tenant billing timezone, UTC when unwired.
+func (h *Handler) tenantLoc(ctx context.Context, tenantID string) *time.Location {
+	if h.tzLocator == nil {
+		return time.UTC
+	}
+	return h.tzLocator.TenantLocation(ctx, tenantID)
 }
 
 // SetCreditNoteIssuer wires the tax-reversing credit-note primitive used by the
@@ -1685,7 +1709,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
 	denomDays := spec.totalDays
 	if sub.CurrentBillingPeriodStart != nil {
-		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval); fc > 0 {
+		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval, h.tenantLoc(ctx, tenantID)); fc > 0 {
 			denomDays = fc
 		}
 	}
