@@ -54,7 +54,6 @@ type EmailDeliverer interface {
 	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
 	SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 	SendPaymentSetupLink(ctx context.Context, tenantID, to, customerName, operatorNote, setupURL string) error
-	SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error
 	SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 	SendMemberInvite(ctx context.Context, tenantID, to, inviterEmail, tenantName, acceptURL string) error
 }
@@ -169,8 +168,6 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	case TypePaymentSetupLink:
 		return d.sender.SendPaymentSetupLink(ctx, row.TenantID, msg.To, msg.CustomerName,
 			msg.OperatorNote, msg.SetupURL)
-	case TypePortalMagicLink:
-		return d.sender.SendPortalMagicLink(ctx, row.TenantID, msg.To, msg.CustomerName, msg.MagicLinkURL)
 	case TypePasswordReset:
 		return d.sender.SendPasswordReset(ctx, row.TenantID, msg.To, msg.CustomerName, msg.PasswordResetURL)
 	case TypeMemberInvite:
