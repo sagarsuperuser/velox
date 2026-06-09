@@ -17,8 +17,14 @@ import (
 // upgrades / over-credits downgrades. Derived from the shared
 // domain.AddBillingInterval so this matches the engine's day-1 stub base-fee
 // proration (segDays/fullCycleDays) and BillOnPlanSwapImmediate exactly.
-func fullBillingCycleDays(periodStart time.Time, interval domain.BillingInterval) int64 {
-	end := domain.AddBillingInterval(periodStart, interval)
+//
+// loc is the tenant's billing timezone: the cycle advance is computed in loc
+// (ADR-050) so the denominator is host-TZ-independent and agrees with the
+// period boundaries the engine writes (which also advance in loc). Without it
+// the same instant yields 30 or 31 days depending on the host time.Local —
+// mischarging every mid-cycle plan change for an offset-TZ tenant.
+func fullBillingCycleDays(periodStart time.Time, interval domain.BillingInterval, loc *time.Location) int64 {
+	end := domain.AddBillingInterval(periodStart, interval, loc)
 	return int64(math.Round(end.Sub(periodStart).Hours() / 24))
 }
 
