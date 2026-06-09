@@ -22,6 +22,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatCents, formatDate, getTenantTimezone } from '@/lib/api'
+import { formatCivilDate } from '@/lib/dates'
 import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule, CustomerUsageSubscription, Subscription, Invoice, InvoicePreview } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -210,7 +211,7 @@ function CycleProgress({ start, end }: { start: string; end: string }) {
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
         <span>
-          {formatDate(start)} → {formatDate(end)}
+          {formatDate(start)} → {formatCivilDate(end)}
         </span>
         <span>
           Day {daysIn} of {totalDays} · {pct.toFixed(0)}%

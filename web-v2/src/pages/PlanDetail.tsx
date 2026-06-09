@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type RatingRule, type Customer } from '@/lib/api'
+import { formatCivilPeriod } from '@/lib/dates'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { statusBadgeVariant } from '@/lib/status'
@@ -373,9 +374,7 @@ export default function PlanDetailPage() {
                     </TableCell>
                     <TableCell><Badge variant={statusVariant(sub.status)}>{sub.status}</Badge></TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {sub.current_billing_period_start && sub.current_billing_period_end
-                        ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
-                        : '\u2014'}
+                      {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end) || '\u2014'}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(sub.created_at)}</TableCell>
                   </TableRow>

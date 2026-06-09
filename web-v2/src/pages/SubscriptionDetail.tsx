@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { api, formatCents, formatDate, formatDateTime, getTenantTimezone, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
+import { formatCivilDate, formatCivilPeriod } from '@/lib/dates'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { TestClockBanner } from '@/components/TestClockBanner'
@@ -470,7 +471,10 @@ export default function SubscriptionDetailPage() {
             const periodEnd = new Date(sub.current_billing_period_end)
             timelinePoints.push({
               label: 'Period End',
-              date: formatDate(sub.current_billing_period_end),
+              // Last day the period covers (inclusive), not the exclusive
+              // boundary instant — distinct from the "Next Billing" dot and
+              // consistent with the "Current period" range below (ADR-050).
+              date: formatCivilDate(sub.current_billing_period_end),
               isPast: periodEnd <= now,
             })
           }
@@ -572,7 +576,7 @@ export default function SubscriptionDetailPage() {
                   </p>
                   {sub.current_billing_period_start && sub.current_billing_period_end && (
                     <p className="text-xs text-muted-foreground mt-1">
-                      First billing: {formatDate(sub.current_billing_period_start)} {'\u2014'} {formatDate(sub.current_billing_period_end)}
+                      First billing: {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end)}
                     </p>
                   )}
                 </>
@@ -597,7 +601,7 @@ export default function SubscriptionDetailPage() {
                   </p>
                   {sub.current_billing_period_start && sub.current_billing_period_end && (
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Period: {formatDate(sub.current_billing_period_start)} {'\u2014'} {formatDate(sub.current_billing_period_end)}
+                      Period: {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end)}
                     </p>
                   )}
                 </>
@@ -822,9 +826,7 @@ export default function SubscriptionDetailPage() {
                 {sub.status === 'trialing' ? 'First billing period' : 'Current period'}
               </span>
               <span className="text-sm text-foreground">
-                {sub.current_billing_period_start && sub.current_billing_period_end
-                  ? `${formatDate(sub.current_billing_period_start)} \u2014 ${formatDate(sub.current_billing_period_end)}`
-                  : '\u2014'}
+                {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end) || '\u2014'}
               </span>
             </div>
             {sub.usage_cap_units != null && (
