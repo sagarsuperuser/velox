@@ -31,7 +31,7 @@ type CustomerStripeLink interface {
 
 // StripeAdapter wires the payment-methods Service to the existing
 // payment.StripeClients pool. Mode-aware — ForCtx(ctx) returns the right
-// client for the caller's livemode, set by customerportal.Middleware.
+// client for the caller's livemode, set from the auth ctx.
 type StripeAdapter struct {
 	clients      *payment.StripeClients
 	customerLink CustomerStripeLink

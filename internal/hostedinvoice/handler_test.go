@@ -17,8 +17,7 @@ import (
 
 // ---- In-memory fakes ----
 //
-// The portalapi tests already prove the pattern works; we follow the same
-// shape here so both packages stay easy to cross-read.
+// Narrow in-memory fakes for the handler's dependencies.
 
 type fakeInvoices struct {
 	byToken   map[string]domain.Invoice // token → invoice

@@ -23,7 +23,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
-	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/feature"
@@ -36,7 +35,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
-	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/recipe"
 	"github.com/sagarsuperuser/velox/internal/session"
@@ -477,12 +475,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	outboxSender := email.NewOutboxSender(emailOutboxStore)
 	emailOutboxSenderRef := outboxSender
 	var (
-		invoiceEmail       invoice.EmailSender                 = outboxSender
-		dunningEmail       dunning.EmailNotifier               = outboxSender
-		receiptEmail       payment.EmailReceipt                = outboxSender
-		paymentSetupEmail  paymentSetupEmailSender             = outboxSender
-		paymentFailedEmail payment.EmailPaymentFailed          = outboxSender
-		magicLinkEmail     customerportal.MagicLinkEmailSender = outboxSender
+		invoiceEmail       invoice.EmailSender        = outboxSender
+		dunningEmail       dunning.EmailNotifier      = outboxSender
+		receiptEmail       payment.EmailReceipt       = outboxSender
+		paymentSetupEmail  paymentSetupEmailSender    = outboxSender
+		paymentFailedEmail payment.EmailPaymentFailed = outboxSender
 		passwordResetEmail interface {
 			SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
 		} = outboxSender
@@ -810,28 +807,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	analyticsH := analytics.NewHandler(db)
 
-	// Customer portal sessions — operators mint a session for a customer
-	// via POST /v1/customer-portal-sessions. The returned token is what
-	// authenticates the customer against /v1/me/* (see Middleware below).
-	portalSvc := customerportal.NewService(customerportal.NewPostgresStore(db))
-	portalOperatorH := customerportal.NewOperatorHandler(
-		portalSvc,
-		strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL")),
-	)
-
-	// Customer-initiated magic-link flow: the customer enters their email
-	// at /login, we look up matches via the keyed blind index (separate
-	// HMAC key from VELOX_ENCRYPTION_KEY so one compromise doesn't
-	// reveal the other), mint a short-lived token per match, and deliver
-	// via the email outbox. Blinder is required; without it the email
-	// lookup silently fails closed and no links can be minted.
-	var emailBlinder *crypto.Blinder
+	// Email blind index (separate HMAC key from VELOX_ENCRYPTION_KEY so one
+	// compromise doesn't reveal the other) powers bounce reporting + the
+	// recipient-suppression gate. Without it those fail closed.
 	if bidxKey := strings.TrimSpace(os.Getenv("VELOX_EMAIL_BIDX_KEY")); bidxKey != "" {
 		b, err := crypto.NewBlinder(bidxKey)
 		if err != nil {
 			slog.Error("invalid VELOX_EMAIL_BIDX_KEY, magic-link requests will fail closed", "error", err)
 		} else {
-			emailBlinder = b
 			customerStore.SetBlinder(b)
 			// Wire bounce reporting now that we have the blinder.
 			emailSender.SetBounceReporter(&bounceReporterAdapter{
@@ -849,34 +832,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 			if emailOutboxSenderRef != nil {
 				emailOutboxSenderRef.SetSuppressionChecker(suppressionChecker)
 			}
-			slog.Info("email blind index enabled for customer-portal magic-link lookup + bounce reporting + suppression gate")
+			slog.Info("email blind index enabled for bounce reporting + recipient suppression gate")
 		}
 	} else {
-		slog.Warn("VELOX_EMAIL_BIDX_KEY not set — magic-link requests will fail closed (no customers findable by email)")
+		slog.Warn("VELOX_EMAIL_BIDX_KEY not set — bounce reporting + suppression will fail closed (no customers findable by email)")
 	}
-	magicLinkStore := customerportal.NewPostgresMagicLinkStore(db)
-	magicLinkSvc := customerportal.NewMagicLinkService(magicLinkStore, portalSvc)
-	// Single delivery path: EmailMagicLinkDelivery. When
-	// CUSTOMER_PORTAL_URL is empty it returns ErrPortalURLNotConfigured
-	// per request — boot logs a warning so the misconfiguration is
-	// visible without preventing the server from starting.
-	portalURL := strings.TrimSpace(os.Getenv("CUSTOMER_PORTAL_URL"))
-	if portalURL == "" {
-		slog.Warn("CUSTOMER_PORTAL_URL NOT SET — magic-link requests will fail with ErrPortalURLNotConfigured. Set this to your customer-portal base URL (e.g. https://billing.example.com).")
-	}
-	magicLinkDelivery := customerportal.NewEmailMagicLinkDelivery(
-		magicLinkEmail, customerEmailAdapter, portalURL, slog.Default(),
-	)
-	magicLinkRequestSvc := customerportal.NewMagicLinkRequestService(
-		magicLinkSvc,
-		&customerLookupAdapter{store: customerStore},
-		emailBlinder,
-		magicLinkDelivery,
-		slog.Default(),
-	)
-	publicPortalH := customerportal.NewPublicHandler(magicLinkRequestSvc, magicLinkSvc)
-
-	// Customer self-service payment methods — handler-only wiring
+	// Operator-side payment-method management — handler-only wiring
 	// here; the store + service were constructed earlier (next to
 	// the paymentMethodsStripe adapter) so the billing engine's
 	// PaymentReadiness adapter can depend on the same service.
@@ -1104,18 +1065,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/", hostedInvoiceH.Routes())
 	})
 
-	// Public customer-portal routes (magic-link request + consume). No
-	// API-key auth: the caller supplies an email (request) or a token
-	// (consume) and that's the only credential. Rate-limited by IP via
-	// the same middleware that limits authenticated traffic — unauthed
-	// callers fall through to ip:<addr> buckets, so a single host
-	// probing emails hits the same 100/min ceiling as any other caller.
-	r.Route("/v1/public/customer-portal", func(r chi.Router) {
-		r.Use(rateLimiter.Middleware())
-		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/", publicPortalH.Routes())
-	})
-
 	// Public cost-dashboard projection — ADR-031 / MANUAL_TEST CU8.
 	// Unauthenticated: the 256-bit cost_dashboard_token in the path
 	// IS the credential. Tighter rate limit (60/min/IP) than the
@@ -1307,51 +1256,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// paymentmethods.Service.CreateSetupSession (single path).
 		// Operator dashboard uses POST /v1/customers/{id}/payment-methods/send-setup-email
 		// (email) or POST /v1/customers/{id}/payment-methods/setup-session (copy-link).
-
-		// Operator endpoint that mints portal bearer tokens for customers
-		// to use against /v1/me/* below. Customer-side routes deliberately
-		// live OUTSIDE this /v1 block because they're gated by the portal
-		// session middleware, not by API-key auth.
-		r.With(auth.Require(auth.PermCustomerWrite)).Mount("/customer-portal-sessions", portalOperatorH.Routes())
-	})
-
-	// Customer self-service surface — authenticated by a portal bearer
-	// token (vlx_cps_...) rather than a tenant API key. See customerportal
-	// package. Idempotency lives here because /me writes (setup-intent,
-	// setup-session, detach) hit Stripe through our service — a double
-	// click from a retry-happy mobile client must not create two payment
-	// methods for the same card.
-	portalAPI := portalapi.New(portalapi.Deps{
-		Invoices:       invoiceSvc,
-		Subscriptions:  subSvc,
-		Customers:      customerStore,
-		Settings:       settingsStore,
-		CreditNotes:    &creditNoteListerAdapter{svc: creditNoteSvc},
-		Credits:        &portalCreditReaderAdapter{svc: creditSvc},
-		CustomerWriter: &portalCustomerWriterAdapter{svc: customerSvc},
-		// Pay-now needs both the Stripe charger and a way to look
-		// up the customer's stripe_customer_id for the PI customer
-		// parameter. payment.Stripe satisfies the first;
-		// paymentSetupStore (the canonical composite) satisfies the
-		// second.
-		Charger: stripeAdapter,
-		PMSetup: paymentSetupStore,
-		// Payment methods are NOT wired here — the standalone
-		// internal/paymentmethods.Handler is mounted at
-		// /v1/me/payment-methods/* alongside this handler's routes
-		// (see r.Mount below). That package already provides the
-		// bootstrap-aware setup-session, list, set-default, and
-		// detach surface. Single source of truth for PM operations.
-		Events:      eventDispatcher,
-		AuditLogger: auditLogger,
-	})
-	r.Route("/v1/me", func(r chi.Router) {
-		r.Use(portalSvc.Middleware())
-		r.Use(rateLimiter.Middleware())
-		r.Use(mw.Idempotency(db))
-		r.Use(middleware.Timeout(30 * time.Second))
-		r.Mount("/payment-methods", paymentMethodsH.Routes())
-		r.Mount("/", portalAPI.Routes())
 	})
 
 	s.router = r

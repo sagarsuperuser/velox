@@ -35,7 +35,6 @@ const (
 	// the same unified template (renderPaymentSetupLinkHTML); the
 	// type tag is purely for routing + observability.
 	TypePaymentSetupLink = "payment_setup_link"
-	TypePortalMagicLink  = "portal_magic_link"
 	TypePasswordReset    = "password_reset"
 	TypeMemberInvite     = "member_invite"
 )
@@ -70,7 +69,6 @@ type outboxMessage struct {
 	SetupURL         string `json:"setup_url,omitempty"`
 	OperatorNote     string `json:"operator_note,omitempty"`
 	UpdateURL        string `json:"update_url,omitempty"`
-	MagicLinkURL     string `json:"magic_link_url,omitempty"`
 	PasswordResetURL string `json:"password_reset_url,omitempty"`
 	InviteURL        string `json:"invite_url,omitempty"`
 	InviterEmail     string `json:"inviter_email,omitempty"`
@@ -254,21 +252,6 @@ func (s *OutboxSender) SendPaymentSetupLink(ctx context.Context, tenantID, to, c
 		CustomerName: customerName,
 		OperatorNote: operatorNote,
 		SetupURL:     setupURL,
-	})
-}
-
-// SendPortalMagicLink enqueues a portal magic-link email. Satisfies
-// customerportal.MagicLinkEmailSender (narrow interface at the wiring
-// layer). The URL carries the one-time-use raw token that lands the
-// customer at the frontend /login page for consumption.
-func (s *OutboxSender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
-	if magicLinkURL == "" {
-		return fmt.Errorf("magic_link_url required: refusing to enqueue portal-magic-link email with no link")
-	}
-	return s.enqueue(ctx, tenantID, TypePortalMagicLink, outboxMessage{
-		To:           to,
-		CustomerName: customerName,
-		MagicLinkURL: magicLinkURL,
 	})
 }
 

@@ -77,12 +77,10 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		metaJSON = []byte("{}")
 	}
 
-	// Resolve actor: customer-portal requests (ctx stamped by
-	// customerportal.Middleware) take precedence, then API-key, then
-	// the 'system' fallback for background workers + cron paths that
-	// have neither. Mapping the portal session to actor_type='customer'
-	// lets the operator Activity feed render customer-initiated
-	// mutations with a correct by-line.
+	// Resolve actor: a stamped customer actor (auth.WithCustomerActor)
+	// takes precedence and maps to actor_type='customer'; otherwise an
+	// API-key request is actor_type='api_key', falling back to 'system'
+	// for background workers + cron paths that have neither.
 	actorType := "api_key"
 	if custID := auth.CustomerActorID(ctx); custID != "" {
 		actorType = "customer"

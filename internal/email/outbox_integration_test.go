@@ -405,12 +405,6 @@ func (f *fakeDeliverer) SendPaymentSetupLink(_ context.Context, tenantID, to, na
 	f.lastUpdateURL = setupURL
 	return nil
 }
-func (f *fakeDeliverer) SendPortalMagicLink(_ context.Context, tenantID, to, name, url string) error {
-	f.calls++
-	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePortalMagicLink, tenantID, to, name
-	f.lastUpdateURL = url
-	return nil
-}
 func (f *fakeDeliverer) SendPasswordReset(_ context.Context, tenantID, to, name, url string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName = email.TypePasswordReset, tenantID, to, name
@@ -446,7 +440,6 @@ func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.Outbox
 		Reason        string `json:"reason"`
 		FailureReason string `json:"failure_reason"`
 		UpdateURL     string `json:"update_url"`
-		MagicLinkURL  string `json:"magic_link_url"`
 		PublicToken   string `json:"public_token"`
 		PDF           []byte `json:"pdf"`
 	}
@@ -466,8 +459,6 @@ func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.Outbox
 		return d.SendPaymentFailed(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
 	case email.TypePaymentSetupRequest:
 		return d.SendPaymentSetupRequest(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
-	case email.TypePortalMagicLink:
-		return d.SendPortalMagicLink(ctx, row.TenantID, m.To, m.CustomerName, m.MagicLinkURL)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}

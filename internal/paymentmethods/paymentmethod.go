@@ -5,9 +5,8 @@
 // table stays as the 1:1 denorm summary that billing reads for the "one
 // default card" path — this package writes both on every mutation.
 //
-// All routes in this package run under customerportal.Middleware, so the
-// caller identity is a customer (not a tenant operator); tenantID +
-// customerID are read from ctx and pushed into BeginTx.
+// The operator routes run under API-key auth: tenantID comes from the auth
+// ctx and customerID from the URL path; both are pushed into BeginTx.
 package paymentmethods
 
 import "time"

@@ -169,11 +169,10 @@ func CustomerActorID(ctx context.Context) string {
 	return v
 }
 
-// WithCustomerActor stamps a customer ID as the request's actor.
-// Called by customerportal.Service.Middleware on every /v1/me/*
-// request so downstream services (audit logger, anything that needs
-// to know who's acting) can resolve the actor without re-importing
-// the customerportal package.
+// WithCustomerActor stamps a customer ID as the request's actor so
+// downstream services (e.g. the audit logger) can record who acted.
+// Currently unused after the customer-portal removal — retained for a
+// future customer-authenticated surface.
 func WithCustomerActor(ctx context.Context, customerID string) context.Context {
 	return context.WithValue(ctx, customerActorKey, customerID)
 }

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
-	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -100,17 +99,6 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 
 			fingerprint := fingerprintRequest(r.Method, r.URL.Path, bodyBytes)
 
-			// Scope the key to the acting customer on the customer-portal
-			// surface (/v1/me). The idempotency_keys row is keyed on
-			// (tenant, livemode, key) only — without the customer actor folded
-			// in, two different portal customers under the same tenant sending
-			// the same Idempotency-Key would collide, and customer B could be
-			// served customer A's cached profile response. Namespacing the
-			// stored key with the customer id makes the rows disjoint. Operator
-			// (Bearer/session) requests carry no portal customer, so their key
-			// is unchanged.
-			key = scopeKeyToCustomer(r.Context(), key)
-
 			// RESERVE the key before running the handler. A single INSERT ...
 			// ON CONFLICT DO NOTHING is the serialization point: exactly one
 			// concurrent request with the same (tenant, livemode, key) inserts
@@ -179,17 +167,6 @@ func Idempotency(db *postgres.DB) func(http.Handler) http.Handler {
 				recorder.statusCode, recorder.body.Bytes())
 		})
 	}
-}
-
-// scopeKeyToCustomer namespaces the idempotency key with the acting portal
-// customer, when present, so two customers under the same tenant can't collide
-// on (tenant, livemode, key) and replay each other's cached responses. Operator
-// requests (no portal customer in ctx) return the key unchanged.
-func scopeKeyToCustomer(ctx context.Context, key string) string {
-	if cid := customerportal.CustomerID(ctx); cid != "" {
-		return "cust:" + cid + ":" + key
-	}
-	return key
 }
 
 // fingerprintRequest returns a stable hash of the request's identifying

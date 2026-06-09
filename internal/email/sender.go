@@ -34,7 +34,7 @@ var ErrSMTPNotConfigured = errors.New("email: SMTP not configured (SMTP_HOST uns
 //
 // Customer-facing emails render as multipart/alternative (text + HTML)
 // with tenant-branded chrome pulled via SettingsGetter. Operator emails
-// (password reset, member invite, portal magic link) stay plain text —
+// (password reset, member invite) stay plain text —
 // they carry security-sensitive tokens and have no tenant branding
 // context to begin with.
 type Sender struct {
@@ -604,24 +604,6 @@ If you weren't expecting this invitation, you can safely ignore this email.
 
 — Velox
 `, inviterEmail, tenantName, acceptURL)
-	return s.sendPlain(ctx, tenantID, to, "", subject, body)
-}
-
-func (s *Sender) SendPortalMagicLink(ctx context.Context, tenantID, to, customerName, magicLinkURL string) error {
-	if magicLinkURL == "" {
-		return fmt.Errorf("magic_link_url required: refusing to send portal-magic-link email with no link")
-	}
-	subject := "Your Velox customer portal sign-in link"
-	body := fmt.Sprintf(`Hi %s,
-
-Click the link below to sign in to your customer portal. It expires in 15 minutes and can only be used once:
-
-%s
-
-If you didn't request this, you can safely ignore this email — nobody can sign in without the link.
-
-— Velox
-`, customerName, magicLinkURL)
 	return s.sendPlain(ctx, tenantID, to, "", subject, body)
 }
 
