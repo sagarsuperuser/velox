@@ -9,8 +9,7 @@
 // belongs to. Cross-tenant probing isn't feasible: the token carries 256
 // bits of entropy and the underlying column is UNIQUE indexed (see
 // migration 0048). Once the invoice is resolved, every subsequent read
-// uses that invoice's tenant — consistent with how portalapi scopes its
-// /v1/me/* surface once the portal session resolves.
+// uses that invoice's tenant.
 //
 // Industry-standard semantics:
 //   - Persistent URL: view remains accessible as long as the invoice
@@ -62,8 +61,7 @@ type InvoiceResolver interface {
 	GetWithLineItems(ctx context.Context, tenantID, id string) (domain.Invoice, []domain.InvoiceLineItem, error)
 }
 
-// CustomerGetter resolves the bill-to block. Same shape as portalapi uses
-// so both portals stay in step.
+// CustomerGetter resolves the bill-to block for the hosted invoice.
 type CustomerGetter interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 	GetBillingProfile(ctx context.Context, tenantID, customerID string) (domain.CustomerBillingProfile, error)
@@ -266,9 +264,8 @@ func (h *Handler) viewInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bill-to: same projection portalapi uses for the PDF, minus the
-	// tenant_id leak. Billing profile falls back to customer display_name
-	// + email when legal_name is unset, matching portalapi behavior.
+	// Bill-to projection for the PDF (no tenant_id leak). Billing profile
+	// falls back to customer display_name + email when legal_name is unset.
 	billTo := viewBillTo{}
 	if h.customers != nil {
 		if cust, err := h.customers.Get(r.Context(), inv.TenantID, inv.CustomerID); err == nil {

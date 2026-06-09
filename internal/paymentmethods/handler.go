@@ -14,21 +14,18 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
-	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// Handler exposes /v1/me/payment-methods, the customer-facing self-service
-// endpoints. All routes run under customerportal.Middleware, so the caller
-// identity is read from ctx (tenant_id + customer_id), not from auth
-// middleware tenant ctx — the /me namespace deliberately doesn't use API
-// keys.
+// Handler exposes the operator-side payment-method surface under
+// /v1/customers/{customer_id}/payment-methods: list / set-default /
+// detach, plus a "send setup link" affordance (email or copy-link) that
+// mints a Stripe Checkout setup URL the operator hands to the customer —
+// card data goes browser → Stripe, never the operator dashboard.
 //
-// Operator routes (OperatorRoutes) layer on additional dependencies —
-// a customer lookup so the email-setup-link endpoint can resolve the
-// recipient's email + display name, and an email sender that ships
-// the setup link. Both are optional: a Handler without them refuses
-// the email path with 503 and still serves list/setDefault/detach.
+// The customer lookup (resolves the recipient email + display name) and
+// the email sender are optional: a Handler without them refuses the
+// email path with 503 and still serves list/setDefault/detach.
 type Handler struct {
 	svc            *Service
 	customerLookup CustomerLookup
@@ -81,16 +78,6 @@ func (h *Handler) SetAuditLogger(a AuditWriter) { h.auditLogger = a }
 // two emails ~30s apart. Optional in tests / local dev.
 func (h *Handler) SetCooldown(c CooldownGate) { h.cooldown = c }
 
-func (h *Handler) Routes() chi.Router {
-	r := chi.NewRouter()
-	r.Get("/", h.list)
-	r.Post("/setup-intent", h.createSetupIntent)
-	r.Post("/setup-session", h.createSetupSession)
-	r.Post("/{id}/default", h.setDefault)
-	r.Delete("/{id}", h.detach)
-	return r
-}
-
 // OperatorRoutes mounts the operator-side PM surface under
 // /v1/customers/{customer_id}/payment-methods. Same Service backs both
 // surfaces — the only difference is where customer_id comes from
@@ -139,45 +126,6 @@ func toResp(pm PaymentMethod) pmResponse {
 	}
 }
 
-func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	tenantID, customerID, ok := identity(r)
-	if !ok {
-		respond.Unauthorized(w, r, "missing portal session context")
-		return
-	}
-	pms, err := h.svc.List(r.Context(), tenantID, customerID)
-	if err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-	out := make([]pmResponse, 0, len(pms))
-	for _, pm := range pms {
-		out = append(out, toResp(pm))
-	}
-	respond.List(w, r, out, len(out))
-}
-
-type setupIntentResponse struct {
-	ClientSecret  string `json:"client_secret"`
-	SetupIntentID string `json:"setup_intent_id"`
-}
-
-func (h *Handler) createSetupIntent(w http.ResponseWriter, r *http.Request) {
-	tenantID, customerID, ok := identity(r)
-	if !ok {
-		respond.Unauthorized(w, r, "missing portal session context")
-		return
-	}
-	secret, siID, err := h.svc.CreateSetupIntent(r.Context(), tenantID, customerID)
-	if err != nil {
-		respond.FromError(w, r, err, "payment_method")
-		return
-	}
-	respond.JSON(w, r, http.StatusCreated, setupIntentResponse{
-		ClientSecret: secret, SetupIntentID: siID,
-	})
-}
-
 type setupSessionRequest struct {
 	ReturnURL string `json:"return_url,omitempty"`
 }
@@ -185,79 +133,6 @@ type setupSessionRequest struct {
 type setupSessionResponse struct {
 	URL       string `json:"url"`
 	SessionID string `json:"session_id"`
-}
-
-func (h *Handler) createSetupSession(w http.ResponseWriter, r *http.Request) {
-	tenantID, customerID, ok := identity(r)
-	if !ok {
-		respond.Unauthorized(w, r, "missing portal session context")
-		return
-	}
-	var req setupSessionRequest
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
-	}
-	url, sessionID, err := h.svc.CreateSetupSession(r.Context(), tenantID, customerID, req.ReturnURL)
-	if err != nil {
-		respond.FromError(w, r, err, "payment_method")
-		return
-	}
-	respond.JSON(w, r, http.StatusCreated, setupSessionResponse{URL: url, SessionID: sessionID})
-}
-
-func (h *Handler) setDefault(w http.ResponseWriter, r *http.Request) {
-	tenantID, customerID, ok := identity(r)
-	if !ok {
-		respond.Unauthorized(w, r, "missing portal session context")
-		return
-	}
-	pmID := chi.URLParam(r, "id")
-	if pmID == "" {
-		respond.BadRequest(w, r, "missing payment method id")
-		return
-	}
-	pm, err := h.svc.SetDefault(r.Context(), tenantID, customerID, pmID)
-	if err != nil {
-		if errors.Is(err, errs.ErrNotFound) {
-			respond.NotFound(w, r, "payment_method")
-			return
-		}
-		respond.InternalError(w, r)
-		return
-	}
-	respond.JSON(w, r, http.StatusOK, toResp(pm))
-}
-
-func (h *Handler) detach(w http.ResponseWriter, r *http.Request) {
-	tenantID, customerID, ok := identity(r)
-	if !ok {
-		respond.Unauthorized(w, r, "missing portal session context")
-		return
-	}
-	pmID := chi.URLParam(r, "id")
-	if pmID == "" {
-		respond.BadRequest(w, r, "missing payment method id")
-		return
-	}
-	pm, err := h.svc.Detach(r.Context(), tenantID, customerID, pmID)
-	if err != nil {
-		if errors.Is(err, errs.ErrNotFound) {
-			respond.NotFound(w, r, "payment_method")
-			return
-		}
-		respond.InternalError(w, r)
-		return
-	}
-	respond.JSON(w, r, http.StatusOK, toResp(pm))
-}
-
-// identity pulls the portal-session context the middleware injected. If
-// either field is empty the request didn't pass through Middleware — we
-// treat that as an auth failure rather than silently fall through.
-func identity(r *http.Request) (tenantID, customerID string, ok bool) {
-	tenantID = customerportal.TenantID(r.Context())
-	customerID = customerportal.CustomerID(r.Context())
-	return tenantID, customerID, tenantID != "" && customerID != ""
 }
 
 // operatorIdentity reads tenant from the auth ctx and customer from

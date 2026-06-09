@@ -15,7 +15,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
-	"github.com/sagarsuperuser/velox/internal/customerportal"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
@@ -24,7 +23,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
-	"github.com/sagarsuperuser/velox/internal/portalapi"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
 
@@ -141,44 +139,6 @@ func (a *paymentReadinessAdapter) ResolveForCharge(ctx context.Context, tenantID
 	return cust.StripeCustomerID, false, nil
 }
 
-// portalCustomerWriterAdapter narrows customer.Service.Update to the
-// portal's allow-list (display_name + email only). Status, dunning-
-// policy assignment, and other operator-controlled fields stay
-// untouched — the portal caller can't reach them through this seam.
-type portalCustomerWriterAdapter struct {
-	svc *customer.Service
-}
-
-func (a *portalCustomerWriterAdapter) UpdateProfile(ctx context.Context, tenantID, customerID, displayName, email string) (domain.Customer, error) {
-	return a.svc.Update(ctx, tenantID, customerID, customer.UpdateInput{
-		DisplayName: displayName,
-		Email:       email,
-	})
-}
-
-// portalCreditReaderAdapter bridges credit.Service → portalapi.CreditReader.
-// Translates the local credit.ListFilter shape to portalapi's narrower
-// view so the portal handler doesn't gain a reverse import of internal/
-// credit. Pure shape conversion; no business logic.
-type portalCreditReaderAdapter struct {
-	svc *credit.Service
-}
-
-func (a *portalCreditReaderAdapter) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
-	return a.svc.GetBalance(ctx, tenantID, customerID)
-}
-
-func (a *portalCreditReaderAdapter) ListEntries(ctx context.Context, f portalapi.CreditListFilter) ([]domain.CreditLedgerEntry, error) {
-	return a.svc.ListEntries(ctx, credit.ListFilter{
-		TenantID:   f.TenantID,
-		CustomerID: f.CustomerID,
-		Limit:      f.Limit,
-		Sort:       f.Sort,
-		SortDir:    f.SortDir,
-	})
-}
-
-// invoiceWriterAdapter bridges invoice.PostgresStore → billing.InvoiceWriter.
 type invoiceWriterAdapter struct {
 	store *invoice.PostgresStore
 }
@@ -693,29 +653,6 @@ func (a *pmCustomerLookupAdapter) GetForSetupLink(ctx context.Context, tenantID,
 		return "", "", err
 	}
 	return c.Email, c.DisplayName, nil
-}
-
-// customerLookupAdapter bridges customer.PostgresStore → customerportal.CustomerLookup.
-// The two EmailMatch types are structurally identical; the adapter keeps
-// customerportal from importing customer (dep-graph layering).
-type customerLookupAdapter struct {
-	store *customer.PostgresStore
-}
-
-func (a *customerLookupAdapter) FindByEmailBlindIndex(ctx context.Context, blind string, limit int) ([]customerportal.CustomerMatch, error) {
-	matches, err := a.store.FindByEmailBlindIndex(ctx, blind, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]customerportal.CustomerMatch, len(matches))
-	for i, m := range matches {
-		out[i] = customerportal.CustomerMatch{
-			TenantID:   m.TenantID,
-			CustomerID: m.CustomerID,
-			Livemode:   m.Livemode,
-		}
-	}
-	return out, nil
 }
 
 // bounceReporterAdapter bridges email.Sender → customer.Service. When

@@ -110,9 +110,6 @@ const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
 const PaymentMethodAddedPage = lazy(() => import('@/pages/PaymentMethodAdded'))
 const HostedInvoicePage = lazy(() => import('@/pages/HostedInvoice'))
-const PortalLoginPage = lazy(() => import('@/pages/PortalLogin'))
-const PortalMagicPage = lazy(() => import('@/pages/PortalMagic'))
-const PortalPage = lazy(() => import('@/pages/Portal'))
 const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetail'))
 const InvoiceDetailPage = lazy(() => import('@/pages/InvoiceDetail'))
 const SubscriptionDetailPage = lazy(() => import('@/pages/SubscriptionDetail'))
@@ -175,9 +172,6 @@ const App = () => (
                   operator dashboard chrome. /portal/login + /portal/magic
                   are unauthenticated; /portal reads the session token from
                   localStorage and redirects to /portal/login on miss. */}
-              <Route path="/portal/login" element={<PortalLoginPage />} />
-              <Route path="/portal/magic" element={<PortalMagicPage />} />
-              <Route path="/portal" element={<PortalPage />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
