@@ -57,17 +57,6 @@ type Store interface {
 	// item and the updated invoice.
 	AddLineItemAtomic(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, domain.Invoice, error)
 
-	// ApplyDiscountAtomic stamps a coupon discount (and the recomputed tax
-	// snapshot that follows from it) onto a draft invoice in a single tx.
-	// Locks the invoice FOR UPDATE, re-checks the state gates (draft,
-	// discount_cents = 0, tax_transaction_id IS NULL) under the lock, then
-	// rewrites discount/tax/totals. Per-line tax stamps are rewritten from
-	// the supplied lineItems (keyed by id) so the recompute is authoritative.
-	//
-	// Returns errs.InvalidState when a gate fails (caller surfaces 409) and
-	// errs.ErrNotFound when the invoice doesn't exist (caller surfaces 404).
-	ApplyDiscountAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
-
 	// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
 	// retry. Locks the invoice row, gates on tax_status in (pending, failed)
 	// and status='draft', rewrites per-line tax stamps and invoice-level tax

@@ -329,7 +329,7 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 //
 // The invoice is built from the same line items evaluateThresholds already
 // computed — re-aggregating would risk a different running total if usage
-// landed between evaluate and fire. Tax + coupon + credit are applied via
+// landed between evaluate and fire. Tax + credit are applied via
 // the same paths the natural cycle uses so an early-finalize charge looks
 // identical to the customer.
 func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eval thresholdEval, periodStart, now time.Time) (bool, error) {

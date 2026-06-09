@@ -171,8 +171,8 @@ func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID strin
 	}
 	client := p.clientForCtx(ctx)
 	if client == nil {
-		// No client for mode — the calculation was a fallback result that
-		// has no Stripe calc_id to commit. No-op, consistent with manual.
+		// No client for the current mode (mode/credential mismatch at commit
+		// time); nothing to commit upstream. No-op, consistent with manual.
 		return "", nil
 	}
 	params := &stripe.TaxTransactionCreateFromCalculationParams{
