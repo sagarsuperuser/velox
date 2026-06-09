@@ -3122,7 +3122,9 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		}
 	})
 
-	t.Run("source invoice UNPAID → credit suppressed (paid-check gate)", func(t *testing.T) {
+	t.Run("source invoice UNPAID + issuers unwired → no refundable grant, no-op", func(t *testing.T) {
+		// No cash was funded, so no balance credit is granted; with no voider /
+		// adjuster wired the relief is a logged no-op (ride the dunning path).
 		unpaid := domain.Invoice{
 			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
 			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
@@ -3141,6 +3143,45 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		}
 		if len(granter.grants) != 0 {
 			t.Errorf("expected no credit grant on unpaid source invoice, got %d grants", len(granter.grants))
+		}
+	})
+
+	t.Run("source invoice UNPAID → amount_due reduced via adjustment, no grant (ADR-050)", func(t *testing.T) {
+		// ADR-050: a cross-interval swap on an UNPAID prebill settles in place —
+		// reduce the open invoice's amount_due to the consumed portion via an
+		// adjustment credit note, rather than minting a refundable balance
+		// credit or silently skipping.
+		unpaid := domain.Invoice{
+			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+			SubtotalCents: 6000, TotalAmountCents: 6000, AmountDueCents: 6000,
+		}
+		unpaidLine := domain.InvoiceLineItem{
+			ID: "ili_1", InvoiceID: "inv_1", LineType: domain.LineTypeBaseFee,
+			BillingPeriodStart: &periodStart,
+		}
+		inv := &mockInvoices{invoices: []domain.Invoice{unpaid}, lineItems: []domain.InvoiceLineItem{unpaidLine}}
+		granter := &fakeCreditGranter{}
+		voider := &fakeInvoiceVoider{}
+		adjuster := &fakeCreditNoteAdjuster{}
+		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
+		engine.SetCreditGranter(granter)
+		engine.SetInvoiceVoider(voider)
+		engine.SetCreditNoteAdjuster(adjuster)
+
+		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), swapAt)
+		if err != nil {
+			t.Fatalf("BillOnPlanSwapImmediate: %v", err)
+		}
+		if cents != 0 || len(granter.grants) != 0 {
+			t.Errorf("unpaid swap: cents=%d grants=%d, want 0/0 (no refundable credit)", cents, len(granter.grants))
+		}
+		if len(voider.voided) != 0 {
+			t.Errorf("voids = %d, want 0 (partial consumption → reduce, not void)", len(voider.voided))
+		}
+		// 16 unused of 31 days, no tax → gross = round(6000×16/31) = 3097.
+		if len(adjuster.calls) != 1 || adjuster.calls[0].invoiceID != "inv_1" || adjuster.calls[0].gross != 3097 {
+			t.Fatalf("adjustment CN = %+v, want one {inv_1, 3097}", adjuster.calls)
 		}
 	})
 

@@ -661,7 +661,9 @@ func TestHandler_UpdateItem_ImmediatePlanChangeFiresItemUpdated(t *testing.T) {
 		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
-	invoices := &invoicesMock{}
+	// Paid current-period prebill so the immediate upgrade proceeds (an upgrade
+	// against an UNPAID source is blocked per ADR-050).
+	invoices := &invoicesMock{sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded}}
 	credits := &creditsMock{}
 
 	dispatcher := &capturingDispatcher{}

@@ -3476,7 +3476,7 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	//               adjustment credit note. Leaving the FULL-period amount on
 	//               the dunning path — the prior behavior — is the one shape no
 	//               major platform endorses; it chases the customer for time
-	//               they never used. See relieveUnpaidPrebillOnCancel.
+	//               they never used. See relieveUnpaidPrebill.
 	//   - MISSING → never billed for this period (e.g. trial cancel); nothing
 	//               to relieve, skip cleanly.
 	var src domain.Invoice
@@ -3498,7 +3498,9 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 			return 0, fmt.Errorf("cancel proration: lookup source invoice: %w", lookupErr)
 		}
 		if s.PaymentStatus != domain.PaymentSucceeded {
-			return e.relieveUnpaidPrebillOnCancel(ctx, sub, s, totalUnused, cancelAt)
+			desc := fmt.Sprintf("Unused portion of %s — canceled %s",
+				sub.Code, cancelAt.UTC().Format("2006-01-02"))
+			return e.relieveUnpaidPrebill(ctx, sub, s, totalUnused, "subscription_cancellation", desc)
 		}
 		src, haveSrc = s, true
 	}
@@ -3529,11 +3531,14 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	return credited, nil
 }
 
-// relieveUnpaidPrebillOnCancel settles an UNPAID in_advance prebill at
-// mid-period cancel (#22). totalUnused is the net (tax-exclusive) unused base
-// already computed by BillOnCancel; src is the unpaid finalized invoice for the
-// period. No customer-balance credit is granted (no cash was funded), so it
-// always returns 0 cents; the error is non-nil only on a hard failure.
+// relieveUnpaidPrebill settles an UNPAID in_advance prebill when the customer
+// abandons the period it covers — a mid-period cancel (#22) or a same-cadence
+// cross-interval plan swap (ADR-050). totalUnused is the net (tax-exclusive)
+// unused base already computed by the caller; src is the unpaid finalized
+// invoice for the period; reason/desc are the credit-note categorical reason
+// and human description for the issuing path. No customer-balance credit is
+// granted (no cash was funded), so it always returns 0 cents; the error is
+// non-nil only on a hard failure.
 //
 // Rule:
 //   - Gross up totalUnused to the invoice's gross via its own Total/Subtotal
@@ -3551,18 +3556,15 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 // the invoice untouched — the legacy "ride the dunning path" behavior — so
 // existing engine tests that don't wire the issuers keep passing.
 //
-// Idempotency: BillOnCancel runs once per cancel (CancelAtomic refuses to
-// re-cancel an already-canceled sub before the biller is reached), so this is
-// not re-entered for the same invoice in normal operation.
-func (e *Engine) relieveUnpaidPrebillOnCancel(ctx context.Context, sub domain.Subscription, src domain.Invoice, totalUnused int64, cancelAt time.Time) (int64, error) {
+// Idempotency: each caller runs once per terminal event (BillOnCancel once per
+// cancel; the swap path once per immediate swap), so this is not re-entered for
+// the same invoice in normal operation; the amount_due cap is the backstop.
+func (e *Engine) relieveUnpaidPrebill(ctx context.Context, sub domain.Subscription, src domain.Invoice, totalUnused int64, reason, desc string) (int64, error) {
 	grossUnused := totalUnused
 	if src.SubtotalCents > 0 {
 		grossUnused = money.RoundHalfToEven(totalUnused*src.TotalAmountCents, src.SubtotalCents)
 	}
-	reduceBy := grossUnused
-	if reduceBy > src.AmountDueCents {
-		reduceBy = src.AmountDueCents
-	}
+	reduceBy := min(grossUnused, src.AmountDueCents)
 	if reduceBy <= 0 {
 		return 0, nil
 	}
@@ -3572,34 +3574,32 @@ func (e *Engine) relieveUnpaidPrebillOnCancel(ctx context.Context, sub domain.Su
 	// money, so fall through to the reduce path in that case.
 	if reduceBy >= src.AmountDueCents && src.AmountPaidCents == 0 {
 		if e.invoiceVoider == nil {
-			slog.InfoContext(ctx, "cancel: unpaid prebill fully unused but invoice voider unwired; leaving for dunning",
-				"subscription_id", sub.ID, "source_invoice_id", src.ID)
+			slog.InfoContext(ctx, "unpaid prebill relief: fully unused but invoice voider unwired; leaving for dunning",
+				"subscription_id", sub.ID, "source_invoice_id", src.ID, "reason", reason)
 			return 0, nil
 		}
 		if _, err := e.invoiceVoider.Void(ctx, sub.TenantID, src.ID); err != nil {
-			return 0, fmt.Errorf("cancel: void fully-unused unpaid prebill %s: %w", src.ID, err)
+			return 0, fmt.Errorf("relieve unpaid prebill: void fully-unused %s: %w", src.ID, err)
 		}
-		slog.InfoContext(ctx, "cancel: voided fully-unused unpaid prebill",
+		slog.InfoContext(ctx, "unpaid prebill relief: voided fully-unused invoice",
 			"subscription_id", sub.ID, "customer_id", sub.CustomerID,
-			"source_invoice_id", src.ID, "amount_cents", reduceBy)
+			"source_invoice_id", src.ID, "amount_cents", reduceBy, "reason", reason)
 		return 0, nil
 	}
 
 	// Partially consumed → reduce amount_due down to the consumed portion.
 	if e.creditNoteAdjuster == nil {
-		slog.InfoContext(ctx, "cancel: unpaid prebill partially used but credit-note adjuster unwired; leaving for dunning",
-			"subscription_id", sub.ID, "source_invoice_id", src.ID)
+		slog.InfoContext(ctx, "unpaid prebill relief: partially used but credit-note adjuster unwired; leaving for dunning",
+			"subscription_id", sub.ID, "source_invoice_id", src.ID, "reason", reason)
 		return 0, nil
 	}
-	desc := fmt.Sprintf("Unused portion of %s — canceled %s",
-		sub.Code, cancelAt.UTC().Format("2006-01-02"))
 	if _, err := e.creditNoteAdjuster.CreateAndIssueAdjustment(
-		ctx, sub.TenantID, src.ID, reduceBy, "subscription_cancellation", desc); err != nil {
-		return 0, fmt.Errorf("cancel: reduce unpaid prebill %s to consumed portion: %w", src.ID, err)
+		ctx, sub.TenantID, src.ID, reduceBy, reason, desc); err != nil {
+		return 0, fmt.Errorf("relieve unpaid prebill: reduce %s to consumed portion: %w", src.ID, err)
 	}
-	slog.InfoContext(ctx, "cancel: reduced unpaid prebill to consumed portion",
+	slog.InfoContext(ctx, "unpaid prebill relief: reduced amount_due to consumed portion",
 		"subscription_id", sub.ID, "customer_id", sub.CustomerID,
-		"source_invoice_id", src.ID, "reduced_by_cents", reduceBy)
+		"source_invoice_id", src.ID, "reduced_by_cents", reduceBy, "reason", reason)
 	return 0, nil
 }
 
@@ -3742,13 +3742,15 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 			return 0, fmt.Errorf("plan-swap refund: lookup source invoice: %w", lookupErr)
 		}
 		if s.PaymentStatus != domain.PaymentSucceeded {
-			slog.InfoContext(ctx, "plan-swap refund: source in_advance invoice not paid; skipping credit grant",
-				"subscription_id", sub.ID,
-				"customer_id", sub.CustomerID,
-				"source_invoice_id", s.ID,
-				"source_payment_status", s.PaymentStatus,
-			)
-			return 0, nil
+			// UNPAID source → settle in place rather than skip (ADR-050): no
+			// cash was funded, so reduce the open prebill's amount_due to the
+			// consumed portion (or void it if nothing was used) instead of
+			// minting a refundable credit. Same primitive the unpaid-cancel
+			// relief uses; keeps the swap path consistent with cancel and the
+			// item-mutation paths.
+			desc := fmt.Sprintf("Unused portion of %s — plan change %s",
+				sub.Code, at.UTC().Format("2006-01-02"))
+			return e.relieveUnpaidPrebill(ctx, sub, s, totalUnused, "subscription_plan_change", desc)
 		}
 		src, haveSrc = s, true
 	}
