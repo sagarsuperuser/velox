@@ -120,5 +120,4 @@ const (
 	EventDunningResolved                    = "dunning.resolved"
 	EventCreditGranted                      = "credit.granted"
 	EventCreditNoteIssued                   = "credit_note.issued"
-	EventBillingAlertTriggered              = "billing.alert.triggered"
 )

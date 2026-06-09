@@ -470,14 +470,6 @@ func (s *Service) invoiceLocation(ctx context.Context, tenantID string) *time.Lo
 	return domain.LoadLocationOrUTC(ts.Timezone)
 }
 
-// HasSucceededInvoice is the implementation of coupon.CustomerHistoryLookup.
-// Lives on the invoice service so the coupon package doesn't import invoice
-// directly — the concrete dependency is injected at assembly time via
-// coupon.Service.SetCustomerHistoryLookup.
-func (s *Service) HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error) {
-	return s.store.HasSucceededInvoice(ctx, tenantID, customerID)
-}
-
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Invoice, int, error) {
 	invs, total, err := s.store.List(ctx, filter)
 	if err != nil {
