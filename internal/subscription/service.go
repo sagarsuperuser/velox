@@ -641,7 +641,7 @@ type ProrationDetail struct {
 	NewPlanID       string  `json:"new_plan_id"`
 	ProrationFactor float64 `json:"proration_factor"`
 	AmountCents     int64   `json:"amount_cents"`
-	Type            string  `json:"type"` // "invoice" or "credit"
+	Type            string  `json:"type"` // "invoice", "credit", or "adjustment" (unpaid-source amount_due reduction, ADR-050)
 	InvoiceID       string  `json:"invoice_id,omitempty"`
 	// TaxProvider / TaxCalculationID are internal (not API surface) — they
 	// route the post-commit Stripe Tax transaction creation up to the atomic
