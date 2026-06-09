@@ -319,54 +319,6 @@ func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoic
 	return nil, nil
 }
 
-func (m *memStore) ApplyDiscountAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
-	inv, ok := m.invoices[invoiceID]
-	if !ok || inv.TenantID != tenantID {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	if inv.Status != domain.InvoiceDraft {
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf("invoice must be draft (current: %s)", inv.Status))
-	}
-	if inv.DiscountCents > 0 {
-		return domain.Invoice{}, errs.InvalidState("invoice already has a discount applied")
-	}
-	byID := make(map[string]domain.InvoiceLineItem, len(lineItems))
-	for _, li := range lineItems {
-		byID[li.ID] = li
-	}
-	for i, existing := range m.lineItems[invoiceID] {
-		if updated, ok := byID[existing.ID]; ok {
-			m.lineItems[invoiceID][i].AmountCents = updated.AmountCents
-			m.lineItems[invoiceID][i].TaxRate = updated.TaxRate
-			m.lineItems[invoiceID][i].TaxAmountCents = updated.TaxAmountCents
-			m.lineItems[invoiceID][i].TotalAmountCents = updated.TotalAmountCents
-		}
-	}
-	inv.SubtotalCents = update.SubtotalCents
-	inv.DiscountCents = update.DiscountCents
-	inv.TaxAmountCents = update.TaxAmountCents
-	inv.TaxRate = update.TaxRate
-	inv.TaxName = update.TaxName
-	inv.TaxCountry = update.TaxCountry
-	inv.TaxID = update.TaxID
-	inv.TaxProvider = update.TaxProvider
-	inv.TaxCalculationID = update.TaxCalculationID
-	inv.TaxReverseCharge = update.TaxReverseCharge
-	inv.TaxExemptReason = update.TaxExemptReason
-	inv.TaxStatus = update.TaxStatus
-	inv.TaxDeferredAt = update.TaxDeferredAt
-	inv.TaxPendingReason = update.TaxPendingReason
-	inv.TotalAmountCents = update.SubtotalCents - update.DiscountCents + update.TaxAmountCents
-	due := inv.TotalAmountCents - inv.AmountPaidCents - inv.CreditsAppliedCents
-	if due < 0 {
-		due = 0
-	}
-	inv.AmountDueCents = due
-	inv.UpdatedAt = time.Now().UTC()
-	m.invoices[invoiceID] = inv
-	return inv, nil
-}
-
 func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
 	inv, ok := m.invoices[invoiceID]
 	if !ok || inv.TenantID != tenantID {

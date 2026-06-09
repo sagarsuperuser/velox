@@ -379,9 +379,8 @@ func TestWireShape_WebhookEventDeliveries(t *testing.T) {
 }
 
 // mapKeys returns the keys of a JSON-decoded object as a slice for
-// stable error-message rendering. Local to the test file since the
-// helper in other packages (billingalert/wire_shape_test.go) lives in
-// its own package and isn't importable.
+// stable error-message rendering. Local to the test file since helpers
+// in other test packages aren't importable.
 func mapKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

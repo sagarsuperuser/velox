@@ -89,9 +89,7 @@ func (d decryptScanner) Scan(src any) error {
 // string literals so the constraint-name router in mapInvoiceUniqueViolation
 // is type-checked against actual index names — a typo here surfaces in
 // integration tests, not as a silent fall-through to the generic
-// "unknown constraint" branch. Mirrors the pattern in
-// internal/coupon/postgres.go which has been doing this since the
-// customer-discount idempotency work.
+// "unknown constraint" branch.
 const (
 	idxInvoicesBillingIdempotency  = "idx_invoices_billing_idempotency"
 	idxInvoicesProrationDedup      = "idx_invoices_proration_dedup"
@@ -1084,138 +1082,6 @@ func (s *PostgresStore) AddLineItemAtomic(
 	return item, inv, nil
 }
 
-// ApplyDiscountAtomic stamps a coupon discount (and the recomputed tax
-// snapshot) onto a draft invoice in a single transaction. The gate
-// re-check lives inside the tx — the caller's outer validate-then-write
-// pattern would race a concurrent finalize or a parallel apply-coupon
-// attempt; taking FOR UPDATE and re-asserting status=draft,
-// discount_cents=0, tax_transaction_id IS NULL closes the TOCTOU window.
-//
-// Per-line tax fields (tax_rate_bp, tax_amount_cents, total_amount_cents,
-// amount_cents) are rewritten from the caller's supplied lineItems because
-// the post-discount tax base may shift the per-line splits (inclusive-mode
-// carving in particular). Lines keyed by id; ids that don't belong to this
-// invoice are silently ignored so a caller can't corrupt a sibling.
-func (s *PostgresStore) ApplyDiscountAtomic(
-	ctx context.Context, tenantID, invoiceID string,
-	update domain.InvoiceDiscountUpdate, lineItems []domain.InvoiceLineItem,
-) (domain.Invoice, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	var (
-		status           domain.InvoiceStatus
-		existingDiscount int64
-		taxTransactionID string
-	)
-	err = tx.QueryRowContext(ctx, `
-		SELECT status, discount_cents, COALESCE(tax_transaction_id,'')
-		FROM invoices WHERE id = $1 FOR UPDATE
-	`, invoiceID).Scan(&status, &existingDiscount, &taxTransactionID)
-	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	if status != domain.InvoiceDraft {
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
-			"invoice must be draft to apply a coupon (current: %s)", status))
-	}
-	if existingDiscount > 0 {
-		return domain.Invoice{}, errs.InvalidState("invoice already has a discount applied")
-	}
-	if taxTransactionID != "" {
-		return domain.Invoice{}, errs.InvalidState("invoice tax has already been committed upstream")
-	}
-
-	now := clock.Now(ctx)
-
-	for _, li := range lineItems {
-		if li.ID == "" {
-			continue
-		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE invoice_line_items
-			SET amount_cents = $3,
-			    tax_rate = $4,
-			    tax_amount_cents = $5,
-			    total_amount_cents = $6,
-			    tax_reason = $7
-			WHERE invoice_id = $1 AND id = $2
-		`, invoiceID, li.ID, li.AmountCents, li.TaxRate, li.TaxAmountCents, li.TotalAmountCents, li.TaxabilityReason)
-		if err != nil {
-			return domain.Invoice{}, fmt.Errorf("update line item tax stamp: %w", err)
-		}
-	}
-
-	total := update.SubtotalCents - update.DiscountCents + update.TaxAmountCents
-
-	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `
-		UPDATE invoices SET
-			subtotal_cents = $2,
-			discount_cents = $3,
-			tax_amount_cents = $4,
-			tax_rate = $5,
-			tax_name = $6,
-			tax_country = $7,
-			tax_id = $8,
-			tax_provider = $9,
-			tax_calculation_id = $10,
-			tax_reverse_charge = $11,
-			tax_exempt_reason = $12,
-			tax_status = $13,
-			tax_deferred_at = $14,
-			tax_pending_reason = $15,
-			tax_error_code = $16,
-			total_amount_cents = $17,
-			amount_due_cents = GREATEST($17 - amount_paid_cents - credits_applied_cents, 0),
-			updated_at = $18
-		WHERE id = $1
-		RETURNING `+invCols,
-		invoiceID,
-		update.SubtotalCents, update.DiscountCents, update.TaxAmountCents, update.TaxRate,
-		update.TaxName, update.TaxCountry, update.TaxID,
-		// tax_provider + tax_calculation_id are NOT NULL DEFAULT ''
-		// — pass empty string directly. NullableString would
-		// convert "" → SQLNULL → constraint violation. Bug surfaced
-		// 2026-05-04 when tax retry on orphan invoices wrote empty
-		// calculation_ids (none/manual providers don't issue them)
-		// and tripped SQLSTATE 23502.
-		update.TaxProvider,
-		update.TaxCalculationID,
-		update.TaxReverseCharge, update.TaxExemptReason,
-		update.TaxStatus, postgres.NullableTime(update.TaxDeferredAt), update.TaxPendingReason,
-		postgres.NullableString(update.TaxErrorCode),
-		total, now,
-	).Scan(s.scanInvDest(&inv)...)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
-	}
-	return inv, nil
-}
-
-// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
-// retry (or, eventually, the retry worker). Locks the invoice row FOR
-// UPDATE, gates on tax_status in (pending, failed) and status='draft',
-// rewrites per-line tax fields from the supplied lineItems, rewrites
-// the invoice-level tax columns, recomputes total / amount_due, and
-// increments tax_retry_count. Returns the updated row with attention
-// re-derivable from the new fields.
-//
-// A retry that succeeds writes tax_status='ok' with calculation_id
-// populated and tax_pending_reason / tax_error_code cleared. A retry
-// that fails again writes tax_status='pending' or 'failed' with the
-// new code/reason — the row stays blocked from finalize and the
-// dashboard banner refreshes.
 func (s *PostgresStore) UpdateTaxAtomic(
 	ctx context.Context, tenantID, invoiceID string,
 	update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem,

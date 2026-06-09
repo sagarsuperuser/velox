@@ -45,7 +45,7 @@ func FrameFromEvent(e domain.WebhookEvent, status string, lastAttemptAt *time.Ti
 		// Most Velox event payloads carry the affected customer's ID
 		// at top-level under "customer_id" — see internal/billing,
 		// internal/subscription, internal/invoice. The few that don't
-		// (coupon.created, plan-change.scheduled with no customer
+		// (some system/scheduled events with no customer
 		// scope) drop through to "" and the dashboard renders "—".
 		if v, ok := e.Payload["customer_id"].(string); ok {
 			customerID = v
