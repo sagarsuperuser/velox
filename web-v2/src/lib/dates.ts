@@ -72,3 +72,80 @@ export function formatYMDInTZ(iso: string, timezone?: string): string {
   const tz = timezone || tenantTZ()
   return formatInTimeZone(new Date(iso), tz, 'yyyy-MM-dd')
 }
+
+// ---------------------------------------------------------------------------
+// Inclusive billing-period display (ADR-050).
+//
+// Billing periods are stored HALF-OPEN [start, end): `end` is the EXCLUSIVE
+// boundary where the next period begins (Jun 1 → Jul 1 = "covers June"). Every
+// billing engine (Stripe, Zuora, Recurly, Chargebee, Lago) DISPLAYS a period by
+// its INCLUSIVE last covered day instead — "Jun 1 – Jun 30", not "Jun 1 – Jul 1"
+// — so the operator never has to mentally subtract a day.
+//
+// These two helpers are the client-side mirror of the Go functions
+// domain.InclusiveDisplayEnd / domain.FormatInclusivePeriod (the canonical
+// spec — keep them byte-for-byte identical). The invoice surfaces get the
+// string straight from the backend (`billing_period_display`, computed by
+// FormatInclusivePeriod) because the PDF is server-rendered; the React
+// subscription surfaces already receive the raw half-open instants over the
+// wire, so they compute the same string here rather than round-tripping a
+// derived field through every read path. Display only — the wire stays
+// half-open.
+//
+// The conversion is a CALENDAR step, never a 24h instant subtraction: snap the
+// exclusive boundary to its civil date in tenant TZ, then step back one calendar
+// day. A 24h subtraction lands on the wrong civil date across a DST boundary or
+// a non-midnight end — the same off-by-one class ADR-050 fixed in the engine.
+
+// inclusiveEndYMD returns [year, month, day] of the last calendar day fully
+// covered by a half-open period whose exclusive end is `endISO`, in tenant TZ.
+function inclusiveEndYMD(endISO: string, tz: string): [number, number, number] {
+  // The boundary's civil date in tenant TZ (e.g. 2028-07-01).
+  const civil = formatInTimeZone(new Date(endISO), tz, 'yyyy-MM-dd')
+  const [y, m, d] = civil.split('-').map(Number)
+  // Step back ONE calendar day. JS Date normalizes day 0 → last day of the
+  // previous month and Jan 0 → Dec 31 of the prior year, so month/year rollover
+  // and leap-Februarys fall out correctly. Explicit y/m/d construction keeps
+  // this browser-TZ-safe (same idiom as addDaysInTZ above).
+  const back = new Date(y, m - 1, d - 1)
+  return [back.getFullYear(), back.getMonth() + 1, back.getDate()]
+}
+
+// formatCivilDate renders the INCLUSIVE last covered day of a half-open
+// period_end as "MMM d, yyyy" in tenant TZ ("Jun 30, 2028"). Use for a single
+// period-boundary label that means "last day covered" (e.g. a cycle's end).
+// NOT for event dates ("Renews", "Cancels", "Next billing") — those fire on the
+// exclusive boundary instant and must keep formatDate(). Empty input → "".
+// Mirrors Go domain.InclusiveDisplayEnd + the "Jan 2, 2006" layout.
+export function formatCivilDate(endISO?: string | null, timezone?: string): string {
+  if (!endISO) return ''
+  const tz = timezone || tenantTZ()
+  const [y, m, d] = inclusiveEndYMD(endISO, tz)
+  return format(new Date(y, m - 1, d), 'MMM d, yyyy')
+}
+
+// formatCivilPeriod renders the human period range "<start> – <inclusiveEnd>"
+// (en-dash) in tenant TZ — the exact string the invoice's backend
+// billing_period_display shows, so a period reads identically wherever it
+// appears. Returns "" when the period is empty (start == end). Clamps the
+// inclusive end to >= the start's civil day so a sub-day stub never inverts.
+// Mirrors Go domain.FormatInclusivePeriod.
+export function formatCivilPeriod(
+  startISO?: string | null,
+  endISO?: string | null,
+  timezone?: string,
+): string {
+  if (!startISO || !endISO) return ''
+  if (new Date(startISO).getTime() === new Date(endISO).getTime()) return ''
+  const tz = timezone || tenantTZ()
+  const startStr = formatInTimeZone(new Date(startISO), tz, 'MMM d, yyyy')
+  // Start's civil day in tenant TZ — the clamp floor for the inclusive end.
+  const [sy, sm, sd] = formatInTimeZone(new Date(startISO), tz, 'yyyy-MM-dd')
+    .split('-')
+    .map(Number)
+  const startDate = new Date(sy, sm - 1, sd)
+  const [ey, em, ed] = inclusiveEndYMD(endISO, tz)
+  let endDate = new Date(ey, em - 1, ed)
+  if (endDate.getTime() < startDate.getTime()) endDate = startDate
+  return `${startStr} – ${format(endDate, 'MMM d, yyyy')}`
+}

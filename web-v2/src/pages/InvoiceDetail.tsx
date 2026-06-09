@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents, formatDate, formatDateTime, formatTaxRate, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
+import { formatCivilPeriod } from '@/lib/dates'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
 import { SimulatedBadge } from '@/components/TestClockBadge'
@@ -912,7 +913,7 @@ export default function InvoiceDetailPage() {
                           item.billing_period_end !== invoice.billing_period_end
                         ) && (
                           <div className="text-xs text-muted-foreground mt-0.5">
-                            Covers {formatDate(item.billing_period_start)} – {formatDate(item.billing_period_end)}
+                            Covers {formatCivilPeriod(item.billing_period_start, item.billing_period_end)}
                           </div>
                         )}
                       </TableCell>
