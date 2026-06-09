@@ -118,12 +118,6 @@ type Store interface {
 	// surface live-mode rows. ADR-019.
 	ListProviderConfigErrors(ctx context.Context, tenantID string, livemode bool) ([]domain.Invoice, error)
 
-	// HasSucceededInvoice reports whether the customer has any invoice with
-	// payment_status = 'succeeded'. Backs the coupon first_time_customer_only
-	// restriction — existence-only so the query can use LIMIT 1 instead of
-	// paging full history.
-	HasSucceededInvoice(ctx context.Context, tenantID, customerID string) (bool, error)
-
 	// GetOutstandingBalance returns the customer's accounts-receivable
 	// exposure: SUM(amount_due_cents) + COUNT(*) of finalized invoices
 	// in payment_status pending/failed/unknown, excluding voided +
