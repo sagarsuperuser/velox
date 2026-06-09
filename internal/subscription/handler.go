@@ -896,6 +896,12 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
+			// Deliberate ADR-050 block (add charges against an unpaid source) →
+			// clean 409, not the internal-failure 500 below.
+			if errors.Is(prorationErr, errs.ErrInvalidState) {
+				respond.FromError(w, r, prorationErr, "subscription item")
+				return
+			}
 			slog.ErrorContext(r.Context(), "item proration failed after item add committed",
 				"subscription_id", id,
 				"item_id", item.ID,
@@ -1099,6 +1105,12 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		prorationResult, prorationErr := h.handleItemProration(r.Context(), tenantID, subAfter, spec, nil)
 		if prorationErr != nil {
+			// Deliberate ADR-050 block (upgrade charges against an unpaid
+			// source) → clean 409, not the internal-failure 500 below.
+			if errors.Is(prorationErr, errs.ErrInvalidState) {
+				respond.FromError(w, r, prorationErr, "subscription item")
+				return
+			}
 			slog.ErrorContext(r.Context(), "item proration failed after item change committed",
 				"subscription_id", subID,
 				"item_id", result.Item.ID,
@@ -1386,6 +1398,13 @@ func (h *Handler) atomicAddItemWithProration(
 	}
 	detail, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx)
 	if err != nil {
+		// A deliberate ADR-050 block (charge against an unpaid source) is an
+		// operator-facing 409, not an internal failure — pass it through
+		// unwrapped so the message stays clean; the deferred Rollback undoes
+		// the item add so nothing half-applies.
+		if errors.Is(err, errs.ErrInvalidState) {
+			return domain.SubscriptionItem{}, err
+		}
 		return domain.SubscriptionItem{}, fmt.Errorf("proration in atomic addItem tx: %w", err)
 	}
 
@@ -1466,6 +1485,13 @@ func (h *Handler) atomicUpdateItemWithProration(
 	}
 	detail, err := h.handleItemProration(ctx, tenantID, subBefore, spec, tx)
 	if err != nil {
+		// A deliberate ADR-050 block (charge against an unpaid source) is an
+		// operator-facing 409, not an internal failure — pass it through
+		// unwrapped so the message stays clean; the deferred Rollback undoes
+		// the item change so nothing half-applies.
+		if errors.Is(err, errs.ErrInvalidState) {
+			return ItemChangeResult{}, err
+		}
 		return ItemChangeResult{}, fmt.Errorf("proration in atomic updateItem tx: %w", err)
 	}
 
@@ -1640,42 +1666,13 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		)
 		return nil, nil
 	}
-	// src is the resolved PAID in_advance source invoice for the current
-	// period; haveSrc records whether one was found. The downgrade-credit
-	// branch below grosses the clawback up against this invoice's tax ratio
-	// and anchors the tax-reversing credit note to it (ADR-048). In
-	// production h.invoices is always wired and this gate runs, so a downgrade
-	// only reaches the credit branch with haveSrc == true.
-	var src domain.Invoice
-	var haveSrc bool
-	if h.invoices != nil && sub.CurrentBillingPeriodStart != nil {
-		resolved, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
-		if lookupErr != nil {
-			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not found for current period",
-				"subscription_id", sub.ID,
-				"item_id", spec.itemID,
-				"change_type", spec.changeType,
-				"period_start", *sub.CurrentBillingPeriodStart,
-				"error", lookupErr,
-			)
-			return nil, nil
-		}
-		if resolved.PaymentStatus != domain.PaymentSucceeded {
-			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not paid",
-				"subscription_id", sub.ID,
-				"item_id", spec.itemID,
-				"change_type", spec.changeType,
-				"source_invoice_id", resolved.ID,
-				"source_payment_status", resolved.PaymentStatus,
-			)
-			return nil, nil
-		}
-		src = resolved
-		haveSrc = true
-	}
-
 	// Integer day-ratio proration per ADR-042 — pure-integer banker's
 	// rounding, no float64 in the cents path. See prorationCents.
+	//
+	// Computed BEFORE resolving the source invoice so the unpaid-source branch
+	// (ADR-050) can route by sign: a net charge (upgrade / add / qty-increase)
+	// is blocked, a net credit (downgrade / removal / qty-decrease) settles as
+	// an adjustment against the open invoice.
 	//
 	// Denominator is the FULL billing cycle, NOT spec.totalDays (the current
 	// period). On a stub/partial period (mid-cycle signup) spec.totalDays is
@@ -1697,6 +1694,40 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 	if proratedCents == 0 {
 		return nil, nil
+	}
+
+	// Resolve the current-period in_advance source invoice and branch on its
+	// payment status. src/haveSrc carry a PAID source into the happy path
+	// below — the downgrade-credit branch grosses the clawback up against this
+	// invoice's tax ratio and anchors the tax-reversing credit note to it
+	// (ADR-048). In production h.invoices is always wired and this gate runs.
+	var src domain.Invoice
+	var haveSrc bool
+	if h.invoices != nil && sub.CurrentBillingPeriodStart != nil {
+		resolved, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
+		if lookupErr != nil {
+			// No source invoice for the period (e.g. a freshly created sub whose
+			// first prebill hasn't been generated). Nothing to anchor an
+			// adjustment or clawback to — defer to cycle close.
+			slog.InfoContext(ctx, "item proration deferred: in_advance source invoice not found for current period",
+				"subscription_id", sub.ID,
+				"item_id", spec.itemID,
+				"change_type", spec.changeType,
+				"period_start", *sub.CurrentBillingPeriodStart,
+				"error", lookupErr,
+			)
+			return nil, nil
+		}
+		if resolved.PaymentStatus != domain.PaymentSucceeded {
+			// UNPAID source. Industry-convergent rule (Chargebee Adjustment
+			// Credit / Lago credit-note wallet / Orb adjustment / Stripe
+			// proration_behavior=none on unpaid / Recurly block-on-past-due):
+			// never mint a refundable credit or stack a second charge against
+			// money the customer hasn't paid (ADR-050).
+			return h.settleUnpaidSourceProration(ctx, tenantID, sub, spec, oldPlan, newPlan, resolved, proratedCents, tx)
+		}
+		src = resolved
+		haveSrc = true
 	}
 
 	// Display-only factor for the ProrationDetail payload (operator-visible
@@ -2038,6 +2069,81 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		}
 	}
 
+	return detail, nil
+}
+
+// settleUnpaidSourceProration applies the ADR-050 unpaid-source policy when a
+// mid-period item change lands on an in_advance period whose source invoice is
+// finalized but NOT paid. Industry-convergent across Stripe / Chargebee /
+// Recurly / Lago / Orb: never mint a refundable credit, and never stack a
+// second charge, against money the customer hasn't paid.
+//
+//   - NET CHARGE (upgrade / add / qty-increase, proratedCents > 0) → BLOCK.
+//     We refuse to pile a second receivable onto an unpaid current-period
+//     invoice (Recurly blocks past-due changes; Stripe recommends
+//     proration_behavior=none on an unpaid latest invoice). The operator must
+//     settle or void the outstanding invoice first. Returned as
+//     errs.InvalidState so the atomic tx rolls the item change back and the
+//     operator sees a clean 409 — nothing half-applies.
+//
+//   - NET CREDIT (downgrade / removal / qty-decrease, proratedCents < 0) →
+//     reduce the open invoice's amount_due via a tax-reversing ADJUSTMENT
+//     credit note, capped at amount_due. No refundable balance credit is
+//     granted (no cash was funded). This is the same CreateAndIssueAdjustment
+//     primitive the engine's relieveUnpaidPrebill uses on an unpaid cancel —
+//     Chargebee's "Adjustment Credit", Lago's credit-note, Orb's adjustment.
+//
+// The adjustment is carried on the detail's Clawback* fields and issued by the
+// caller AFTER the tx commits (the CN service is not tx-aware), exactly like
+// the PAID downgrade clawback (ADR-048); the non-atomic path issues inline.
+func (h *Handler) settleUnpaidSourceProration(ctx context.Context, tenantID string, sub domain.Subscription, spec itemProrationSpec, oldPlan, newPlan domain.Plan, src domain.Invoice, proratedCents int64, tx *sql.Tx) (*ProrationDetail, error) {
+	if proratedCents > 0 {
+		slog.InfoContext(ctx, "item change blocked: net charge against an unpaid in_advance source invoice (ADR-050)",
+			"subscription_id", sub.ID,
+			"item_id", spec.itemID,
+			"change_type", spec.changeType,
+			"source_invoice_id", src.ID,
+			"source_payment_status", src.PaymentStatus,
+			"amount_due_cents", src.AmountDueCents,
+		)
+		return nil, errs.InvalidState(fmt.Sprintf(
+			"invoice %s for the current period is unpaid (%.2f %s outstanding); settle or void it before changing this subscription",
+			src.InvoiceNumber, float64(src.AmountDueCents)/100, src.Currency,
+		)).WithCode("unpaid_invoice_blocks_change")
+	}
+
+	// Net credit: settle the unused slice against the open invoice as an
+	// adjustment, capped at what's still owed (CreateAndIssueAdjustment errors
+	// above amount_due — same clamp the engine's unpaid-cancel relief applies).
+	creditAmount := -proratedCents
+	grossCredit := grossUpByInvoiceRatio(creditAmount, src.SubtotalCents, src.TotalAmountCents)
+	reduceBy := min(grossCredit, src.AmountDueCents)
+	if reduceBy <= 0 {
+		return nil, nil
+	}
+
+	detail := &ProrationDetail{
+		OldPlanID:          spec.oldPlanID,
+		NewPlanID:          spec.newPlanID,
+		Type:               "adjustment",
+		AmountCents:        reduceBy,
+		ClawbackInvoiceID:  src.ID,
+		ClawbackGrossCents: reduceBy,
+		ClawbackReason:     clawbackReason(spec.changeType),
+		ClawbackMemo:       prorationMemo(spec, oldPlan, newPlan),
+	}
+	// Non-atomic path issues inline; the atomic wrappers issue after tx.Commit.
+	if tx == nil {
+		h.issueClawbackCreditNote(ctx, tenantID, detail)
+	}
+	slog.InfoContext(ctx, "unpaid-source downgrade settled via adjustment credit note (amount_due reduced; no refundable credit)",
+		"subscription_id", sub.ID,
+		"item_id", spec.itemID,
+		"change_type", spec.changeType,
+		"source_invoice_id", src.ID,
+		"net_cents", creditAmount,
+		"reduce_by_cents", reduceBy,
+	)
 	return detail, nil
 }
 
