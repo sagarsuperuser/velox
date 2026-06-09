@@ -378,7 +378,15 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 	if inv.DueAt != nil {
 		detailRow("Due Date", inv.DueAt.Format("January 2, 2006"))
 	}
-	detailRow("Period", fmt.Sprintf("%s - %s", inv.BillingPeriodStart.Format("Jan 2, 2006"), inv.BillingPeriodEnd.Format("Jan 2, 2006")))
+	// Inclusive last-day period ("Jun 1 – Jun 30"), authored once via
+	// domain.FormatInclusivePeriod (ADR-050 follow-up) and carried on
+	// inv.BillingPeriodDisplay so the PDF, hosted page, and dashboard all show
+	// the identical string. Empty for one-off / no-period invoices → omit the
+	// row. Callers that fetch via GetByPublicToken (hosted/portal, bypassing the
+	// service read decorator) populate this field before RenderPDF.
+	if inv.BillingPeriodDisplay != "" {
+		detailRow("Period", inv.BillingPeriodDisplay)
+	}
 	detailRow("Currency", strings.ToUpper(inv.Currency))
 
 	leftBottom := y

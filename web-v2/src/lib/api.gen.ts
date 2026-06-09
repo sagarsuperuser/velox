@@ -2195,6 +2195,8 @@ export interface components {
             billing_period_start: string;
             /** Format: date-time */
             billing_period_end: string;
+            /** @description Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-050). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period. */
+            billing_period_display?: string;
             /**
              * Format: date-time
              * @description Set when the invoice transitions out of draft.

@@ -823,11 +823,11 @@ export default function InvoiceDetailPage() {
                 renders as a confusing same-day "Jan 14 – Jan 14". Industry
                 (Stripe/Chargebee/Lago) omit an invoice-level period for
                 one-off charges; show it only when there's a real span. */}
-            {invoice.billing_period_start !== invoice.billing_period_end && (
+            {invoice.billing_period_display && (
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Period</p>
                 <p className="text-sm text-foreground">
-                  {formatDate(invoice.billing_period_start)} – {formatDate(invoice.billing_period_end)}
+                  {invoice.billing_period_display}
                 </p>
               </div>
             )}

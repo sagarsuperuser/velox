@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { api, downloadPDF, formatCents, formatDate } from '@/lib/api'
+import { api, downloadPDF, formatCents } from '@/lib/api'
 import { formatYMDInTZ } from '@/lib/dates'
 import type { Customer, Invoice } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
@@ -432,7 +432,7 @@ export default function InvoicesPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDate(inv.billing_period_start)} {'\u2014'} {formatDate(inv.billing_period_end)}
+                        {inv.billing_period_display || '\u2014'}
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-mono text-sm">
                         {formatCents(inv.amount_due_cents, inv.currency)}

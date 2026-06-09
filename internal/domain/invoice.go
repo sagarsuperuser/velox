@@ -174,13 +174,22 @@ type Invoice struct {
 	// payment_overdue) plus due_at. Nil when the invoice is healthy
 	// (terminal-state or no failure mode active). See
 	// docs/adr/009-invoice-attention.md for the wire-shape contract.
-	Attention             *Attention `json:"attention,omitempty"`
-	TotalAmountCents      int64      `json:"total_amount_cents"`
-	AmountDueCents        int64      `json:"amount_due_cents"`
-	AmountPaidCents       int64      `json:"amount_paid_cents"`
-	CreditsAppliedCents   int64      `json:"credits_applied_cents"`
-	BillingPeriodStart    time.Time  `json:"billing_period_start"`
-	BillingPeriodEnd      time.Time  `json:"billing_period_end"`
+	Attention           *Attention `json:"attention,omitempty"`
+	TotalAmountCents    int64      `json:"total_amount_cents"`
+	AmountDueCents      int64      `json:"amount_due_cents"`
+	AmountPaidCents     int64      `json:"amount_paid_cents"`
+	CreditsAppliedCents int64      `json:"credits_applied_cents"`
+	BillingPeriodStart  time.Time  `json:"billing_period_start"`
+	BillingPeriodEnd    time.Time  `json:"billing_period_end"`
+	// BillingPeriodDisplay is the human period string with the INCLUSIVE last
+	// covered day ("Jun 1, 2028 – Jun 30, 2028"), rendered date-only in the
+	// tenant TZ — the industry-standard period display (ADR-050 follow-up).
+	// Computed on read (never persisted); the raw half-open
+	// BillingPeriodStart/End above are unchanged (SDK contract). Empty for
+	// one-off / no-period invoices so callers omit the period row. Every
+	// surface (PDF, hosted, dashboard, list) shows this one value verbatim so
+	// it can't drift across the Go and TS runtimes.
+	BillingPeriodDisplay  string     `json:"billing_period_display,omitempty"`
 	IssuedAt              *time.Time `json:"issued_at,omitempty"`
 	DueAt                 *time.Time `json:"due_at,omitempty"`
 	PaidAt                *time.Time `json:"paid_at,omitempty"`
