@@ -70,28 +70,45 @@ func BeginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
 // Chargebee but conflicts with the operator's calendar-billing intent).
 func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location) time.Time {
 	if interval == BillingYearly {
-		return periodEnd.AddDate(1, 0, 0)
+		// Anniversary yearly: advance in tenant TZ so the anchor day is
+		// preserved in the operator's calendar, not the value's ambient
+		// Location (ADR-050). Pre-fix this did a bare UTC AddDate, which
+		// drifted the boundary by a day for any offset-TZ tenant whose
+		// anchor instant maps to a different UTC calendar date.
+		return addIntervalIn(periodEnd, interval, loc)
 	}
 	if billingTime == BillingTimeCalendar {
-		// Add the month in LOCAL TZ so the resulting "1st of next
-		// month" is the next calendar boundary in the tenant's zone,
-		// not in UTC. UTC AddDate can shift the local day across the
-		// month boundary when the local-vs-UTC offset crosses
-		// midnight — e.g. periodEnd = Jun 19 18:30 UTC is Jun 20 IST,
-		// AddDate in UTC gives Jul 19 18:30 UTC = Jul 20 IST, then
-		// BeginningOfMonth in IST snaps to Jul 1 (correct). But for
-		// periodEnd = Apr 30 18:30 UTC = May 1 IST, AddDate in UTC
-		// gives May 30 18:30 UTC = May 31 IST, then BeginningOfMonth
-		// in IST snaps to May 1 (WRONG — caller expected Jun 1).
-		// Adding the month in local TZ avoids the off-by-one.
-		if loc == nil {
-			loc = time.UTC
-		}
-		local := periodEnd.In(loc)
-		next := local.AddDate(0, 1, 0)
-		return time.Date(next.Year(), next.Month(), 1, 0, 0, 0, 0, loc).UTC()
+		// Snap to the 1st of periodEnd's month in tenant TZ, THEN add a
+		// month — so a day-29/30/31 anchor never overflows a short month.
+		// Pre-fix this added the month first (Jan 31 + 1mo = Mar 3 in Go's
+		// overflow), then snapped to the 1st of the *result's* month →
+		// Mar 1, silently skipping February (ADR-050 Root C). Adding the
+		// month in `loc` also keeps the boundary in the tenant's zone.
+		return addIntervalIn(BeginningOfMonthIn(periodEnd, loc), BillingMonthly, loc)
 	}
-	return periodEnd.AddDate(0, 1, 0)
+	// Anniversary monthly: preserve day-of-month, advanced in tenant TZ.
+	return addIntervalIn(periodEnd, interval, loc)
+}
+
+// addIntervalIn advances `t` by one billing interval (+1 month, or +1 year for
+// yearly), performing the calendar add in `loc` so the result is anchored to
+// the tenant's timezone rather than `t`'s ambient Location or the host
+// time.Local (ADR-050). Returns a UTC instant. loc=nil falls back to UTC.
+//
+// This is the single fix for the timezone date-math defect class: every
+// month/year advance MUST go through here (or NextBillingPeriodEnd, which
+// does), so the result no longer varies with whether the input time.Time was
+// freshly built in UTC or DB-scanned as time.Local. Day-grade adds
+// (AddDate(0,0,N) for trial/due dates) are TZ-invariant and need not route here.
+func addIntervalIn(t time.Time, interval BillingInterval, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	if interval == BillingYearly {
+		return local.AddDate(1, 0, 0).UTC()
+	}
+	return local.AddDate(0, 1, 0).UTC()
 }
 
 // AddBillingInterval returns t advanced by exactly one billing interval —
@@ -111,11 +128,14 @@ func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTi
 // Deliberately calendar-agnostic. For the calendar-snapping cycle-CLOSE
 // advance (which re-anchors to the 1st of the next month in tenant TZ), use
 // NextBillingPeriodEnd instead.
-func AddBillingInterval(t time.Time, interval BillingInterval) time.Time {
-	if interval == BillingYearly {
-		return t.AddDate(1, 0, 0)
-	}
-	return t.AddDate(0, 1, 0)
+//
+// `loc` is the tenant's billing timezone: the advance is computed in `loc`
+// (ADR-050) so the full-cycle length is independent of whether `t` was built
+// in UTC or DB-scanned as time.Local. loc=nil falls back to UTC. Pre-fix this
+// took no loc and did a bare AddDate on `t`'s ambient Location, making the
+// proration denominator host-TZ-dependent (30 vs 31 for an offset-TZ tenant).
+func AddBillingInterval(t time.Time, interval BillingInterval, loc *time.Location) time.Time {
+	return addIntervalIn(t, interval, loc)
 }
 
 // PauseCollectionBehavior controls what the engine does with the invoice it

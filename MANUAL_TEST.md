@@ -181,8 +181,8 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Change timezone to `Asia/Kolkata` or `America/Los_Angeles` → dashboard timestamps shift, zone abbreviation appended (e.g. `2:14 PM PDT`).
 - [ ] API key expiry / list-page from-to filters interpret civil dates as start/end of day in tenant TZ.
-- [ ] Subscription billing math stays UTC ("monthly on the 5th" = 5th UTC).
-- [ ] Wire format always UTC ISO 8601 with `Z`.
+- [ ] **Subscription billing dates are anchored in the tenant timezone (ADR-050).** Set tenant TZ = `Asia/Kolkata`. Create an anniversary-monthly sub starting the **1st of a month** (e.g. Jun 1, in IST). The first period is **Jun 1 → Jul 1** = **30 days** (a June anniversary), NOT `Jun 1 → Jul 2` / 31 days. A mid-cycle upgrade prorates against the **30-day** cycle. Verify the SAME result regardless of whether the server runs `TZ=UTC` or `TZ=Asia/Kolkata` — the period and proration denominator must not depend on the host timezone (pre-fix they gave 30 vs 31). Calendar-monthly anchored on the **31st** rolls to the **1st of next month** (does not skip February: Jan 31 → Feb 1).
+- [ ] Wire format always UTC ISO 8601 with `Z` (storage/display is UTC; the *calendar arithmetic* for period boundaries is done in the tenant TZ per ADR-050).
 
 ## FLOW A1: Sign-in
 
