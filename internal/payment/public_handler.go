@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stripe/stripe-go/v82"
@@ -221,19 +221,29 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Build return URL
+	// Build the return URL: the public, unauthenticated /payment-method-added
+	// SPA page — the same terminal the operator-driven "Add payment method"
+	// flow uses (paymentmethods.setupCompletePath). A customer arriving from an
+	// email link has NO portal session, so the fallback MUST be a public route;
+	// the legacy /customers/{id} fallback was an operator ProtectedRoute that
+	// bounced the customer to login.
 	returnURL := h.returnURL
 	if returnURL == "" {
-		returnURL = fmt.Sprintf("http://localhost:5173/customers/%s?payment=updated", token.CustomerID)
+		returnURL = "http://localhost:5173/payment-method-added"
 	}
+	// Success vs. cancel get distinct ?status= so the landing page renders the
+	// right copy (mirrors the paymentmethods setup-session flow); Stripe calls
+	// one of the two depending on outcome.
+	successURL := appendStatusQuery(returnURL, "success")
+	cancelURL := appendStatusQuery(returnURL, "cancel")
 
 	// Create a Checkout Session in setup mode for new payment method
 	sess, err := sc.V1CheckoutSessions.Create(r.Context(), &stripe.CheckoutSessionCreateParams{
 		Customer:           stripe.String(stripeCustomerID),
 		Mode:               stripe.String(string(stripe.CheckoutSessionModeSetup)),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		SuccessURL:         stripe.String(returnURL),
-		CancelURL:          stripe.String(returnURL),
+		SuccessURL:         stripe.String(successURL),
+		CancelURL:          stripe.String(cancelURL),
 		Params: stripe.Params{
 			Metadata: map[string]string{
 				"velox_customer_id": token.CustomerID,
@@ -266,4 +276,16 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	respond.JSON(w, r, http.StatusCreated, checkoutResponse{
 		URL: sess.URL,
 	})
+}
+
+// appendStatusQuery adds ?status=<v> (or &status=<v>) to the Stripe return URL
+// so the public /payment-method-added page renders success vs. cancel copy.
+// Inlined rather than pulling net/url: inputs are operator config + a constant.
+// Mirrors paymentmethods.appendQuery.
+func appendStatusQuery(rawURL, status string) string {
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
+	}
+	return rawURL + sep + "status=" + status
 }
