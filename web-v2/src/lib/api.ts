@@ -580,7 +580,10 @@ export interface ProrationDetail {
   new_plan_id: string
   proration_factor: number
   amount_cents: number
-  type: 'invoice' | 'credit'
+  // 'invoice' = a proration charge invoice; 'credit' = a balance credit;
+  // 'adjustment' = reduced an unpaid open invoice's amount due (ADR-050
+  // unpaid-source path — NOT a refundable balance credit).
+  type: 'invoice' | 'credit' | 'adjustment'
   invoice_id?: string
 }
 
