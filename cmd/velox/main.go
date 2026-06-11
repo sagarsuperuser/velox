@@ -362,6 +362,7 @@ Environment:
   STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
   VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint
   PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
+  PAYMENT_UPDATE_RETURN_URL Where Stripe Checkout returns after the public payment-update flow; must be a real SPA route, e.g. https://app.example.com/payment-method-added (handler appends ?status=success|cancel)
   VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest
   REDIS_URL                 Redis URL for distributed rate limiting`)
 }
