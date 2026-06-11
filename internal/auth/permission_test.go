@@ -22,18 +22,15 @@ func TestHasPermission_SecretHasAll(t *testing.T) {
 }
 
 func TestHasPermission_PublishableRestricted(t *testing.T) {
-	// Publishable keys ship in browsers. Read scopes only — no writes.
-	has := []Permission{PermCustomerRead, PermUsageRead, PermSubscriptionRead, PermInvoiceRead}
-	for _, p := range has {
-		if !HasPermission(KeyTypePublishable, p) {
-			t.Errorf("publishable should have %s", p)
-		}
-	}
-
-	// Regression for the pre-FEAT-5-readiness leak: publishable keys used to
-	// hold customer:write + usage:write, letting any visitor to any page that
-	// embedded a vlx_pub_live_ key create customers or fake usage events.
+	// Publishable keys ship in browsers and get NO tenant-wide scopes —
+	// authenticate-only. Two regressions guarded here:
+	//   - the pre-FEAT-5-readiness write leak (customer:write + usage:write let
+	//     any visitor create customers / fake usage), and
+	//   - the read leak (customer:read in a browser key exposes all-customer
+	//     PII, every invoice PDF, tenant revenue via /analytics, and CSV
+	//     exports) — tenant-wide reads are the same exposure class as writes.
 	notHas := []Permission{
+		PermCustomerRead, PermUsageRead, PermSubscriptionRead, PermInvoiceRead,
 		PermCustomerWrite, PermUsageWrite,
 		PermPricingWrite, PermSubscriptionWrite, PermInvoiceWrite, PermDunningWrite, PermAPIKeyWrite, PermTenantWrite,
 	}
@@ -69,8 +66,8 @@ func TestAllPermissions(t *testing.T) {
 	}
 
 	pubPerms := AllPermissions(KeyTypePublishable)
-	if len(pubPerms) != 4 {
-		t.Errorf("publishable should have 4 permissions, got %d", len(pubPerms))
+	if len(pubPerms) != 0 {
+		t.Errorf("publishable should have 0 permissions (authenticate-only), got %d", len(pubPerms))
 	}
 
 	platformPerms := AllPermissions(KeyTypePlatform)
