@@ -50,6 +50,16 @@ type invoicesMock struct {
 	// gate will skip emission (matching production-safe default).
 	sourceInvoice    domain.Invoice
 	sourceInvoiceErr error
+	// autoChargeEnrolled records invoice IDs passed to SetAutoChargePending(true)
+	// so tests can assert a proration CHARGE invoice was enrolled for collection.
+	autoChargeEnrolled []string
+}
+
+func (m *invoicesMock) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
+	if pending {
+		m.autoChargeEnrolled = append(m.autoChargeEnrolled, id)
+	}
+	return nil
 }
 
 func (m *invoicesMock) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {

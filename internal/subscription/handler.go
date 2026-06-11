@@ -54,6 +54,15 @@ type ProrationInvoiceCreator interface {
 	// follow-through (2026-05-29).
 	CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	NextInvoiceNumberTx(ctx context.Context, tx *sql.Tx, tenantID string) (string, error)
+	// SetAutoChargePending enrolls a finalized proration CHARGE invoice into the
+	// auto-charge sweep so it actually collects — wall-clock RetryPendingCharges
+	// for live subs, RetryPendingChargesForClock during catchup for clock-pinned
+	// subs. Without it an upgrade/add/qty-increase invoice is finalized but never
+	// charged (no creation-site enrollment), unlike engine cycle/create invoices.
+	// Idempotent; the sweep's status='finalized' AND payment_status='pending'
+	// filter gates when it fires (so enrolling a still-draft tax-pending invoice
+	// is safe — it stays parked until tax resolves and it finalizes).
+	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 }
 
 // ProrationCreditGranter grants credits for downgrade proration. Dedup key is
@@ -1443,6 +1452,10 @@ func (h *Handler) atomicAddItemWithProration(
 	// rationale: the CN service isn't tx-aware + tax reversal is external).
 	// No-op for the add path (upgrades charge, never claw back), kept uniform.
 	h.issueClawbackCreditNote(ctx, tenantID, detail)
+	// Enroll the charge invoice for the auto-charge sweep AFTER the tx is durable
+	// (a flag UPDATE on a not-yet-committed row would be lost). No-op for credit/
+	// adjustment paths.
+	h.enrollAutoCharge(ctx, tenantID, detail)
 	return item, nil
 }
 
@@ -1529,6 +1542,9 @@ func (h *Handler) atomicUpdateItemWithProration(
 	// a plan-downgrade or quantity-decrease credits the GROSS via a tax-reversing
 	// CN. No-op on upgrades / quantity increases (those bill via the invoice path).
 	h.issueClawbackCreditNote(ctx, tenantID, detail)
+	// Enroll an upgrade / qty-increase charge invoice for the auto-charge sweep
+	// (post-commit; no-op for the downgrade credit path).
+	h.enrollAutoCharge(ctx, tenantID, detail)
 	return result, nil
 }
 
@@ -1597,6 +1613,24 @@ func (h *Handler) commitProrationTax(ctx context.Context, tenantID string, detai
 	if err := h.tax.CommitTax(ctx, tenantID, detail.InvoiceID, detail.TaxCalculationID); err != nil {
 		slog.WarnContext(ctx, "tax: commit failed after proration invoice",
 			"error", err, "tenant_id", tenantID, "invoice_id", detail.InvoiceID)
+	}
+}
+
+// enrollAutoCharge flags a freshly-created proration CHARGE invoice for the
+// auto-charge sweep so it actually collects (parity with engine cycle/create
+// invoices, which enroll at finalize). Called AFTER the atomic tx commits — a
+// flag UPDATE on a not-yet-durable row would be lost — and inline on the
+// non-atomic path, mirroring commitProrationTax. No-op unless the charge branch
+// recorded a fresh invoice id. On error the invoice is durable but unenrolled;
+// log at error level (the operator can Collect Payment manually) — same
+// reconcilable risk profile as the post-commit tax commit.
+func (h *Handler) enrollAutoCharge(ctx context.Context, tenantID string, detail *ProrationDetail) {
+	if detail == nil || detail.AutoChargeInvoiceID == "" {
+		return
+	}
+	if err := h.invoices.SetAutoChargePending(ctx, tenantID, detail.AutoChargeInvoiceID, true); err != nil {
+		slog.ErrorContext(ctx, "proration charge invoice not enrolled for auto-charge; collect manually or it will sit unpaid",
+			"error", err, "tenant_id", tenantID, "invoice_id", detail.AutoChargeInvoiceID)
 	}
 }
 
@@ -1984,6 +2018,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		detail.InvoiceID = inv.ID
 		detail.Type = "invoice"
+		// Enroll the freshly-created charge invoice into the auto-charge sweep so
+		// it actually collects (ADR — proration parity). Without this an upgrade /
+		// add / qty-increase invoice finalizes but is never charged, because
+		// (unlike engine cycle/create invoices) the subscription handler has no
+		// finalize-time collection step. The sweep does the timeline-correct
+		// charge — wall-clock cron for live subs, test-clock catchup on advance
+		// for clock-pinned — so we deliberately do NOT charge inline here (that
+		// would duplicate the charge path and wall-clock-charge a simulated
+		// invoice). Set only on this fresh-creation path, never the dedup-replay
+		// above (that invoice may already be paid). Issued post-commit like the
+		// tax commit (a flag UPDATE on a not-yet-durable row would be lost).
+		detail.AutoChargeInvoiceID = inv.ID
 		// Carry the provider provenance so tax can be committed once the
 		// invoice row is durable. On the non-atomic path (tx == nil) the
 		// row is already committed by CreateInvoiceWithLineItems, so commit
@@ -1995,6 +2041,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		detail.TaxCalculationID = inv.TaxCalculationID
 		if tx == nil {
 			h.commitProrationTax(ctx, tenantID, detail)
+			h.enrollAutoCharge(ctx, tenantID, detail)
 		}
 
 		slog.InfoContext(ctx, "proration invoice created",

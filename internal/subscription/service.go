@@ -661,6 +661,13 @@ type ProrationDetail struct {
 	ClawbackGrossCents int64  `json:"-"`
 	ClawbackReason     string `json:"-"`
 	ClawbackMemo       string `json:"-"`
+	// AutoChargeInvoiceID is the freshly-created proration CHARGE invoice to
+	// enroll into the auto-charge sweep AFTER the tx commits (the sweep then
+	// collects it — wall-clock cron for live subs, test-clock catchup on
+	// advance for clock-pinned). Set only on fresh creation of a positive
+	// proration invoice, never on the dedup-replay path (that invoice may
+	// already be paid). Empty for credit/adjustment paths. Internal.
+	AutoChargeInvoiceID string `json:"-"`
 }
 
 func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, input AddItemInput) (domain.SubscriptionItem, error) {
