@@ -1752,7 +1752,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   still pending. Implementation checklists in those RFCs flipped from
   `[ ]` to `[x]` and dropped now-stale "(Week N)" qualifiers, broken
   pointers to the moved-out 90-day plan, and Track A / Track B
-  internal-plan vocabulary that referenced the now-private velox-ops
+  internal-plan vocabulary that referenced the private planning
   repo. The blog post `docs/blog/2026-04-stripe-meter-api-ai-workloads.md`
   got a 2026-04-28 update note at the top calling out that the
   multi-dim implementation it describes is now live in `main` and the
@@ -1760,16 +1760,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   "Velox is implementing this" line further down so the post reads as
   shipped retrospective, not aspirational design.
 
-- **Public/private repo split for internal-only docs.** Twelve internal
-  planning + marketing docs moved out of the public repo to a private
-  `sagarsuperuser/velox-ops` repo so the public surface only carries
-  material consumers and operators actually need. Removed:
-  `docs/90-day-plan.md`, `docs/positioning.md`, `docs/parallel-work.md`,
-  `docs/parallel-handoff.md`, `docs/design-partner-readiness-plan.md`,
-  `docs/design-partner-onboarding.md`, `docs/phase2-hardening-plan.md`,
-  `docs/stripe-tier2-gap-analysis.md`, `docs/migration-safety-findings.md`,
-  and the three `docs/marketing/` files (cold-email-templates,
-  demo-script, outreach-list). Public repo retains: the design RFCs
+- **Public/private repo split for internal-only docs.** Internal
+  planning and marketing docs moved out of the public repo to a private
+  planning repo so the public surface only carries
+  material consumers and operators actually need. Public repo retains: the design RFCs
   (`docs/design-*.md`), operator runbooks (`docs/ops/`), compliance
   mapping (`docs/compliance/`), the customer migration guide, the public
   blog, and self-host docs. Cross-references in retained docs rewritten
@@ -1942,7 +1936,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   deferred — that would require a publishable-key auth path on the
   public endpoint which would weaken the per-customer-token isolation
   the iframe currently provides. Closes the Week 5 React-component
-  readiness item in `docs/90-day-plan.md` (with the v1.1 carveouts
+  readiness item in `the internal launch plan` (with the v1.1 carveouts
   spelled out in the same line).
 
 - **Public cost dashboard embed: theme + accent URL params.**
@@ -1959,13 +1953,13 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   documented at `/docs/embeds/cost-dashboard`. Closes the Week 5
   "Theming via CSS variables; dark mode by default" item.
 
-- **Design-partner onboarding playbook at `docs/design-partner-onboarding.md`.**
+- **Design-partner onboarding playbook at `the internal onboarding notes`.**
   Partner-facing lifecycle document covering the 12-month free term, weekly
   check-in cadence, sandbox-cutover-week-steady-state phases, communication
   SLAs (< 1 business hour for production incidents, < 4 business hours for
   bugs), incident-response expectations, mutual exits, and the Day-90
   co-branded case-study draft. Distinct from the internal
-  `docs/design-partner-readiness-plan.md` (what we ship before invites)
+  `the internal readiness plan` (what we ship before invites)
   vs. this (what happens once a partner signs the LOI). Closes the
   Week 8 readiness item.
 
@@ -2002,7 +1996,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   / 46 to 64. Stale flows audited and kept — no removals, all old
   flows still describe behaviour that ships in `main`.
 
-- **`docs/90-day-plan.md` truth-up — Week 12 incident-runbook line
+- **`the internal launch plan` truth-up — Week 12 incident-runbook line
   flipped to ✅.** The plan called for "Incident runbook tested
   (failover, rollback to Stripe Billing, billing reconciliation)";
   re-reading the three scenarios against what's already shipped:
@@ -2022,7 +2016,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   — runbook *documentation* was the deliverable this line tracked,
   not running a real incident, and the documentation is in place.
 
-- **Demo recording script at `docs/marketing/demo-script.md`.**
+- **Demo recording script at `internal demo notes`.**
   Shot-by-shot 5-minute screen-recording script for the cold-emailable
   product walkthrough — five-beat shape (hook → multi-dim meters via
   the `anthropic_style` recipe → live `usage_events` ingest with the
@@ -2034,7 +2028,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   "what's deliberately not in the script" section pruning the
   anti-patterns (architecture deep-dive, feature inventory,
   competitive table, founder bio, pricing). Pairs with
-  `docs/marketing/cold-email-templates.md` — the script is what the
+  `internal outreach templates` — the script is what the
   recipient sees after replying to one of those templates. Records
   against the runbook in `docs/ops/stripe-end-to-end-test.md` once
   the demo tenant is bootstrapped. The plan item that calls for the
@@ -2048,7 +2042,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   with verify roundtrip via `internal/tenantstripe/service.go`) →
   customer + saved card via Stripe Elements → flat subscription →
   immediate invoice + PaymentIntent (the no-Stripe-Billing-fee code
-  path that's the load-bearing claim in `docs/positioning.md`) →
+  path that's the load-bearing claim in `the internal positioning notes`) →
   webhook delivery via `stripe listen` → declined-card dunning loop
   with `4000 0000 0000 0002` → credit-note refund → disconnect.
   Designed to be re-run before each design-partner sandbox cutover
@@ -2061,9 +2055,9 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   `stripe-cli` (interactive). Closes the Week 11 "test against a
   real Stripe test account end-to-end" readiness item.
 
-- **Cold-email templates at `docs/marketing/cold-email-templates.md`.**
+- **Cold-email templates at `internal outreach templates`.**
   Four founder-to-founder / CEO-to-VP-Eng templates for the three
-  outreach segments in `docs/marketing/outreach-list.md`
+  outreach segments in `internal outreach notes`
   (AI inference, vector DB / regulated infra, dev infra), with
   per-segment subject A/B variants under 60 chars, a one-touch
   reply playbook (Day 5 single bump, Day 14 dead row), and an
@@ -2072,10 +2066,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   paragraphs, urgency framing). Each template references the
   recipient's public posture by sentence two — the cold-email
   baseline that separates a 90-second read from a spam click.
-  Pairs with the existing `docs/marketing/outreach-list.md` for
+  Pairs with the existing `internal outreach notes` for
   Week 8's outreach push.
 
-- **`docs/90-day-plan.md` truth-up:** flipped the time-to-first-invoice
+- **`the internal launch plan` truth-up:** flipped the time-to-first-invoice
   telemetry checkbox to ✅ — evidence is the `TimeToFirstInvoiceSeconds`
   field on `GET /v1/billing/dashboard` (PR #57), computed via the
   audit-log scan of `invoice.finalize` minus `tenants.created_at`. The
@@ -2095,7 +2089,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   charges, the in-progress billing window, threshold alerts the
   customer is tracking, and the projected total for the cycle when
   the server populates it. Closes two of the four Week 5 cost-dashboard
-  readiness items in `docs/90-day-plan.md`; the typed React component
+  readiness items in `the internal launch plan`; the typed React component
   (`<VeloxCostDashboard tenantKey customerId />`) and CSS-variable
   theming + dark-mode-by-default remain explicitly deferred to v1.1.
 - **Public cost-dashboard token + sanitised read endpoint (backend
@@ -2136,7 +2130,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   full rollback on partial failure, RLS-isolated), idempotency on
   `(tenant_id, recipe_key)`, and a customisation pointer to
   `docs/design-recipes.md`. Closes the last unchecked Week 3 item in
-  `docs/90-day-plan.md` ("Recipes documented at /docs/recipes with
+  `the internal launch plan` ("Recipes documented at /docs/recipes with
   copy-pasteable curl"). New nav entry in `DocsShell` Guides group plus
   a discovery card on the docs overview page.
 - **Time-to-first-invoice metric on the per-tenant billing dashboard,
@@ -2223,7 +2217,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   `docs/self-host.md` (new Migrating from Stripe Billing section
   next to Compliance posture), `docs/ops/runbook.md` (new Migration
   section in the table of contents and body, alongside Compliance),
-  and `docs/90-day-plan.md` (Week 11 "Migration guide with cutover
+  and `the internal launch plan` (Week 11 "Migration guide with cutover
   playbook" checkbox flips to closed). Closes the migration-guide
   Week 11 readiness item; the importer + CLI rows are de-facto closed
   by Phase 0/1/2/3 PRs already shipped, leaving only "Test against
@@ -2744,8 +2738,8 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   is reserved (the wire shape accepts it so frontend mocks compile but the
   service rejects with code `filter_type_unsupported` pending a
   customer-tag schema). Wire-shape regression tests pin the always-snake_case
-  contract for all three endpoints. See `docs/90-day-plan.md` Week 6 + Week 6
-  in `docs/parallel-handoff.md` Track A.
+  contract for all three endpoints. See `the internal launch plan` Week 6 + Week 6
+  in `the internal handoff notes` Track A.
 
 - **Real-time webhook event UI with SSE live-tail + replay (Week 6 Track A)** (2026-04-26) —
   the dashboard's Webhook Events page now streams every dispatched event
@@ -2985,7 +2979,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 - **Billing thresholds — Stripe Tier 1 parity hard-cap mid-cycle finalize** (2026-04-26) —
   the fourth flagship developer-experience surface alongside customer-usage,
   recipes, and create_preview (per `docs/design-billing-thresholds.md`,
-  `docs/positioning.md` pillar 1.4). Configures a per-subscription
+  `the internal positioning notes` pillar 1.4). Configures a per-subscription
   hard cap on running cycle subtotal (`amount_gte`, integer cents) and/or
   per-subscription-item quantity caps (`item_thresholds[]` with
   `usage_gte` as a NUMERIC(38,12) decimal string, ADR-005). When usage
@@ -3042,7 +3036,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 - **Create-preview endpoint — Stripe Tier 1 parity for `Invoice.upcoming`** (2026-04-26) —
   the third flagship developer-experience surface alongside customer-usage
-  and recipes (per `docs/design-create-preview.md`, `docs/positioning.md`
+  and recipes (per `docs/design-create-preview.md`, `the internal positioning notes`
   pillar 1.4). `POST /v1/invoices/create_preview` answers "what is my
   next bill going to look like?" with the same line set the cycle scan
   would emit if billing fired right now — so dashboard projected-bill
@@ -3104,7 +3098,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 - **Customer usage endpoint — one call answers "what did this customer use?"** (2026-04-26) —
   the second flagship developer-experience surface, alongside recipes (per
-  `docs/design-customer-usage.md`, `docs/positioning.md` pillar 1.4). `GET
+  `docs/design-customer-usage.md`, `the internal positioning notes` pillar 1.4). `GET
   /v1/customers/{id}/usage` collapses "show me what this customer used and
   owes" into one read. With no params it returns the customer's current
   billing cycle by default; `?from=&to=` (RFC 3339, both required if either
@@ -3206,7 +3200,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 - **Pricing recipes — one-call billing setup** (2026-04-26) — the
   developer-experience flagship that turns Week 2's multi-dim meter
   engine into a 30-second quickstart (per `docs/design-recipes.md`,
-  `docs/positioning.md` pillar 1.3). `POST
+  `the internal positioning notes` pillar 1.3). `POST
   /v1/recipes/{key}/instantiate` atomically builds the full graph
   (rating rules → meters → multi-dim pricing rules → plan → optional
   dunning policy → optional webhook endpoint → instance row) under a
@@ -3255,7 +3249,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 - **Multi-dimensional meters foundation — AI-native wedge** (2026-04-25) —
   the runtime engine for Velox's positioning bet (per
-  `docs/positioning.md`): one meter receives events with arbitrary
+  `the internal positioning notes`): one meter receives events with arbitrary
   dimensions, many pricing rules pick out subsets at different rates.
   Migration `0054_multi_dim_meters` widens `usage_events.quantity` to
   `NUMERIC(38,12)` (Stripe `quantity_decimal` parity), adds a GIN index
@@ -3402,7 +3396,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   `CREATE INDEX … USING GIN (properties)` — a non-concurrent build that
   holds an `AccessExclusiveLock` on `usage_events` for the whole
   duration. The populated-DB safety harness
-  (`docs/migration-safety-findings.md`) bundled this lock into the
+  (`the internal migration notes`) bundled this lock into the
   53.5s 0054 measurement on 5M rows. CONCURRENTLY is the canonical
   fix, but `CREATE INDEX CONCURRENTLY` cannot run inside a transaction
   block, and `golang-migrate`'s postgres driver in v4.19.1 does not
@@ -3433,7 +3427,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   comments, block comments), and the advisory-lock id derivation.
   Out of scope on this PR: 0054's column rewrite (BIGINT→NUMERIC) and
   0020's 13 UNIQUE swaps — both DEFERRED in
-  `docs/migration-safety-findings.md` because they need backfill
+  `the internal migration notes` because they need backfill
   machinery / many-step rewrites and Velox is pre-launch with near-zero
   rows in the affected tables. Re-evaluate during Phase 3 cutover.
 
@@ -3443,7 +3437,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
   database: each `ALTER TABLE T DROP CONSTRAINT c, ADD CONSTRAINT c
   FOREIGN KEY ...` was atomic but validated every existing row under
   `AccessExclusiveLock`. On the populated-DB safety harness
-  (`docs/migration-safety-findings.md`) it held an
+  (`the internal migration notes`) it held an
   `AccessExclusiveLock` on `audit_log` for 8.8s up / 6.7s down at the
   medium scale (5M usage_events, 100k audit_log). Rewritten in-place to
   the standard NOT VALID + VALIDATE two-step on every FK: `DROP

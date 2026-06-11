@@ -230,7 +230,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ### In flight
 
-- **First design-partner cutover** to Velox in production
+- **Seeking our first design partner** — AI-infra at $1M–$50M ARR (see Contributing)
 - **AI-native primitive sharpening** — per-token, model-tier, prompt/completion split surfacing in dashboard + invoices
 
 ### Explicitly deferred (on hold pending design partner)
