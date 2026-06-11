@@ -344,6 +344,25 @@ func TestClassifyInvoiceAttention_PaymentScheduled(t *testing.T) {
 	if len(att.Actions) == 0 || att.Actions[0].Code != AttentionActionChargeNow {
 		t.Errorf("expected primary action charge_now, got %+v", att.Actions)
 	}
+	// Wall-clock invoice: message points at the scheduler tick.
+	if !strings.Contains(att.Message, "next tick") {
+		t.Errorf("wall-clock message = %q, want it to mention the scheduler tick", att.Message)
+	}
+
+	// Simulated (clock-pinned) invoice: the wall-clock sweep excludes it, so
+	// the message must point at advancing the test clock — not "next tick",
+	// which would never fire in real time (ADR-028/029 disjoint flows).
+	inv.IsSimulated = true
+	simAtt := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: true})
+	if simAtt == nil || simAtt.Reason != AttentionReasonPaymentScheduled {
+		t.Fatalf("simulated: expected payment_scheduled attention, got %+v", simAtt)
+	}
+	if !strings.Contains(simAtt.Message, "test-clock advance") {
+		t.Errorf("simulated message = %q, want it to mention the test-clock advance", simAtt.Message)
+	}
+	if strings.Contains(simAtt.Message, "next tick") {
+		t.Errorf("simulated message = %q must NOT promise a wall-clock tick", simAtt.Message)
+	}
 }
 
 // TestClassifyInvoiceAttention_NoPaymentMethod_BeatsScheduled pins the
