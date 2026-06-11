@@ -485,8 +485,8 @@ Single delivery path: when SMTP isn't configured every send returns
 Boot warnings on startup (one each when var unset; never fatal):
 - `SMTP NOT CONFIGURED`
 - `HOSTED_INVOICE_BASE_URL NOT SET` — invoice / receipt / dunning / payment-failed CTAs render with no link
-- `CUSTOMER_PORTAL_URL NOT SET`
 - `PAYMENT_UPDATE_URL NOT SET`
+- `DASHBOARD_BASE_URL NOT SET` — password-reset emails won't send
 
 - [ ] **E1 STARTTLS**: `SMTP_TLS=starttls SMTP_PORT=587` + creds. Trigger invoice email → `email_outbox` row pending → dispatched within seconds → recipient receives.
 - [ ] **E2 Implicit TLS**: `SMTP_TLS=implicit SMTP_PORT=465`. Same expectation; verifies `tls.Dial` path.
@@ -1028,7 +1028,7 @@ Rebuild trigger: first DP names a load-bearing promo-code use case.
 - [ ] Currency change → new invoices use it; existing unchanged.
 - [ ] Edit billing profile (address, tax ID) → PDF reflects update.
 - [ ] Edit billing profile when customer has `stripe_customer_id` set → Stripe Dashboard → Customer shows the updated legal_name / phone / address / tax_exempt immediately (Phase 1 Velox→Stripe sync, best-effort, fires on every customer/profile update). <!-- currency-ok: Stripe Customer object's own tax_exempt field -->
-- [ ] Create a brand-new customer with email + display_name + billing profile → first PM action (Add card from portal) lazily creates the Stripe Customer pre-populated with email, name, address, and tax_exempt status — Stripe Dashboard shows a fully-populated row, NOT a blank one with only `velox_*` metadata. <!-- currency-ok: Stripe's own tax_exempt field -->
+- [ ] Create a brand-new customer with email + display_name + billing profile → first PM action (operator send-setup-email / copy setup-link) lazily creates the Stripe Customer pre-populated with email, name, address, and tax_exempt status — Stripe Dashboard shows a fully-populated row, NOT a blank one with only `velox_*` metadata. <!-- currency-ok: Stripe's own tax_exempt field -->
 - [ ] Set billing profile tax_id (e.g. `eu_vat` + `DE123456789`) → Stripe Dashboard → Customer → Tax IDs tab shows the entry (Phase 2 reconcile). Change tax_id value → old entry gone, new entry present. Clear tax_id → Tax IDs tab empty. Brand-new customer with tax_id pre-filled in profile → first PM action creates the Stripe Customer with the tax_id already in the Tax IDs tab (no follow-up update call needed).
 - [ ] Draft invoice held >24h, then click Finalize → operator sees `tax calculation expired (age 24h0m, max 23h0m) — retry tax to refresh, then finalize` (Phase 2 expiry guard). Click Retry tax → tax recomputes → Finalize succeeds, Stripe Tax dashboard shows a `tx_*` transaction. Without the guard, finalize previously left the invoice with `tax_calculation_id` populated but no `tax_transaction_id`.
 - [ ] **Tax-retry flush on profile update.** Customer with a draft invoice stuck on `tax_error_code = customer_data_invalid` (e.g. US customer missing `postal_code`). Edit billing profile → fill the missing field → Save. Without per-invoice clicking: invoice's `tax_status` flips to `succeeded` (or back to `failed` with a different code if still wrong), and `slog | grep "billing profile flush retried tax errors"` shows `processed >= 1`. Other stuck-tax codes (e.g. `provider_outage`) are NOT replayed by the flush — only `customer_data_invalid`.
@@ -1105,11 +1105,8 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 
 ## FLOW P2A: Audit log — customer-initiated + Tier 2 coverage
 
-Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_log` and the AuditLog page renders the customer actor + new resource types correctly.
+Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_log` and the AuditLog page renders the new resource types correctly.
 
-- [ ] Customer cancels sub via portal → AuditLog row: actor "<Customer Name>" (customer actor type), "Canceled <sub>" with meta `canceled_by=customer`.
-- [ ] Customer resumes sub via portal → AuditLog row: "Cleared scheduled cancellation on <sub>" with meta `resumed_by=customer`.
-- [ ] Customer edits profile via portal → "Updated profile for <name>" with meta `updated_by=customer`.
 - [ ] Engine auto-fires scheduled cancellation (advance the test clock past cycle close) → AuditLog row: "Canceled <sub>" with meta `canceled_by=schedule`, actor "System".
 - [ ] Operator marks invoice uncollectible → "Marked INV-NNN uncollectible".
 - [ ] Operator records offline payment → "Recorded offline payment on INV-NNN".

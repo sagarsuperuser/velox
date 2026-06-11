@@ -31,7 +31,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 
 ## Important decisions
 - Auth: dashboard uses email + password; API uses Bearer keys. Dashboard `POST /v1/auth/login` validates against `users.password_hash` (bcrypt cost 12) and mints an httpOnly `velox_session` cookie bound to `users.id` — not to any API key. SDK / curl callers send `Authorization: Bearer <vlx_…>`; `internal/session.MiddlewareOrAPIKey` accepts either, cookie taking precedence. Password reset uses single-use 1h tokens delivered via SMTP (Mailpit in local dev — `docker compose up -d mailpit`). No multi-user invites or 2FA in v1. See `docs/adr/011-email-password-auth-and-clean-api-keys.md`; ADR-007 and ADR-008 are superseded.
-- Email: single delivery path. `Sender` returns `ErrSMTPNotConfigured` when `SMTP_HOST` is unset — no stdout fallback. Boot logs WARN once per missing env (`SMTP_HOST`, `CUSTOMER_PORTAL_URL`, `PAYMENT_UPDATE_URL`); the producer always wires the real adapter.
+- Email: single delivery path. `Sender` returns `ErrSMTPNotConfigured` when `SMTP_HOST` is unset — no stdout fallback. Boot logs WARN once per missing email-link env (`HOSTED_INVOICE_BASE_URL`, `PAYMENT_UPDATE_URL`, `DASHBOARD_BASE_URL`); the producer always wires the real adapter.
 - Stripe: PaymentIntent-only pattern (no Stripe Billing/Invoices to avoid 0.5% fee)
 - No Temporal dependency in v1 — simple background goroutine scheduler. Redis used for distributed rate limiting only.
 - Credits use event-sourced ledger (immutable append-only)
