@@ -315,13 +315,16 @@ function EndpointsTab() {
 
 /* ─── Event Groups ─── */
 
+// Must match the events the backend actually dispatches
+// (internal/domain/webhook_outbound.go emit sites). An event listed here but
+// never emitted is worse than omitting it — a subscriber gets silence forever.
 const EVENT_GROUPS: { label: string; events: { type: string; description: string }[] }[] = [
   {
     label: 'Invoice',
     events: [
-      { type: 'invoice.created', description: 'Invoice created' },
       { type: 'invoice.finalized', description: 'Invoice finalized and ready for payment' },
-      { type: 'invoice.paid', description: 'Invoice marked as paid' },
+      { type: 'invoice.payment_recorded', description: 'An offline payment was recorded on an invoice' },
+      { type: 'invoice.marked_uncollectible', description: 'Invoice written off as uncollectible (bad debt)' },
       { type: 'invoice.voided', description: 'Invoice voided' },
     ],
   },
@@ -338,14 +341,25 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
       { type: 'subscription.created', description: 'Subscription created' },
       { type: 'subscription.activated', description: 'Subscription activated' },
       { type: 'subscription.canceled', description: 'Subscription canceled' },
-      { type: 'subscription.paused', description: 'Subscription paused' },
-      { type: 'subscription.resumed', description: 'Subscription resumed' },
+      { type: 'subscription.cancel_scheduled', description: 'Cancellation scheduled for the period end' },
+      { type: 'subscription.cancel_cleared', description: 'A scheduled cancellation was cleared' },
+      { type: 'subscription.collection_paused', description: 'Collection paused — invoices draft only' },
+      { type: 'subscription.collection_resumed', description: 'Collection resumed' },
+      { type: 'subscription.trial_ended', description: 'Trial ended' },
+      { type: 'subscription.trial_extended', description: 'Trial extended' },
+      { type: 'subscription.threshold_crossed', description: 'A usage billing threshold was crossed' },
+      { type: 'subscription.item.added', description: 'An item was added to the subscription' },
+      { type: 'subscription.item.updated', description: 'A subscription item changed (plan or quantity)' },
+      { type: 'subscription.item.removed', description: 'An item was removed from the subscription' },
+      { type: 'subscription.pending_change.scheduled', description: 'A change was scheduled for the next cycle' },
+      { type: 'subscription.pending_change.applied', description: 'A scheduled change took effect' },
+      { type: 'subscription.pending_change.canceled', description: 'A scheduled change was canceled' },
     ],
   },
   {
     label: 'Customer',
     events: [
-      { type: 'customer.created', description: 'Customer created' },
+      { type: 'customer.email_bounced', description: 'A customer email bounced and was suppressed' },
     ],
   },
   {
@@ -354,13 +368,6 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
       { type: 'dunning.started', description: 'Dunning process started' },
       { type: 'dunning.escalated', description: 'Dunning escalated after retries exhausted' },
       { type: 'dunning.resolved', description: 'Dunning resolved (payment recovered)' },
-    ],
-  },
-  {
-    label: 'Credit',
-    events: [
-      { type: 'credit.granted', description: 'Credit granted to customer' },
-      { type: 'credit_note.issued', description: 'Credit note issued' },
     ],
   },
 ]
