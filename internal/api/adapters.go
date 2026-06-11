@@ -605,6 +605,13 @@ func (a *prorationInvoiceCreatorAdapter) NextInvoiceNumberTx(ctx context.Context
 	return a.numberer.NextInvoiceNumberTx(ctx, tx, tenantID)
 }
 
+// SetAutoChargePending enrolls a finalized proration charge invoice into the
+// auto-charge sweep (forwards to the store's existing method — the same one the
+// engine's finalize path uses).
+func (a *prorationInvoiceCreatorAdapter) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
+	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
+}
+
 // prorationTaxApplierAdapter bridges billing.Engine → subscription.ProrationTaxApplier.
 // Narrow translation: same signature, different named return type so the
 // subscription package doesn't import billing.
