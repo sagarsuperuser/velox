@@ -244,6 +244,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// by any operator pressure.
 	outboxStore := webhook.NewOutboxStore(db)
 	eventDispatcher := webhook.NewOutboxDispatcher(outboxStore)
+	// invoice.paid is emitted transactionally from MarkPaid (atomic with the
+	// finalized→paid transition) so it fires exactly once across every
+	// settlement path. Wire the outbox into the invoice store for that.
+	invoiceStore.SetOutboxEnqueuer(outboxStore)
 	subH.SetEventDispatcher(eventDispatcher)
 	// Trial-expiry phases (catchup orchestrator + wall-clock cron)
 	// fire subscription.trial_ended via the subscription Service —

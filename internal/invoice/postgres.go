@@ -16,13 +16,28 @@ import (
 )
 
 type PostgresStore struct {
-	db  *postgres.DB
-	enc *crypto.Encryptor
+	db     *postgres.DB
+	enc    *crypto.Encryptor
+	outbox OutboxEnqueuer
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db, enc: crypto.NewNoop()}
 }
+
+// OutboxEnqueuer enqueues an outbound webhook event inside the caller's tx, so
+// the event is persisted atomically with the state change (ADR-040 transactional
+// outbox). Satisfied by *webhook.OutboxStore; declared as a narrow consumer-side
+// interface so the invoice store needs no webhook import.
+type OutboxEnqueuer interface {
+	Enqueue(ctx context.Context, tx *sql.Tx, tenantID, eventType string, payload map[string]any) (string, error)
+}
+
+// SetOutboxEnqueuer wires transactional webhook emission for transitions that
+// fire from many call sites (notably invoice.paid, emitted from MarkPaid so it
+// fires exactly once regardless of which path settled the invoice). Optional —
+// when unset, no event is enqueued.
+func (s *PostgresStore) SetOutboxEnqueuer(o OutboxEnqueuer) { s.outbox = o }
 
 // SetEncryptor wires AES-256-GCM encryption for the hosted-invoice public_token
 // at rest. When set (non-noop), the raw token is encrypted before storage and
@@ -648,6 +663,26 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 	}
 	if err != nil {
 		return domain.Invoice{}, err
+	}
+	// invoice.paid — enqueued in the SAME tx as the finalized/uncollectible →
+	// paid transition. The already-paid branch above returns before reaching
+	// here, so this fires EXACTLY ONCE, and it covers every settlement path
+	// (card via SettleSucceeded, credits-cover, offline record-payment, dunning
+	// recovery, and the reconciler's bare-MarkPaid fallback) without each
+	// needing its own dispatch. ADR-040 transactional outbox: if the tx rolls
+	// back, no event; if it commits, the dispatcher delivers.
+	if s.outbox != nil {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventInvoicePaid, map[string]any{
+			"invoice_id":        inv.ID,
+			"invoice_number":    inv.InvoiceNumber,
+			"customer_id":       inv.CustomerID,
+			"subscription_id":   inv.SubscriptionID,
+			"amount_paid_cents": inv.AmountPaidCents,
+			"currency":          inv.Currency,
+			"paid_at":           paidAt.UTC(),
+		}); err != nil {
+			return domain.Invoice{}, fmt.Errorf("enqueue invoice.paid: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err

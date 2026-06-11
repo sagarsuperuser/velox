@@ -323,6 +323,7 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
     label: 'Invoice',
     events: [
       { type: 'invoice.finalized', description: 'Invoice finalized and ready for payment' },
+      { type: 'invoice.paid', description: 'Invoice fully paid (by card, credits, or an offline payment)' },
       { type: 'invoice.payment_recorded', description: 'An offline payment was recorded on an invoice' },
       { type: 'invoice.marked_uncollectible', description: 'Invoice written off as uncollectible (bad debt)' },
       { type: 'invoice.voided', description: 'Invoice voided' },
