@@ -19,6 +19,7 @@ export type InvoiceBillingReason = typeof InvoiceBillingReason[keyof typeof Invo
 export const InvoiceBillingReason = {
   subscription_cycle: 'subscription_cycle',
   subscription_create: 'subscription_create',
+  subscription_cancel: 'subscription_cancel',
   manual: 'manual',
   threshold: 'threshold',
 } as const;

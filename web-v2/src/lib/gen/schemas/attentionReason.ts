@@ -28,4 +28,5 @@ export const AttentionReason = {
   payment_processing: 'payment_processing',
   payment_scheduled: 'payment_scheduled',
   awaiting_payment: 'awaiting_payment',
+  no_payment_method: 'no_payment_method',
 } as const;

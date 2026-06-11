@@ -249,6 +249,7 @@ components:
         - payment_processing
         - payment_scheduled
         - awaiting_payment
+        - no_payment_method
       description: |
         Closed, typed code naming why an invoice needs operator
         attention. Stable public-API contract — codes are never
@@ -268,6 +269,9 @@ components:
         - review_registration
         - charge_now
         - send_reminder
+        - add_payment_method
+        - update_payment_method
+        - connect_tax_provider
       description: |
         Operator's recommended next step. Closed enum because every
         code maps to a concrete server endpoint or frontend route,
@@ -346,7 +350,7 @@ components:
 
     InvoiceBillingReason:
       type: string
-      enum: [subscription_cycle, subscription_create, manual, threshold]
+      enum: [subscription_cycle, subscription_create, subscription_cancel, manual, threshold]
       description: |
         Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
         that produced the invoice. Stamped at create time and never mutated.
@@ -998,32 +1002,6 @@ paths:
         "200":
           description: Subscription activated
 
-  /v1/subscriptions/{id}/change-plan:
-    post:
-      tags: [Subscriptions]
-      summary: Change subscription plan
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [new_plan_id]
-              properties:
-                new_plan_id:
-                  type: string
-                immediate:
-                  type: boolean
-      responses:
-        "200":
-          description: Plan changed
-
   /v1/usage-events:
     post:
       tags: [Usage]
@@ -1531,40 +1509,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/CreditBalance"
 
-  /v1/dunning/policy:
-    get:
-      tags: [Dunning]
-      summary: Get dunning policy
-      responses:
-        "200":
-          description: Dunning policy
-    put:
-      tags: [Dunning]
-      summary: Configure dunning policy
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                enabled:
-                  type: boolean
-                retry_schedule:
-                  type: array
-                  items:
-                    type: string
-                max_retry_attempts:
-                  type: integer
-                final_action:
-                  type: string
-                  enum: [manual_review, pause, write_off_later]
-      responses:
-        "200":
-          description: Policy updated
-
   /v1/test-clocks:
     get:
       tags: [TestClocks]
@@ -1705,24 +1649,3 @@ paths:
           description: Clock is not in `ready` state
         "422":
           description: New frozen_time is not strictly after the current
-
-  /v1/webhooks/stripe:
-    post:
-      tags: [Webhooks]
-      summary: Stripe webhook receiver
-      security: []
-      description: Receives Stripe webhook events. Verified via Stripe-Signature header.
-      responses:
-        "200":
-          description: Event processed
-
-  /v1/metrics:
-    get:
-      tags: [System]
-      summary: Prometheus metrics
-      security: []
-      responses:
-        "200":
-          description: Prometheus metrics
-          content:
-            text/plain: {}
