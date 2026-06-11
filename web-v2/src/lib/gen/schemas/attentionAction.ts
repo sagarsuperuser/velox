@@ -27,4 +27,7 @@ export const AttentionAction = {
   review_registration: 'review_registration',
   charge_now: 'charge_now',
   send_reminder: 'send_reminder',
+  add_payment_method: 'add_payment_method',
+  update_payment_method: 'update_payment_method',
+  connect_tax_provider: 'connect_tax_provider',
 } as const;

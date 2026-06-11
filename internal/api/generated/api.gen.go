@@ -20,21 +20,28 @@ const (
 
 // Defines values for AttentionAction.
 const (
-	ChargeNow          AttentionAction = "charge_now"
-	EditBillingProfile AttentionAction = "edit_billing_profile"
-	ReconcilePayment   AttentionAction = "reconcile_payment"
-	RetryPayment       AttentionAction = "retry_payment"
-	RetryTax           AttentionAction = "retry_tax"
-	ReviewRegistration AttentionAction = "review_registration"
-	RotateApiKey       AttentionAction = "rotate_api_key"
-	SendReminder       AttentionAction = "send_reminder"
-	WaitProvider       AttentionAction = "wait_provider"
+	AddPaymentMethod    AttentionAction = "add_payment_method"
+	ChargeNow           AttentionAction = "charge_now"
+	ConnectTaxProvider  AttentionAction = "connect_tax_provider"
+	EditBillingProfile  AttentionAction = "edit_billing_profile"
+	ReconcilePayment    AttentionAction = "reconcile_payment"
+	RetryPayment        AttentionAction = "retry_payment"
+	RetryTax            AttentionAction = "retry_tax"
+	ReviewRegistration  AttentionAction = "review_registration"
+	RotateApiKey        AttentionAction = "rotate_api_key"
+	SendReminder        AttentionAction = "send_reminder"
+	UpdatePaymentMethod AttentionAction = "update_payment_method"
+	WaitProvider        AttentionAction = "wait_provider"
 )
 
 // Valid indicates whether the value is a known member of the AttentionAction enum.
 func (e AttentionAction) Valid() bool {
 	switch e {
+	case AddPaymentMethod:
+		return true
 	case ChargeNow:
+		return true
+	case ConnectTaxProvider:
 		return true
 	case EditBillingProfile:
 		return true
@@ -50,6 +57,8 @@ func (e AttentionAction) Valid() bool {
 		return true
 	case SendReminder:
 		return true
+	case UpdatePaymentMethod:
+		return true
 	case WaitProvider:
 		return true
 	default:
@@ -60,6 +69,7 @@ func (e AttentionAction) Valid() bool {
 // Defines values for AttentionReason.
 const (
 	AwaitingPayment      AttentionReason = "awaiting_payment"
+	NoPaymentMethod      AttentionReason = "no_payment_method"
 	Overdue              AttentionReason = "overdue"
 	PaymentFailed        AttentionReason = "payment_failed"
 	PaymentProcessing    AttentionReason = "payment_processing"
@@ -73,6 +83,8 @@ const (
 func (e AttentionReason) Valid() bool {
 	switch e {
 	case AwaitingPayment:
+		return true
+	case NoPaymentMethod:
 		return true
 	case Overdue:
 		return true
@@ -159,6 +171,7 @@ func (e ErrorErrorType) Valid() bool {
 // Defines values for InvoiceBillingReason.
 const (
 	Manual             InvoiceBillingReason = "manual"
+	SubscriptionCancel InvoiceBillingReason = "subscription_cancel"
 	SubscriptionCreate InvoiceBillingReason = "subscription_create"
 	SubscriptionCycle  InvoiceBillingReason = "subscription_cycle"
 	Threshold          InvoiceBillingReason = "threshold"
@@ -168,6 +181,8 @@ const (
 func (e InvoiceBillingReason) Valid() bool {
 	switch e {
 	case Manual:
+		return true
+	case SubscriptionCancel:
 		return true
 	case SubscriptionCreate:
 		return true
@@ -447,27 +462,6 @@ func (e SubscriptionStatus) Valid() bool {
 	case SubscriptionStatusDraft:
 		return true
 	case SubscriptionStatusTrialing:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for PutV1DunningPolicyJSONBodyFinalAction.
-const (
-	ManualReview  PutV1DunningPolicyJSONBodyFinalAction = "manual_review"
-	Pause         PutV1DunningPolicyJSONBodyFinalAction = "pause"
-	WriteOffLater PutV1DunningPolicyJSONBodyFinalAction = "write_off_later"
-)
-
-// Valid indicates whether the value is a known member of the PutV1DunningPolicyJSONBodyFinalAction enum.
-func (e PutV1DunningPolicyJSONBodyFinalAction) Valid() bool {
-	switch e {
-	case ManualReview:
-		return true
-	case Pause:
-		return true
-	case WriteOffLater:
 		return true
 	default:
 		return false
@@ -1054,18 +1048,6 @@ type PostV1CustomersJSONBody struct {
 	ExternalId  string `json:"external_id"`
 }
 
-// PutV1DunningPolicyJSONBody defines parameters for PutV1DunningPolicy.
-type PutV1DunningPolicyJSONBody struct {
-	Enabled          bool                                  `json:"enabled,omitempty"`
-	FinalAction      PutV1DunningPolicyJSONBodyFinalAction `json:"final_action,omitempty"`
-	MaxRetryAttempts int                                   `json:"max_retry_attempts,omitempty"`
-	Name             string                                `json:"name,omitempty"`
-	RetrySchedule    []string                              `json:"retry_schedule,omitempty"`
-}
-
-// PutV1DunningPolicyJSONBodyFinalAction defines parameters for PutV1DunningPolicy.
-type PutV1DunningPolicyJSONBodyFinalAction string
-
 // PostV1InvoicesCreatePreviewJSONBody defines parameters for PostV1InvoicesCreatePreview.
 type PostV1InvoicesCreatePreviewJSONBody struct {
 	// CustomerId Customer to preview the invoice for.
@@ -1155,12 +1137,6 @@ type PostV1SubscriptionsJSONBody struct {
 // PostV1SubscriptionsJSONBodyBillingTime defines parameters for PostV1Subscriptions.
 type PostV1SubscriptionsJSONBodyBillingTime string
 
-// PostV1SubscriptionsIdChangePlanJSONBody defines parameters for PostV1SubscriptionsIdChangePlan.
-type PostV1SubscriptionsIdChangePlanJSONBody struct {
-	Immediate bool   `json:"immediate,omitempty"`
-	NewPlanId string `json:"new_plan_id"`
-}
-
 // PostV1TestClocksJSONBody defines parameters for PostV1TestClocks.
 type PostV1TestClocksJSONBody struct {
 	FrozenTime time.Time `json:"frozen_time"`
@@ -1208,9 +1184,6 @@ type PostV1CreditsGrantJSONRequestBody PostV1CreditsGrantJSONBody
 // PostV1CustomersJSONRequestBody defines body for PostV1Customers for application/json ContentType.
 type PostV1CustomersJSONRequestBody PostV1CustomersJSONBody
 
-// PutV1DunningPolicyJSONRequestBody defines body for PutV1DunningPolicy for application/json ContentType.
-type PutV1DunningPolicyJSONRequestBody PutV1DunningPolicyJSONBody
-
 // PostV1InvoicesCreatePreviewJSONRequestBody defines body for PostV1InvoicesCreatePreview for application/json ContentType.
 type PostV1InvoicesCreatePreviewJSONRequestBody PostV1InvoicesCreatePreviewJSONBody
 
@@ -1225,9 +1198,6 @@ type PostV1RatingRulesJSONRequestBody PostV1RatingRulesJSONBody
 
 // PostV1SubscriptionsJSONRequestBody defines body for PostV1Subscriptions for application/json ContentType.
 type PostV1SubscriptionsJSONRequestBody PostV1SubscriptionsJSONBody
-
-// PostV1SubscriptionsIdChangePlanJSONRequestBody defines body for PostV1SubscriptionsIdChangePlan for application/json ContentType.
-type PostV1SubscriptionsIdChangePlanJSONRequestBody PostV1SubscriptionsIdChangePlanJSONBody
 
 // PostV1TestClocksJSONRequestBody defines body for PostV1TestClocks for application/json ContentType.
 type PostV1TestClocksJSONRequestBody PostV1TestClocksJSONBody
@@ -1282,12 +1252,6 @@ type ServerInterface interface {
 	// Rotate the public cost-dashboard token (ADR-031)
 	// (POST /v1/customers/{id}/rotate-cost-dashboard-token)
 	PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string)
-	// Get dunning policy
-	// (GET /v1/dunning/policy)
-	GetV1DunningPolicy(w http.ResponseWriter, r *http.Request)
-	// Configure dunning policy
-	// (PUT /v1/dunning/policy)
-	PutV1DunningPolicy(w http.ResponseWriter, r *http.Request)
 	// List invoices
 	// (GET /v1/invoices)
 	GetV1Invoices(w http.ResponseWriter, r *http.Request)
@@ -1312,9 +1276,6 @@ type ServerInterface interface {
 	// Create meter
 	// (POST /v1/meters)
 	PostV1Meters(w http.ResponseWriter, r *http.Request)
-	// Prometheus metrics
-	// (GET /v1/metrics)
-	GetV1Metrics(w http.ResponseWriter, r *http.Request)
 	// List plans
 	// (GET /v1/plans)
 	GetV1Plans(w http.ResponseWriter, r *http.Request)
@@ -1339,9 +1300,6 @@ type ServerInterface interface {
 	// Activate draft subscription
 	// (POST /v1/subscriptions/{id}/activate)
 	PostV1SubscriptionsIdActivate(w http.ResponseWriter, r *http.Request, id string)
-	// Change subscription plan
-	// (POST /v1/subscriptions/{id}/change-plan)
-	PostV1SubscriptionsIdChangePlan(w http.ResponseWriter, r *http.Request, id string)
 	// List test clocks for the active tenant
 	// (GET /v1/test-clocks)
 	GetV1TestClocks(w http.ResponseWriter, r *http.Request)
@@ -1369,9 +1327,6 @@ type ServerInterface interface {
 	// Batch ingest usage events (max 1000)
 	// (POST /v1/usage-events/batch)
 	PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request)
-	// Stripe webhook receiver
-	// (POST /v1/webhooks/stripe)
-	PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request)
 	// Resolve the current credential to its tenant context
 	// (GET /v1/whoami)
 	GetV1Whoami(w http.ResponseWriter, r *http.Request)
@@ -1459,18 +1414,6 @@ func (_ Unimplemented) PostV1CustomersIdRotateCostDashboardToken(w http.Response
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Get dunning policy
-// (GET /v1/dunning/policy)
-func (_ Unimplemented) GetV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Configure dunning policy
-// (PUT /v1/dunning/policy)
-func (_ Unimplemented) PutV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // List invoices
 // (GET /v1/invoices)
 func (_ Unimplemented) GetV1Invoices(w http.ResponseWriter, r *http.Request) {
@@ -1519,12 +1462,6 @@ func (_ Unimplemented) PostV1Meters(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Prometheus metrics
-// (GET /v1/metrics)
-func (_ Unimplemented) GetV1Metrics(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // List plans
 // (GET /v1/plans)
 func (_ Unimplemented) GetV1Plans(w http.ResponseWriter, r *http.Request) {
@@ -1570,12 +1507,6 @@ func (_ Unimplemented) PostV1Subscriptions(w http.ResponseWriter, r *http.Reques
 // Activate draft subscription
 // (POST /v1/subscriptions/{id}/activate)
 func (_ Unimplemented) PostV1SubscriptionsIdActivate(w http.ResponseWriter, r *http.Request, id string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Change subscription plan
-// (POST /v1/subscriptions/{id}/change-plan)
-func (_ Unimplemented) PostV1SubscriptionsIdChangePlan(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1630,12 +1561,6 @@ func (_ Unimplemented) PostV1UsageEvents(w http.ResponseWriter, r *http.Request)
 // Batch ingest usage events (max 1000)
 // (POST /v1/usage-events/batch)
 func (_ Unimplemented) PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Stripe webhook receiver
-// (POST /v1/webhooks/stripe)
-func (_ Unimplemented) PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1970,46 +1895,6 @@ func (siw *ServerInterfaceWrapper) PostV1CustomersIdRotateCostDashboardToken(w h
 	handler.ServeHTTP(w, r)
 }
 
-// GetV1DunningPolicy operation middleware
-func (siw *ServerInterfaceWrapper) GetV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetV1DunningPolicy(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// PutV1DunningPolicy operation middleware
-func (siw *ServerInterfaceWrapper) PutV1DunningPolicy(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PutV1DunningPolicy(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetV1Invoices operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Invoices(w http.ResponseWriter, r *http.Request) {
 
@@ -2214,20 +2099,6 @@ func (siw *ServerInterfaceWrapper) PostV1Meters(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
-// GetV1Metrics operation middleware
-func (siw *ServerInterfaceWrapper) GetV1Metrics(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetV1Metrics(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetV1Plans operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Plans(w http.ResponseWriter, r *http.Request) {
 
@@ -2401,37 +2272,6 @@ func (siw *ServerInterfaceWrapper) PostV1SubscriptionsIdActivate(w http.Response
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1SubscriptionsIdActivate(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// PostV1SubscriptionsIdChangePlan operation middleware
-func (siw *ServerInterfaceWrapper) PostV1SubscriptionsIdChangePlan(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	// ------------- Path parameter "id" -------------
-	var id string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostV1SubscriptionsIdChangePlan(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2665,20 +2505,6 @@ func (siw *ServerInterfaceWrapper) PostV1UsageEventsBatch(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
-// PostV1WebhooksStripe operation middleware
-func (siw *ServerInterfaceWrapper) PostV1WebhooksStripe(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostV1WebhooksStripe(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetV1Whoami operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Whoami(w http.ResponseWriter, r *http.Request) {
 
@@ -2852,12 +2678,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/customers/{id}/rotate-cost-dashboard-token", wrapper.PostV1CustomersIdRotateCostDashboardToken)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/dunning/policy", wrapper.GetV1DunningPolicy)
-	})
-	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/v1/dunning/policy", wrapper.PutV1DunningPolicy)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/invoices", wrapper.GetV1Invoices)
 	})
 	r.Group(func(r chi.Router) {
@@ -2882,9 +2702,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/meters", wrapper.PostV1Meters)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/v1/metrics", wrapper.GetV1Metrics)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/plans", wrapper.GetV1Plans)
 	})
 	r.Group(func(r chi.Router) {
@@ -2907,9 +2724,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/subscriptions/{id}/activate", wrapper.PostV1SubscriptionsIdActivate)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/subscriptions/{id}/change-plan", wrapper.PostV1SubscriptionsIdChangePlan)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/test-clocks", wrapper.GetV1TestClocks)
@@ -2937,9 +2751,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/usage-events/batch", wrapper.PostV1UsageEventsBatch)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/v1/webhooks/stripe", wrapper.PostV1WebhooksStripe)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/whoami", wrapper.GetV1Whoami)

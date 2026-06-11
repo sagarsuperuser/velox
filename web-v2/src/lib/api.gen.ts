@@ -544,49 +544,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/subscriptions/{id}/change-plan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Change subscription plan */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: string;
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        new_plan_id: string;
-                        immediate?: boolean;
-                    };
-                };
-            };
-            responses: {
-                /** @description Plan changed */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/usage-events": {
         parameters: {
             query?: never;
@@ -1487,69 +1444,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/dunning/policy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get dunning policy */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Dunning policy */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        /** Configure dunning policy */
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        name?: string;
-                        enabled?: boolean;
-                        retry_schedule?: string[];
-                        max_retry_attempts?: number;
-                        /** @enum {string} */
-                        final_action?: "manual_review" | "pause" | "write_off_later";
-                    };
-                };
-            };
-            responses: {
-                /** @description Policy updated */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/test-clocks": {
         parameters: {
             query?: never;
@@ -1812,79 +1706,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/webhooks/stripe": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Stripe webhook receiver
-         * @description Receives Stripe webhook events. Verified via Stripe-Signature header.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Event processed */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/metrics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Prometheus metrics */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Prometheus metrics */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "text/plain": unknown;
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2030,14 +1851,14 @@ export interface components {
          *     sub-code.
          * @enum {string}
          */
-        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "overdue" | "payment_processing" | "payment_scheduled" | "awaiting_payment";
+        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "overdue" | "payment_processing" | "payment_scheduled" | "awaiting_payment" | "no_payment_method";
         /**
          * @description Operator's recommended next step. Closed enum because every
          *     code maps to a concrete server endpoint or frontend route,
          *     and audit logs key off the code.
          * @enum {string}
          */
-        AttentionAction: "edit_billing_profile" | "retry_tax" | "retry_payment" | "wait_provider" | "rotate_api_key" | "reconcile_payment" | "review_registration" | "charge_now" | "send_reminder";
+        AttentionAction: "edit_billing_profile" | "retry_tax" | "retry_payment" | "wait_provider" | "rotate_api_key" | "reconcile_payment" | "review_registration" | "charge_now" | "send_reminder" | "add_payment_method" | "update_payment_method" | "connect_tax_provider";
         AttentionActionItem: {
             code: components["schemas"]["AttentionAction"];
             /**
@@ -2103,7 +1924,7 @@ export interface components {
          *     that produced the invoice. Stamped at create time and never mutated.
          * @enum {string}
          */
-        InvoiceBillingReason: "subscription_cycle" | "subscription_create" | "manual" | "threshold";
+        InvoiceBillingReason: "subscription_cycle" | "subscription_create" | "subscription_cancel" | "manual" | "threshold";
         /** @enum {string} */
         InvoiceLineType: "base_fee" | "usage" | "add_on" | "discount" | "tax";
         /**
