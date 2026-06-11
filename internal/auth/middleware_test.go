@@ -127,27 +127,12 @@ func TestRequire_PublishableKeyRestricted(t *testing.T) {
 	svc := NewService(newMemStore())
 	result, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Pub", KeyType: KeyTypePublishable})
 
-	// Should have — reads only; publishable keys ship in browsers.
-	allowed := []Permission{PermCustomerRead, PermUsageRead, PermSubscriptionRead, PermInvoiceRead}
-	for _, perm := range allowed {
-		t.Run("allowed_"+string(perm), func(t *testing.T) {
-			handler := Middleware(svc)(Require(perm)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			})))
-
-			req := httptest.NewRequest("GET", "/", nil)
-			req.Header.Set("Authorization", "Bearer "+result.RawKey)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Errorf("pub key should have %s, got %d", perm, rec.Code)
-			}
-		})
-	}
-
-	// Should NOT have — every write path is closed on publishable.
+	// Publishable keys get NO tenant-wide scopes — authenticate-only. Every
+	// read AND write path is closed: tenant-wide reads in a browser key leak
+	// all-customer PII/revenue, the same exposure class as the writes the
+	// earlier readiness pass cut.
 	denied := []Permission{
+		PermCustomerRead, PermUsageRead, PermSubscriptionRead, PermInvoiceRead,
 		PermCustomerWrite, PermUsageWrite,
 		PermPricingWrite, PermSubscriptionWrite, PermInvoiceWrite, PermDunningRead, PermDunningWrite, PermAPIKeyWrite,
 	}
@@ -260,38 +245,35 @@ func TestRequire_PlatformKeyOnlyTenants(t *testing.T) {
 
 func TestRequireMethod_GETUsesReadPOSTUsesWrite(t *testing.T) {
 	svc := NewService(newMemStore())
-	pub, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Pub", KeyType: KeyTypePublishable})
+	// Secret holds customer:read but NOT tenant:write (tenant scopes are
+	// platform-only), so RequireMethod(customer:read, tenant:write) passes read
+	// methods (arg0 held) and 403s write methods (arg1 absent) — isolating
+	// GET/HEAD/OPTIONS→arg0 and POST/PUT/PATCH/DELETE→arg1. (Publishable keys,
+	// formerly the read-only fixture here, now carry no scopes at all.)
 	sec, _ := svc.CreateKey(t.Context(), "t1", CreateKeyInput{Name: "Sec", KeyType: KeyTypeSecret})
 
-	mw := Middleware(svc)(RequireMethod(PermCustomerRead, PermCustomerWrite)(
+	mw := Middleware(svc)(RequireMethod(PermCustomerRead, PermTenantWrite)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 	))
 
 	cases := []struct {
 		method string
-		key    string
 		want   int
 		why    string
 	}{
-		// Publishable holds customer:read but not customer:write.
-		// Read methods pass; write methods 403.
-		{"GET", pub.RawKey, http.StatusOK, "GET pub → read perm satisfied"},
-		{"HEAD", pub.RawKey, http.StatusOK, "HEAD pub → read perm satisfied"},
-		{"OPTIONS", pub.RawKey, http.StatusOK, "OPTIONS pub → read perm satisfied"},
-		{"POST", pub.RawKey, http.StatusForbidden, "POST pub → write perm denied"},
-		{"PUT", pub.RawKey, http.StatusForbidden, "PUT pub → write perm denied"},
-		{"PATCH", pub.RawKey, http.StatusForbidden, "PATCH pub → write perm denied"},
-		{"DELETE", pub.RawKey, http.StatusForbidden, "DELETE pub → write perm denied"},
-		// Secret holds both — every method allowed.
-		{"GET", sec.RawKey, http.StatusOK, "GET secret → both perms held"},
-		{"POST", sec.RawKey, http.StatusOK, "POST secret → both perms held"},
-		{"DELETE", sec.RawKey, http.StatusOK, "DELETE secret → both perms held"},
+		{"GET", http.StatusOK, "GET → arg0 (customer:read) held"},
+		{"HEAD", http.StatusOK, "HEAD → arg0 held"},
+		{"OPTIONS", http.StatusOK, "OPTIONS → arg0 held"},
+		{"POST", http.StatusForbidden, "POST → arg1 (tenant:write) absent"},
+		{"PUT", http.StatusForbidden, "PUT → arg1 absent"},
+		{"PATCH", http.StatusForbidden, "PATCH → arg1 absent"},
+		{"DELETE", http.StatusForbidden, "DELETE → arg1 absent"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.why, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, "/", nil)
-			req.Header.Set("Authorization", "Bearer "+tc.key)
+			req.Header.Set("Authorization", "Bearer "+sec.RawKey)
 			rec := httptest.NewRecorder()
 			mw.ServeHTTP(rec, req)
 			if rec.Code != tc.want {

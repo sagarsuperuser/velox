@@ -92,17 +92,19 @@ var keyPermissions = map[KeyType]map[Permission]bool{
 		PermTestClockWrite:    true,
 	},
 	// Publishable keys are browser-embeddable (vlx_pub_live_… ships in JS
-	// SDKs). They must be read-only: any write permission granted here is
-	// exploitable by every visitor to every page that embeds the key.
-	// Stripe's pk_live_ equivalents can only mint tokens / retrieve public
-	// resources — write flows for end-users go through the customer portal's
-	// magic-link session, not publishable keys.
-	KeyTypePublishable: {
-		PermCustomerRead:     true,
-		PermUsageRead:        true,
-		PermSubscriptionRead: true,
-		PermInvoiceRead:      true,
-	},
+	// SDKs), so they get NO tenant-wide scopes at all — not even reads. An
+	// earlier pass removed the write scopes (a visitor could create customers /
+	// fake usage); the reads were left, but they are the same exposure class:
+	// vlx_pub_ + customer:read lets any visitor to any embedding page list
+	// every customer's PII, pull every invoice PDF, read tenant revenue via
+	// /analytics, and bulk-export CSVs. Stripe's pk_ equivalents deliberately
+	// cannot list customers or read revenue. Velox has no current browser flow
+	// that needs these reads (the cost dashboard and hosted/payment pages
+	// authenticate with their own per-resource tokens, not publishable keys),
+	// so the safe default is an empty scope set: a publishable key authenticates
+	// but reads nothing tenant-wide. Re-add a NARROW, purpose-built scope here
+	// only when a concrete browser use case names what it needs.
+	KeyTypePublishable: {},
 	// Dashboard sessions inherit the full secret-key permission set today —
 	// every logged-in user is an owner per the bootstrap flow, and there are
 	// no non-owner roles yet. When invites + role-scoped permissions land,
