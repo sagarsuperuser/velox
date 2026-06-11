@@ -599,11 +599,22 @@ func classifyPaymentScheduled(inv Invoice) *Attention {
 	// pick it up on its next sweep. The sweep cadence is short
 	// (seconds-to-minutes) so we don't surface a precise
 	// next_attempt_at — "on its next tick" is honest.
+	//
+	// A clock-pinned (simulated) invoice is the exception: the wall-clock
+	// sweep EXCLUDES it (ADR-028/029 disjoint flows — ListAutoChargePending
+	// filters out subs with a test_clock_id), so the retry fires only when
+	// the operator advances the test clock. Saying "next tick" there is a
+	// lie — in real time the invoice sits indefinitely, so adding a payment
+	// method and waiting looks broken. Surface the clock-advance reality.
+	message := "Auto-charge is scheduled — the engine will attempt the charge on its next tick."
+	if inv.IsSimulated {
+		message = "Auto-charge runs on the next test-clock advance — advance the clock to trigger it, or use Charge now to collect immediately."
+	}
 	return &Attention{
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonPaymentScheduled,
 		Code:     "payment.scheduled",
-		Message:  "Auto-charge is scheduled — the engine will attempt the charge on its next tick.",
+		Message:  message,
 		DocURL:   docBaseURL + "payment-scheduled",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionChargeNow, Label: "Charge now"},
