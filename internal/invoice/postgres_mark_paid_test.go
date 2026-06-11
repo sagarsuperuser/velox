@@ -2,6 +2,7 @@ package invoice_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -84,5 +85,66 @@ func TestMarkPaid_IdempotentPreservesAmountPaid(t *testing.T) {
 	}
 	if second.Status != domain.InvoicePaid {
 		t.Errorf("after duplicate MarkPaid: status=%q, want paid", second.Status)
+	}
+}
+
+// recordingOutbox captures the events MarkPaid enqueues, ignoring the tx.
+type recordingOutbox struct{ events []string }
+
+func (r *recordingOutbox) Enqueue(_ context.Context, _ *sql.Tx, _, eventType string, _ map[string]any) (string, error) {
+	r.events = append(r.events, eventType)
+	return "vlx_whob_test", nil
+}
+
+// TestMarkPaid_FiresInvoicePaidOnceOnTransition asserts invoice.paid is emitted
+// exactly once — on the real finalized→paid transition — and NOT on a duplicate
+// MarkPaid of an already-paid invoice (the already-paid branch returns before
+// the emit). This is what lets the single MarkPaid emit point cover every
+// settlement path (card, credits, offline, dunning, reconciler fallback)
+// without double-firing.
+func TestMarkPaid_FiresInvoicePaidOnceOnTransition(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	store := invoice.NewPostgresStore(db)
+	rec := &recordingOutbox{}
+	store.SetOutboxEnqueuer(rec)
+	tenantID := testutil.CreateTestTenant(t, db, "MarkPaid InvoicePaid Event")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices
+		    SET subtotal_cents = 1000, total_amount_cents = 1000,
+		        amount_due_cents = 1000, tax_status = 'ok'
+		  WHERE id = $1`, invID); err != nil {
+		t.Fatalf("seed amounts: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+	if _, err := store.UpdateStatus(ctx, tenantID, invID, domain.InvoiceFinalized); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Real transition → exactly one invoice.paid.
+	if _, err := store.MarkPaid(ctx, tenantID, invID, "pi_1", now); err != nil {
+		t.Fatalf("first MarkPaid: %v", err)
+	}
+	if len(rec.events) != 1 || rec.events[0] != domain.EventInvoicePaid {
+		t.Fatalf("after transition: got events %v, want exactly [%s]", rec.events, domain.EventInvoicePaid)
+	}
+
+	// Duplicate MarkPaid (already paid) → no new event.
+	if _, err := store.MarkPaid(ctx, tenantID, invID, "pi_2", now.Add(time.Minute)); err != nil {
+		t.Fatalf("duplicate MarkPaid: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Errorf("REGRESSION: duplicate MarkPaid re-emitted invoice.paid: got %v, want exactly one", rec.events)
 	}
 }
