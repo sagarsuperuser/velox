@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { api, formatCents, formatDate, formatDateTime, getTenantTimezone, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
-import { formatCivilDate, formatCivilPeriod } from '@/lib/dates'
+import { formatCivilDate, formatCivilPeriod, startOfDayInTZ } from '@/lib/dates'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { TestClockBanner } from '@/components/TestClockBanner'
@@ -178,11 +178,13 @@ export default function SubscriptionDetailPage() {
   const pauseCollectionMutation = useMutation({
     mutationFn: () => {
       const body: { behavior: 'keep_as_draft'; resumes_at?: string } = { behavior: 'keep_as_draft' }
-      // DatePicker emits yyyy-MM-dd (date-only). Append start-of-day in
-      // the operator's local zone so the catchup orchestrator picks the
-      // pause back up on the right cycle close.
+      // DatePicker emits yyyy-MM-dd (date-only). Interpret it as start-of-day
+      // in the TENANT timezone (not the browser's): the backend's auto-resume
+      // scan compares the instant literally, and every other operator-picked
+      // civil date (extend-trial, credit expiry) anchors in tenant TZ. A
+      // browser-local parse shifted the resume by the operator/tenant offset.
       if (pauseResumesAt.trim() !== '') {
-        body.resumes_at = new Date(pauseResumesAt + 'T00:00:00').toISOString()
+        body.resumes_at = startOfDayInTZ(pauseResumesAt)
       }
       return api.pauseSubscriptionCollection(id!, body)
     },
