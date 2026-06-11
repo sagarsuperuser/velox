@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -209,7 +210,7 @@ func (s *PostgresStore) AdjustAtomic(
 	// check above guarantees enough drainable; the return value is
 	// the actual drained amount and equals -amountCents.
 	if amountCents < 0 {
-		if _, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now); err != nil {
+		if _, _, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now); err != nil {
 			return domain.CreditLedgerEntry{}, fmt.Errorf("attribute clawback: %w", err)
 		}
 	}
@@ -246,8 +247,9 @@ func (s *PostgresStore) AdjustAtomic(
 
 // drainPositiveBlocks FIFO-drains up to `wantDrain` cents across active
 // positive blocks (grants + positive adjustments + invoice reversals),
-// bumping each block's consumed_cents. Returns the actual drained
-// amount — which equals min(wantDrain, sum(block.remaining)).
+// bumping each block's consumed_cents. Returns (drained, available):
+// drained = min(wantDrain, available); available = the total remaining
+// capacity across the selected blocks (sum of amount_cents-consumed_cents).
 //
 // Order: soonest-expiring first (NULL last) so usage minimizes wasted
 // expiring credits, earliest-created as the tie-breaker. Skips blocks
@@ -255,13 +257,12 @@ func (s *PostgresStore) AdjustAtomic(
 // draining them here would mask the retirement.
 //
 // Caller MUST hold a FOR UPDATE lock on the customer's ledger rows.
-// In a clean ledger drainable == balance always holds (every negative
-// ledger entry attributes via this path), so callers can pass the
-// raw invoice or clawback amount and trust the return value for the
-// actual mutation that follows.
+// In a clean ledger `available` equals the SUM(amount_cents) balance
+// (every negative ledger entry attributes via this path). ApplyToInvoiceAtomic
+// compares the two to detect drift and caps its drain at the balance.
 func (s *PostgresStore) drainPositiveBlocks(
 	ctx context.Context, tx *sql.Tx, tenantID, customerID string, wantDrain int64, now time.Time,
-) (int64, error) {
+) (int64, int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, amount_cents, consumed_cents
 		FROM customer_credit_ledger
@@ -273,27 +274,30 @@ func (s *PostgresStore) drainPositiveBlocks(
 		ORDER BY expires_at NULLS LAST, created_at, id
 	`, tenantID, customerID, now)
 	if err != nil {
-		return 0, fmt.Errorf("scan positive blocks: %w", err)
+		return 0, 0, fmt.Errorf("scan positive blocks: %w", err)
 	}
 	type block struct {
 		id        string
 		remaining int64
 	}
 	var blocks []block
+	var available int64
 	for rows.Next() {
 		var id string
 		var amount, consumed int64
 		if err := rows.Scan(&id, &amount, &consumed); err != nil {
 			_ = rows.Close()
-			return 0, fmt.Errorf("scan block: %w", err)
+			return 0, 0, fmt.Errorf("scan block: %w", err)
 		}
-		blocks = append(blocks, block{id: id, remaining: amount - consumed})
+		rem := amount - consumed
+		blocks = append(blocks, block{id: id, remaining: rem})
+		available += rem
 	}
 	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("close blocks cursor: %w", err)
+		return 0, 0, fmt.Errorf("close blocks cursor: %w", err)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate blocks: %w", err)
+		return 0, 0, fmt.Errorf("iterate blocks: %w", err)
 	}
 
 	remaining := wantDrain
@@ -310,11 +314,11 @@ func (s *PostgresStore) drainPositiveBlocks(
 			SET consumed_cents = consumed_cents + $1
 			WHERE id = $2 AND tenant_id = $3
 		`, take, b.id, tenantID); err != nil {
-			return 0, fmt.Errorf("update block %s consumed_cents: %w", b.id, err)
+			return 0, 0, fmt.Errorf("update block %s consumed_cents: %w", b.id, err)
 		}
 		remaining -= take
 	}
-	return wantDrain - remaining, nil
+	return wantDrain - remaining, available, nil
 }
 
 // ApplyToInvoiceAtomic debits the customer's credit balance and reduces the
@@ -373,15 +377,36 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	// drains only what's available; the leftover stays on the
 	// invoice for the PaymentIntent to cover. Negative balance was
 	// short-circuited above.
-	deduct, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, invoiceAmountCents, now)
+	//
+	// Cap the drain at the authoritative balance, NOT the sum of blocks'
+	// remaining-to-drain. In a clean ledger these are equal: every negative
+	// entry (clawback via AdjustAtomic, expiry) attributes to a block by
+	// bumping consumed_cents, so block-remaining stays in lockstep with the
+	// SUM(amount_cents) balance, and this cap is a no-op. The cap is a loud
+	// defensive guard against a *future* path that adds a negative entry
+	// WITHOUT attributing it: that drift would leave blocks with more
+	// remaining than the balance, and an uncapped drain would write a negative
+	// balance_after — silent money corruption. We cap (balance can't go
+	// negative) AND warn (the drift is surfaced, never absorbed).
+	drainTarget := min(invoiceAmountCents, currentBalance)
+	deduct, drainable, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, drainTarget, now)
 	if err != nil {
 		return 0, fmt.Errorf("drain credits for invoice: %w", err)
 	}
-	if deduct <= 0 {
-		return 0, nil
+	if drainable != currentBalance {
+		// Drift: the positive blocks' total remaining capacity disagrees with
+		// the authoritative SUM(amount_cents) balance — a negative entry was
+		// not attributed to a block, or a block's expiry is out of sync. The
+		// drain above stayed capped at the balance so the ledger can't go
+		// negative; surface the drift so it's reconciled, never absorbed.
+		slog.WarnContext(ctx, "credit ledger drift: drainable block capacity != balance",
+			"customer_id", customerID,
+			"balance_cents", currentBalance,
+			"drainable_cents", drainable,
+		)
 	}
 	if deduct <= 0 {
-		// All "balance" was in expired grants — nothing actually drainable.
+		// All drainable "balance" was in expired/exhausted grants.
 		return 0, nil
 	}
 
