@@ -1215,6 +1215,8 @@ export default function SubscriptionDetailPage() {
             if (res.proration) {
               if (res.proration.type === 'invoice') {
                 toast.success(`Proration invoice created for ${formatCents(res.proration.amount_cents)}`)
+              } else if (res.proration.type === 'adjustment') {
+                toast.success(`Open invoice reduced by ${formatCents(Math.abs(res.proration.amount_cents))}`)
               } else {
                 toast.success(`${formatCents(Math.abs(res.proration.amount_cents))} credited to customer balance`)
               }
@@ -1238,6 +1240,8 @@ export default function SubscriptionDetailPage() {
             if (res.proration) {
               if (res.proration.type === 'invoice') {
                 toast.success(`Proration invoice created for ${formatCents(res.proration.amount_cents)}`)
+              } else if (res.proration.type === 'adjustment') {
+                toast.success(`Open invoice reduced by ${formatCents(Math.abs(res.proration.amount_cents))}`)
               } else {
                 toast.success(`${formatCents(Math.abs(res.proration.amount_cents))} credited to customer balance`)
               }
