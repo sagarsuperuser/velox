@@ -160,6 +160,10 @@ export default function ResetPasswordPage() {
                 {loading ? <Loader2 size={16} className="animate-spin mr-2" /> : null}
                 {loading ? 'Updating…' : 'Update password'}
               </Button>
+
+              <Link to="/login" className="block text-center text-xs text-muted-foreground hover:text-foreground transition-colors">
+                Back to sign in
+              </Link>
             </form>
           )}
         </CardContent>

@@ -80,6 +80,16 @@ type CreditFormData = z.infer<typeof creditSchema>
 
 const ENTRY_TYPES = ['All', 'grant', 'usage', 'adjustment'] as const
 
+// Human labels for ledger entry types — 'usage' as a bare badge is
+// ambiguous (a usage event? a deduction?); spell it out.
+const ENTRY_TYPE_LABELS: Record<string, string> = {
+  grant: 'Grant',
+  usage: 'Deduction',
+  adjustment: 'Adjustment',
+  expiry: 'Expiry',
+}
+const entryTypeLabel = (t: string): string => ENTRY_TYPE_LABELS[t] ?? t
+
 function SortableHead({
   label, sortKey: key, activeSortKey, sortDir, onSort, className,
 }: {
@@ -250,7 +260,7 @@ export default function CreditsPage() {
                 className="flex h-8 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {ENTRY_TYPES.map(t => (
-                  <option key={t} value={t}>{t === 'All' ? 'All types' : t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                  <option key={t} value={t}>{t === 'All' ? 'All types' : entryTypeLabel(t)}</option>
                 ))}
               </select>
               {ledger.length > 0 && (
@@ -297,7 +307,7 @@ export default function CreditsPage() {
                     {ledgerPaginated.map(entry => (
                       <TableRow key={entry.id}>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.created_at)}</TableCell>
-                        <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entry.entry_type}</Badge></TableCell>
+                        <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entryTypeLabel(entry.entry_type)}</Badge></TableCell>
                         <TableCell className="text-sm text-foreground">{entry.description || '—'}</TableCell>
                         <TableCell className="text-sm">
                           {entry.invoice_id ? (
