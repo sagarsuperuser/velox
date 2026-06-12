@@ -1114,6 +1114,8 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 - [ ] Destructive rows have red left border. Expand → metadata + "View" link.
 - [ ] Filters: resource type, action, date range. Export CSV → all entries.
 - [ ] **Export honors the tenant timezone (2026-06-12)**: on a non-UTC tenant (e.g. IST), set a date-range filter so a row sits within an hour of a day boundary; the exported CSV contains exactly the rows shown on screen for that range — no edge row silently dropped from (or added to) the export. Pre-fix the export anchored dates at UTC while the list used tenant-TZ, so the windows diverged by the UTC offset.
+- [ ] **Export includes a Details column (2026-06-12)**: the exported CSV has a final **Details** column carrying the row's metadata JSON (e.g. `{"action":"marked_uncollectible"}`, prorated amounts, old/new plan); empty for rows with no metadata. Pre-fix the metadata was visible only in the expanded UI row, never in the file.
+- [ ] **Entity pages link to their audit history (2026-06-12)**: Customer, Invoice, and Subscription detail pages each show an **"Audit log"** button in the header; clicking it opens `/audit-log` pre-filtered to that record (resource type + id), showing only that entity's events.
 - [ ] **Date filter accepts both formats**: `?date_from=2026-01-01&date_to=2026-12-31` (bare YYYY-MM-DD) and `?date_from=2026-01-01T00:00:00Z` (RFC3339) both work. Invalid input (`?date_from=garbage`) → 400 with field-level error. Same shared parser (`internal/api/timefilter`) as the export + usage endpoints.
 
 ## FLOW P2A: Audit log — customer-initiated + Tier 2 coverage

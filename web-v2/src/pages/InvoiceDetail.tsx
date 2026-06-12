@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -38,7 +38,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Mail, CreditCard, Link2, RotateCw, Info, MoreHorizontal, Download, Eye, XCircle, Receipt, AlertOctagon } from 'lucide-react'
+import { Loader2, Mail, CreditCard, Link2, RotateCw, Info, MoreHorizontal, Download, Eye, XCircle, Receipt, AlertOctagon, History } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -116,6 +116,7 @@ type EmailFormData = z.infer<typeof emailSchema>
 
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [showVoidConfirm, setShowVoidConfirm] = useState(false)
   const [showRotatePublicTokenConfirm, setShowRotatePublicTokenConfirm] = useState(false)
@@ -466,6 +467,11 @@ export default function InvoiceDetailPage() {
             this draft" affordance. Everything else sits in the
             overflow. */}
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm"
+            onClick={() => navigate(`/audit-log?resource_type=invoice&resource_id=${invoice.id}`)}>
+            <History size={14} className="mr-1.5" />
+            Audit log
+          </Button>
           {invoice.status === 'draft' && (
             <Button variant="outline" size="sm" onClick={() => setShowAddLineItem(true)} disabled={acting}>
               Add Line Item

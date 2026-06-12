@@ -346,10 +346,14 @@ export default function AuditLogPage() {
         e.ip_address || '',
         e.request_id || '',
         formatDateTime(e.created_at),
+        // The action detail (amounts, old/new plan, cancel_at, …) lived only in
+        // the expanded UI row, never in the export — useless for a compliance
+        // evidence pack. Emit the raw metadata JSON; downloadCSV escapes it.
+        e.metadata && Object.keys(e.metadata).length ? JSON.stringify(e.metadata) : '',
       ])
       downloadCSV(
         'audit-log.csv',
-        ['Actor', 'Actor ID', 'Action', 'Resource Type', 'Resource ID', 'Resource Label', 'IP', 'Request ID', 'Date'],
+        ['Actor', 'Actor ID', 'Action', 'Resource Type', 'Resource ID', 'Resource Label', 'IP', 'Request ID', 'Date', 'Details'],
         rows,
       )
     } finally {
