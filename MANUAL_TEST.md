@@ -281,6 +281,7 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Detail header: name + status pill + Advance/Delete. Advance disabled when status≠ready.
 - [ ] Advance dialog presets: `+1h / +1d / +1mo` + custom. Earlier-than-current time → inline error.
+- [ ] **`+1mo` preset is a calendar month (2026-06-13):** with the clock frozen at e.g. Jun 15, clicking `+1mo` fills Jul 15 — same day-of-month, landing exactly ON the monthly cycle boundary — not Jul 16 (+31 days).
 - [ ] Submit → API responds in <500ms with `status: "advancing"` and the new `frozen_time`. Dashboard shows "Advancing…" badge (non-blocking — operator can navigate to other pages and the clock continues catching up in the background; ADR-015).
 - [ ] `psql` (or any tab) shows `test_clocks.status='advancing'` while the worker runs. Polling `/v1/test-clocks/{id}` every 1.5s flips to `status='ready'` when the worker's catchup loop completes.
 - [ ] Generated invoices appear in `/invoices` for the elapsed cycles — one per closed billing period, with `created_at` / `issued_at` aligned to the test-clock timeline (not wall-clock).
