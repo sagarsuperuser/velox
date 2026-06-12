@@ -897,7 +897,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", id, "", map[string]any{
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", id, subBefore.Code, map[string]any{
 			"action":   "item_added",
 			"item_id":  item.ID,
 			"plan_id":  item.PlanID,
@@ -1090,7 +1090,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		if s, err := h.svc.Get(ctx, tenantID, subID); err == nil {
 			auditSub = s
 		}
-		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, "", auditMetaForSub(auditSub, payload))
+		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, auditSub.Code, auditMetaForSub(auditSub, payload))
 	}
 
 	// Skip the legacy delta-proration emission when the service used
@@ -1301,7 +1301,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", subID, "", map[string]any{
+		_ = h.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", subID, subBefore.Code, map[string]any{
 			"action":  "item_removed",
 			"item_id": itemID,
 		})

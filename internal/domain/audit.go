@@ -20,21 +20,18 @@ type AuditEntry struct {
 
 // Well-known audit actions.
 const (
-	AuditActionCreate    = "create"
-	AuditActionUpdate    = "update"
-	AuditActionDelete    = "delete"
-	AuditActionActivate  = "activate"
-	AuditActionCancel    = "cancel"
-	AuditActionPause     = "pause"
-	AuditActionResume    = "resume"
-	AuditActionFinalize  = "finalize"
-	AuditActionVoid      = "void"
-	AuditActionRevoke    = "revoke"
-	AuditActionGrant     = "grant"
-	AuditActionRefund    = "refund"
-	AuditActionArchive   = "archive"
-	AuditActionUnarchive = "unarchive"
-	AuditActionRedeem    = "redeem"
+	AuditActionCreate   = "create"
+	AuditActionUpdate   = "update"
+	AuditActionDelete   = "delete"
+	AuditActionActivate = "activate"
+	AuditActionCancel   = "cancel"
+	AuditActionPause    = "pause"
+	AuditActionResume   = "resume"
+	AuditActionFinalize = "finalize"
+	AuditActionVoid     = "void"
+	AuditActionRevoke   = "revoke"
+	AuditActionGrant    = "grant"
+	AuditActionRefund   = "refund"
 	// AuditActionCollect covers an operator manually charging a finalized
 	// invoice's saved card (POST /invoices/{id}/collect). AuditActionSend
 	// covers operator-initiated invoice emails (POST /invoices/{id}/send).

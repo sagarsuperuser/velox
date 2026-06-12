@@ -234,19 +234,21 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	// Join is (tenant_id, id) which matches the api_keys PK's tenant scope.
 	//
 	// Also LEFT JOIN customers for actor_type='customer' rows (customer-
-	// portal-driven mutations). Picks display_name so the AuditLog page
-	// shows "Acme Corp" instead of the generic "Customer" fallback.
-	// COALESCE prefers the api-key name (when the row is api_key-actored)
-	// over the customer display name (the joins are mutually exclusive in
-	// practice — actor_id can't be both a key and a customer).
+	// portal-driven mutations) and users for actor_type='user' rows
+	// (dashboard session operators — actor identity from #225): display
+	// name preferred, email as the identity operators recognize. users is
+	// a global (non-RLS) table so the join works under TxTenant. COALESCE
+	// order is safe — the joins are mutually exclusive in practice
+	// (an actor_id is exactly one of key / customer / user).
 	query := `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
-		COALESCE(NULLIF(k.name, ''), c.display_name, '') AS actor_name,
+		COALESCE(NULLIF(k.name, ''), c.display_name, NULLIF(u.display_name, ''), u.email, '') AS actor_name,
 		al.action, al.resource_type, al.resource_id,
 		COALESCE(al.resource_label,''), al.metadata,
 		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
 		FROM audit_log al
 		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
-		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'` + whereClause
+		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
+		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'` + whereClause
 
 	// Order by (created_at, id) DESC — id tiebreaker aligns with the
 	// cursor predicate's tuple ordering so seek + ORDER BY stay in
