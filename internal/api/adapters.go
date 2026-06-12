@@ -519,9 +519,10 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 	// without grepping outbox tables. Mirrors the operator-driven
 	// setup_link_sent audit row written by paymentmethods.Handler.
 	if a.auditLogger != nil {
+		// No recipient address in the append-only row (GDPR erasure) — the
+		// email outbox holds the delivery record; the row links the customer.
 		_ = a.auditLogger.Log(ctx, tenantID, "update", "customer", inv.CustomerID, name, map[string]any{
 			"action":         "setup_link_sent",
-			"to":             to,
 			"invoice_id":     inv.ID,
 			"invoice_number": inv.InvoiceNumber,
 			"trigger":        "finalize_no_pm",

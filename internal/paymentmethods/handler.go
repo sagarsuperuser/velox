@@ -334,9 +334,11 @@ func (h *Handler) operatorSendSetupEmail(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.auditLogger != nil {
+		// No recipient address in the append-only row (GDPR erasure) — the
+		// row links to the customer, and the email outbox is the delivery
+		// record with the actual address.
 		_ = h.auditLogger.Log(r.Context(), tenantID, "update", "customer", customerID, displayName, map[string]any{
 			"action":     "setup_link_sent",
-			"to":         email,
 			"session_id": sessionID,
 		})
 	}
