@@ -1040,6 +1040,7 @@ Rebuild trigger: first DP names a load-bearing promo-code use case.
 ## FLOW CU1: Settings + billing profile
 
 - [ ] Settings: company name change → "Saved" indicator. Navigating with unsaved changes prompts.
+- [ ] **Settings changes are audited field-by-field (2026-06-12)**: change e.g. the default currency + Net terms, save, open `/audit-log` → one "Updated Settings" row whose expanded metadata shows `changed` with each field's `from`/`to` (e.g. `default_currency: USD → EUR`) — including a flip of the fail-closed audit policy itself. A no-op save (no fields changed) adds no field-level row. Actor = the signed-in operator, not "System".
 - [ ] Currency change → new invoices use it; existing unchanged.
 - [ ] Edit billing profile (address, tax ID) → PDF reflects update.
 - [ ] Edit billing profile when customer has `stripe_customer_id` set → Stripe Dashboard → Customer shows the updated legal_name / phone / address / tax_exempt immediately (Phase 1 Velox→Stripe sync, best-effort, fires on every customer/profile update). <!-- currency-ok: Stripe Customer object's own tax_exempt field -->

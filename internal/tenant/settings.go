@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -354,12 +355,30 @@ func padInt(n, width int) string {
 
 // SettingsHandler handles HTTP for tenant settings.
 type SettingsHandler struct {
-	store *SettingsStore
+	store       *SettingsStore
+	auditLogger SettingsAuditRecorder
+}
+
+// SettingsAuditRecorder is the narrow audit surface the settings handler
+// needs — declared here so internal/tenant stays decoupled from
+// internal/audit. Production wires *audit.Logger via SetAuditLogger in
+// router.go. Optional: nil = no field-level audit row (the generic
+// middleware catch-all still records that a PUT happened).
+type SettingsAuditRecorder interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }
 
 func NewSettingsHandler(store *SettingsStore) *SettingsHandler {
 	return &SettingsHandler{store: store}
 }
+
+// SetAuditLogger wires the audit recorder used to log settings changes with
+// field-level before/after detail. Settings carry compliance-sensitive knobs
+// (audit_fail_closed, default_currency, timezone, net terms, tax config) —
+// before this, a settings change produced only the catch-all row with
+// metadata={"path":"/v1/settings"} and no record of WHAT changed; notably,
+// disabling fail-closed audit policy itself left no field-level trace.
+func (h *SettingsHandler) SetAuditLogger(a SettingsAuditRecorder) { h.auditLogger = a }
 
 func (h *SettingsHandler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -399,6 +418,19 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the pre-change settings for the field-level audit diff. Get
+	// synthesizes defaults on miss, so a first-ever save diffs against the
+	// defaults the tenant was effectively running on — the honest "before".
+	// A read failure skips the diff (audit falls back to the catch-all row)
+	// rather than blocking the save.
+	var before domain.TenantSettings
+	haveBefore := false
+	if h.auditLogger != nil {
+		if b, err := h.store.Get(r.Context(), tenantID); err == nil {
+			before, haveBefore = b, true
+		}
+	}
+
 	result, err := h.store.Upsert(r.Context(), ts)
 	if err != nil {
 		slog.Error("upsert settings", "error", err)
@@ -406,7 +438,56 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Field-level change audit (the catch-all row only records that a PUT
+	// happened). Diff computed over the JSON field names so new settings
+	// fields are covered automatically. No-op saves write nothing — the
+	// catch-all still records the request, same as before this existed.
+	if h.auditLogger != nil && haveBefore {
+		if changed := diffSettings(before, result); len(changed) > 0 {
+			_ = h.auditLogger.Log(r.Context(), tenantID, "update", "setting", "", "Settings", map[string]any{
+				"action":  "settings_updated",
+				"changed": changed,
+			})
+		}
+	}
+
 	respond.JSON(w, r, http.StatusOK, result)
+}
+
+// diffSettings returns {json_field: {"from": old, "to": new}} for every field
+// that differs between two settings snapshots, keyed by the wire (JSON) field
+// names so the audit row matches the API vocabulary and new struct fields are
+// picked up without touching this code. tenant_id and the row timestamps are
+// excluded — they're identity/bookkeeping, not operator-changed configuration.
+func diffSettings(before, after domain.TenantSettings) map[string]any {
+	norm := func(ts domain.TenantSettings) map[string]any {
+		b, err := json.Marshal(ts)
+		if err != nil {
+			return map[string]any{}
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			return map[string]any{}
+		}
+		delete(m, "tenant_id")
+		delete(m, "created_at")
+		delete(m, "updated_at")
+		return m
+	}
+	bm, am := norm(before), norm(after)
+	changed := map[string]any{}
+	for k, av := range am {
+		if !reflect.DeepEqual(bm[k], av) {
+			changed[k] = map[string]any{"from": bm[k], "to": av}
+		}
+	}
+	// Fields present before but omitted after (omitempty: value cleared).
+	for k, bv := range bm {
+		if _, ok := am[k]; !ok {
+			changed[k] = map[string]any{"from": bv, "to": nil}
+		}
+	}
+	return changed
 }
 
 // validateSettings validates + applies defaults to a settings struct, returning
