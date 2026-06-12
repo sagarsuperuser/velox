@@ -29,6 +29,16 @@ go test ./... -short          # unit tests only
 go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 ```
 
+## Concurrent sessions
+
+Two or more Claude Code sessions may work this repo at the same time. Rules:
+
+- **Every session works in its own git worktree** (`.claude/worktrees/<task-name>`). The main working tree stays parked on `main` — no session edits it, switches its branch, or stages files there.
+- **Claim a migration number** by checking origin/main **and** every local branch (`git worktree list`, `git branch -a`) — another session's unmerged migration may already hold the next number. Duplicates only fail at integration-test time.
+- **Stay on disjoint domains/packages** where possible. CHANGELOG/MANUAL_TEST conflicts are expected and cheap: whoever merges second rebases and keeps both sides' entries.
+- **Merge small PRs promptly; rebase onto origin/main before push.** A conflicting PR gets no CI (GitHub can't build the merge ref) — rebase first, then watch checks.
+- **Shared singletons**: one local Postgres (concurrent `-short=false` runs from two sessions can interfere — run unit tests freely, treat CI as the integration gate) and one `make dev` / vite (ports 8080/5173).
+
 ## Important decisions
 - Auth: dashboard uses email + password; API uses Bearer keys. Dashboard `POST /v1/auth/login` validates against `users.password_hash` (bcrypt cost 12) and mints an httpOnly `velox_session` cookie bound to `users.id` — not to any API key. SDK / curl callers send `Authorization: Bearer <vlx_…>`; `internal/session.MiddlewareOrAPIKey` accepts either, cookie taking precedence. Password reset uses single-use 1h tokens delivered via SMTP (Mailpit in local dev — `docker compose up -d mailpit`). No multi-user invites or 2FA in v1. See `docs/adr/011-email-password-auth-and-clean-api-keys.md`; ADR-007 and ADR-008 are superseded.
 - Email: single delivery path. `Sender` returns `ErrSMTPNotConfigured` when `SMTP_HOST` is unset — no stdout fallback. Boot logs WARN once per missing email-link env (`HOSTED_INVOICE_BASE_URL`, `PAYMENT_UPDATE_URL`, `DASHBOARD_BASE_URL`); the producer always wires the real adapter.
