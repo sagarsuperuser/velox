@@ -321,6 +321,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		charger:       stripeAdapter,
 		invoiceStore:  invoiceStore,
 		paymentSetups: paymentSetupStore,
+		credits:       creditSvc,
 	})
 	// Pre-invoiceSvc dunning wires (pauser + canceler only depend on
 	// subscription.Service + invoice store, both defined above).

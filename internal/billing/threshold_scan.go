@@ -480,10 +480,19 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		}
 	}
 
-	// Apply customer credits before charging. Same shape as the cycle scan.
+	// Apply customer credits before charging. Same shape as the cycle scan —
+	// INCLUDING the creditApplyOK gate (2026-05-30 fix, ported 2026-06-13): a
+	// failed credit application must flag the invoice for the scheduler-retry
+	// sweep and SKIP the inline charge below, otherwise the customer's card is
+	// charged the FULL pre-credit total while their balance sits unconsumed.
+	// The retry sweep re-applies credits before charging (processAutoCharge).
+	creditApplyOK := true
 	if e.credits != nil && totalWithTax > 0 {
 		if _, err := e.credits.ApplyToInvoiceAt(ctx, sub.TenantID, sub.CustomerID, inv.ID, totalWithTax, now, inv.InvoiceNumber); err != nil {
-			slog.Warn("threshold scan: failed to apply credits", "invoice_id", inv.ID, "error", err)
+			slog.Warn("threshold scan: failed to apply credits — flagging for retry; auto-charge skipped to avoid overcharge",
+				"invoice_id", inv.ID, "error", err)
+			creditApplyOK = false
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 		}
 	}
 
@@ -493,7 +502,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// tax-retry / pause-resume's auto-finalize chains land the
 	// transition later. Mirrors the same gate added to billOnePeriod's
 	// equivalent block (2026-05-22 fix — invoice DEMO-000906).
-	if totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
+	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
@@ -504,7 +513,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	}
 
 	// Auto-charge: synchronous with timeout, same behaviour as the cycle scan.
-	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
+	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
 		if stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID); err == nil &&
 			hasDefaultPM && stripeCusID != "" {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
