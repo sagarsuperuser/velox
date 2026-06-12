@@ -907,6 +907,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		dashboardBaseURL,
 		emailSender.IsConfigured(),
 	)
+	// Audit authenticated auth events (login, logout, mode change, password
+	// reset). Failed logins go to the structured security log instead, not the
+	// per-tenant audit_log. This is the DASHBOARD (session) auth handler —
+	// distinct from authH (the API-key handler) wired above.
+	dashboardAuthH.SetAuditLogger(auditLogger)
 
 	s := &Server{
 		BillingEngine:     engine,
