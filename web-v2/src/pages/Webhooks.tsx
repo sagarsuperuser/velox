@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import { CopyButton } from '@/components/CopyButton'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -620,7 +621,15 @@ function EventsTab() {
               {events.map(ev => (
                 <TableRow key={ev.id}>
                   <TableCell><Badge variant="outline">{ev.event_type}</Badge></TableCell>
-                  <TableCell className="font-mono text-muted-foreground">{ev.id.slice(0, 12)}...</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {/* The prefix is the same on every row (vlx_whevt_…) —
+                        show the distinguishing tail and make the full id
+                        copyable instead of printing 2 useful characters. */}
+                    <span className="inline-flex items-center gap-1" title={ev.id}>
+                      …{ev.id.slice(-8)}
+                      <CopyButton text={ev.id} />
+                    </span>
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{formatDate(ev.created_at)}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => handleReplay(ev.id)}>

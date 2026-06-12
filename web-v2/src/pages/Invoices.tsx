@@ -456,7 +456,13 @@ export default function InvoicesPage() {
                               no PaymentIntent exists yet. Hiding the pill on
                               drafts (Stripe parity) avoids the misleading
                               "this is stuck on payment" reading. */}
-                          {inv.status !== 'draft' && (
+                          {/* Hide the payment chip where it merely restates
+                              the lifecycle badge next to it: paid ⇒ succeeded
+                              and voided ⇒ no collection — rendering both reads
+                              as noise on every settled row. It stays on open
+                              invoices, where pending/processing/failed is the
+                              actual signal. */}
+                          {inv.status !== 'draft' && inv.status !== 'paid' && inv.status !== 'voided' && (
                             <Badge variant={statusBadgeVariant(inv.payment_status)}>{inv.payment_status}</Badge>
                           )}
                           {/* Due-date countdown only on open invoices
@@ -489,6 +495,8 @@ export default function InvoicesPage() {
                         <Button
                           variant="outline"
                           size="sm"
+                          aria-label={`Download PDF for ${inv.invoice_number}`}
+                          title="Download PDF"
                           onClick={async (e) => {
                             e.stopPropagation()
                             try {
@@ -498,7 +506,7 @@ export default function InvoicesPage() {
                             }
                           }}
                         >
-                          Download
+                          <Download size={14} />
                         </Button>
                       </TableCell>
                     </TableRow>

@@ -323,7 +323,6 @@ export default function CustomersPage() {
                 <TableHeader>
                   <TableRow>
                     <SortableHead label="Name" sortKey="display_name" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                    <TableHead className="text-xs font-medium">External ID</TableHead>
                     <SortableHead label="Email" sortKey="email" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     <SortableHead label="Status" sortKey="status" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     <SortableHead label="Created" sortKey="created_at" activeSortKey={sortKey} sortDir={sortDir} onSort={onSort} />
@@ -359,12 +358,9 @@ export default function CustomersPage() {
                                   list. */}
                               {c.test_clock_id && <TestClockBadge testClockId={c.test_clock_id} />}
                             </div>
-                            <p className="text-xs text-muted-foreground">{c.external_id}</p>
+                            <p className="text-xs text-muted-foreground font-mono truncate max-w-[220px]" title={c.external_id}>{c.external_id}</p>
                           </div>
                         </div>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground font-mono truncate max-w-[160px]" title={c.external_id}>
-                        {c.external_id}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {c.email || '\u2014'}
