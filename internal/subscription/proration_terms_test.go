@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -91,7 +90,7 @@ func TestUpdateItem_ProrationInvoiceNetTermsFallback(t *testing.T) {
 	if inv.NetPaymentTermDays != 30 {
 		t.Errorf("NetPaymentTermDays: got %d, want fallback 30 when no NetTermsReader is wired", inv.NetPaymentTermDays)
 	}
-	var wantDue time.Time = proNow.AddDate(0, 0, 30)
+	wantDue := proNow.AddDate(0, 0, 30)
 	if inv.DueAt == nil || !inv.DueAt.Equal(wantDue) {
 		t.Errorf("DueAt: got %v, want %v", inv.DueAt, wantDue)
 	}

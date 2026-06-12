@@ -1975,14 +1975,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// showed no "Simulated" marker (while the sibling cycle invoice
 			// did). The frontend badge reads this field authoritatively and
 			// deliberately does NOT infer simulation from a future date.
-			IsSimulated: sub.TestClockID != "",
+			IsSimulated:        sub.TestClockID != "",
 			NetPaymentTermDays: netDays,
 			// Stripe stamps subscription_update for every mid-period
 			// change invoice (plan / quantity / item add). Pre-fix this
 			// path was the only invoice writer that left the reason
 			// NULL, so the dashboard couldn't label the trigger.
-			BillingReason: domain.BillingReasonSubscriptionUpdate,
-			Memo:          memo,
+			BillingReason:            domain.BillingReasonSubscriptionUpdate,
+			Memo:                     memo,
 			SourcePlanChangedAt:      &changeAt,
 			SourceSubscriptionItemID: spec.itemID,
 			SourceChangeType:         spec.changeType,
