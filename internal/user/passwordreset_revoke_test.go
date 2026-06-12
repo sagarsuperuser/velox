@@ -117,7 +117,7 @@ func TestConfirmPasswordResetRevokesSessions(t *testing.T) {
 	sessStore := &recordingSessionStore{}
 	sessSvc := session.NewService(sessStore)
 
-	h := NewHandler(userSvc, sessSvc, session.DefaultCookieConfig(), stubEmailSender{}, "")
+	h := NewHandler(userSvc, sessSvc, session.DefaultCookieConfig(), stubEmailSender{}, "", false)
 
 	body, _ := json.Marshal(confirmResetReq{
 		Token:    plaintext,

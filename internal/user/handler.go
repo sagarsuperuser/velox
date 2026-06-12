@@ -28,6 +28,7 @@ type Handler struct {
 	cookie           session.CookieConfig
 	email            EmailSender // required — production always wires the adapter
 	dashboardBaseURL string      // canonical dashboard origin for reset links; never from request headers. empty => reset emails disabled
+	smtpConfigured   bool        // SMTP wired at boot (email.Sender.IsConfigured); drives the email_delivery hint
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -46,13 +47,14 @@ type EmailSender interface {
 // poisoning / token theft. When empty, password-reset emails are not sent
 // (requestPasswordReset fails safe). Set it to your dashboard URL — in
 // split-origin dev (Vite on :5173 vs API on :8080) that's the SPA URL.
-func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string) *Handler {
+func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string, smtpConfigured bool) *Handler {
 	return &Handler{
 		users:            users,
 		sessions:         sessions,
 		cookie:           cookie,
 		email:            emailSender,
 		dashboardBaseURL: strings.TrimRight(strings.TrimSpace(dashboardBaseURL), "/"),
+		smtpConfigured:   smtpConfigured,
 	}
 }
 
@@ -251,8 +253,19 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Whether reset emails can actually be DELIVERED on this deployment —
+	// server-global (SMTP wired AND DASHBOARD_BASE_URL set), computed
+	// independently of whether the email matched a user, so it leaks no
+	// account existence (it's deployment posture, not account state). Lets the
+	// UI tell a self-hoster their email isn't configured rather than promising
+	// a link that can never arrive.
+	emailDelivery := "ok"
+	if h.dashboardBaseURL == "" || !h.smtpConfigured {
+		emailDelivery = "not_configured"
+	}
 	respond.JSON(w, r, http.StatusOK, map[string]string{
-		"message": "if an account exists for that email, a password-reset link has been sent",
+		"message":        "if an account exists for that email, a password-reset link has been sent",
+		"email_delivery": emailDelivery,
 	})
 }
 

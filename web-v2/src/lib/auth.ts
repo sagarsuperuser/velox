@@ -47,8 +47,11 @@ export const authApi = {
 
   // requestPasswordReset triggers the "send a reset link" flow.
   // Always 200; never confirms whether the email was on file.
+  // email_delivery reflects server config (SMTP + DASHBOARD_BASE_URL),
+  // not whether the email matched — used to warn self-hosters whose
+  // email isn't wired that no link can actually arrive.
   requestPasswordReset: (email: string) =>
-    apiRequest<{ message: string }>('POST', '/auth/password-reset/request', { email }),
+    apiRequest<{ message: string; email_delivery?: 'ok' | 'not_configured' }>('POST', '/auth/password-reset/request', { email }),
 
   // confirmPasswordReset consumes a reset token and sets a new
   // password. Token from the email link's ?token= param.
