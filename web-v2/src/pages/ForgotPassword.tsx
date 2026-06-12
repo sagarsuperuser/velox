@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { authApi } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
@@ -20,6 +21,7 @@ import { VeloxLogo } from '@/components/VeloxLogo'
 // 'not_configured' and we tell the operator no link can be sent — there
 // is NO stdout/log fallback for the link (ADR-011 removed it).
 export default function ForgotPasswordPage() {
+  usePageTitle('Reset password')
   const [email, setEmail] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [emailNotConfigured, setEmailNotConfigured] = useState(false)

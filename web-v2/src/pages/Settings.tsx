@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
@@ -135,6 +136,7 @@ function LogoPreview({ url }: { url: string }) {
 }
 
 export default function SettingsPage() {
+  usePageTitle('Settings')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)

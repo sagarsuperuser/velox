@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -151,6 +152,8 @@ export default function PlanDetailPage() {
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
+
+  usePageTitle(plan?.name)
 
   if (loading) {
     return (

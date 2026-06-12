@@ -66,7 +66,12 @@ function NavLink({
 }: {
   to: string; icon: LucideIcon; label: string; pathname: string; onClick?: () => void; count?: number; badgeTone?: 'info' | 'critical'
 }) {
+  // Prefix match keeps the section highlighted on detail pages
+  // (/customers/:id highlights Customers). Pricing also owns the
+  // /plans/:id and /meters/:id detail routes.
   const active = pathname === to
+    || (to !== '/' && pathname.startsWith(to + '/'))
+    || (to === '/pricing' && (pathname.startsWith('/plans/') || pathname.startsWith('/meters/')))
   return (
     <div>
     <Tooltip>

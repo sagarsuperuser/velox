@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { formatCents } from '@/lib/api'
@@ -16,6 +17,7 @@ interface TokenData {
 }
 
 export default function UpdatePaymentPage() {
+  usePageTitle('Update payment method')
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token') || ''
 

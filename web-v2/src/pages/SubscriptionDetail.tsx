@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -240,6 +241,8 @@ export default function SubscriptionDetailPage() {
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
+
+  usePageTitle(sub?.display_name)
 
   if (loading) {
     return (

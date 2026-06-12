@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +38,7 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react'
 
 export default function RecipesPage() {
+  usePageTitle('Recipes')
   const [selected, setSelected] = useState<Recipe | null>(null)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -83,7 +85,7 @@ export default function RecipesPage() {
             <EmptyState
               icon={Box}
               title="No recipes available yet"
-              description="Pricing recipes ship with the v0.x release of the recipes API (Week 3). Check back after the next deploy, or follow docs/design-recipes.md for the contract."
+              description="Recipes are pre-built pricing templates for common AI billing models — per-token rates by model, GPU-hours, API calls. None are installed on this server yet."
             />
           </CardContent>
         </Card>

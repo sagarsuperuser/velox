@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -89,6 +90,7 @@ function badgeVariant(val: string): 'success' | 'info' | 'secondary' | 'outline'
 }
 
 export default function PricingPage() {
+  usePageTitle('Pricing')
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = (['plans', 'meters', 'rules'].includes(searchParams.get('tab') || '')
     ? searchParams.get('tab')

@@ -5,11 +5,11 @@ export function statusBadgeVariant(status: string): 'default' | 'secondary' | 'd
     // Blue
     case 'finalized': case 'processing': case 'issued': case 'trialing': return 'info'
     // Red
-    case 'voided': case 'canceled': case 'failed': case 'revoked': case 'uncollectible': return 'danger'
+    case 'voided': case 'canceled': case 'failed': case 'revoked': case 'uncollectible': case 'expired': return 'danger'
     // Amber
     case 'paused': case 'pending': case 'escalated': return 'warning'
     // Gray
-    case 'draft': case 'archived': return 'secondary'
+    case 'draft': case 'archived': case 'ready': return 'secondary'
     default: return 'outline'
   }
 }

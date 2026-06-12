@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -130,6 +131,8 @@ export default function TestClockDetailPage() {
       setDeleting(false)
     }
   }
+
+  usePageTitle(clock?.name)
 
   if (clockQ.isLoading) {
     return (

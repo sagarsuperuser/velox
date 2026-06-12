@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -140,6 +141,8 @@ export default function MeterDetailPage() {
     },
     onError: (err) => showApiError(err, 'Failed to delete pricing rule'),
   })
+
+  usePageTitle(meter?.name)
 
   if (loading) {
     return (

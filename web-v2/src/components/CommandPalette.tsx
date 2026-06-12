@@ -195,7 +195,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                 <CommandItem
                   key={`plan-${p.id}`}
                   value={`plan ${p.name} ${p.code}`}
-                  onSelect={() => go('/pricing')}
+                  onSelect={() => go(`/plans/${p.id}`)}
                   className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <Zap className="mr-2 h-4 w-4" />

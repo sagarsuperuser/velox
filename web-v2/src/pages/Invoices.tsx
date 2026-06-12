@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -69,6 +70,7 @@ function SortableHead({
 }
 
 export default function InvoicesPage() {
+  usePageTitle('Invoices')
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -56,6 +57,7 @@ const createEndpointSchema = z.object({
 type CreateEndpointData = z.infer<typeof createEndpointSchema>
 
 export default function WebhooksPage() {
+  usePageTitle('Webhooks')
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = (searchParams.get('tab') === 'events' ? 'events' : 'endpoints') as 'endpoints' | 'events'
   const setTab = (t: string) => setSearchParams(t === 'endpoints' ? {} : { tab: t })
@@ -90,6 +92,7 @@ function EndpointsTab() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdSecret, setCreatedSecret] = useState<{ secret: string; secondary_valid_until?: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebhookEndpoint | null>(null)
+  const [rotatingId, setRotatingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data, isLoading: loading, error: loadError, refetch } = useQuery({
@@ -208,7 +211,10 @@ function EndpointsTab() {
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="outline" size="sm" className="h-7 text-xs"
+                          disabled={!!rotatingId}
                           onClick={async () => {
+                            if (rotatingId) return
+                            setRotatingId(ep.id)
                             try {
                               const res = await api.rotateWebhookSecret(ep.id)
                               setCreatedSecret({ secret: res.secret, secondary_valid_until: res.secondary_valid_until })
@@ -216,9 +222,11 @@ function EndpointsTab() {
                               toast.success('Secret rotated')
                             } catch (err) {
                               showApiError(err, 'Failed to rotate secret')
+                            } finally {
+                              setRotatingId(null)
                             }
                           }}>
-                          Rotate Secret
+                          {rotatingId === ep.id ? <><Loader2 size={12} className="animate-spin mr-1" />Rotating…</> : 'Rotate Secret'}
                         </Button>
                         <Button variant="outline" size="sm" className="h-7 text-xs text-destructive hover:text-destructive"
                           onClick={() => setDeleteTarget(ep)}>

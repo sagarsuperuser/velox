@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -128,6 +129,17 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     return () => { if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl) }
+  }, [pdfPreviewUrl])
+
+  // Escape closes the PDF preview overlay (it is a hand-rolled modal, not
+  // a base-ui Dialog, so it gets no focus/keyboard handling for free).
+  useEffect(() => {
+    if (!pdfPreviewUrl) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [pdfPreviewUrl])
 
   // Generated react-query hook from api/openapi.yaml. The hook key is
@@ -398,6 +410,8 @@ export default function InvoiceDetailPage() {
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
+
+  usePageTitle(invoice?.invoice_number)
 
   if (loading) {
     return (
@@ -1363,7 +1377,7 @@ export default function InvoiceDetailPage() {
 
       {/* PDF Preview */}
       {pdfPreviewUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null) }}>
+        <div role="dialog" aria-modal="true" aria-label="Invoice PDF preview" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null) }}>
           <div className="relative w-full max-w-4xl h-[85vh] bg-background rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-3 border-b border-border">
               <h2 className="text-sm font-semibold text-foreground">Invoice Preview -- {invoice.invoice_number}</h2>

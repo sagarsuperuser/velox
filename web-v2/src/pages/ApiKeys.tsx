@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -9,6 +10,7 @@ import { addDaysInTZ, endOfDayInTZ, formatExpiryHintInTZ } from '@/lib/dates'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { Layout } from '@/components/Layout'
+import { statusBadgeVariant } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -86,6 +88,7 @@ function isExpired(key: ApiKeyInfo): boolean {
 }
 
 export default function ApiKeysPage() {
+  usePageTitle('API keys')
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
@@ -253,7 +256,7 @@ export default function ApiKeysPage() {
                           <div className="flex items-center gap-3">
                             <p className="text-sm text-muted-foreground">{k.name}</p>
                             <code className="text-xs font-mono text-muted-foreground">{k.key_prefix}----</code>
-                            <Badge variant="destructive">expired</Badge>
+                            <Badge variant={statusBadgeVariant('expired')}>expired</Badge>
                             <span className="text-xs text-muted-foreground">
                               Expired {k.expires_at ? relativeTime(k.expires_at) : ''}
                             </span>

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -10,6 +11,7 @@ import { api, formatDate, formatDateTime, getTenantTimezone, type TestClock } fr
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
+import { statusBadgeVariant } from '@/lib/status'
 import { EmptyState } from '@/components/EmptyState'
 import { CardListSkeleton } from '@/components/ui/TableSkeleton'
 import { Button } from '@/components/ui/button'
@@ -37,7 +39,7 @@ type CreateData = z.infer<typeof createSchema>
 function statusBadge(status: TestClock['status']) {
   switch (status) {
     case 'ready':
-      return <Badge variant="secondary">Ready</Badge>
+      return <Badge variant={statusBadgeVariant('ready')}>Ready</Badge>
     case 'advancing':
       return (
         <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400">
@@ -45,11 +47,12 @@ function statusBadge(status: TestClock['status']) {
         </Badge>
       )
     case 'internal_failure':
-      return <Badge variant="destructive">Failed</Badge>
+      return <Badge variant={statusBadgeVariant('failed')}>Failed</Badge>
   }
 }
 
 export default function TestClocksPage() {
+  usePageTitle('Test clocks')
   const { user } = useAuth()
   const navigate = useNavigate()
   const [showCreate, setShowCreate] = useState(false)

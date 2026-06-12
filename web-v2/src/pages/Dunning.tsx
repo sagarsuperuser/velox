@@ -1,4 +1,5 @@
 import { Fragment, useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -100,6 +101,7 @@ function futureRelativeTime(dateStr: string, effectiveNowISO?: string): string {
 }
 
 export default function DunningPage() {
+  usePageTitle('Dunning')
   return (
     <Layout>
       <div className="flex items-center justify-between">

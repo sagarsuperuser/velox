@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { formatInTimeZone } from 'date-fns-tz'
@@ -43,6 +44,7 @@ function formatShortDate(dateStr: string): string {
 }
 
 export default function DashboardPage() {
+  usePageTitle('Dashboard')
   const [period, setPeriod] = useState<Period>('30d')
   const theme = useChartTheme()
 

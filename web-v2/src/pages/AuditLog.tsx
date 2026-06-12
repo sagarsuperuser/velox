@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from 'date-fns-tz'
-import { api, formatDateTime, formatRate, getTenantTimezone } from '@/lib/api'
+import { api, formatDateTime, formatRate, getTenantTimezone, formatCents } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
@@ -223,7 +224,7 @@ function formatMetadata(meta: Record<string, unknown> | undefined): { label: str
     if (SIM_CONTEXT_KEYS.has(key)) continue
     const label = fixAcronyms(key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))
     if (typeof val === 'number' && key.includes('cents')) {
-      items.push({ label: label.replace(' Cents', ''), value: `$${(val / 100).toFixed(2)}` })
+      items.push({ label: label.replace(' Cents', ''), value: formatCents(val) })
     } else if (typeof val === 'string' && key.includes('cents') && val !== '' && Number.isFinite(Number(val))) {
       // Decimal per-unit rates serialize as strings (e.g. "0.0003" cents).
       // toFixed(2) would collapse sub-cent rates to $0.00 — render at full
@@ -275,6 +276,7 @@ function actionVariant(action: string): 'default' | 'secondary' | 'destructive' 
 }
 
 export default function AuditLogPage() {
+  usePageTitle('Audit log')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [urlState, setUrlState] = useUrlState({
