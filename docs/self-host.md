@@ -59,6 +59,24 @@ For your own VM:
 - Version: 16.x
 - Extensions: none required (Velox uses standard `gen_random_bytes`,
   `LATERAL`, RLS — all built-in).
+- **`velox_app` role (required for tenant isolation).** Velox enforces
+  multi-tenant isolation with Row-Level Security, which only applies to a
+  **non-owner** role. At request time it connects as `velox_app`, derived from
+  `DATABASE_URL` by swapping the credentials to `velox_app`/`velox_app`. The
+  compose path creates this role automatically
+  ([`deploy/compose/postgres-init.sql`](../deploy/compose/postgres-init.sql));
+  on your own Postgres you must create it:
+
+  ```sql
+  CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
+  GRANT velox_app TO <the role in your DATABASE_URL>;
+  -- migrations GRANT the needed table privileges to velox_app
+  ```
+
+  **With `APP_ENV=staging` or `production`, Velox refuses to start** if it
+  can't open the `velox_app` pool — running as the table owner would bypass
+  RLS and leak data across tenants. (In `local` it warns and continues, since
+  a single-tenant dev box often uses one superuser URL.)
 - Backups: take a `pg_dump` snapshot on whatever cadence your data loss
   tolerance allows. Stripe's webhook outbox + Velox's audit log are the
   two surfaces where lost rows are most expensive; both are covered by a
