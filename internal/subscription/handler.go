@@ -1898,13 +1898,22 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		// only partition the stored lines: charge = net − credit, chargeTax =
 		// T − creditTax, so the two lines reconstruct the net exactly.
 		//
-		// Gated to: (1) a real plan change (add-item / quantity change have no
-		// distinct old plan to name as "unused time on …" — they keep the
-		// single net line), and (2) the net not being carved by inclusive-mode
-		// tax (taxResult.SubtotalCents == proratedCents) — in the rare
-		// inclusive case the carved net ≠ proratedCents, so we fall back to the
-		// single net line rather than risk a subtotal/line mismatch.
-		if spec.changeType == domain.ItemChangeTypePlan && taxResult.SubtotalCents == proratedCents {
+		// Gated to: (1) a plan change OR a quantity increase — both have an
+		// "unused old" slice to credit (old plan / old seat count). The
+		// pre-fix quantity gate kept a single line whose Quantity was the NEW
+		// total but whose Amount was the DELTA-only charge, so the derived
+		// unit price was a fiction and qty × unit visibly disagreed with the
+		// amount (3 × $33.33 ≠ $100.00 — integer truncation). Stripe stamps
+		// the same credit/charge pair for quantity updates. Item ADD stays
+		// single-line: oldAmount is 0, so there is nothing unused to credit
+		// and the split would degenerate to a $0 line. And (2) the net not
+		// being carved by inclusive-mode tax (taxResult.SubtotalCents ==
+		// proratedCents) — in the rare inclusive case the carved net ≠
+		// proratedCents, so we fall back to the single net line rather than
+		// risk a subtotal/line mismatch.
+		splitEligible := spec.changeType == domain.ItemChangeTypePlan ||
+			spec.changeType == domain.ItemChangeTypeQuantity
+		if splitEligible && taxResult.SubtotalCents == proratedCents {
 			creditCents, chargeCents, creditTax, chargeTax := splitUpgradeProration(
 				oldAmount, remainingDays, denomDays, proratedCents, taxResult.TaxAmountCents)
 
@@ -1916,8 +1925,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			oldQty := max64(spec.oldQuantity, 1)
 			newQty := max64(spec.newQuantity, 1)
 
+			// Labels: a plan change names the two plans; a quantity change
+			// reuses one plan name, so the seat counts carry the contrast
+			// (Stripe's "Unused time on 1 × Pro" shape).
+			creditDesc := upgradeCreditLabel(oldPlan, spec.changeAt)
+			chargeDesc := upgradeChargeLabel(newPlan, spec.changeAt)
+			if spec.changeType == domain.ItemChangeTypeQuantity {
+				creditDesc = qtyChangeCreditLabel(newPlan, oldQty, spec.changeAt)
+				chargeDesc = qtyChangeChargeLabel(newPlan, newQty, spec.changeAt)
+			}
+
 			creditLine := tmpl
-			creditLine.Description = upgradeCreditLabel(oldPlan, spec.changeAt)
+			creditLine.Description = creditDesc
 			creditLine.Quantity = oldQty
 			creditLine.AmountCents = creditCents
 			creditLine.UnitAmountCents = creditCents / oldQty
@@ -1925,7 +1944,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			creditLine.TotalAmountCents = creditCents + creditTax
 
 			chargeLine := tmpl
-			chargeLine.Description = upgradeChargeLabel(newPlan, spec.changeAt)
+			chargeLine.Description = chargeDesc
 			chargeLine.Quantity = newQty
 			chargeLine.AmountCents = chargeCents
 			chargeLine.UnitAmountCents = chargeCents / newQty
@@ -2288,6 +2307,17 @@ func upgradeCreditLabel(oldPlan domain.Plan, at time.Time) string {
 
 func upgradeChargeLabel(newPlan domain.Plan, at time.Time) string {
 	return fmt.Sprintf("Remaining time on %s (after %s)", newPlan.Name, at.Format("Jan 2, 2006"))
+}
+
+// qtyChangeCreditLabel / qtyChangeChargeLabel are the quantity-increase
+// variants of the pair above. Both lines name the SAME plan, so the seat
+// counts carry the contrast — Stripe's "Unused time on 1 × Pro" shape.
+func qtyChangeCreditLabel(plan domain.Plan, oldQty int64, at time.Time) string {
+	return fmt.Sprintf("Unused time on %d × %s (after %s)", oldQty, plan.Name, at.Format("Jan 2, 2006"))
+}
+
+func qtyChangeChargeLabel(plan domain.Plan, newQty int64, at time.Time) string {
+	return fmt.Sprintf("Remaining time on %d × %s (after %s)", newQty, plan.Name, at.Format("Jan 2, 2006"))
 }
 
 // clawbackReason maps a downgrade change type to the credit-note `reason`
