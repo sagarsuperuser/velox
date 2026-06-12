@@ -162,38 +162,83 @@ func TestUpdateItem_PlanUpgrade_TwoLineTaxApportionsAndTiesOut(t *testing.T) {
 	}
 }
 
-// TestUpdateItem_AddAndQuantityChange_KeepSingleLine confirms the two-line split
-// is scoped to a real PLAN change: an item add and a quantity increase (which
-// have no distinct old plan to credit as "unused time on …") keep the existing
-// single net line.
-func TestUpdateItem_AddAndQuantityChange_KeepSingleLine(t *testing.T) {
-	ctx := clock.WithEffectiveNow(context.Background(), proNow)
+// TestUpdateItem_QuantityIncrease_RendersTwoLines locks the quantity-change
+// extension of ADR-048 Phase C: a mid-cycle seat increase emits the same
+// credit-unused / charge-remaining pair a plan upgrade does (Stripe stamps
+// the identical shape for quantity updates). The pre-fix single line showed
+// the NEW total quantity against the DELTA-only amount, so the derived unit
+// price was a fiction and qty × unit visibly disagreed with the amount
+// (3 × $33.33 ≠ $100.00 — integer truncation).
+func TestUpdateItem_QuantityIncrease_RendersTwoLines(t *testing.T) {
+	ctx := clock.WithEffectiveNow(context.Background(), proNow) // 15 of 30 days remain
 	tenantID := "t1"
 
-	t.Run("quantity increase → single line", func(t *testing.T) {
-		store := newMemStore()
-		subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_seats", proPeriodStart, proPeriodEnd)
-		svc := NewService(store, nil)
-		plans := &plansMock{plans: map[string]domain.Plan{
-			"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
-		}}
-		invoices := &invoicesMock{sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded}}
-		h := NewHandler(svc)
-		h.SetProrationDeps(plans, invoices, &creditsMock{})
+	store := newMemStore()
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_seats", proPeriodStart, proPeriodEnd)
+	svc := NewService(store, nil)
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_seats": {ID: "plan_seats", Name: "Seat", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	invoices := &invoicesMock{sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded}}
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, &creditsMock{})
 
-		newQty := int64(3)
-		body, _ := json.Marshal(UpdateItemInput{Quantity: &newQty})
-		req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
-		rr := httptest.NewRecorder()
-		h.updateItem(rr, req)
+	newQty := int64(3)
+	body, _ := json.Marshal(UpdateItemInput{Quantity: &newQty})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
 
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
-		}
-		if len(invoices.createdLineItems) != 1 || len(invoices.createdLineItems[0]) != 1 {
-			t.Errorf("quantity increase must keep ONE line, got %v", invoices.createdLineItems)
-		}
-	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdLineItems) != 1 || len(invoices.createdLineItems[0]) != 2 {
+		t.Fatalf("quantity increase must render TWO lines (credit unused + charge remaining), got %v", invoices.createdLineItems)
+	}
+	lines := invoices.createdLineItems[0]
+	credit, charge := lines[0], lines[1]
+
+	// 1→3 seats at $10.00/seat, half period: net = 2×1000×15/30 = 1000.
+	// credit = −(1×1000×15/30) = −500; charge = residual 1500 = 3 seats × $5.00.
+	if credit.AmountCents != -500 || credit.Quantity != 1 || credit.UnitAmountCents != -500 {
+		t.Errorf("credit line: got amount=%d qty=%d unit=%d, want -500/1/-500",
+			credit.AmountCents, credit.Quantity, credit.UnitAmountCents)
+	}
+	if charge.AmountCents != 1500 || charge.Quantity != 3 || charge.UnitAmountCents != 500 {
+		t.Errorf("charge line: got amount=%d qty=%d unit=%d, want 1500/3/500",
+			charge.AmountCents, charge.Quantity, charge.UnitAmountCents)
+	}
+	// qty × unit must reconstruct the amount on BOTH lines — the exact
+	// coherence the single-line display violated.
+	if credit.Quantity*credit.UnitAmountCents != credit.AmountCents {
+		t.Errorf("credit line incoherent: %d × %d ≠ %d", credit.Quantity, credit.UnitAmountCents, credit.AmountCents)
+	}
+	if charge.Quantity*charge.UnitAmountCents != charge.AmountCents {
+		t.Errorf("charge line incoherent: %d × %d ≠ %d", charge.Quantity, charge.UnitAmountCents, charge.AmountCents)
+	}
+	if !strings.Contains(credit.Description, "Unused time on 1 × Seat") {
+		t.Errorf("credit label: got %q, want 'Unused time on 1 × Seat …'", credit.Description)
+	}
+	if !strings.Contains(charge.Description, "Remaining time on 3 × Seat") {
+		t.Errorf("charge label: got %q, want 'Remaining time on 3 × Seat …'", charge.Description)
+	}
+
+	inv := invoices.createdInvoices[0]
+	amt, _, total := sumLineAmounts(lines)
+	if amt != inv.SubtotalCents || inv.SubtotalCents != 1000 {
+		t.Errorf("line amounts sum to %d, invoice subtotal %d, want both 1000", amt, inv.SubtotalCents)
+	}
+	if total != inv.TotalAmountCents || inv.TotalAmountCents != 1000 {
+		t.Errorf("line totals sum to %d, invoice total %d, want both 1000", total, inv.TotalAmountCents)
+	}
+}
+
+// TestUpdateItem_ItemAdd_KeepsSingleLine confirms the split's remaining scope
+// boundary: an item ADD has no unused old slice to credit (oldAmount is 0 —
+// the credit half would be a $0 line), so it keeps the single net line.
+func TestUpdateItem_ItemAdd_KeepsSingleLine(t *testing.T) {
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
+	tenantID := "t1"
 
 	t.Run("item add → single line", func(t *testing.T) {
 		store := newMemStore()
