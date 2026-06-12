@@ -234,11 +234,20 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 		}
 		lineType := domain.InvoiceLineItemType(pl.LineType)
 		quantity := pl.Quantity.IntPart()
+		// Usage lines carry the exact fractional quantity (cycle-writer
+		// parity, engine.go billOnePeriod) so qty × unit reconciles with
+		// the amount on display surfaces. Base-fee lines keep the zero
+		// value per the QuantityDecimal contract ("use Quantity").
+		var qtyDecimal decimal.Decimal
+		if lineType == domain.LineTypeUsage {
+			qtyDecimal = pl.Quantity
+		}
 		lineItems = append(lineItems, domain.InvoiceLineItem{
 			LineType:            lineType,
 			MeterID:             pl.MeterID,
 			Description:         pl.Description,
 			Quantity:            quantity,
+			QuantityDecimal:     qtyDecimal,
 			UnitAmountCents:     pl.UnitAmountCents,
 			AmountCents:         pl.AmountCents,
 			TotalAmountCents:    pl.AmountCents,
@@ -391,10 +400,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	dueAt := now.AddDate(0, 0, netDays)
 
-	invStatus := domain.InvoiceFinalized
-	if taxApp.TaxStatus == domain.InvoiceTaxPending {
-		invStatus = domain.InvoiceDraft
-	}
+	// Shared finalization gate (tax-pending OR pause-collection → Draft),
+	// same as every other invoice writer. The scan currently skips paused
+	// subs upstream (scanOneThreshold), so the pause arm is unreachable
+	// today — but a hand-rolled tax-only gate here was wrong-by-
+	// construction: any relaxation of that skip would have finalized and
+	// auto-charged a paused subscription.
+	invStatus := domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection)
 
 	// Emit the threshold invoice. The partial unique index on
 	// (tenant, sub, billing_period_start) WHERE billing_reason='threshold'
@@ -403,26 +415,30 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// not now, so two ticks fired against the same in-flight cycle dedup
 	// to the same row even though their wall-clock differs.
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
-		CustomerID:         sub.CustomerID,
-		SubscriptionID:     sub.ID,
-		InvoiceNumber:      invoiceNumber,
-		Status:             invStatus,
-		PaymentStatus:      domain.PaymentPending,
-		Currency:           invoiceCurrency,
-		SubtotalCents:      taxApp.SubtotalCents,
-		DiscountCents:      taxApp.DiscountCents,
-		TaxRate:            taxApp.TaxRate,
-		TaxName:            taxApp.TaxName,
-		TaxCountry:         taxApp.TaxCountry,
-		TaxID:              taxApp.TaxID,
-		TaxAmountCents:     taxApp.TaxAmountCents,
-		TaxProvider:        taxApp.TaxProvider,
-		TaxCalculationID:   taxApp.TaxCalculationID,
-		TaxReverseCharge:   taxApp.TaxReverseCharge,
-		TaxExemptReason:    taxApp.TaxExemptReason,
-		TaxStatus:          taxApp.TaxStatus,
-		TaxDeferredAt:      taxApp.TaxDeferredAt,
-		TaxPendingReason:   taxApp.TaxPendingReason,
+		CustomerID:       sub.CustomerID,
+		SubscriptionID:   sub.ID,
+		InvoiceNumber:    invoiceNumber,
+		Status:           invStatus,
+		PaymentStatus:    domain.PaymentPending,
+		Currency:         invoiceCurrency,
+		SubtotalCents:    taxApp.SubtotalCents,
+		DiscountCents:    taxApp.DiscountCents,
+		TaxRate:          taxApp.TaxRate,
+		TaxName:          taxApp.TaxName,
+		TaxCountry:       taxApp.TaxCountry,
+		TaxID:            taxApp.TaxID,
+		TaxAmountCents:   taxApp.TaxAmountCents,
+		TaxProvider:      taxApp.TaxProvider,
+		TaxCalculationID: taxApp.TaxCalculationID,
+		TaxReverseCharge: taxApp.TaxReverseCharge,
+		TaxExemptReason:  taxApp.TaxExemptReason,
+		TaxStatus:        taxApp.TaxStatus,
+		TaxDeferredAt:    taxApp.TaxDeferredAt,
+		TaxPendingReason: taxApp.TaxPendingReason,
+		// TaxErrorCode lets the dashboard banner + webhook consumers
+		// branch on cause (fix-customer-data vs provider-outage). Was
+		// the one TaxApplication field this writer dropped.
+		TaxErrorCode:       taxApp.TaxErrorCode,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
@@ -434,6 +450,12 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		CreatedAt:          now,
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonThreshold,
+		// Threshold invoices fire on clock-pinned subs too (the
+		// ScanThresholdsForClock catchup path); without this stamp the
+		// invoice landed is_simulated=false and rendered without the
+		// Simulated badge while sibling cycle/proration invoices on the
+		// same clock showed it. Matches every other engine writer.
+		IsSimulated: sub.TestClockID != "",
 	}, eval.LineItems)
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {

@@ -478,6 +478,11 @@ type mockUsage struct {
 	// quantities per [from, to]. Key is "meterID|fromRFC3339|toRFC3339".
 	// Missing keys fall back to totals.
 	perInterval map[string]int64
+	// ruleAggs lets multi-dim tests stub per-pricing-rule buckets the way
+	// the real AggregateByPricingRules returns them (one RuleAggregation
+	// per claimed rule). Keyed by meterID; when unset, the legacy
+	// single-bucket fallback below applies.
+	ruleAggs map[string][]domain.RuleAggregation
 }
 
 func mockIntervalKey(meterID string, from, to time.Time) string {
@@ -518,6 +523,9 @@ func (m *mockUsage) AggregateForBillingPeriodByAgg(_ context.Context, _, _ strin
 // aggregation per known meter so the new preview path produces the same
 // totals the legacy tests expect.
 func (m *mockUsage) AggregateByPricingRules(_ context.Context, _, _, meterID string, _ domain.AggregationMode, _, _ time.Time) ([]domain.RuleAggregation, error) {
+	if aggs, ok := m.ruleAggs[meterID]; ok {
+		return aggs, nil
+	}
 	qty, ok := m.totals[meterID]
 	if !ok {
 		return nil, nil
@@ -534,6 +542,10 @@ type mockPricing struct {
 	meters    map[string]domain.Meter
 	rules     map[string]domain.RatingRuleVersion
 	overrides map[string]domain.CustomerPriceOverride // key: customerID+ruleID
+	// meterPricingRules drives the multi-dim fork (ADR-044): meters with
+	// entries here take the AggregateByPricingRules path. Keyed by meterID;
+	// nil/missing keeps the meter on the legacy single-rule path.
+	meterPricingRules map[string][]domain.MeterPricingRule
 }
 
 func (m *mockPricing) GetPlan(_ context.Context, _, id string) (domain.Plan, error) {
@@ -589,11 +601,10 @@ func (m *mockPricing) GetOverride(_ context.Context, _, customerID, ruleID strin
 	return o, nil
 }
 
-// ListMeterPricingRulesByMeter is a no-op stub. The engine unit tests use
-// single-rule meters; per-rule DimensionMatch echo is covered by the
-// create_preview integration tests against real Postgres.
-func (m *mockPricing) ListMeterPricingRulesByMeter(_ context.Context, _, _ string) ([]domain.MeterPricingRule, error) {
-	return nil, nil
+// ListMeterPricingRulesByMeter returns the configured multi-dim rules for a
+// meter (nil for legacy single-rule meters — the default for most tests).
+func (m *mockPricing) ListMeterPricingRulesByMeter(_ context.Context, _, meterID string) ([]domain.MeterPricingRule, error) {
+	return m.meterPricingRules[meterID], nil
 }
 
 type mockInvoices struct {

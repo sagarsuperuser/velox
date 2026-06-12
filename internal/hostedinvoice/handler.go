@@ -172,8 +172,14 @@ type viewInvoice struct {
 }
 
 type viewLineItem struct {
-	Description      string `json:"description"`
-	Quantity         int64  `json:"quantity"`
+	Description string `json:"description"`
+	Quantity    int64  `json:"quantity"`
+	// QuantityDecimal is the exact (possibly fractional) usage quantity as a
+	// decimal string; empty for whole-quantity lines. Without it the page
+	// showed the truncated integer against the full amount (1.5 GPU-hours →
+	// "Qty 1 × $6.67 = $10.00"), the qty × unit ≠ amount incoherence the
+	// invoice PDF already avoids via its QuantityDecimal-aware formatter.
+	QuantityDecimal  string `json:"quantity_decimal,omitempty"`
 	UnitAmountCents  int64  `json:"unit_amount_cents"`
 	AmountCents      int64  `json:"amount_cents"`
 	TaxAmountCents   int64  `json:"tax_amount_cents,omitempty"`
@@ -510,7 +516,7 @@ func toViewInvoice(inv domain.Invoice) viewInvoice {
 func toViewLineItems(items []domain.InvoiceLineItem) []viewLineItem {
 	out := make([]viewLineItem, 0, len(items))
 	for _, it := range items {
-		out = append(out, viewLineItem{
+		v := viewLineItem{
 			Description:      it.Description,
 			Quantity:         it.Quantity,
 			UnitAmountCents:  it.UnitAmountCents,
@@ -518,7 +524,11 @@ func toViewLineItems(items []domain.InvoiceLineItem) []viewLineItem {
 			TaxAmountCents:   it.TaxAmountCents,
 			TotalAmountCents: it.TotalAmountCents,
 			Currency:         it.Currency,
-		})
+		}
+		if !it.QuantityDecimal.IsZero() {
+			v.QuantityDecimal = it.QuantityDecimal.String()
+		}
+		out = append(out, v)
 	}
 	return out
 }

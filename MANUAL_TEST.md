@@ -653,6 +653,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] PATCH `{amount_gte:50000}` → cross $500 → same shape.
 - [ ] Cross threshold + immediately `POST /v1/billing/run` → idempotent skip.
 - [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
+- [ ] **Threshold invoice on a test clock carries the Simulated badge (2026-06-12):** pin a sub with an amount threshold to a test clock, advance until the cap crosses → the threshold invoice shows the **Simulated** badge (is_simulated=true), same as sibling cycle invoices on the clock. Pre-fix the badge was missing on threshold invoices only.
 - [ ] Canceled/archived subs → Set/Edit hidden.
 
 ## FLOW B15: `in_advance` plan happy path (ADR-031)
@@ -689,6 +690,12 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
   - Single invoice carries both — no separate invoice for the upcoming base.
 - [ ] Tax applies to both lines; per-line `tax_amount_cents` populated.
 - [ ] Auto-charge fires once for the combined total.
+
+## FLOW B16b: token usage billed on immediate cancel (ADR-044 cancel path, 2026-06-12)
+
+- [ ] Setup: sub on a pure-usage plan with the multi-dim `tokens` meter (per-`{model, token_type}` pricing rules, e.g. the claude-3.5-sonnet recipe — meter has NO direct rating-rule binding). Ingest input + output token usage mid-period.
+- [ ] Cancel immediately → a final invoice IS emitted with `billing_reason=subscription_cancel`, one usage line per claimed rule (`… - canceled mid-period`), priced at the recipe's decimal rates. Pre-fix: NO invoice — all token usage was free on cancel.
+- [ ] Each usage line carries `quantity_decimal`; line amounts match what the same usage would bill at cycle close.
 
 ## FLOW B17: `in_advance` cancel proration credit
 

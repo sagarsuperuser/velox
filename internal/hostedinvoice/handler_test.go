@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -506,4 +507,60 @@ func containsJSONField(raw, field string) bool {
 		}
 	}
 	return false
+}
+
+// TestViewInvoice_FractionalQuantity_CarriesQuantityDecimal locks the
+// qty × unit = amount coherence fix for the hosted page: a fractional-usage
+// line (1.5 GPU-hours at $6.67/hr = $10.00) must surface quantity_decimal in
+// the JSON so the SPA renders "1.5", not the truncated integer 1 against the
+// full $10.00 amount. The invoice PDF already handles this via its
+// QuantityDecimal-aware formatter; the hosted payload dropped the field.
+func TestViewInvoice_FractionalQuantity_CarriesQuantityDecimal(t *testing.T) {
+	fi := newFakeInvoices()
+	fc := newFakeCustomers()
+	fs := newFakeSettings()
+	inv := seedFinalized(t, fi, fc, fs, "vlx_pinv_frac")
+	fi.lineItems[inv.ID] = []domain.InvoiceLineItem{{
+		ID:              "li_frac",
+		InvoiceID:       inv.ID,
+		TenantID:        "t_1",
+		Description:     "GPU hours",
+		Quantity:        1, // truncation of 1.5
+		QuantityDecimal: decimal.RequireFromString("1.5"),
+		UnitAmountCents: 667, AmountCents: 1000, TotalAmountCents: 1000,
+		Currency: "USD",
+	}}
+
+	h := newTestHandler(fi, fc, fs, &fakeCheckout{})
+	r := mountRouter(h)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/vlx_pinv_frac", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp hostedInvoicePayload
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(resp.LineItems) != 1 {
+		t.Fatalf("line_items = %d, want 1", len(resp.LineItems))
+	}
+	if resp.LineItems[0].QuantityDecimal != "1.5" {
+		t.Errorf("quantity_decimal = %q, want \"1.5\" (SPA must render the exact fractional qty)", resp.LineItems[0].QuantityDecimal)
+	}
+	// Whole-quantity lines keep the field empty (omitempty) — the SPA falls
+	// back to the integer quantity.
+	fi.lineItems[inv.ID][0].QuantityDecimal = decimal.Decimal{}
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/vlx_pinv_frac", nil))
+	var resp2 hostedInvoicePayload
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode body 2: %v", err)
+	}
+	if resp2.LineItems[0].QuantityDecimal != "" {
+		t.Errorf("whole-qty line quantity_decimal = %q, want empty", resp2.LineItems[0].QuantityDecimal)
+	}
 }
