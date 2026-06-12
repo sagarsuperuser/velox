@@ -15,12 +15,14 @@ import { VeloxLogo } from '@/components/VeloxLogo'
 // user — defends against account enumeration via response timing or
 // content. ADR-011.
 //
-// Self-hosted deployments without SMTP wired surface the reset link
-// to server logs (internal/user/handler.go) — operators retrieve it
-// from there.
+// When email delivery is not configured on the server (SMTP unset or
+// DASHBOARD_BASE_URL unset), the response carries email_delivery:
+// 'not_configured' and we tell the operator no link can be sent — there
+// is NO stdout/log fallback for the link (ADR-011 removed it).
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [emailNotConfigured, setEmailNotConfigured] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -33,7 +35,8 @@ export default function ForgotPasswordPage() {
     }
     setLoading(true)
     try {
-      await authApi.requestPasswordReset(email.trim())
+      const res = await authApi.requestPasswordReset(email.trim())
+      setEmailNotConfigured(res?.email_delivery === 'not_configured')
       setSubmitted(true)
     } catch (err) {
       if (err instanceof ApiError) {
@@ -57,10 +60,20 @@ export default function ForgotPasswordPage() {
         <CardContent className="p-6">
           {submitted ? (
             <div className="space-y-4 text-sm">
-              <p className="text-foreground">
-                If an account exists for <strong>{email}</strong>, we&rsquo;ve sent a password-reset link.
-                The link expires in 1 hour.
-              </p>
+              {emailNotConfigured ? (
+                <div className="px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                  <p className="text-foreground font-medium">Email delivery isn&rsquo;t configured on this server</p>
+                  <p className="text-muted-foreground mt-1">
+                    No reset link can be sent. Configure SMTP and <code className="font-mono">DASHBOARD_BASE_URL</code>,
+                    then try again — see <code className="font-mono">docs/ops/email-setup.md</code>.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-foreground">
+                  If an account exists for <strong>{email}</strong>, we&rsquo;ve sent a password-reset link.
+                  The link expires in 1 hour.
+                </p>
+              )}
               <Link to="/login">
                 <Button variant="outline" className="w-full">
                   Back to sign in

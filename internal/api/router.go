@@ -900,6 +900,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		userSvc, sessionSvc, session.DefaultCookieConfig(),
 		&passwordResetEmailAdapter{sender: passwordResetEmail},
 		dashboardBaseURL,
+		emailSender.IsConfigured(),
 	)
 
 	s := &Server{
