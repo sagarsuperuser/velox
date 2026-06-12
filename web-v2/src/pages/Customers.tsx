@@ -17,6 +17,7 @@ import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -135,20 +136,27 @@ export default function CustomersPage() {
   })
   const clocks = clocksData?.data ?? []
 
+  // Debounced server-side search: matches name / email / external ID
+  // across the FULL dataset (the backend decrypts and matches the
+  // encrypted PII columns) — not just the visible page.
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
+
   // Server-side paginated fetch
   const queryParams = useMemo(() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
+    if (debouncedSearch) params.set('search', debouncedSearch)
     if (sortKey) params.set('sort', sortKey)
     if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, filterStatus, sortKey, sortDir])
+  }, [page, filterStatus, debouncedSearch, sortKey, sortDir])
 
   const { data: customersData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['customers', page, filterStatus, sortKey, sortDir],
+    queryKey: ['customers', queryParams],
     queryFn: () => api.listCustomers(queryParams),
+    placeholderData: (prev) => prev,
   })
 
   const customers = customersData?.data ?? []
@@ -168,28 +176,18 @@ export default function CustomersPage() {
     },
   })
 
-  // Client-side search filter on current page data
-  const filtered = useMemo(() => {
-    return customers.filter((c: Customer) => {
-      if (search) {
-        const q = search.toLowerCase()
-        if (!c.display_name.toLowerCase().includes(q) &&
-          !c.external_id.toLowerCase().includes(q) &&
-          !(c.email && c.email.toLowerCase().includes(q))) return false
-      }
-      return true
-    })
-  }, [customers, search])
-
+  // Search is server-side (search= query param) — rows arriving here
+  // are already filtered across the full dataset, not just the page.
+  //
   // Server-side sort end-to-end. Client-side re-sort would only reorder
   // the current page, breaking pagination semantics.
   const { onSort } = useSortable(
-    filtered,
+    customers,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
-  const sorted = filtered
+  const sorted = customers
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -232,8 +230,10 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      {/* Filters */}
-      {(total > 0 || filterStatus) && (
+      {/* Filters — search is server-side across the full dataset. The
+          row stays visible while a search is active so a zero-result
+          query never hides its own input. */}
+      {(total > 0 || filterStatus || search) && (
         <div className="flex items-center gap-3 mt-6">
           <div className="flex gap-1 bg-muted rounded-lg p-1">
             {[
@@ -259,8 +259,8 @@ export default function CustomersPage() {
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setUrlState({ search: e.target.value })}
-              placeholder="Search within page..."
+              onChange={e => setUrlState({ search: e.target.value, page: '1' })}
+              placeholder="Search by name, email, or ID..."
               className="pl-9"
             />
           </div>
@@ -280,14 +280,18 @@ export default function CustomersPage() {
           ) : loading ? (
             <TableSkeleton columns={6} />
           ) : total === 0 ? (
-            filterStatus ? (
+            filterStatus || debouncedSearch ? (
               <EmptyState
-                title={`No ${filterStatus} customers`}
+                title={
+                  debouncedSearch
+                    ? `No customers match “${debouncedSearch}”`
+                    : `No ${filterStatus} customers`
+                }
                 description="Try a different filter to see more results."
                 action={{
-                  label: 'Clear filter',
+                  label: 'Clear filters',
                   variant: 'outline',
-                  onClick: () => setUrlState({ status: '', page: '1' }),
+                  onClick: () => setUrlState({ status: '', search: '', page: '1' }),
                 }}
               />
             ) : (
@@ -303,9 +307,14 @@ export default function CustomersPage() {
               />
             )
           ) : sorted.length === 0 ? (
-            <p className="px-6 py-8 text-sm text-muted-foreground text-center">
-              No customers match filters on this page
-            </p>
+            // Stale ?page= beyond the filtered range — point back to
+            // page 1 rather than rendering a bare table.
+            <div className="px-6 py-8 text-center">
+              <p className="text-sm text-muted-foreground mb-3">This page is out of range for the current filters</p>
+              <Button variant="outline" size="sm" onClick={() => setUrlState({ page: '1' })}>
+                Back to first page
+              </Button>
+            </div>
           ) : (
             <>
               <Table>

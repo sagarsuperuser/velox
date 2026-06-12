@@ -16,6 +16,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/api/timefilter"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -354,12 +355,26 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Shared ?from / ?to contract (api/timefilter): RFC3339 instants
+	// or bare YYYY-MM-DD, inclusive both ends. Malformed input is a
+	// loud 400 — silently ignoring it would return an unfiltered list
+	// that lies about what the operator asked for.
+	createdFrom, createdTo, err := timefilter.ParseRange(r, "from", "to")
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
 	filter := ListFilter{
 		TenantID:       tenantID,
 		CustomerID:     r.URL.Query().Get("customer_id"),
 		SubscriptionID: r.URL.Query().Get("subscription_id"),
 		Status:         r.URL.Query().Get("status"),
 		PaymentStatus:  r.URL.Query().Get("payment_status"),
+		Search:         strings.TrimSpace(r.URL.Query().Get("search")),
+		CreatedFrom:    createdFrom,
+		CreatedTo:      createdTo,
+		Overdue:        r.URL.Query().Get("overdue") == "true",
 		IDs:            ids,
 		Limit:          limit,
 		Offset:         offset,

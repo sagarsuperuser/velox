@@ -471,6 +471,42 @@ func (e SubscriptionStatus) Valid() bool {
 	}
 }
 
+// Defines values for GetV1CustomersParamsDir.
+const (
+	GetV1CustomersParamsDirAsc  GetV1CustomersParamsDir = "asc"
+	GetV1CustomersParamsDirDesc GetV1CustomersParamsDir = "desc"
+)
+
+// Valid indicates whether the value is a known member of the GetV1CustomersParamsDir enum.
+func (e GetV1CustomersParamsDir) Valid() bool {
+	switch e {
+	case GetV1CustomersParamsDirAsc:
+		return true
+	case GetV1CustomersParamsDirDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetV1InvoicesParamsDir.
+const (
+	GetV1InvoicesParamsDirAsc  GetV1InvoicesParamsDir = "asc"
+	GetV1InvoicesParamsDirDesc GetV1InvoicesParamsDir = "desc"
+)
+
+// Valid indicates whether the value is a known member of the GetV1InvoicesParamsDir enum.
+func (e GetV1InvoicesParamsDir) Valid() bool {
+	switch e {
+	case GetV1InvoicesParamsDirAsc:
+		return true
+	case GetV1InvoicesParamsDirDesc:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PostV1MetersJSONBodyAggregation.
 const (
 	PostV1MetersJSONBodyAggregationCount PostV1MetersJSONBodyAggregation = "count"
@@ -546,6 +582,24 @@ func (e PostV1RatingRulesJSONBodyMode) Valid() bool {
 	case PostV1RatingRulesJSONBodyModeGraduated:
 		return true
 	case PostV1RatingRulesJSONBodyModePackage:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetV1SubscriptionsParamsDir.
+const (
+	Asc  GetV1SubscriptionsParamsDir = "asc"
+	Desc GetV1SubscriptionsParamsDir = "desc"
+)
+
+// Valid indicates whether the value is a known member of the GetV1SubscriptionsParamsDir enum.
+func (e GetV1SubscriptionsParamsDir) Valid() bool {
+	switch e {
+	case Asc:
+		return true
+	case Desc:
 		return true
 	default:
 		return false
@@ -1040,9 +1094,28 @@ type PostV1CreditsGrantJSONBody struct {
 // GetV1CustomersParams defines parameters for GetV1Customers.
 type GetV1CustomersParams struct {
 	Status string `form:"status,omitempty" json:"status,omitempty"`
-	Limit  int    `form:"limit,omitempty" json:"limit,omitempty"`
-	Offset int    `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// ExternalId Exact-match filter on the caller-assigned external ID.
+	ExternalId string `form:"external_id,omitempty" json:"external_id,omitempty"`
+
+	// Ids Comma-separated customer IDs to fetch exactly.
+	Ids string `form:"ids,omitempty" json:"ids,omitempty"`
+
+	// Search Case-insensitive substring match on display name, email,
+	// external ID, or ID. Matching runs post-decryption (PII
+	// columns are encrypted at rest), bounded to the first 5000
+	// rows of the tenant's filtered set.
+	Search string `form:"search,omitempty" json:"search,omitempty"`
+
+	// Sort One of display_name, email, external_id, status, created_at (default).
+	Sort   string                  `form:"sort,omitempty" json:"sort,omitempty"`
+	Dir    GetV1CustomersParamsDir `form:"dir,omitempty" json:"dir,omitempty"`
+	Limit  int                     `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset int                     `form:"offset,omitempty" json:"offset,omitempty"`
 }
+
+// GetV1CustomersParamsDir defines parameters for GetV1Customers.
+type GetV1CustomersParamsDir string
 
 // PostV1CustomersJSONBody defines parameters for PostV1Customers.
 type PostV1CustomersJSONBody struct {
@@ -1050,6 +1123,46 @@ type PostV1CustomersJSONBody struct {
 	Email       string `json:"email,omitempty"`
 	ExternalId  string `json:"external_id"`
 }
+
+// GetV1InvoicesParams defines parameters for GetV1Invoices.
+type GetV1InvoicesParams struct {
+	CustomerId     string `form:"customer_id,omitempty" json:"customer_id,omitempty"`
+	SubscriptionId string `form:"subscription_id,omitempty" json:"subscription_id,omitempty"`
+	Status         string `form:"status,omitempty" json:"status,omitempty"`
+	PaymentStatus  string `form:"payment_status,omitempty" json:"payment_status,omitempty"`
+
+	// Search Case-insensitive substring match on invoice number.
+	Search string `form:"search,omitempty" json:"search,omitempty"`
+
+	// From Lower bound on created_at, inclusive. RFC3339 instant or
+	// bare YYYY-MM-DD (anchored at 00:00:00Z).
+	From string `form:"from,omitempty" json:"from,omitempty"`
+
+	// To Upper bound on created_at, inclusive. RFC3339 instant or
+	// bare YYYY-MM-DD (anchored at 23:59:59Z).
+	To string `form:"to,omitempty" json:"to,omitempty"`
+
+	// Overdue When true, restrict to open invoices past their due date
+	// that haven't settled (finalized + due_at < now +
+	// payment_status not succeeded/processing). Backs the
+	// dashboard's "Past due" segment.
+	Overdue bool `form:"overdue,omitempty" json:"overdue,omitempty"`
+
+	// Ids Comma-separated invoice IDs to fetch exactly.
+	Ids string `form:"ids,omitempty" json:"ids,omitempty"`
+
+	// Sort One of invoice_number, amount_due_cents, billing_period_start, due_at, issued_at, status, payment_status, created_at (default).
+	Sort   string                 `form:"sort,omitempty" json:"sort,omitempty"`
+	Dir    GetV1InvoicesParamsDir `form:"dir,omitempty" json:"dir,omitempty"`
+	Limit  int                    `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset int                    `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// After Opaque cursor (default created_at sort only); takes precedence over offset.
+	After string `form:"after,omitempty" json:"after,omitempty"`
+}
+
+// GetV1InvoicesParamsDir defines parameters for GetV1Invoices.
+type GetV1InvoicesParamsDir string
 
 // PostV1InvoicesCreatePreviewJSONBody defines parameters for PostV1InvoicesCreatePreview.
 type PostV1InvoicesCreatePreviewJSONBody struct {
@@ -1125,6 +1238,27 @@ type PostV1RatingRulesJSONBody struct {
 
 // PostV1RatingRulesJSONBodyMode defines parameters for PostV1RatingRules.
 type PostV1RatingRulesJSONBodyMode string
+
+// GetV1SubscriptionsParams defines parameters for GetV1Subscriptions.
+type GetV1SubscriptionsParams struct {
+	CustomerId string `form:"customer_id,omitempty" json:"customer_id,omitempty"`
+
+	// PlanId Filter to subscriptions with a live item on this plan.
+	PlanId string `form:"plan_id,omitempty" json:"plan_id,omitempty"`
+	Status string `form:"status,omitempty" json:"status,omitempty"`
+
+	// Search Case-insensitive substring match on display name or code.
+	Search string `form:"search,omitempty" json:"search,omitempty"`
+
+	// Sort One of display_name, status, next_billing_at, trial_end_at, created_at (default).
+	Sort   string                      `form:"sort,omitempty" json:"sort,omitempty"`
+	Dir    GetV1SubscriptionsParamsDir `form:"dir,omitempty" json:"dir,omitempty"`
+	Limit  int                         `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset int                         `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// GetV1SubscriptionsParamsDir defines parameters for GetV1Subscriptions.
+type GetV1SubscriptionsParamsDir string
 
 // PostV1SubscriptionsJSONBody defines parameters for PostV1Subscriptions.
 type PostV1SubscriptionsJSONBody struct {
@@ -1257,7 +1391,7 @@ type ServerInterface interface {
 	PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string)
 	// List invoices
 	// (GET /v1/invoices)
-	GetV1Invoices(w http.ResponseWriter, r *http.Request)
+	GetV1Invoices(w http.ResponseWriter, r *http.Request, params GetV1InvoicesParams)
 	// Preview the next invoice for a customer (Stripe-equivalent)
 	// (POST /v1/invoices/create_preview)
 	PostV1InvoicesCreatePreview(w http.ResponseWriter, r *http.Request)
@@ -1296,7 +1430,7 @@ type ServerInterface interface {
 	PostV1RatingRules(w http.ResponseWriter, r *http.Request)
 	// List subscriptions
 	// (GET /v1/subscriptions)
-	GetV1Subscriptions(w http.ResponseWriter, r *http.Request)
+	GetV1Subscriptions(w http.ResponseWriter, r *http.Request, params GetV1SubscriptionsParams)
 	// Create subscription
 	// (POST /v1/subscriptions)
 	PostV1Subscriptions(w http.ResponseWriter, r *http.Request)
@@ -1419,7 +1553,7 @@ func (_ Unimplemented) PostV1CustomersIdRotateCostDashboardToken(w http.Response
 
 // List invoices
 // (GET /v1/invoices)
-func (_ Unimplemented) GetV1Invoices(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetV1Invoices(w http.ResponseWriter, r *http.Request, params GetV1InvoicesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1497,7 +1631,7 @@ func (_ Unimplemented) PostV1RatingRules(w http.ResponseWriter, r *http.Request)
 
 // List subscriptions
 // (GET /v1/subscriptions)
-func (_ Unimplemented) GetV1Subscriptions(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetV1Subscriptions(w http.ResponseWriter, r *http.Request, params GetV1SubscriptionsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1820,6 +1954,46 @@ func (siw *ServerInterfaceWrapper) GetV1Customers(w http.ResponseWriter, r *http
 		return
 	}
 
+	// ------------- Optional query parameter "external_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "external_id", r.URL.Query(), &params.ExternalId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "external_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "ids" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "ids", r.URL.Query(), &params.Ids, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ids", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "search" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "search", r.URL.Query(), &params.Search, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "search", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "sort" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "dir" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dir", r.URL.Query(), &params.Dir, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dir", Err: err})
+		return
+	}
+
 	// ------------- Optional query parameter "limit" -------------
 
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
@@ -1901,14 +2075,131 @@ func (siw *ServerInterfaceWrapper) PostV1CustomersIdRotateCostDashboardToken(w h
 // GetV1Invoices operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Invoices(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetV1InvoicesParams
+
+	// ------------- Optional query parameter "customer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "customer_id", r.URL.Query(), &params.CustomerId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "customer_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "subscription_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "subscription_id", r.URL.Query(), &params.SubscriptionId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "subscription_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "payment_status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "payment_status", r.URL.Query(), &params.PaymentStatus, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "payment_status", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "search" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "search", r.URL.Query(), &params.Search, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "search", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "overdue" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "overdue", r.URL.Query(), &params.Overdue, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "overdue", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "ids" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "ids", r.URL.Query(), &params.Ids, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ids", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "sort" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "dir" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dir", r.URL.Query(), &params.Dir, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dir", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "after" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "after", r.URL.Query(), &params.After, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "after", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetV1Invoices(w, r)
+		siw.Handler.GetV1Invoices(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2216,14 +2507,83 @@ func (siw *ServerInterfaceWrapper) PostV1RatingRules(w http.ResponseWriter, r *h
 // GetV1Subscriptions operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Subscriptions(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetV1SubscriptionsParams
+
+	// ------------- Optional query parameter "customer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "customer_id", r.URL.Query(), &params.CustomerId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "customer_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "plan_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "plan_id", r.URL.Query(), &params.PlanId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "plan_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "search" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "search", r.URL.Query(), &params.Search, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "search", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "sort" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sort", r.URL.Query(), &params.Sort, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sort", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "dir" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dir", r.URL.Query(), &params.Dir, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dir", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetV1Subscriptions(w, r)
+		siw.Handler.GetV1Subscriptions(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {

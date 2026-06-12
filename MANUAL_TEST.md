@@ -1209,6 +1209,23 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Decimal precision: `0.5 + 0.5 + 0.0001` → `1.0001` (no rounding).
 - [ ] Export CSV.
 
+## FLOW U11: Operator search + list filters (2026-06-12)
+
+Setup: ≥26 customers so at least one lands on page 2 (FLOW S1 tenant + a quick create loop works).
+
+- [ ] Customers page: search a page-2 customer by email fragment → row appears; `Showing 1–1 of 1`.
+- [ ] Customers page: search `zzz-no-match` → "No customers match" empty state with its own Clear filters button; search input still visible.
+- [ ] Invoices page: search a full invoice number (e.g. `INV-2026-0003`) → that invoice only.
+- [ ] Invoices page: From/To date pickers filter across pages (pick a range excluding today → today's invoices gone, total shrinks).
+- [ ] Invoices page: **Past due** tab → only finalized invoices with `due_at` in the past and payment not succeeded/processing.
+- [ ] Customer detail → Outstanding card link → Invoices opens with a dismissible `customer: <name>` chip and only that customer's invoices; × clears it.
+- [ ] Customer detail → Sent emails → click an invoice number → Invoices opens pre-searched to that number.
+- [ ] ⌘K: type a page-2 customer's email → customer appears with email in the subtitle; Enter navigates to its detail page.
+- [ ] ⌘K: paste an invoice number → invoice appears; works for invoices beyond the 50 most recent.
+- [ ] Subscriptions page: search by code fragment → matches across pages.
+- [ ] Refresh any filtered list URL → filters (search/status/dates/page) restore from the URL.
+- [ ] Customer detail → External ID row has a copy icon; Subscription detail → Customer row has a copy icon (copies the raw customer id).
+
 ## FLOW U7: Edge cases
 
 | Case | Expected |

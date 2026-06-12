@@ -178,6 +178,23 @@ type ListFilter struct {
 	SubscriptionID string
 	Status         string
 	PaymentStatus  string
+	// Search filters by invoice number, case-insensitive substring
+	// (ILIKE, metacharacters escaped). Empty = no filter. Backs the
+	// dashboard list search box and the command palette.
+	Search string
+	// CreatedFrom / CreatedTo bound created_at — inclusive on both
+	// ends, matching the shared api/timefilter contract (?from / ?to).
+	// Zero values = unbounded.
+	CreatedFrom time.Time
+	CreatedTo   time.Time
+	// Overdue restricts to open invoices past their due date that
+	// haven't settled and aren't mid-payment: status='finalized',
+	// due_at < now(), payment_status not in (succeeded, processing).
+	// Backs the dashboard's "Past due" tab (Stripe-parity segment).
+	// NOTE: deliberately computed from due_at at query time — the
+	// invoices.payment_overdue column has no writer and is always
+	// false (schema 0001 default); do not filter on it.
+	Overdue bool
 	// IDs scopes the result to a specific set of invoice IDs. Used by
 	// other list pages (CreditNotes) to fetch exactly the invoices
 	// referenced by their primary rows — avoids the

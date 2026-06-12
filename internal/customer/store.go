@@ -60,6 +60,13 @@ type ListFilter struct {
 	TenantID   string
 	Status     string
 	ExternalID string
+	// Search filters by display_name, email, external_id, or id —
+	// case-insensitive substring. display_name and email are encrypted
+	// at rest, so the store CANNOT push this into SQL ILIKE; it streams
+	// a bounded scan, decrypts, and matches in Go (see listSearch).
+	// Empty = no filter. Backs the dashboard search box and the
+	// command palette.
+	Search string
 	// IDs scopes the result to a specific set of customer IDs. Used by
 	// other list pages (Invoices, Subscriptions, etc.) to fetch
 	// exactly the customers referenced by their primary rows, avoiding

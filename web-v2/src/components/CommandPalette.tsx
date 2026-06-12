@@ -1,6 +1,7 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import {
   LayoutDashboard, Users, FileText, CreditCard, Tag, Wallet, Settings,
   Receipt, AlertTriangle, ScrollText, Globe, Key, BarChart3,
@@ -50,21 +51,38 @@ const NAV_ITEMS: NavItem[] = [
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate()
 
-  // Fetch entity data when palette opens. Four parallel queries
-  // gated on `enabled: open` so the lists are fetched lazily on first
-  // ⌘K open. RQ caches keyed `['command-palette', <kind>]` so each
-  // re-open is instant — and the lists are deduped if other pages
-  // already fetched the same data (Customers / Invoices pages use
-  // the same backend endpoints).
+  // Controlled input → debounced server-side search. With no query the
+  // palette shows the 50 most recent rows per entity (jump-to-recent);
+  // once the operator types, the term goes to the backend's search=
+  // param so matches come from the FULL dataset — not whichever 50
+  // rows happened to be cached. Customer search matches name / email /
+  // external ID (the backend decrypt-matches the encrypted PII
+  // columns); invoices match by number; subscriptions by name / code.
+  const [query, setQuery] = useState('')
+  const term = useDebouncedValue(query.trim(), 250)
+  // Reset the query in the close handlers (not an effect) so the next
+  // ⌘K opens fresh — selection + dialog-dismiss both route through
+  // handleClose below.
+  const handleClose = useCallback(() => {
+    setQuery('')
+    onClose()
+  }, [onClose])
+
+  // Four parallel queries gated on `enabled: open` so the lists are
+  // fetched lazily on first ⌘K open. Keys include the search term;
+  // placeholderData keeps the previous results rendered while the
+  // next search is in flight (no flicker-to-empty between keystrokes).
   const customersQuery = useQuery({
-    queryKey: ['command-palette', 'customers'],
-    queryFn: () => api.listCustomers('limit=50'),
+    queryKey: ['command-palette', 'customers', term],
+    queryFn: () => api.listCustomers(term ? `search=${encodeURIComponent(term)}&limit=10` : 'limit=50'),
     enabled: open,
+    placeholderData: (prev) => prev,
   })
   const invoicesQuery = useQuery({
-    queryKey: ['command-palette', 'invoices'],
-    queryFn: () => api.listInvoices('limit=50'),
+    queryKey: ['command-palette', 'invoices', term],
+    queryFn: () => api.listInvoices(term ? `search=${encodeURIComponent(term)}&limit=10` : 'limit=50'),
     enabled: open,
+    placeholderData: (prev) => prev,
   })
   const plansQuery = useQuery({
     queryKey: ['command-palette', 'plans'],
@@ -72,9 +90,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     enabled: open,
   })
   const subscriptionsQuery = useQuery({
-    queryKey: ['command-palette', 'subscriptions'],
-    queryFn: () => api.listSubscriptions('limit=50'),
+    queryKey: ['command-palette', 'subscriptions', term],
+    queryFn: () => api.listSubscriptions(term ? `search=${encodeURIComponent(term)}&limit=10` : 'limit=50'),
     enabled: open,
+    placeholderData: (prev) => prev,
   })
   const customers: Customer[] = customersQuery.data?.data ?? []
   const invoices: Invoice[] = invoicesQuery.data?.data ?? []
@@ -83,13 +102,18 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
   const go = useCallback((href: string) => {
     navigate(href)
-    onClose()
-  }, [navigate, onClose])
+    handleClose()
+  }, [navigate, handleClose])
 
   return (
-    <CommandDialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose() }} className="sm:max-w-[560px] top-[15%] translate-y-0">
+    <CommandDialog open={open} onOpenChange={(isOpen) => { if (!isOpen) handleClose() }} className="sm:max-w-[560px] top-[15%] translate-y-0">
       <Command className="rounded-lg border-none shadow-none">
-      <CommandInput placeholder="Search or jump to..." className="h-12 text-base" />
+      <CommandInput
+        placeholder="Search customers, invoices, subscriptions..."
+        className="h-12 text-base"
+        value={query}
+        onValueChange={setQuery}
+      />
       <CommandList className="max-h-[400px]">
         <CommandEmpty>No results found</CommandEmpty>
 
@@ -120,14 +144,20 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
               {customers.slice(0, 10).map(c => (
                 <CommandItem
                   key={`cust-${c.id}`}
-                  value={`customer ${c.display_name} ${c.external_id} ${c.email || ''}`}
+                  value={`customer ${c.display_name} ${c.external_id} ${c.email || ''} ${c.id}`}
                   onSelect={() => go(`/customers/${c.id}`)}
                   className="py-2.5 px-3 data-selected:bg-primary data-selected:text-primary-foreground"
                 >
                   <User className="mr-2 h-4 w-4" />
                   <div className="flex flex-col">
                     <span>{c.display_name}</span>
-                    <span className="text-xs opacity-60">{c.external_id}</span>
+                    {/* Email beside external_id — support/ops often only
+                        know the customer's email; show the field the
+                        match likely hit. */}
+                    <span className="text-xs opacity-60">
+                      {c.external_id}
+                      {c.email ? ` · ${c.email}` : ''}
+                    </span>
                   </div>
                 </CommandItem>
               ))}

@@ -3,13 +3,14 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api, downloadPDF, formatCents } from '@/lib/api'
-import { formatYMDInTZ } from '@/lib/dates'
+import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { Customer, Invoice } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -72,16 +73,25 @@ export default function InvoicesPage() {
     search: '',
     status: '',
     payment_status: '',
+    customer: '',
+    overdue: '',
     dateFrom: '',
     dateTo: '',
     page: '1',
     sort: 'created_at',
     dir: 'desc',
   })
-  const { search, status: statusFilter, payment_status: paymentStatusFilter, dateFrom, dateTo, sort: sortKey } = urlState
+  const {
+    search, status: statusFilter, payment_status: paymentStatusFilter,
+    customer: customerFilter, overdue: overdueFilter, dateFrom, dateTo, sort: sortKey,
+  } = urlState
   const sortDir = urlState.dir as SortDir
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const navigate = useNavigate()
+
+  // Debounce the search term so the API sees one request per typing
+  // pause; the input itself stays keystroke-responsive via URL state.
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
 
   const queryParams = useMemo(() => {
     const params = new URLSearchParams()
@@ -89,6 +99,15 @@ export default function InvoicesPage() {
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (statusFilter) params.set('status', statusFilter)
     if (paymentStatusFilter) params.set('payment_status', paymentStatusFilter)
+    if (customerFilter) params.set('customer_id', customerFilter)
+    if (overdueFilter) params.set('overdue', 'true')
+    // Server-side search + date range (was client-side over the
+    // current 25-row page, which silently missed every other page).
+    // Dates convert tenant-TZ civil days to UTC instants per ADR-010;
+    // the backend's shared ?from/?to contract is inclusive both ends.
+    if (debouncedSearch) params.set('search', debouncedSearch)
+    if (dateFrom) params.set('from', startOfDayInTZ(dateFrom))
+    if (dateTo) params.set('to', endOfDayInTZ(dateTo))
     // Sort wiring: SPA had clickable column headers + URL state but the
     // params were never sent to the API — list rendered in arbitrary
     // order on ties. Backend validates against a closed allow-list and
@@ -97,11 +116,20 @@ export default function InvoicesPage() {
     if (sortKey) params.set('sort', sortKey)
     if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, statusFilter, paymentStatusFilter, sortKey, sortDir])
+  }, [page, statusFilter, paymentStatusFilter, customerFilter, overdueFilter, debouncedSearch, dateFrom, dateTo, sortKey, sortDir])
 
   const { data: invoicesData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['invoices', page, statusFilter, paymentStatusFilter, sortKey, sortDir],
+    queryKey: ['invoices', queryParams],
     queryFn: () => api.listInvoices(queryParams),
+    placeholderData: (prev) => prev,
+  })
+
+  // Resolve the ?customer= filter to a display name for the dismissible
+  // chip — operators land here from CustomerDetail's Outstanding card.
+  const { data: filterCustomer } = useQuery({
+    queryKey: ['customer', customerFilter],
+    queryFn: () => api.getCustomer(customerFilter),
+    enabled: !!customerFilter,
   })
 
   // Fetch only the customers referenced by the visible invoices.
@@ -160,40 +188,24 @@ export default function InvoicesPage() {
     return m
   }, [testClocksData])
 
-  // Client-side search + date filter on current page data
-  const filtered = useMemo(() => invoices.filter((inv: Invoice) => {
-    if (search) {
-      const q = search.toLowerCase()
-      if (!inv.invoice_number.toLowerCase().includes(q)) return false
-    }
-    // Compare created_at re-projected into tenant TZ so the date
-    // operators pick matches what they see on the row (commit
-    // b523c71 made formatDate render in tenant TZ; this filter
-    // must follow the same projection or it disagrees with the
-    // displayed date around UTC-day boundaries).
-    if (dateFrom) {
-      if (inv.created_at && formatYMDInTZ(inv.created_at) < dateFrom) return false
-    }
-    if (dateTo) {
-      if (inv.created_at && formatYMDInTZ(inv.created_at) > dateTo) return false
-    }
-    return true
-  }), [invoices, search, dateFrom, dateTo])
-
+  // Search + date range are server-side (search=, from=, to= query
+  // params) — the rows arriving here are already filtered across the
+  // full dataset, not just the visible page.
+  //
   // useSortable provides the click handler (flip-on-same-key, reset
   // direction on new key) + URL-state binding. We deliberately
-  // discard `sorted` because sort is now server-side end-to-end —
+  // discard `sorted` because sort is server-side end-to-end —
   // the server returns rows in the requested order with a
   // deterministic id tie-break. Client-side re-sort would only sort
   // the current page (e.g. "top 50 by created_at re-sorted by
   // amount") which breaks pagination semantics.
   const { onSort } = useSortable(
-    filtered,
+    invoices,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
-  const sorted = filtered
+  const sorted = invoices
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -218,7 +230,7 @@ export default function InvoicesPage() {
           <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2">
             <span>
               Track invoices, payments, and billing history
-              {statusFilter ? ` · Showing ${statusFilter}` : !paymentStatusFilter && total > 0 ? ` · ${total} total` : ''}
+              {statusFilter ? ` · Showing ${statusFilter}` : overdueFilter ? ' · Showing past due' : !paymentStatusFilter && !customerFilter && total > 0 ? ` · ${total} total` : ''}
             </span>
             {paymentStatusFilter && (
               <Badge variant="secondary" className="gap-1">
@@ -228,6 +240,22 @@ export default function InvoicesPage() {
                   onClick={() => setUrlState({ payment_status: '', page: '1' })}
                   className="ml-0.5 hover:text-foreground"
                   aria-label="Clear payment status filter"
+                >
+                  ×
+                </button>
+              </Badge>
+            )}
+            {/* Customer chip — set when arriving from a customer page
+                deep-link (/invoices?customer=...). Dismissible, same
+                affordance as the payment-status chip. */}
+            {customerFilter && (
+              <Badge variant="secondary" className="gap-1">
+                customer: {filterCustomer?.display_name || customerFilter}
+                <button
+                  type="button"
+                  onClick={() => setUrlState({ customer: '', page: '1' })}
+                  className="ml-0.5 hover:text-foreground"
+                  aria-label="Clear customer filter"
                 >
                   ×
                 </button>
@@ -243,58 +271,65 @@ export default function InvoicesPage() {
             </Button>
           )}
           <div className="flex gap-1 bg-muted rounded-lg p-1">
+            {/* "Past due" is not an invoice status — it's a server-side
+                predicate (finalized + past due_at + unsettled), so it
+                rides a separate ?overdue= param. Stripe's invoice list
+                carries the same segment. */}
             {[
-              { value: '', label: 'All' },
-              { value: 'draft', label: 'Draft' },
-              { value: 'finalized', label: 'Open' },
-              { value: 'paid', label: 'Paid' },
-              { value: 'voided', label: 'Voided' },
-            ].map(f => (
-              <button
-                key={f.value}
-                onClick={() => setUrlState({ status: f.value, page: '1' })}
-                className={cn(
-                  'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                  statusFilter === f.value
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {f.label}
-              </button>
-            ))}
+              { value: '', label: 'All', overdue: false },
+              { value: 'draft', label: 'Draft', overdue: false },
+              { value: 'finalized', label: 'Open', overdue: false },
+              { value: '', label: 'Past due', overdue: true },
+              { value: 'paid', label: 'Paid', overdue: false },
+              { value: 'voided', label: 'Voided', overdue: false },
+            ].map(f => {
+              const active = f.overdue ? !!overdueFilter : !overdueFilter && statusFilter === f.value
+              return (
+                <button
+                  key={f.label}
+                  onClick={() => setUrlState({ status: f.value, overdue: f.overdue ? '1' : '', page: '1' })}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                    active
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {f.label}
+                </button>
+              )
+            })}
           </div>
         </div>
       </div>
 
-      {/* Search + date filters */}
-      {total > 0 && (
+      {/* Search + date filters — server-side across the full dataset.
+          The row stays visible while a search/date filter is active so
+          a zero-result query never hides its own input. */}
+      {(total > 0 || search || dateFrom || dateTo) && (
         <div className="flex items-center gap-3 mt-6">
           <div className="relative flex-1">
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setUrlState({ search: e.target.value })}
-              placeholder="Search within page..."
+              onChange={e => setUrlState({ search: e.target.value, page: '1' })}
+              placeholder="Search by invoice number..."
               className="pl-9"
             />
           </div>
           <DatePicker
             value={dateFrom}
-            onChange={(v) => setUrlState({ dateFrom: v })}
+            onChange={(v) => setUrlState({ dateFrom: v, page: '1' })}
             placeholder="From date"
             className="w-44"
           />
           <DatePicker
             value={dateTo}
-            onChange={(v) => setUrlState({ dateTo: v })}
+            onChange={(v) => setUrlState({ dateTo: v, page: '1' })}
             placeholder="To date"
             className="w-44"
             minDate={dateFrom ? new Date(dateFrom + 'T00:00:00') : undefined}
           />
-          {(search || dateFrom || dateTo) && (
-            <span className="text-xs text-muted-foreground">Filtering within current page</span>
-          )}
         </div>
       )}
 
@@ -311,20 +346,26 @@ export default function InvoicesPage() {
           ) : loading ? (
             <TableSkeleton columns={7} />
           ) : total === 0 ? (
-            statusFilter || paymentStatusFilter ? (
+            statusFilter || paymentStatusFilter || overdueFilter || customerFilter || debouncedSearch || dateFrom || dateTo ? (
               <EmptyState
                 title={
-                  statusFilter && paymentStatusFilter
+                  debouncedSearch
+                    ? `No invoices match “${debouncedSearch}”`
+                    : overdueFilter
+                    ? 'No past-due invoices'
+                    : statusFilter && paymentStatusFilter
                     ? `No ${statusFilter} invoices with payment ${paymentStatusFilter}`
                     : statusFilter
                     ? `No ${statusFilter} invoices`
-                    : `No invoices with payment ${paymentStatusFilter}`
+                    : paymentStatusFilter
+                    ? `No invoices with payment ${paymentStatusFilter}`
+                    : 'No invoices match the current filters'
                 }
                 description="Try a different filter to see more results."
                 action={{
                   label: 'Clear filters',
                   variant: 'outline',
-                  onClick: () => setUrlState({ status: '', payment_status: '', page: '1' }),
+                  onClick: () => setUrlState({ status: '', payment_status: '', overdue: '', customer: '', search: '', dateFrom: '', dateTo: '', page: '1' }),
                 }}
               />
             ) : (
@@ -340,9 +381,14 @@ export default function InvoicesPage() {
               />
             )
           ) : sorted.length === 0 ? (
-            <p className="px-6 py-8 text-sm text-muted-foreground text-center">
-              No invoices match filters on this page
-            </p>
+            // Stale ?page= beyond the filtered range (e.g. a bookmark)
+            // — point back to page 1 rather than rendering a bare table.
+            <div className="px-6 py-8 text-center">
+              <p className="text-sm text-muted-foreground mb-3">This page is out of range for the current filters</p>
+              <Button variant="outline" size="sm" onClick={() => setUrlState({ page: '1' })}>
+                Back to first page
+              </Button>
+            </div>
           ) : (
             <>
               <Table>

@@ -50,6 +50,20 @@ export interface paths {
             parameters: {
                 query?: {
                     status?: string;
+                    /** @description Exact-match filter on the caller-assigned external ID. */
+                    external_id?: string;
+                    /** @description Comma-separated customer IDs to fetch exactly. */
+                    ids?: string;
+                    /**
+                     * @description Case-insensitive substring match on display name, email,
+                     *     external ID, or ID. Matching runs post-decryption (PII
+                     *     columns are encrypted at rest), bounded to the first 5000
+                     *     rows of the tenant's filtered set.
+                     */
+                    search?: string;
+                    /** @description One of display_name, email, external_id, status, created_at (default). */
+                    sort?: string;
+                    dir?: "asc" | "desc";
                     limit?: number;
                     offset?: number;
                 };
@@ -450,7 +464,19 @@ export interface paths {
         /** List subscriptions */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    customer_id?: string;
+                    /** @description Filter to subscriptions with a live item on this plan. */
+                    plan_id?: string;
+                    status?: string;
+                    /** @description Case-insensitive substring match on display name or code. */
+                    search?: string;
+                    /** @description One of display_name, status, next_billing_at, trial_end_at, created_at (default). */
+                    sort?: string;
+                    dir?: "asc" | "desc";
+                    limit?: number;
+                    offset?: number;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -669,7 +695,40 @@ export interface paths {
         /** List invoices */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    customer_id?: string;
+                    subscription_id?: string;
+                    status?: string;
+                    payment_status?: string;
+                    /** @description Case-insensitive substring match on invoice number. */
+                    search?: string;
+                    /**
+                     * @description Lower bound on created_at, inclusive. RFC3339 instant or
+                     *     bare YYYY-MM-DD (anchored at 00:00:00Z).
+                     */
+                    from?: string;
+                    /**
+                     * @description Upper bound on created_at, inclusive. RFC3339 instant or
+                     *     bare YYYY-MM-DD (anchored at 23:59:59Z).
+                     */
+                    to?: string;
+                    /**
+                     * @description When true, restrict to open invoices past their due date
+                     *     that haven't settled (finalized + due_at < now +
+                     *     payment_status not succeeded/processing). Backs the
+                     *     dashboard's "Past due" segment.
+                     */
+                    overdue?: boolean;
+                    /** @description Comma-separated invoice IDs to fetch exactly. */
+                    ids?: string;
+                    /** @description One of invoice_number, amount_due_cents, billing_period_start, due_at, issued_at, status, payment_status, created_at (default). */
+                    sort?: string;
+                    dir?: "asc" | "desc";
+                    limit?: number;
+                    offset?: number;
+                    /** @description Opaque cursor (default created_at sort only); takes precedence over offset. */
+                    after?: string;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;

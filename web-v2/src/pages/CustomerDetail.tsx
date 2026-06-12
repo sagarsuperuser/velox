@@ -536,7 +536,13 @@ export default function CustomerDetailPage() {
           <div className="divide-y divide-border">
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">External ID</span>
-              <span className="text-sm text-foreground font-mono">{customer.external_id}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm text-foreground font-mono">{customer.external_id}</span>
+                {/* external_id is the identifier operators paste into
+                    API calls and support threads — same copy affordance
+                    as the internal ID below. */}
+                <CopyButton text={customer.external_id} />
+              </div>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Email</span>
@@ -975,8 +981,10 @@ export default function CustomerDetailPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium text-foreground">{sentEmailLabel(em.email_type)}</p>
+                        {/* ?search= is the Invoices page's URL key (was
+                            ?q=, which the page never read — dead link). */}
                         {em.invoice_number && (
-                          <Link to={`/invoices?q=${em.invoice_number}`} className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
+                          <Link to={`/invoices?search=${encodeURIComponent(em.invoice_number)}`} className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
                             {em.invoice_number}
                           </Link>
                         )}
