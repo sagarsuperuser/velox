@@ -10,14 +10,52 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 type Service struct {
-	store Store
+	store    Store
+	resolver clock.Resolver
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
+}
+
+// SetResolver wires the unified clock.Resolver (implemented by
+// *billing.Engine). Ingest timestamps default to and gate against the
+// CUSTOMER's effective now — a test clock's frozen_time when the
+// customer is pinned — so usage ingestion works in simulated time: on
+// a clock advanced into the (wall-clock) future, events without a
+// timestamp land at frozen_time inside the simulated current period,
+// and sim-timestamped events pass the future-skew gate that wall-clock
+// comparison would wrongly reject. Optional: nil keeps wall-clock
+// gating (narrow tests).
+func (s *Service) SetResolver(r clock.Resolver) {
+	s.resolver = r
+}
+
+// effectiveNow returns the customer's "now": ctx-bound effective time
+// if an upstream entry point already bound it, frozen_time when the
+// customer is pinned to a test clock, wall-clock otherwise.
+//
+// Live mode skips the resolver lookup entirely — test clocks are
+// test-mode-only (DB CHECK on test_clocks.livemode), so a live
+// customer can never be pinned and the high-volume production ingest
+// path stays at zero extra queries.
+func (s *Service) effectiveNow(ctx context.Context, tenantID, customerID string) time.Time {
+	if t, ok := clock.EffectiveNow(ctx); ok {
+		return t
+	}
+	if s.resolver != nil && !postgres.Livemode(ctx) && customerID != "" {
+		if t, err := s.resolver.EffectiveNowForCustomer(ctx, tenantID, customerID); err == nil {
+			return t
+		}
+		// Resolver errors mean the customer read failed — ingest's own
+		// store call will surface that; don't block on the clock here.
+	}
+	return time.Now().UTC()
 }
 
 // IngestInput is the internal service input — uses resolved internal IDs only.
@@ -49,14 +87,20 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 	if input.Timestamp == nil {
 		return domain.UsageEvent{}, errs.Required("timestamp")
 	}
-	// Reject future timestamps. Equality-with-now is allowed because the
-	// test-vs-prod clock race makes strict past-only brittle to verify, and
-	// the 'backfill' origin tag already distinguishes these rows from live
-	// POST traffic for audit purposes.
-	if input.Timestamp.After(time.Now().UTC()) {
+	// Reject future timestamps — relative to the CUSTOMER's effective now
+	// (frozen_time when pinned to a test clock), so backfilling simulated
+	// history onto an advanced clock works: with the clock frozen in July,
+	// June events are valid backfill even when wall-clock says May.
+	// Equality-with-now is allowed because the test-vs-prod clock race
+	// makes strict past-only brittle to verify, and the 'backfill' origin
+	// tag already distinguishes these rows from live POST traffic for
+	// audit purposes.
+	now := s.effectiveNow(ctx, tenantID, input.CustomerID)
+	if input.Timestamp.After(now) {
 		return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future for backfill — use POST /usage-events for real-time ingest")
 	}
-	return s.ingest(ctx, tenantID, input, domain.UsageOriginBackfill)
+	// Carry the resolved now downstream so ingest doesn't re-resolve.
+	return s.ingest(clock.WithEffectiveNow(ctx, now), tenantID, input, domain.UsageOriginBackfill)
 }
 
 // MaxDimensionKeys caps the size of the JSONB dimensions map on each
@@ -119,14 +163,24 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		return domain.UsageEvent{}, errs.Invalid("quantity", "magnitude too large — must be less than 10^26")
 	}
 
-	ts := time.Now().UTC()
+	// "Now" is the CUSTOMER's effective now — a test clock's frozen_time
+	// when the customer is pinned (Stripe Test Clocks shape: meter events
+	// on a pinned customer live on the simulated timeline). Two effects:
+	// events without a timestamp land at frozen_time (inside the simulated
+	// current billing period, where the next Advance bills them), and the
+	// future gate below compares against simulated now — pre-fix it
+	// compared against wall-clock, so on a clock advanced into the future
+	// every sim-timestamped event was rejected as "in the future" and the
+	// flagship advance-and-bill-usage demo broke at ingest.
+	now := s.effectiveNow(ctx, tenantID, input.CustomerID)
+	ts := now
 	if input.Timestamp != nil {
 		// Reject future-dated live events (a small clock-skew tolerance keeps
 		// legitimate near-now client clocks working). Without this, only
 		// Backfill rejected future timestamps and a live POST could park usage
 		// in a future billing period. Backfill applies its own stricter
 		// past-only gate before reaching here.
-		if input.Timestamp.After(time.Now().UTC().Add(usageFutureSkew)) {
+		if input.Timestamp.After(now.Add(usageFutureSkew)) {
 			return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future")
 		}
 		ts = input.Timestamp.UTC()

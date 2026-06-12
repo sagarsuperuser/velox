@@ -629,6 +629,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// entry's created_at in simulated time so the dashboard "credit
 	// granted on …" line matches the rest of the simulated timeline.
 	creditSvc.SetResolver(engine)
+	// Usage ingest on a clock-pinned customer defaults timestamps to and
+	// gates them against the clock's frozen_time, so simulated-time usage
+	// can be ingested onto an advanced clock (every path funnels here:
+	// live POST, batch, backfill, LiteLLM). Live mode never pays the
+	// lookup — test clocks are test-mode-only by DB CHECK.
+	usageSvc.SetResolver(engine)
 	// subscription.Service uses the resolver at Create / Activate /
 	// ChangeItem / ScheduleCancel / PauseCollection / EndTrial /
 	// ExtendTrial so every per-sub timestamp the operator writes
