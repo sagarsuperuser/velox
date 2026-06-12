@@ -897,6 +897,11 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Webhook live tail shows customer names, not raw vlx_cus ids (unknown ids show shortened, full id on hover).
 - [ ] ⌘K → type a plan name → Enter lands on the plan's detail page.
 
+## FLOW C2b: Credits ledger readability (2026-06-13)
+
+- [ ] Customer ledger shows 5 columns (Date · Type · Description · Amount · Balance) with Amount/Balance fully visible at a 1280px window — nothing clipped at the right edge.
+- [ ] An "Applied to invoice DEMO-NNNN" row's description IS the invoice link; a grant with expiry shows "Expires <date>" as subtext; an expiry row reads "Grant expired" (machine id only as small mono subtext).
+
 ## FLOW I9: Credit note on void
 
 - [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.
