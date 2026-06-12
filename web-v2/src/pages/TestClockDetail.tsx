@@ -390,13 +390,25 @@ function AdvanceClockDialog({
   const [timePart, setTimePart] = useState(defaultTime)
   const [submitting, setSubmitting] = useState(false)
 
-  const presets: { label: string; ms: number }[] = [
-    { label: '+1h', ms: 60 * 60 * 1000 },
-    { label: '+1d', ms: 24 * 60 * 60 * 1000 },
-    { label: '+1mo', ms: 31 * 24 * 60 * 60 * 1000 },
+  // +1mo is a CALENDAR month (setMonth), not a fixed 31 days — a 31-day
+  // jump overshoots the monthly billing boundary the preset exists to
+  // hit (Jun 15 + 31d = Jul 16, one day past the Jul 15 cycle close).
+  // Month-end overflow (Jan 31 → Mar 3) intentionally matches the
+  // engine's own month arithmetic (Go AddDate, no clamping).
+  const presets: { label: string; advance: (d: Date) => Date }[] = [
+    { label: '+1h', advance: d => new Date(d.getTime() + 60 * 60 * 1000) },
+    { label: '+1d', advance: d => new Date(d.getTime() + 24 * 60 * 60 * 1000) },
+    {
+      label: '+1mo',
+      advance: d => {
+        const n = new Date(d)
+        n.setMonth(n.getMonth() + 1)
+        return n
+      },
+    },
   ]
-  const applyPreset = (ms: number) => {
-    const d = new Date(new Date(clock.frozen_time).getTime() + ms)
+  const applyPreset = (advance: (d: Date) => Date) => {
+    const d = advance(new Date(clock.frozen_time))
     setDatePart(formatInTimeZone(d, tz, 'yyyy-MM-dd'))
     setTimePart(formatInTimeZone(d, tz, 'HH:mm'))
   }
@@ -476,7 +488,7 @@ function AdvanceClockDialog({
             <Label className="mb-2 block">Quick jumps</Label>
             <div className="flex gap-2">
               {presets.map(p => (
-                <Button key={p.label} type="button" size="sm" variant="outline" onClick={() => applyPreset(p.ms)}>
+                <Button key={p.label} type="button" size="sm" variant="outline" onClick={() => applyPreset(p.advance)}>
                   {p.label}
                 </Button>
               ))}
