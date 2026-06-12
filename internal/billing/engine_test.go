@@ -705,6 +705,35 @@ func (m *mockInvoices) ListAutoChargePendingForClock(_ context.Context, _ string
 	return nil, nil
 }
 
+// LatestThresholdPeriodEnd mirrors the postgres semantics: MAX
+// billing_period_end across non-voided threshold invoices whose
+// billing_period_start is inside [periodStart, periodEnd). Tests seed a
+// threshold invoice in m.invoices and the cycle-close watermark finds
+// it organically.
+func (m *mockInvoices) LatestThresholdPeriodEnd(_ context.Context, _, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error) {
+	var latest time.Time
+	found := false
+	for _, inv := range m.invoices {
+		if inv.SubscriptionID != subscriptionID || inv.BillingReason != domain.BillingReasonThreshold {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+			continue
+		}
+		if inv.BillingPeriodStart.Before(periodStart) || !inv.BillingPeriodStart.Before(periodEnd) {
+			continue
+		}
+		if !found || inv.BillingPeriodEnd.After(latest) {
+			latest = inv.BillingPeriodEnd
+			found = true
+		}
+	}
+	if !found {
+		return time.Time{}, errs.ErrNotFound
+	}
+	return latest, nil
+}
+
 func (m *mockInvoices) ListAutoChargePending(_ context.Context, limit int) ([]domain.Invoice, error) {
 	var result []domain.Invoice
 	for _, inv := range m.invoices {

@@ -1951,6 +1951,48 @@ func (s *PostgresStore) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, 
 	return inv, err
 }
 
+// LatestThresholdPeriodEnd returns the latest billing_period_end across
+// the subscription's threshold-fired invoices for the cycle starting at
+// periodStart. The billing engine's cycle close uses it as the
+// "already billed through" watermark: usage before that instant (and
+// the in_arrears base fee) landed on the threshold invoice, so the
+// cycle-close invoice must bill only the residual window — otherwise a
+// reset_billing_cycle=false threshold double-bills the customer.
+//
+// Window-scoped by billing_period_start ∈ [periodStart, periodEnd) so
+// the watermark generalizes to multiple threshold fires per cycle
+// (each successive fire's period starts at the previous one's end).
+// Voided / uncollectible invoices don't count — their amounts were
+// returned or written off, so the usage they covered is billable again.
+// Returns errs.ErrNotFound when no threshold invoice fired this cycle.
+func (s *PostgresStore) LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error) {
+	if subscriptionID == "" {
+		return time.Time{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var end sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT MAX(billing_period_end) FROM invoices
+		WHERE subscription_id = $1
+		  AND billing_reason = 'threshold'
+		  AND status NOT IN ('voided', 'uncollectible')
+		  AND billing_period_start >= $2
+		  AND billing_period_start < $3
+	`, subscriptionID, periodStart, periodEnd).Scan(&end)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !end.Valid {
+		return time.Time{}, errs.ErrNotFound
+	}
+	return end.Time, nil
+}
+
 // invoiceOrderBy returns the ORDER BY clause for the invoice list,
 // validating sort + dir against a closed set. Anything outside the
 // allow-list silently falls back to the default — never interpolate
