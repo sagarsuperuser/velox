@@ -91,6 +91,12 @@ const ENTRY_TYPE_LABELS: Record<string, string> = {
 }
 const entryTypeLabel = (t: string): string => ENTRY_TYPE_LABELS[t] ?? t
 
+// The expiry worker writes "Expired grant <ledger-id>" descriptions (the
+// format is load-bearing for backend dedup — credit/postgres.go matches it
+// with LIKE — so the STORED text must not change). Display-side we render
+// the human phrase and demote the machine id to subtext.
+const EXPIRED_GRANT_RE = /^Expired grant (vlx_ccl_\w+)$/
+
 function SortableHead({
   label, sortKey: key, activeSortKey, sortDir, onSort, className,
 }: {
@@ -285,7 +291,7 @@ export default function CreditsPage() {
           </CardHeader>
           <CardContent className="p-0">
             {ledgerLoading ? (
-              <TableSkeleton columns={7} />
+              <TableSkeleton columns={5} />
             ) : filteredLedger.length === 0 ? (
               <div className="px-6 py-12 text-center">
                 <p className="text-sm font-medium text-foreground">No transactions{entryTypeFilter !== 'All' ? ` of type "${entryTypeFilter}"` : ''}</p>
@@ -299,8 +305,6 @@ export default function CreditsPage() {
                       <SortableHead label="Date" sortKey="created_at" activeSortKey={ledgerSortKey} sortDir={ledgerSortDir} onSort={onLedgerSort} />
                       <SortableHead label="Type" sortKey="entry_type" activeSortKey={ledgerSortKey} sortDir={ledgerSortDir} onSort={onLedgerSort} />
                       <TableHead className="text-xs font-medium">Description</TableHead>
-                      <TableHead className="text-xs font-medium">Invoice</TableHead>
-                      <TableHead className="text-xs font-medium">Expires</TableHead>
                       <SortableHead label="Amount" sortKey="amount_cents" activeSortKey={ledgerSortKey} sortDir={ledgerSortDir} onSort={onLedgerSort} className="text-right" />
                       <TableHead className="text-xs font-medium text-right">Balance</TableHead>
                     </TableRow>
@@ -310,18 +314,32 @@ export default function CreditsPage() {
                       <TableRow key={entry.id}>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.created_at)}</TableCell>
                         <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entryTypeLabel(entry.entry_type)}</Badge></TableCell>
-                        <TableCell className="text-sm text-foreground">{entry.description || '—'}</TableCell>
-                        <TableCell className="text-sm">
-                          {entry.invoice_id ? (
-                            <Link to={`/invoices/${entry.invoice_id}`} className="text-primary hover:underline">
-                              View invoice
-                            </Link>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                          {entry.expires_at ? formatDate(entry.expires_at) : '—'}
+                        <TableCell className="text-sm text-foreground">
+                          {(() => {
+                            const expired = entry.description?.match(EXPIRED_GRANT_RE)
+                            const text = expired ? 'Grant expired' : (entry.description || '—')
+                            return (
+                              <>
+                                {entry.invoice_id ? (
+                                  <Link to={`/invoices/${entry.invoice_id}`} className="text-primary hover:underline">
+                                    {text}
+                                  </Link>
+                                ) : (
+                                  text
+                                )}
+                                {expired && (
+                                  <span className="block text-xs text-muted-foreground font-mono mt-0.5" title={expired[1]}>
+                                    {expired[1].slice(0, 18)}…
+                                  </span>
+                                )}
+                                {entry.expires_at && !expired && (
+                                  <span className="block text-xs text-muted-foreground mt-0.5">
+                                    Expires {formatDate(entry.expires_at)}
+                                  </span>
+                                )}
+                              </>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell className={cn('text-right tabular-nums font-mono text-sm', entry.amount_cents >= 0 ? 'text-emerald-600' : 'text-destructive')}>
                           {entry.amount_cents >= 0 ? '+' : ''}{formatCents(entry.amount_cents)}
