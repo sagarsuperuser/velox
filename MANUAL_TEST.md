@@ -657,6 +657,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Cross threshold + immediately `POST /v1/billing/run` → idempotent skip.
 - [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
 - [ ] **Threshold invoice on a test clock carries the Simulated badge (2026-06-12):** pin a sub with an amount threshold to a test clock, advance until the cap crosses → the threshold invoice shows the **Simulated** badge (is_simulated=true), same as sibling cycle invoices on the clock. Pre-fix the badge was missing on threshold invoices only.
+- [ ] **`reset_billing_cycle=false` cycle close bills only the residual (2026-06-13):** set `{amount_gte, reset_billing_cycle:false}`, cross the cap mid-cycle (threshold invoice fires), keep ingesting, then advance to period end → the cycle invoice has NO base-fee line and its usage line's period starts at the threshold invoice's `billing_period_end` (only post-fire usage). Sum of the two invoices == what one un-thresholded invoice would have been. Pre-fix the cycle invoice re-billed the full period + base on top of the threshold invoice.
 - [ ] Canceled/archived subs → Set/Edit hidden.
 
 ## FLOW B15: `in_advance` plan happy path (ADR-031)

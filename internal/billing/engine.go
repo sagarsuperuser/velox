@@ -363,6 +363,12 @@ type InvoiceWriter interface {
 	// (paid source) vs Adjustment (unpaid source) credits; Stripe warns
 	// to disable proration when the source invoice is unpaid.
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+	// LatestThresholdPeriodEnd returns the latest billing_period_end of
+	// the subscription's non-voided threshold-fired invoices whose
+	// billing_period_start falls inside [periodStart, periodEnd).
+	// billOnePeriod treats it as the cycle's "already billed through"
+	// watermark. errs.ErrNotFound when no threshold invoice exists.
+	LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
@@ -1895,6 +1901,27 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// skip the next-period in_advance base line.)
 	terminalCycleClose := shouldFireScheduledCancel(sub, periodEnd, now)
 
+	// Threshold-fired invoice for THIS cycle: when fireThreshold ran
+	// mid-cycle and the cycle was NOT reset (reset_billing_cycle=false —
+	// or reset=true whose UpdateBillingCycle failed after the fire), that
+	// invoice already billed (and typically charged) usage through its
+	// billing_period_end PLUS the full in_arrears base fee
+	// (evaluateThresholds → previewWithWindow emits the unprorated base).
+	// Without this watermark the cycle close re-billed both: usage from
+	// periodStart and the base again — every reset=false threshold cycle
+	// double-charged. Keyed on the invoice (ground truth), not the
+	// mutable BillingThresholds config, so an operator removing
+	// thresholds mid-cycle doesn't resurrect the double-bill.
+	// errs.ErrNotFound = no threshold fire = zero behavior change; any
+	// other error aborts this sub's cycle (billing blind here risks a
+	// double charge — feedback_no_silent_fallbacks).
+	var thresholdBilledThrough *time.Time
+	if end, thErr := e.invoices.LatestThresholdPeriodEnd(ctx, sub.TenantID, sub.ID, periodStart, periodEnd); thErr == nil {
+		thresholdBilledThrough = &end
+	} else if !errors.Is(thErr, errs.ErrNotFound) {
+		return false, fmt.Errorf("lookup threshold invoice for cycle: %w", thErr)
+	}
+
 	// Pull the per-item change log for this period — drives segment-
 	// aware base-fee billing (Lago / Chargebee / Orb shape). Each row
 	// demarcates a [pre-change, post-change] boundary, so the in_arrears
@@ -2036,7 +2063,19 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			continue
 		}
 
-		// in_arrears: emit per-segment lines.
+		// in_arrears: emit per-segment lines — UNLESS a threshold invoice
+		// already billed this cycle's base. fireThreshold bills the FULL
+		// (unprorated) in_arrears base for every item on the sub at fire
+		// time, so re-emitting any segment here double-bills it. Known
+		// imprecision: an item added AFTER the fire wasn't on the
+		// threshold invoice and is under-billed by its partial-period
+		// base — accepted; the alternative (segment-level reconciliation
+		// against the threshold invoice's lines) over-bills in the
+		// mirrored cases, and under-billing is the safer failure for a
+		// rare same-cycle combo.
+		if thresholdBilledThrough != nil {
+			continue
+		}
 		itemForSeg := it
 		segments := itemBaseSegments(&itemForSeg, changesByItem[it.ID], periodStart, periodEnd)
 		for _, seg := range segments {
@@ -2064,7 +2103,13 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// in_arrears only — in_advance items removed mid-period already
 	// paid upfront for the period; refund flows through the cancel-
 	// proration / removed-item credit path (not this loop).
+	// Skipped when a threshold invoice billed this cycle — same
+	// double-bill guard as Pass 1 (an item removed after the fire had
+	// its full base on the threshold invoice).
 	for itemID, changes := range changesByItem {
+		if thresholdBilledThrough != nil {
+			break
+		}
 		if _, stillPresent := itemsByID[itemID]; stillPresent {
 			continue
 		}
@@ -2129,6 +2174,18 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// to every meter in its segment's plan.
 	meterIntervals := map[string][]usageInterval{}
 	addMeterInterval := func(mid string, start, end time.Time) {
+		// Clamp to the threshold watermark: usage in
+		// [periodStart, thresholdBilledThrough) already landed on the
+		// mid-cycle threshold invoice; the cycle close bills only the
+		// residual window. Intervals fully inside the billed window
+		// drop out entirely. Nil watermark = no threshold fire =
+		// full period, unchanged.
+		if thresholdBilledThrough != nil && start.Before(*thresholdBilledThrough) {
+			start = *thresholdBilledThrough
+		}
+		if !end.After(start) {
+			return
+		}
 		meterIntervals[mid] = append(meterIntervals[mid], usageInterval{start, end})
 	}
 	for _, it := range sub.Items {

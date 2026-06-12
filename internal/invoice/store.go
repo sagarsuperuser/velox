@@ -161,6 +161,14 @@ type Store interface {
 	// subs in the first place. Returns errs.ErrNotFound when no
 	// matching invoice exists.
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+
+	// LatestThresholdPeriodEnd returns the latest billing_period_end of
+	// the subscription's non-voided threshold invoices whose
+	// billing_period_start falls inside [periodStart, periodEnd). The
+	// cycle close treats it as the "billed through" watermark so a
+	// reset_billing_cycle=false threshold fire doesn't get re-billed at
+	// period end. errs.ErrNotFound when no threshold invoice exists.
+	LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error)
 }
 
 // OutstandingBalance is the customer-AR snapshot — total cents owed

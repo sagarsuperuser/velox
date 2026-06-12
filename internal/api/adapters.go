@@ -196,6 +196,10 @@ func (a *invoiceWriterAdapter) FindBaseInvoiceForPeriod(ctx context.Context, ten
 	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
 }
 
+func (a *invoiceWriterAdapter) LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error) {
+	return a.store.LatestThresholdPeriodEnd(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
 // creditGrantAdapter bridges credit.Service → creditnote.CreditGranter.
 type creditGrantAdapter struct {
 	svc *credit.Service
