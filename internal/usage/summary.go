@@ -67,8 +67,11 @@ func (h *Handler) getSummary(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	customerID := chi.URLParam(r, "customer_id")
 
-	// Default to current month
-	now := time.Now().UTC()
+	// Default to the customer's current month — frozen_time's month when
+	// the customer is pinned to a test clock (wall-clock's otherwise), so
+	// the summary follows the simulated timeline after an Advance instead
+	// of reporting the wall-clock month the clock has left behind.
+	now := h.svc.effectiveNow(r.Context(), tenantID, customerID)
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	to := from.AddDate(0, 1, 0)
 
