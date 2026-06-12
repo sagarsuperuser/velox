@@ -4,6 +4,7 @@ import { api, formatDateTime } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { Customer, Meter, UsageEvent, UsageEventsAggregate } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
+import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 
@@ -48,6 +49,7 @@ export default function UsageEventsPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
 
   // Fetch only the customers referenced by visible events (avoids the
   // "Unknown" pagination bug — see Invoices.tsx for full rationale).
@@ -62,6 +64,16 @@ export default function UsageEventsPage() {
     queryFn: () => api.listCustomers(customerIdsForEvents.length > 0 ? `ids=${customerIdsForEvents.join(',')}&limit=${customerIdsForEvents.length}` : ''),
     enabled: customerIdsForEvents.length > 0,
   })
+
+  // Full customer list for the FILTER dropdown. The per-page query above
+  // only knows customers present on the loaded page — pre-fix the dropdown
+  // was populated from it, so on first load (or after a narrowing filter)
+  // it offered no options at all. Same pattern as Subscriptions/Invoices.
+  const { data: filterCustomersData } = useQuery({
+    queryKey: ['customers-ref'],
+    queryFn: () => api.listCustomers(),
+  })
+  const filterCustomers = filterCustomersData?.data ?? []
 
   const { data: metersData } = useQuery({
     queryKey: ['meters-ref'],
@@ -174,18 +186,43 @@ export default function UsageEventsPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  const handleExport = () => {
-    const exportParams = filterQs || undefined
-    api.listUsageEvents(exportParams).then(res => {
-      const rows = (res.data || []).map(ev => [
+  // Export pages through ALL filtered events (capped), not just the server's
+  // default page — pre-fix this called listUsageEvents with no limit and
+  // silently truncated the CSV to one page. Mirrors AuditLog.tsx's export.
+  const EXPORT_PAGE_SIZE = 1000
+  const EXPORT_MAX_ROWS = 50_000
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const all: UsageEvent[] = []
+      let offset = 0
+      while (all.length < EXPORT_MAX_ROWS) {
+        const parts = [`limit=${EXPORT_PAGE_SIZE}`, `offset=${offset}`]
+        if (filterQs) parts.push(filterQs)
+        const res = await api.listUsageEvents(parts.join('&'))
+        const batch = res.data || []
+        all.push(...batch)
+        if (batch.length < EXPORT_PAGE_SIZE) break
+        offset += EXPORT_PAGE_SIZE
+      }
+      // Resolve names from the FULL customer list (the per-page customerMap
+      // only knows the visible page; exported rows beyond it would fall back
+      // to raw IDs).
+      const nameById: Record<string, string> = {}
+      filterCustomers.forEach(c => { nameById[c.id] = c.display_name })
+      const rows = all.slice(0, EXPORT_MAX_ROWS).map(ev => [
         formatDateTime(ev.timestamp),
-        customerMap[ev.customer_id]?.display_name || ev.customer_id,
+        nameById[ev.customer_id] || customerMap[ev.customer_id]?.display_name || ev.customer_id,
         meterMap[ev.meter_id]?.name || ev.meter_id,
         ev.quantity,
         ev.dimensions && Object.keys(ev.dimensions).length > 0 ? JSON.stringify(ev.dimensions) : '',
       ])
       downloadCSV('usage-events.csv', ['Timestamp', 'Customer', 'Meter', 'Value', 'Dimensions'], rows)
-    })
+    } catch (err) {
+      showApiError(err, 'Export failed')
+    } finally {
+      setExporting(false)
+    }
   }
 
   // Stat-card values come from the server-side aggregate so that they
@@ -214,9 +251,9 @@ export default function UsageEventsPage() {
           <p className="text-sm text-muted-foreground mt-1">Track and analyze usage across customers and meters</p>
         </div>
         {total > 0 && (
-          <Button variant="outline" size="sm" onClick={handleExport}>
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
             <Download size={16} className="mr-2" />
-            Export CSV
+            {exporting ? 'Exporting…' : 'Export CSV'}
           </Button>
         )}
       </div>
@@ -229,7 +266,7 @@ export default function UsageEventsPage() {
           className="flex h-9 w-52 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">All customers</option>
-          {customers.map(c => (
+          {filterCustomers.map(c => (
             <option key={c.id} value={c.id}>{c.display_name}</option>
           ))}
         </select>
