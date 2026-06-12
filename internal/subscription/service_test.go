@@ -1826,6 +1826,8 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		svc := NewService(newMemStore(), clock.NewFake(createdAt))
 		fb := &fakeBiller{}
 		svc.SetBiller(fb)
+		aud := &captureAudit{}
+		svc.SetAuditLogger(aud)
 		sub, err := svc.Create(ctx, "t1", CreateInput{
 			Code: "sub-trial", DisplayName: "Trial", CustomerID: "c",
 			Items:       []CreateItemInput{{PlanID: "p"}},
@@ -1865,6 +1867,20 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		// in the mem store stub but verified via fb.calls).
 		if fb.calls != 1 {
 			t.Errorf("BillOnCreate calls: got %d, want 1 (covers in_advance first paid period)", fb.calls)
+		}
+
+		// Audit row: the auto-flip must leave the same trial_ended trace the
+		// operator EndTrial writes, marked triggered_by=schedule and carrying
+		// the sim context (clock id + trial_end_at as the effective instant).
+		if len(aud.entries) != 1 {
+			t.Fatalf("audit entries: got %d, want 1 (trial_ended)", len(aud.entries))
+		}
+		am := aud.entries[0].metadata
+		if am["action"] != "trial_ended" || am["triggered_by"] != "schedule" {
+			t.Errorf("audit metadata: got %+v, want action=trial_ended triggered_by=schedule", am)
+		}
+		if am["test_clock_id"] != "tclk_1" || am["sim_effective_at"] == nil {
+			t.Errorf("audit sim context: got %+v, want test_clock_id + sim_effective_at", am)
 		}
 	})
 

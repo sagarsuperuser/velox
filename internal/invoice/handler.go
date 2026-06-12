@@ -460,14 +460,9 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
-			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":        inv.CustomerID,
-			"total_amount_cents": inv.TotalAmountCents,
-			"currency":           inv.Currency,
-		})
-	}
+	// The finalize audit row is written by service.Finalize — the canonical
+	// single writer, covering this endpoint AND the tax-retry auto-finalize.
+	// A handler-level write here would be a duplicate row.
 
 	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceFinalized, inv)
 
@@ -606,18 +601,10 @@ func (h *Handler) markUncollectible(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// AuditLog.tsx already has a special-case renderer for
-	// meta.action='marked_uncollectible' — but the audit row was never
-	// written, so that branch was dead code. Wire it up so the
-	// Audit Log page can finally show "Marked INV-NNN uncollectible".
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
-			"action":         "marked_uncollectible",
-			"customer_id":    inv.CustomerID,
-			"amount_due":     inv.AmountDueCents,
-			"invoice_number": inv.InvoiceNumber,
-		})
-	}
+	// The marked_uncollectible audit row is written by service.MarkUncollectible
+	// (the canonical writer, with richer metadata). The handler-level write that
+	// used to live here — added under the mistaken belief no row existed — made
+	// every operator mark-uncollectible produce TWO identical audit rows.
 
 	// Halt dunning automation. Best-effort — failure is logged not
 	// surfaced; the invoice transition is the authoritative state
@@ -668,22 +655,9 @@ func (h *Handler) recordOfflinePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// AuditLog.tsx already has a special-case renderer for
-	// meta.action='payment_recorded' — wire the audit write so it
-	// surfaces. Money-critical action: operator marking an invoice
-	// paid out-of-band must be traceable for finance reconciliation.
-	if h.auditLogger != nil {
-		meta := map[string]any{
-			"action":         "payment_recorded",
-			"customer_id":    inv.CustomerID,
-			"amount_paid":    inv.AmountPaidCents,
-			"invoice_number": inv.InvoiceNumber,
-		}
-		if input.Note != "" {
-			meta["note"] = input.Note
-		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "invoice", inv.ID, inv.InvoiceNumber, meta)
-	}
+	// The payment_recorded audit row is written by service.RecordOfflinePayment
+	// (the canonical writer — its row also carries recovered_from_status). The
+	// handler-level write that used to live here duplicated it on every call.
 
 	if h.dunning != nil {
 		if err := h.dunning.ResolveByInvoice(r.Context(), tenantID, id, domain.ResolutionPaymentRecovered); err != nil {

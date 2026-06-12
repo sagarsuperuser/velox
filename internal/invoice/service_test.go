@@ -1021,10 +1021,15 @@ func TestMarkUncollectible_WritesAuditAndDispatchesEvent(t *testing.T) {
 	if out.Status != domain.InvoiceUncollectible {
 		t.Errorf("status: got %q, want uncollectible", out.Status)
 	}
-	if len(audit.entries) != 1 {
-		t.Fatalf("audit entries: got %d, want 1", len(audit.entries))
+	// Two rows: service.Finalize writes the canonical finalize row (the
+	// fixture finalizes through the service), then MarkUncollectible its own.
+	if len(audit.entries) != 2 {
+		t.Fatalf("audit entries: got %d, want 2 (finalize + marked_uncollectible)", len(audit.entries))
 	}
-	if a := audit.entries[0]; a.metadata["action"] != "marked_uncollectible" {
+	if a := audit.entries[0]; a.action != string(domain.AuditActionFinalize) {
+		t.Errorf("first audit action: got %v, want finalize", a.action)
+	}
+	if a := audit.entries[1]; a.metadata["action"] != "marked_uncollectible" {
 		t.Errorf("audit metadata.action: got %v, want marked_uncollectible", a.metadata["action"])
 	}
 	if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoiceMarkedUncollectible {
@@ -1069,14 +1074,16 @@ func TestRecordOfflinePayment(t *testing.T) {
 		if out.PaidAt == nil {
 			t.Error("paid_at should be set")
 		}
-		if len(audit.entries) != 1 || audit.entries[0].metadata["action"] != "payment_recorded" {
-			t.Errorf("audit: got %+v", audit.entries)
+		// entries[0] is service.Finalize's canonical finalize row (the fixture
+		// finalizes through the service); entries[1] is the payment_recorded row.
+		if len(audit.entries) != 2 || audit.entries[1].metadata["action"] != "payment_recorded" {
+			t.Errorf("audit: got %+v, want finalize + payment_recorded", audit.entries)
 		}
-		if audit.entries[0].metadata["recovered_from_status"] != string(domain.InvoiceFinalized) {
-			t.Errorf("audit recovered_from_status: got %v, want finalized", audit.entries[0].metadata["recovered_from_status"])
+		if audit.entries[1].metadata["recovered_from_status"] != string(domain.InvoiceFinalized) {
+			t.Errorf("audit recovered_from_status: got %v, want finalized", audit.entries[1].metadata["recovered_from_status"])
 		}
-		if audit.entries[0].metadata["note"] != "Cheque #1234" {
-			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[0].metadata["note"])
+		if audit.entries[1].metadata["note"] != "Cheque #1234" {
+			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[1].metadata["note"])
 		}
 		if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoicePaymentRecorded {
 			t.Errorf("events: got %+v", events.events)

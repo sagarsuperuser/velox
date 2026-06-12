@@ -82,11 +82,43 @@ type AuditWriter interface {
 }
 
 // SetAuditLogger wires the audit logger used by the engine to record
-// background-fired lifecycle events (currently: scheduled cancellation
-// firing at period end). Without this, those auto-fires only show in
-// outbound webhooks and slog — the operator Activity feed misses them.
+// background-fired lifecycle events (scheduled cancellation, engine-
+// finalized invoices, trial auto-expiry). Without this, those auto-fires
+// only show in outbound webhooks and slog — the operator Activity feed
+// and the audit log miss them.
 func (e *Engine) SetAuditLogger(a AuditWriter) {
 	e.auditLogger = a
+}
+
+// auditInvoiceFinalized writes the finalize audit row for an invoice the
+// engine created already-finalized (cycle close, subscription create,
+// cancel-final, threshold). The operator HTTP path and the tax-retry
+// auto-finalize get their row from invoice.Service.Finalize; engine
+// invoices never pass through Finalize — they're born finalized — so
+// without this they left no audit trace at all, and the TTFI metric
+// (which reads MIN(created_at) of finalize rows) reported nothing for
+// tenants whose first invoice was engine-generated (the normal path).
+//
+// Skips drafts (tax-pending / pause-collection): those finalize later via
+// the tax-retry chain, which writes the row in service.Finalize — writing
+// here too would double-count. Clock-pinned subs get the simulated
+// effective time in metadata (ADR-030: created_at stays wall-clock).
+func (e *Engine) auditInvoiceFinalized(ctx context.Context, sub domain.Subscription, inv domain.Invoice, now time.Time) {
+	if e.auditLogger == nil || inv.Status != domain.InvoiceFinalized {
+		return
+	}
+	meta := map[string]any{
+		"invoice_number":     inv.InvoiceNumber,
+		"customer_id":        inv.CustomerID,
+		"total_amount_cents": inv.TotalAmountCents,
+		"currency":           inv.Currency,
+		"triggered_by":       string(inv.BillingReason),
+	}
+	if sub.TestClockID != "" {
+		meta["test_clock_id"] = sub.TestClockID
+		meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+	}
+	_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel
@@ -1705,6 +1737,21 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"subscription_id", sub.ID,
 				"tenant_id", sub.TenantID,
 			)
+			// Audit the auto-flip — third trial-end path (cycle-close);
+			// matches the row the operator EndTrial and the scheduler /
+			// catchup expiry scans write.
+			if e.auditLogger != nil {
+				meta := map[string]any{
+					"action":       "trial_ended",
+					"customer_id":  sub.CustomerID,
+					"triggered_by": "schedule",
+				}
+				if sub.TestClockID != "" {
+					meta["test_clock_id"] = sub.TestClockID
+					meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+				}
+				_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
+			}
 			// ADR-031 trial-end coverage: BillOnCreate fires for the
 			// just-opened paid period [current_period_start,
 			// current_period_end] so in_advance items don't slip
@@ -2478,6 +2525,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		return false, fmt.Errorf("create invoice: %w", err)
 	}
 
+	// Audit the engine-finalized invoice (no-op for drafts — tax-pending /
+	// pause-collection rows get their finalize audit row from the tax-retry
+	// chain's service.Finalize).
+	e.auditInvoiceFinalized(ctx, sub, inv, now)
+
 	// Stripe Tax: once the invoice is durably persisted, commit the
 	// tax_calculation into a tax_transaction so Stripe can report the
 	// liability. Failures here don't unwind the invoice — the calculation
@@ -2862,6 +2914,9 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		}
 		return domain.Invoice{}, fmt.Errorf("create invoice: %w", err)
 	}
+
+	// Audit the engine-finalized invoice (no-op for drafts).
+	e.auditInvoiceFinalized(ctx, sub, inv, now)
 
 	// Commit tax if a provider produced a calculation (same pattern
 	// as the cycle path; ManualProvider / NoneProvider no-op).
@@ -3443,6 +3498,9 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		}
 		return domain.Invoice{}, fmt.Errorf("create final-on-cancel invoice: %w", err)
 	}
+
+	// Audit the engine-finalized invoice (no-op for drafts).
+	e.auditInvoiceFinalized(ctx, sub, inv, now)
 
 	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
 		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {

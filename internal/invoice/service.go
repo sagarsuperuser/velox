@@ -561,6 +561,21 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 				"tax_provider", finalized.TaxProvider, "calculation_id", finalized.TaxCalculationID)
 		}
 	}
+	// Canonical finalize audit row — written HERE (not per entry point) so
+	// every path through Finalize gets exactly one row: the operator HTTP
+	// endpoint (actor = the operator, from ctx) AND the tax-retry
+	// auto-finalize chain (actor = system). The handler's own write was
+	// removed alongside this — two writers per action is the duplicate-row
+	// bug mark-uncollectible / record-payment had. The TTFI metric
+	// (ttfi_postgres.go) reads MIN(created_at) over these rows.
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionFinalize, "invoice", finalized.ID, finalized.InvoiceNumber, map[string]any{
+			"invoice_number":     finalized.InvoiceNumber,
+			"customer_id":        finalized.CustomerID,
+			"total_amount_cents": finalized.TotalAmountCents,
+			"currency":           finalized.Currency,
+		})
+	}
 	return finalized, nil
 }
 

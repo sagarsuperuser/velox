@@ -1494,6 +1494,20 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 			continue
 		}
 
+		// Audit the auto-flip — the operator EndTrial path writes the same
+		// trial_ended row; without this, scheduler-driven expiry showed only
+		// in webhooks and the Activity feed missed it (same asymmetry the
+		// scheduled-cancel + pause-auto-resume audits already fixed).
+		if s.audit != nil {
+			_ = s.audit.Log(bound, tenantID, domain.AuditActionUpdate, "subscription", activated.ID, activated.Code, map[string]any{
+				"action":           "trial_ended",
+				"customer_id":      activated.CustomerID,
+				"triggered_by":     "schedule",
+				"test_clock_id":    clockID,
+				"sim_effective_at": trialEndAt.UTC().Format(time.RFC3339),
+			})
+		}
+
 		// Cover the first paid period for in_advance items at the
 		// activation instant (Bug #6 carry-through). No-op when no
 		// item is in_advance. Idempotent via the invoice UNIQUE
@@ -1567,6 +1581,16 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			}
 			batchErrs = append(batchErrs, fmt.Errorf("activate sub %s: %w", sub.ID, err))
 			continue
+		}
+
+		// Audit the auto-flip (wall-clock counterpart of the catchup path's
+		// trial_ended row — no sim metadata, this scan excludes clock-pinned subs).
+		if s.audit != nil {
+			_ = s.audit.Log(ctx, activated.TenantID, domain.AuditActionUpdate, "subscription", activated.ID, activated.Code, map[string]any{
+				"action":       "trial_ended",
+				"customer_id":  activated.CustomerID,
+				"triggered_by": "schedule",
+			})
 		}
 
 		if s.biller != nil {
