@@ -272,6 +272,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		customerH.SetAPIBaseURL(base)
 	}
 	settingsH := tenant.NewSettingsHandler(settingsStore)
+	// Field-level settings-change audit (which fields, before/after) — the
+	// middleware catch-all alone records only that a PUT happened.
+	settingsH.SetAuditLogger(auditLogger)
 	stripeClient := payment.NewLiveStripeClient(stripeClients)
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil, clk) // retrier set below after stripeAdapter created
