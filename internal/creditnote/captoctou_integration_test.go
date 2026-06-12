@@ -92,7 +92,7 @@ func TestCreateUnderInvoiceLock_SerializesCap(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := store.CreateUnderInvoiceLock(ctx, tenantID, inv.ID, build(i)); err == nil {
+			if _, err := store.CreateUnderInvoiceLock(ctx, tenantID, inv.ID, nil, build(i)); err == nil {
 				mu.Lock()
 				successes++
 				mu.Unlock()

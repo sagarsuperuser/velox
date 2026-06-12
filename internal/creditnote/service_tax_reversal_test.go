@@ -49,6 +49,7 @@ func TestCreate_ProportionalTaxBreakdown(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 
 	// Half refund → should break out half the tax.
 	cn, err := svc.Create(context.Background(), "t1", CreateInput{
@@ -93,6 +94,7 @@ func TestCreate_ZeroTaxInvoiceLeavesZeroTaxOnCN(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 
 	cn, err := svc.Create(context.Background(), "t1", CreateInput{
 		InvoiceID: "inv_notax", Reason: "credit",
@@ -134,6 +136,7 @@ func TestIssue_TaxReversalOnPaidInvoiceWithTransaction(t *testing.T) {
 	refunder := &fakeRefunder{}
 	rev := &fakeTaxReverser{returnID: "tx_reversal_1"}
 	svc := NewService(store, invoices, refunder, &fakeCreditGranter{})
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	svc.SetTaxReverser(rev)
 
 	cn, err := svc.CreateRefund(context.Background(), "t1", RefundInput{
@@ -190,6 +193,7 @@ func TestIssue_NoReversalWhenInvoiceHasNoTransactionID(t *testing.T) {
 	refunder := &fakeRefunder{}
 	rev := &fakeTaxReverser{}
 	svc := NewService(store, invoices, refunder, &fakeCreditGranter{})
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	svc.SetTaxReverser(rev)
 
 	_, err := svc.CreateRefund(context.Background(), "t1", RefundInput{
@@ -222,6 +226,7 @@ func TestIssue_NoReverserWiredDoesNotCall(t *testing.T) {
 	}
 	refunder := &fakeRefunder{}
 	svc := NewService(store, invoices, refunder, &fakeCreditGranter{})
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 
 	cn, err := svc.CreateRefund(context.Background(), "t1", RefundInput{
 		InvoiceID: "inv_paid", Reason: "duplicate",
@@ -259,6 +264,7 @@ func TestIssue_ReversalFailureStillIssuesCN(t *testing.T) {
 	refunder := &fakeRefunder{}
 	rev := &fakeTaxReverser{failWith: errors.New("stripe: api error")}
 	svc := NewService(store, invoices, refunder, &fakeCreditGranter{})
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	svc.SetTaxReverser(rev)
 
 	cn, err := svc.CreateRefund(context.Background(), "t1", RefundInput{

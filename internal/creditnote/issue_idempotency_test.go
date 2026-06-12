@@ -25,6 +25,7 @@ func TestIssue_IdempotentNoDoubleApply(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	cn, err := svc.Create(ctx, "t1", CreateInput{
@@ -77,6 +78,7 @@ func TestIssue_CASLoserDoesNotApply(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	cn, err := svc.Create(ctx, "t1", CreateInput{

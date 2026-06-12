@@ -892,6 +892,11 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 - [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.
 
+## FLOW I9b: Credit note PDF totals reconcile (2026-06-12)
+
+- [ ] On a taxed paid invoice (e.g. $100 net + 10% = $110), create + issue a full CN (one line, qty 1 × $110.00 gross). Download the CN PDF: line amount **$110.00**, totals rows read **"Total excluding tax" $100.00**, tax row **$10.00**, **"Credit Total" $110.00** — line amounts sum to Credit Total; no row claims to be a sum-of-lines "Subtotal" that doesn't match.
+- [ ] CN numbers are sequential per tenant (CN-…-0001, -0002). A failed number allocation FAILS the Create loudly; no CN with a timestamp-shaped number (CN-YYYYMM-…) is ever created.
+
 ## FLOW I11: `create_preview`
 
 - [ ] `POST /v1/invoices/create_preview {subscription_id}` → invoice shape with `id=null`, no DB row.

@@ -11,9 +11,11 @@ type Store interface {
 	// CreateUnderInvoiceLock serializes credit-note creation for one invoice:
 	// it takes a per-invoice advisory lock, lists the invoice's existing credit
 	// notes in the same transaction, lets `build` run the cap checks against
-	// that locked snapshot and return the note to insert, and inserts it
-	// atomically — closing the over-credit TOCTOU on concurrent Create.
-	CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// that locked snapshot and return the note to insert, and inserts the note
+	// AND its line items in that one transaction — closing the over-credit
+	// TOCTOU on concurrent Create, and guaranteeing a header can never commit
+	// without its lines (no orphan credit notes on partial failure).
+	CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
@@ -30,7 +32,6 @@ type Store interface {
 	// SetTaxTransaction persists the reversal transaction id returned by
 	// the tax provider at Issue time.
 	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
-	CreateLineItem(ctx context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error)
 	ListLineItems(ctx context.Context, tenantID, creditNoteID string) ([]domain.CreditNoteLineItem, error)
 }
 
