@@ -482,11 +482,19 @@ func (s *PostgresStore) AggregateByPricingRules(
 		return nil, err
 	}
 
-	// last_ever pass — only if the meter has any last_ever rules. Each
-	// last_ever rule's quantity is the most recent event (across all
-	// time) claimed by it. The claim semantics are identical to the
-	// period-bounded path; the only difference is the missing time
-	// filter.
+	// last_ever pass — each last_ever rule's quantity is the most recent
+	// event (across all time) CLAIMED by it. Claim semantics must be truly
+	// identical to the period-bounded path: ALL of the meter's rules compete
+	// for each event and the single top-priority match wins; only events
+	// whose WINNER is a last_ever rule belong here.
+	//
+	// The pre-fix query filtered the candidate set to last_ever rules BEFORE
+	// the claim (JOIN … WHERE aggregation_mode='last_ever'), so an event
+	// already claimed by a higher-priority sum/max/count rule in the period
+	// pass was claimed AGAIN by a lower-priority last_ever rule — the same
+	// event billed twice (period bucket + last_ever bucket). Mirroring the
+	// period pass's LATERAL top-1 claim and filtering on the winner's mode
+	// AFTER the claim closes the double-count.
 	leverRows, err := tx.QueryContext(ctx, `
 		WITH ranked_rules AS (
 			SELECT id, dimension_match, aggregation_mode, rating_rule_version_id,
@@ -495,19 +503,24 @@ func (s *PostgresStore) AggregateByPricingRules(
 			WHERE tenant_id = $1 AND meter_id = $2
 		),
 		claims AS (
-			SELECT DISTINCT ON (e.id)
+			SELECT
 				e.id,
 				e.quantity,
 				e.timestamp,
 				rr.id                     AS rule_id,
 				rr.rating_rule_version_id AS rating_rule_version_id
 			FROM usage_events e
-			JOIN ranked_rules rr ON e.properties @> rr.dimension_match
+			LEFT JOIN LATERAL (
+				SELECT id, aggregation_mode, rating_rule_version_id, rule_rank
+				FROM ranked_rules
+				WHERE e.properties @> ranked_rules.dimension_match
+				ORDER BY rule_rank ASC
+				LIMIT 1
+			) rr ON TRUE
 			WHERE e.tenant_id   = $1
 			  AND e.meter_id    = $2
 			  AND e.customer_id = $3
 			  AND rr.aggregation_mode = 'last_ever'
-			ORDER BY e.id, rr.rule_rank ASC
 		)
 		SELECT DISTINCT ON (rule_id)
 			rule_id, rating_rule_version_id, quantity
