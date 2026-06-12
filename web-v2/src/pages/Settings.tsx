@@ -826,7 +826,21 @@ export default function SettingsPage() {
                 <span className="text-sm text-muted-foreground">Unsaved changes</span>
               </div>
               <div className="flex items-center gap-3">
-                <Button variant="ghost" onClick={() => loadSettings()}>Discard</Button>
+                <AlertDialog>
+                  <AlertDialogTrigger render={<Button variant="ghost" />}>Discard</AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        All unsaved edits on this page will be lost and the form reset to the last saved values.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep editing</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => loadSettings()}>Discard changes</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
                 <Button onClick={() => handleSave()} disabled={saving}>
                   {saving ? <><Loader2 size={14} className="animate-spin mr-2" /> Saving...</> : 'Save Changes'}
                 </Button>
@@ -1274,7 +1288,7 @@ function ApiKeysForm({ livemode, connected, onSuccess }: {
     mutationFn: (data: StripeConnectForm) => api.connectStripe({ ...data, livemode }),
     onSuccess: (row) => {
       if (row.last_verified_error) {
-        toast.error(`Saved, but Stripe verify failed: ${row.last_verified_error}`)
+        toast.error('Saved, but Stripe could not verify these keys — see the details below the form.')
       } else {
         const base = `${connected ? 'Rotated' : 'Connected'} ${livemode ? 'live' : 'test'} mode${
           row.stripe_account_name ? ` as ${row.stripe_account_name}` : ''
@@ -1288,8 +1302,8 @@ function ApiKeysForm({ livemode, connected, onSuccess }: {
         const queued = row.retries_queued ?? 0
         const description = queued > 0
           ? queued === 1
-            ? 'Retrying 1 invoice that was stuck on tax in the background.'
-            : `Retrying ${queued} invoices that were stuck on tax in the background.`
+            ? 'Retrying 1 invoice that was waiting for a Stripe connection.'
+            : `Retrying ${queued} invoices that were waiting for a Stripe connection.`
           : undefined
         if (description) {
           toast.success(base, { description })

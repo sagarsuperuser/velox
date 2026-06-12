@@ -70,6 +70,17 @@ function keyTypeVariant(type: string): 'default' | 'secondary' | 'outline' {
   }
 }
 
+// Human label for a key type — the raw enum ("secret") is a backend
+// identifier, not operator copy.
+function keyTypeLabel(type: string): string {
+  switch (type) {
+    case 'secret': return 'Secret'
+    case 'publishable': return 'Publishable'
+    case 'platform': return 'Platform'
+    default: return type
+  }
+}
+
 function isExpired(key: ApiKeyInfo): boolean {
   return !!key.expires_at && new Date(key.expires_at) < new Date()
 }
@@ -78,6 +89,7 @@ export default function ApiKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
+  const [revoking, setRevoking] = useState(false)
   const [rotateTarget, setRotateTarget] = useState<ApiKeyInfo | null>(null)
   const [showRevoked, setShowRevoked] = useState(false)
   const [showExpired, setShowExpired] = useState(false)
@@ -102,7 +114,8 @@ export default function ApiKeysPage() {
   const errorMsg = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
 
   const handleRevoke = async () => {
-    if (!revokeTarget) return
+    if (!revokeTarget || revoking) return
+    setRevoking(true)
     try {
       await api.revokeApiKey(revokeTarget.id)
       toast.success('API key revoked')
@@ -110,6 +123,8 @@ export default function ApiKeysPage() {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     } catch (err) {
       showApiError(err, 'Failed to revoke key')
+    } finally {
+      setRevoking(false)
     }
   }
 
@@ -185,7 +200,7 @@ export default function ApiKeysPage() {
                           {k.key_prefix}--------
                         </code>
                         <div className="flex items-center gap-4 mt-2">
-                          <Badge variant={keyTypeVariant(k.key_type)}>{k.key_type}</Badge>
+                          <Badge variant={keyTypeVariant(k.key_type)}>{keyTypeLabel(k.key_type)}</Badge>
                           <span className="text-xs text-muted-foreground">Created {relativeTime(k.created_at)}</span>
                           <span className="text-xs text-muted-foreground">
                             {k.last_used_at ? `Last used ${relativeTime(k.last_used_at)}` : 'Never used'}
@@ -366,8 +381,8 @@ export default function ApiKeysPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setRevokeTarget(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleRevoke} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Revoke Key
+            <AlertDialogAction onClick={handleRevoke} disabled={revoking} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {revoking ? 'Revoking…' : 'Revoke Key'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -611,8 +626,9 @@ function RotateKeyDialog({
         <DialogHeader>
           <DialogTitle>Rotate API Key</DialogTitle>
           <DialogDescription>
-            A new {target.key_type} key will be issued for "{target.name}". Choose how long the current key
-            stays valid so deployed clients can swap credentials.
+            A new {keyTypeLabel(target.key_type).toLowerCase()} key will be issued for "{target.name}". The current key
+            stops working when the grace period ends — immediately if you pick "Now" — so anything
+            still using it must switch to the new key within that window.
           </DialogDescription>
         </DialogHeader>
 

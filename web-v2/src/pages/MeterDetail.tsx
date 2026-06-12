@@ -41,12 +41,17 @@ import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 const statusVariant = statusBadgeVariant
 
 const AGGREGATION_MODES: { value: MeterAggregationMode; label: string; help: string }[] = [
-  { value: 'sum', label: 'sum', help: 'Add all event values in the period.' },
-  { value: 'count', label: 'count', help: 'Count matching events; ignore values.' },
-  { value: 'last_during_period', label: 'last_during_period', help: 'Take the latest event in the period.' },
-  { value: 'last_ever', label: 'last_ever', help: 'Take the latest event across all time (state-style billing).' },
-  { value: 'max', label: 'max', help: 'Take the largest value in the period.' },
+  { value: 'sum', label: 'Sum', help: 'Add all event values in the period.' },
+  { value: 'count', label: 'Count', help: 'Count matching events; ignore values.' },
+  { value: 'last_during_period', label: 'Last value in period', help: 'Take the latest event in the period.' },
+  { value: 'last_ever', label: 'Last value ever', help: 'Take the latest event across all time (state-style billing).' },
+  { value: 'max', label: 'Maximum', help: 'Take the largest value in the period.' },
 ]
+
+// Human label for an aggregation mode — operator copy never shows the raw
+// snake_case enum.
+const aggregationLabel = (mode: string): string =>
+  AGGREGATION_MODES.find(m => m.value === mode)?.label ?? mode
 
 export default function MeterDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -182,7 +187,7 @@ export default function MeterDetailPage() {
             <CopyButton text={meter.id} />
           </div>
         </div>
-        <Badge variant="secondary">{meter.aggregation}</Badge>
+        <Badge variant="secondary">{aggregationLabel(meter.aggregation)}</Badge>
       </div>
 
       {/* Properties */}
@@ -202,7 +207,7 @@ export default function MeterDetailPage() {
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Default aggregation</span>
-              <Badge variant="secondary">{meter.aggregation}</Badge>
+              <Badge variant="secondary">{aggregationLabel(meter.aggregation)}</Badge>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground">Created</span>
@@ -335,7 +340,7 @@ export default function MeterDetailPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="font-mono text-xs">{rule.aggregation_mode}</Badge>
+                        <Badge variant="secondary" className="text-xs">{aggregationLabel(rule.aggregation_mode)}</Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {ratingRuleName ? (

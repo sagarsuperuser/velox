@@ -62,6 +62,15 @@ function effectiveNowMs(effectiveNowISO?: string): number {
   return Date.now()
 }
 
+// Human labels for the resolution enum — raw values like
+// "payment_recovered" are backend identifiers, not operator copy.
+const RESOLUTION_LABELS: Record<string, string> = {
+  payment_recovered: 'Payment recovered',
+  manually_resolved: 'Manually resolved',
+  write_off: 'Written off',
+  invoice_not_collectible: 'Uncollectible',
+}
+
 function relativeTime(dateStr: string, effectiveNowISO?: string): string {
   const now = effectiveNowMs(effectiveNowISO)
   const then = new Date(dateStr).getTime()
@@ -264,6 +273,9 @@ function RunsTab() {
                   <p className="text-sm text-muted-foreground mt-1">
                     Dunning runs will appear here when Velox detects a failed payment and begins the recovery process.
                   </p>
+                  <Link to="/dunning-policies" className="inline-block mt-4">
+                    <Button variant="outline" size="sm">Configure a dunning policy</Button>
+                  </Link>
                 </>
               )}
             </div>
@@ -337,7 +349,7 @@ function RunsTab() {
                             <div className="flex items-center gap-2">
                               <Badge variant={statusBadgeVariant(run.state)}>{run.state}</Badge>
                               {run.resolution && run.resolution !== run.state && (
-                                <Badge variant={run.resolution === 'payment_recovered' ? 'success' : run.resolution === 'manually_resolved' ? 'info' : run.resolution === 'write_off' ? 'warning' : 'outline'}>{run.resolution}</Badge>
+                                <Badge variant={run.resolution === 'payment_recovered' ? 'success' : run.resolution === 'manually_resolved' ? 'info' : run.resolution === 'write_off' ? 'warning' : 'outline'}>{RESOLUTION_LABELS[run.resolution] ?? run.resolution}</Badge>
                               )}
                               {!isFinished && (
                                 <Button variant="outline" size="sm" className="h-6 text-xs ml-1"

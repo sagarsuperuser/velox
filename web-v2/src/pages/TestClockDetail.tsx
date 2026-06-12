@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
+import { showApiError } from '@/lib/formErrors'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -19,7 +20,6 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useAuth } from '@/contexts/AuthContext'
-import { ApiError } from '@/lib/api'
 import { ChevronLeft, FastForward, Loader2, Trash2, AlertTriangle, Clock as ClockIcon, Users } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
@@ -47,6 +47,7 @@ export default function TestClockDetailPage() {
   const [showAdvance, setShowAdvance] = useState(false)
   const [showDelete, setShowDelete] = useState(false)
   const [retryingAdvance, setRetryingAdvance] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Test-mode-only — same redirect guard as the index page.
   useEffect(() => {
@@ -96,15 +97,15 @@ export default function TestClockDetailPage() {
       // first poll tick.
       queryClient.invalidateQueries({ queryKey: ['test-clocks', id] })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to retry'
-      toast.error(msg)
+      showApiError(err, 'Failed to retry')
     } finally {
       setRetryingAdvance(false)
     }
   }
 
   const handleDelete = async () => {
-    if (!id) return
+    if (!id || deleting) return
+    setDeleting(true)
     try {
       await api.deleteTestClock(id)
       toast.success('Test clock deleted')
@@ -124,8 +125,8 @@ export default function TestClockDetailPage() {
       navigate('/test-clocks')
       queryClient.invalidateQueries({ queryKey: ['test-clocks'], exact: true })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete'
-      toast.error(msg)
+      showApiError(err, 'Failed to delete')
+      setDeleting(false)
     }
   }
 
@@ -342,8 +343,8 @@ export default function TestClockDetailPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setShowDelete(false)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Delete clock
+            <AlertDialogAction onClick={handleDelete} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {deleting ? 'Deleting…' : 'Delete clock'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -447,8 +448,7 @@ function AdvanceClockDialog({
       queryClient.invalidateQueries({ queryKey: ['invoices'] })
       onClose()
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to advance clock'
-      toast.error(msg)
+      showApiError(err, 'Failed to advance clock')
     } finally {
       setSubmitting(false)
     }
