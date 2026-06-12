@@ -435,7 +435,10 @@ export const api = {
     apiRequest<{ status: string }>('DELETE', `/recipes/instances/${id}`),
 
   // Audit Log
-  listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total: number }>('GET', `/audit-log${params ? '?' + params : ''}`),
+  // Response shape depends on pagination mode: offset (?offset=) returns
+  // { data, total }; cursor (?after=) returns { data, has_more, next_cursor }
+  // and skips the expensive COUNT. The declared type is the union of both.
+  listAuditLog: (params?: string) => apiRequest<{ data: AuditEntry[]; total?: number; has_more?: boolean; next_cursor?: string }>('GET', `/audit-log${params ? '?' + params : ''}`),
   getAuditFilters: () => apiRequest<AuditFilterOptions>('GET', '/audit-log/filters'),
 
   // Webhooks

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from 'date-fns-tz'
@@ -20,15 +20,24 @@ import {
   Pagination,
   PaginationContent,
   PaginationItem,
-  PaginationLink,
   PaginationNext,
   PaginationPrevious,
 } from '@/components/ui/pagination'
+import { CopyButton } from '@/components/CopyButton'
 import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 
 import { Download, ChevronRight, History } from 'lucide-react'
 
 const PAGE_SIZE = 50
+
+// encodeCursor builds the seek-pagination token for ?after= — the same wire
+// format the backend emits (base64url of {id, created_at}) — so the client
+// can transition from the page-1 offset response onto the cursor path.
+function encodeCursor(e: AuditEntry): string {
+  return btoa(JSON.stringify({ id: e.id, created_at: e.created_at }))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+}
 
 function describeAction(entry: AuditEntry): string {
   const label = entry.resource_label || ''
@@ -56,6 +65,13 @@ function describeAction(entry: AuditEntry): string {
       if (entry.resource_type === 'customer' && metaAction === 'billing_profile_upserted') return `Updated billing profile${label ? ` for ${label}` : ''}`
       if (entry.resource_type === 'payment_method' && metaAction === 'default_changed') return `Set ${label || 'card'} as default`
       if (entry.resource_type === 'subscription' && metaAction === 'cancel_cleared') return `Cleared scheduled cancellation${label ? ` on ${label}` : ''}`
+      if (entry.resource_type === 'subscription' && metaAction === 'trial_ended') return `Trial ended${label ? ` on ${label}` : ''}`
+      if (entry.resource_type === 'subscription' && metaAction === 'item_added') return `Added item${label ? ` to ${label}` : ''}`
+      if (entry.resource_type === 'subscription' && metaAction === 'item_removed') return `Removed item${label ? ` from ${label}` : ''}`
+      if (entry.resource_type === 'setting' && metaAction === 'settings_updated') {
+        const n = entry.metadata?.changed ? Object.keys(entry.metadata.changed as Record<string, unknown>).length : 0
+        return n > 0 ? `Updated settings (${n} field${n === 1 ? '' : 's'})` : 'Updated settings'
+      }
       if (entry.resource_type === 'dunning_run' && metaAction === 'resolved') return `Resolved dunning run (${entry.metadata?.resolution})`
       if (entry.resource_type === 'dunning_policy' && metaAction === 'set_default') return `Set dunning policy as default${label ? ` (${label})` : ''}`
       if (entry.resource_type === 'test_clock' && metaAction === 'advanced') return `Advanced test clock${label ? ` "${label}"` : ''}`
@@ -87,7 +103,6 @@ function describeAction(entry: AuditEntry): string {
     case 'credit.adjustment': return `Adjusted credits${label ? ` for ${label}` : ''}`
     case 'credit.deduction': return `Deducted credits${label ? ` from ${label}` : ''}`
     case 'credit_note.issued': return `Issued credit note ${label}`
-    case 'subscription.plan_changed': return `Changed plan${label ? ` for ${label}` : ''}`
     case 'subscription.item_updated':
       if (metaAction === 'item_plan_changed') return `Changed plan${label ? ` for ${label}` : ''}`
       if (metaAction === 'item_quantity_changed') return `Changed quantity${label ? ` for ${label}` : ''}`
@@ -107,7 +122,7 @@ function describeAction(entry: AuditEntry): string {
 }
 
 const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.deduction', 'refund'])
-const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'subscription.plan_changed', 'change_plan', 'subscription.item_updated', 'collect'])
+const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'change_plan', 'subscription.item_updated', 'collect'])
 
 function resourceLink(entry: AuditEntry): string | null {
   // Guard the empty-resource_id case — some audit rows (e.g. tenant-scope
@@ -134,6 +149,12 @@ function formatActorName(entry: AuditEntry): string {
     if (entry.actor_name) return entry.actor_name
     return entry.actor_id.startsWith('vlx_') ? `Key ${entry.actor_id.slice(0, 16)}...` : 'API Key'
   }
+  if (entry.actor_type === 'user') {
+    // Dashboard session operators (#225 actor identity). actor_name is the
+    // join-resolved display name or email; fall back to a generic label so
+    // pre-join rows never render the raw enum "user".
+    return entry.actor_name || 'Operator'
+  }
   if (entry.actor_type === 'customer') {
     // Customer-portal-driven mutations (subscription cancel, profile edit,
     // payment-method changes) ship actor_id = customer.id. Prefer the
@@ -145,11 +166,22 @@ function formatActorName(entry: AuditEntry): string {
   return entry.actor_type
 }
 
-function prettyLabel(value: string): string {
+// fixAcronyms repairs title-casing of common initialisms ("Ip Address" →
+// "IP Address") after the generic word-capitalization pass.
+function fixAcronyms(value: string): string {
   return value
+    .replace(/\bIp\b/g, 'IP')
+    .replace(/\bId\b/g, 'ID')
+    .replace(/\bUrl\b/g, 'URL')
+    .replace(/\bApi\b/g, 'API')
+    .replace(/\bSmtp\b/g, 'SMTP')
+}
+
+function prettyLabel(value: string): string {
+  return fixAcronyms(value
     .replace(/[_.]/g, ' ')
     .replace(/-/g, ' ')
-    .replace(/\b\w/g, c => c.toUpperCase())
+    .replace(/\b\w/g, c => c.toUpperCase()))
 }
 
 // Fallbacks for an empty tenant: without any audit rows the /filters endpoint
@@ -189,7 +221,7 @@ function formatMetadata(meta: Record<string, unknown> | undefined): { label: str
   for (const [key, val] of Object.entries(meta)) {
     if (key === 'resource_label') continue
     if (SIM_CONTEXT_KEYS.has(key)) continue
-    const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    const label = fixAcronyms(key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))
     if (typeof val === 'number' && key.includes('cents')) {
       items.push({ label: label.replace(' Cents', ''), value: `$${(val / 100).toFixed(2)}` })
     } else if (typeof val === 'string' && key.includes('cents') && val !== '' && Number.isFinite(Number(val))) {
@@ -197,6 +229,10 @@ function formatMetadata(meta: Record<string, unknown> | undefined): { label: str
       // toFixed(2) would collapse sub-cent rates to $0.00 — render at full
       // precision instead.
       items.push({ label: label.replace(' Cents', ''), value: formatRate(val) })
+    } else if (val !== null && typeof val === 'object') {
+      // Structured values (e.g. the settings-change {field: {from, to}} map)
+      // — String(val) renders "[object Object]"; show the JSON instead.
+      items.push({ label, value: JSON.stringify(val) })
     } else if (val !== null && val !== undefined && val !== '') {
       items.push({ label, value: String(val) })
     }
@@ -234,7 +270,7 @@ function actionVariant(action: string): 'default' | 'secondary' | 'destructive' 
   // Green for positive actions
   if (['create', 'activate', 'resume', 'grant', 'resolve'].includes(action)) return 'success'
   // Blue for updates/changes
-  if (['update', 'finalize', 'run', 'subscription.plan_changed', 'credit_note.issued'].includes(action)) return 'info'
+  if (['update', 'finalize', 'run', 'credit_note.issued'].includes(action)) return 'info'
   return 'secondary'
 }
 
@@ -248,7 +284,6 @@ export default function AuditLogPage() {
     resource_id: '',
     date_from: '',
     date_to: '',
-    page: '1',
   })
   const {
     resource_type: resourceType,
@@ -258,7 +293,19 @@ export default function AuditLogPage() {
     date_from: dateFrom,
     date_to: dateTo,
   } = urlState
-  const page = Math.max(1, parseInt(urlState.page) || 1)
+
+  // Cursor (seek) pagination — Stripe-style Previous/Next. The stack holds
+  // one cursor per page beyond the first; depth = current page - 1. Page 1
+  // uses the offset path (which also returns the total once); deeper pages
+  // ride ?after=, which skips the expensive COUNT entirely (the RLS OR-branch
+  // makes that COUNT a full seq scan, so numbered offset pages paid it on
+  // every click). Stack resets whenever a filter changes.
+  const [cursors, setCursors] = useState<string[]>([])
+  const [lastTotal, setLastTotal] = useState(0)
+  const after = cursors.length > 0 ? cursors[cursors.length - 1] : ''
+  const page = cursors.length + 1
+  const filterKey = [resourceType, action, actorFilter, resourceIdFilter, dateFrom, dateTo].join('|')
+  useEffect(() => { setCursors([]) }, [filterKey])
 
   // Audit log entries query — keyed by every filter dimension so the
   // cache is sharded per-filter-set. Changing any filter triggers a
@@ -268,7 +315,8 @@ export default function AuditLogPage() {
   const qs = (() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
-    params.set('offset', String((page - 1) * PAGE_SIZE))
+    if (after) params.set('after', after)
+    else params.set('offset', '0')
     if (resourceType) params.set('resource_type', resourceType)
     if (action) params.set('action', action)
     if (resourceIdFilter) params.set('resource_id', resourceIdFilter)
@@ -282,7 +330,12 @@ export default function AuditLogPage() {
     queryFn: () => api.listAuditLog(qs),
   })
   const entries = entriesQuery.data?.data ?? []
-  const total = entriesQuery.data?.total ?? 0
+  // total only arrives on the page-1 (offset) response; keep the last-seen
+  // value so the header count survives while paging through cursor pages.
+  useEffect(() => {
+    if (typeof entriesQuery.data?.total === 'number') setLastTotal(entriesQuery.data.total)
+  }, [entriesQuery.data])
+  const total = lastTotal
   const loading = entriesQuery.isLoading
   const error = entriesQuery.error instanceof Error ? entriesQuery.error.message : (entriesQuery.error ? 'Failed to load audit log' : null)
   const loadEntries = () => { void entriesQuery.refetch() }
@@ -299,7 +352,16 @@ export default function AuditLogPage() {
     resourceTypes: filterOptionsQuery.data?.resource_types?.length ? filterOptionsQuery.data.resource_types : DEFAULT_RESOURCE_TYPES,
   }
 
-  const totalPages = Math.ceil(total / PAGE_SIZE)
+  // Page 1 (offset response) derives has-more from the total; cursor pages
+  // carry has_more/next_cursor. For page 1 the next cursor is built client-
+  // side from the last row — same wire format the backend emits
+  // (base64url of {id, created_at}).
+  const hasNext = after
+    ? Boolean(entriesQuery.data?.has_more)
+    : total > PAGE_SIZE
+  const nextCursor = after
+    ? (entriesQuery.data?.next_cursor ?? '')
+    : (entries.length > 0 ? encodeCursor(entries[entries.length - 1]) : '')
   const groups = groupByDate(entries)
 
   // Export walks pages of 100 until either exhausted or the safety cap is
@@ -324,16 +386,21 @@ export default function AuditLogPage() {
       if (dateTo) filters.set('date_to', endOfDayInTZ(dateTo))
 
       const all: AuditEntry[] = []
-      let offset = 0
+      // First page rides the offset path (one COUNT); every subsequent page
+      // seeks via cursor — pre-fix the loop paid the all-tenant COUNT scan on
+      // every one of up to 500 pages.
+      let exportAfter = ''
       while (all.length < EXPORT_MAX_ROWS) {
         const params = new URLSearchParams(filters)
         params.set('limit', String(EXPORT_PAGE_SIZE))
-        params.set('offset', String(offset))
+        if (exportAfter) params.set('after', exportAfter)
+        else params.set('offset', '0')
         const res = await api.listAuditLog(params.toString())
         const batch = res.data || []
         all.push(...batch)
         if (batch.length < EXPORT_PAGE_SIZE) break
-        offset += EXPORT_PAGE_SIZE
+        if (exportAfter && res.has_more === false) break
+        exportAfter = (exportAfter ? res.next_cursor : '') || encodeCursor(batch[batch.length - 1])
       }
 
       const rows = all.slice(0, EXPORT_MAX_ROWS).map(e => [
@@ -384,7 +451,7 @@ export default function AuditLogPage() {
       <div className="flex flex-wrap items-center gap-3 mt-6">
         <select
           value={resourceType}
-          onChange={e => setUrlState({ resource_type: e.target.value, page: '1' })}
+          onChange={e => setUrlState({ resource_type: e.target.value })}
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All resources</option>
@@ -394,7 +461,7 @@ export default function AuditLogPage() {
         </select>
         <select
           value={action}
-          onChange={e => setUrlState({ action: e.target.value, page: '1' })}
+          onChange={e => setUrlState({ action: e.target.value })}
           className={cn(selectClass, 'w-44')}
         >
           <option value="">All actions</option>
@@ -404,25 +471,25 @@ export default function AuditLogPage() {
         </select>
         <Input
           value={actorFilter}
-          onChange={e => setUrlState({ actor: e.target.value, page: '1' })}
+          onChange={e => setUrlState({ actor: e.target.value })}
           placeholder="Filter by actor..."
           className="w-40"
         />
         <Input
           value={resourceIdFilter}
-          onChange={e => setUrlState({ resource_id: e.target.value, page: '1' })}
+          onChange={e => setUrlState({ resource_id: e.target.value })}
           placeholder="Filter by resource ID..."
           className="w-44"
         />
         <DatePicker
           value={dateFrom}
-          onChange={v => setUrlState({ date_from: v, page: '1' })}
+          onChange={v => setUrlState({ date_from: v })}
           placeholder="From date"
           className="w-44"
         />
         <DatePicker
           value={dateTo}
-          onChange={v => setUrlState({ date_to: v, page: '1' })}
+          onChange={v => setUrlState({ date_to: v })}
           placeholder="To date"
           className="w-44"
           minDate={dateFrom ? new Date(dateFrom + 'T00:00:00') : undefined}
@@ -433,7 +500,7 @@ export default function AuditLogPage() {
             size="sm"
             onClick={() => setUrlState({
               resource_type: '', action: '', actor: '', resource_id: '',
-              date_from: '', date_to: '', page: '1',
+              date_from: '', date_to: '',
             })}
           >
             Clear all
@@ -494,7 +561,7 @@ export default function AuditLogPage() {
                               onClick={() => setExpandedId(isExpanded ? null : entry.id)}
                             >
                               <span className="text-sm text-muted-foreground w-20 shrink-0 tabular-nums">{time}</span>
-                              <Badge variant={actionVariant(entry.action)}>{entry.action}</Badge>
+                              <Badge variant={actionVariant(entry.action)}>{prettyLabel(entry.action)}</Badge>
                               <span className="text-sm text-foreground ml-2.5 flex-1 truncate" title={describeAction(entry)}>
                                 {describeAction(entry)}
                               </span>
@@ -531,7 +598,10 @@ export default function AuditLogPage() {
                                   </div>
                                   <div>
                                     <p className="text-xs text-muted-foreground">Resource ID</p>
-                                    <p className="text-foreground font-mono text-xs mt-0.5 truncate" title={entry.resource_id}>{entry.resource_id}</p>
+                                    <p className="text-foreground font-mono text-xs mt-0.5 truncate flex items-center gap-1" title={entry.resource_id}>
+                                      <span className="truncate">{entry.resource_id}</span>
+                                      {entry.resource_id && <CopyButton text={entry.resource_id} />}
+                                    </p>
                                   </div>
                                   <div>
                                     <p className="text-xs text-muted-foreground">Actor</p>
@@ -570,48 +640,26 @@ export default function AuditLogPage() {
                 ))}
               </div>
 
-              {/* Pagination */}
-              {totalPages > 1 && (
+              {/* Pagination — cursor-based Previous/Next (no numbered jumps:
+                  the seek query is O(log N) per page at any depth, where the
+                  numbered-offset COUNT was a full scan per click). */}
+              {(page > 1 || hasNext) && (
                 <div className="border-t border-border px-4 py-3 flex items-center justify-between">
                   <p className="text-xs text-muted-foreground">
-                    Showing {(page - 1) * PAGE_SIZE + 1}
-                    {'\u2013'}
-                    {Math.min(page * PAGE_SIZE, total)} of {total}
+                    Page {page}{total > 0 ? ` · ${total} total` : ''}
                   </p>
                   <Pagination>
                     <PaginationContent>
                       <PaginationItem>
                         <PaginationPrevious
-                          onClick={() => setUrlState({ page: String(Math.max(1, page - 1)) })}
+                          onClick={() => setCursors(c => c.slice(0, -1))}
                           className={cn(page <= 1 && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
-                      {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-                        let pageNum: number
-                        if (totalPages <= 5) {
-                          pageNum = i + 1
-                        } else if (page <= 3) {
-                          pageNum = i + 1
-                        } else if (page >= totalPages - 2) {
-                          pageNum = totalPages - 4 + i
-                        } else {
-                          pageNum = page - 2 + i
-                        }
-                        return (
-                          <PaginationItem key={pageNum}>
-                            <PaginationLink
-                              onClick={() => setUrlState({ page: String(pageNum) })}
-                              isActive={page === pageNum}
-                            >
-                              {pageNum}
-                            </PaginationLink>
-                          </PaginationItem>
-                        )
-                      })}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setUrlState({ page: String(Math.min(totalPages, page + 1)) })}
-                          className={cn(page >= totalPages && 'pointer-events-none opacity-50')}
+                          onClick={() => nextCursor && setCursors(c => [...c, nextCursor])}
+                          className={cn(!hasNext && 'pointer-events-none opacity-50')}
                         />
                       </PaginationItem>
                     </PaginationContent>
