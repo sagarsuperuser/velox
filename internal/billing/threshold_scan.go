@@ -468,6 +468,10 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		return false, fmt.Errorf("create threshold invoice: %w", err)
 	}
 
+	// Audit the engine-finalized invoice (no-op for drafts) — same finalize-
+	// row contract as the cycle path; feeds TTFI + the audit log.
+	e.auditInvoiceFinalized(ctx, sub, inv, now)
+
 	// Commit tax (Stripe parity) — matches the cycle scan's flow.
 	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
 		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {

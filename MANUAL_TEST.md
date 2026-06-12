@@ -1128,7 +1128,9 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_log` and the AuditLog page renders the new resource types correctly.
 
 - [ ] Engine auto-fires scheduled cancellation (advance the test clock past cycle close) → AuditLog row: "Canceled <sub>" with meta `canceled_by=schedule`, actor "System".
-- [ ] Operator marks invoice uncollectible → "Marked INV-NNN uncollectible".
+- [ ] **Engine-finalized invoices are audited (2026-06-12)**: advance a test clock past a cycle close (or create a sub with an in_advance plan) → AuditLog shows a **"Finalized INV-NNN"** row for the engine-generated invoice, actor "System", meta `triggered_by=subscription_cycle|subscription_create|…`, with the test-clock chip/sim subline on clock-pinned subs. Pre-fix only operator-clicked finalizes were audited — and the dashboard's time-to-first-invoice stat stayed empty for engine-billed tenants; it now populates from the first engine invoice.
+- [ ] **Trial auto-expiry is audited (2026-06-12)**: let a trial lapse via clock advance (or the wall-clock scheduler) → "Trial ended" row on the subscription with `triggered_by=schedule`, matching the operator End-Trial row.
+- [ ] Operator marks invoice uncollectible → "Marked INV-NNN uncollectible" — **exactly one row** (pre-fix this wrote two identical rows; same fix applies to record-offline-payment).
 - [ ] Operator records offline payment → "Recorded offline payment on INV-NNN".
 - [ ] Operator clicks **Collect payment** on a finalized invoice → "Collected payment on INV-NNN" (amber/medium severity, `action='collect'`), NOT "Created INV-NNN". Operator clicks **Send** → "Emailed INV-NNN" (`action='send'`, meta `to=<recipient>`). Operator **Refund** → "Refunded INV-NNN" (red/high severity). Operator rotates the hosted-invoice link → "Rotated hosted-invoice link for INV-NNN". None of these render as a green "Created" row.
 - [ ] Operator edits customer (display_name / email / dunning policy) → "Updated <name>".
