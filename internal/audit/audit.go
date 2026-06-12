@@ -55,8 +55,6 @@ func NewLogger(db *postgres.DB) *Logger {
 // before the resource is hydratable, or the resource has no operator-
 // facing name); the page falls back to the resource_type.
 func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error {
-	actorID := auth.KeyID(ctx)
-
 	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -77,18 +75,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		metaJSON = []byte("{}")
 	}
 
-	// Resolve actor: a stamped customer actor (auth.WithCustomerActor)
-	// takes precedence and maps to actor_type='customer'; otherwise an
-	// API-key request is actor_type='api_key', falling back to 'system'
-	// for background workers + cron paths that have neither.
-	actorType := "api_key"
-	if custID := auth.CustomerActorID(ctx); custID != "" {
-		actorType = "customer"
-		actorID = custID
-	} else if actorID == "" {
-		actorType = "system"
-		actorID = "system"
-	}
+	actorType, actorID := ResolveActor(ctx)
 
 	ipAddress := ClientIP(ctx)
 	requestID := chimw.GetReqID(ctx)
@@ -134,6 +121,32 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// audit row has been written so its catch-all path suppresses a duplicate.
 	MarkHandled(ctx)
 	return nil
+}
+
+// ResolveActor determines who performed an audited action from the request
+// context, in priority order:
+//   - customer — a stamped customer actor (public token flows, auth.WithCustomerActor)
+//   - user     — a dashboard operator on a session cookie (auth.WithUserID, ADR-011)
+//   - api_key  — an SDK / curl caller on a Bearer vlx_… key (auth.WithKeyID)
+//   - system   — background workers / cron with no request identity
+//
+// Both audit write paths (Logger.Log and the AuditLog middleware) call this so
+// the actor resolves identically. Before this, both read only auth.KeyID — and
+// session.applyToCtx sets WithUserID but never WithKeyID — so every dashboard
+// (session-cookie) operator action recorded actor_type='system'/'system', and
+// the log could not answer "who did this?" for the primary UI. The 'user'
+// value the audit_log CHECK constraint reserves was never written.
+func ResolveActor(ctx context.Context) (actorType, actorID string) {
+	if custID := auth.CustomerActorID(ctx); custID != "" {
+		return "customer", custID
+	}
+	if userID := auth.UserID(ctx); userID != "" {
+		return "user", userID
+	}
+	if keyID := auth.KeyID(ctx); keyID != "" {
+		return "api_key", keyID
+	}
+	return "system", "system"
 }
 
 // nullIfEmpty preserves SQL NULL for optional text columns — avoids a
