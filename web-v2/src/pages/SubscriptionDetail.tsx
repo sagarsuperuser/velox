@@ -36,7 +36,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 
-import { Loader2, Plus, HelpCircle } from 'lucide-react'
+import { Loader2, Plus, HelpCircle, History } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -300,6 +300,11 @@ export default function SubscriptionDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline"
+            onClick={() => navigate(`/audit-log?resource_type=subscription&resource_id=${sub.id}`)}>
+            <History size={16} className="mr-1.5" />
+            Audit log
+          </Button>
           {sub.status === 'draft' && (
             <Button onClick={() => activateMutation.mutate()} disabled={acting}>
               Activate

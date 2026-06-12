@@ -33,7 +33,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 
-import { Loader2, Pencil, CreditCard, Archive, Wand2, FilePlus2, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Pencil, CreditCard, Archive, Wand2, FilePlus2, Plus, Trash2, ChevronDown, ChevronRight, History } from 'lucide-react'
 import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
@@ -423,6 +423,11 @@ export default function CustomerDetailPage() {
               Edit
             </Button>
           )}
+          <Button variant="outline" size="sm"
+            onClick={() => navigate(`/audit-log?resource_type=customer&resource_id=${customer.id}`)}>
+            <History size={14} className="mr-1.5" />
+            Audit log
+          </Button>
           {customer.status === 'active' && (
             <AlertDialog>
               <AlertDialogTrigger render={<Button variant="outline" size="sm" className="text-destructive hover:text-destructive" />}>
