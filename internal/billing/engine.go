@@ -2789,7 +2789,12 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		return domain.Invoice{}, fmt.Errorf("apply tax: %w", err)
 	}
 
-	netDays := 0
+	// Fallback 30 — the schema default — matching billOnePeriod, the
+	// threshold writer, and the subscription handler's proration path.
+	// Pre-fix this was 0: when settings were unreadable this invoice
+	// stamped DueAt == IssuedAt (immediately overdue, dunning fires on
+	// day 0) while every sibling cycle invoice stayed Net-30.
+	netDays := 30
 	if e.settings != nil {
 		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.NetPaymentTerms > 0 {
 			netDays = ts.NetPaymentTerms
@@ -3120,6 +3125,30 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		usageTotals = totals
 	}
 
+	// Enforce the subscription-level usage cap, same semantics as
+	// billOnePeriod: the partial window [periodStart, canceledAt] is the
+	// entire billable extent of the final cycle, so the per-cycle cap
+	// applies to it whole. Totals are scaled in place (full-period reads)
+	// and capScale carries the same factor to the sub-period and
+	// multi-dim branches below, whose aggregations return raw quantities.
+	// Pre-fix the cancel path billed raw above-cap usage that cycle close
+	// would have capped — overbilling "block"-capped subs on cancel.
+	capScale := decimal.New(1, 0)
+	capOne := decimal.New(1, 0)
+	if sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
+		totalUsage := decimal.Zero
+		for _, qty := range usageTotals {
+			totalUsage = totalUsage.Add(qty)
+		}
+		capDec := decimal.NewFromInt(*sub.UsageCapUnits)
+		if totalUsage.GreaterThan(capDec) {
+			capScale = capDec.Div(totalUsage)
+			for mid, qty := range usageTotals {
+				usageTotals[mid] = qty.Mul(capScale)
+			}
+		}
+	}
+
 	// Segment-aware usage billing over the partial period
 	// [periodStart, canceledAt]. Mirrors the billOnePeriod shape:
 	// each meter bills only for the time it was active on the sub.
@@ -3168,7 +3197,98 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	}
 
 	for meterID, ivs := range meterIntervals {
+		// Does this meter price via dimension-match pricing rules (the
+		// multi-dim shape: e.g. the AI `tokens` meter, one rule per
+		// {model, token_type})? Same fork billOnePeriod / preview / the
+		// threshold scan take — a single meter-linked rating rule can't
+		// express N rates, so for these meters RatingRuleVersionID is
+		// empty and the single-rule branch below would silently skip
+		// them. Pre-fix this fork was MISSING here: a mid-period
+		// immediate cancel emitted $0 for all token usage (the ADR-044
+		// wedge breakage, on the cancel path).
+		pricingRules, err := e.pricing.ListMeterPricingRulesByMeter(ctx, sub.TenantID, meterID)
+		if err != nil {
+			return domain.Invoice{}, fmt.Errorf("list pricing rules for meter %s on cancel: %w", meterID, err)
+		}
+
 		merged := mergeUsageIntervals(ivs)
+
+		// ---- Multi-dim path: one billable bucket per claimed rule. ----
+		if len(pricingRules) > 0 {
+			meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
+			if err != nil {
+				return domain.Invoice{}, fmt.Errorf("get meter %s on cancel: %w", meterID, err)
+			}
+			rulesByID := make(map[string]domain.MeterPricingRule, len(pricingRules))
+			for _, r := range pricingRules {
+				rulesByID[r.ID] = r
+			}
+			defaultMode := mapMeterAggregation(meter.Aggregation)
+			for _, iv := range merged {
+				ivStart := iv.start
+				ivEnd := iv.end
+				aggs, err := e.usage.AggregateByPricingRules(ctx, sub.TenantID, sub.CustomerID, meterID, defaultMode, iv.start, iv.end)
+				if err != nil {
+					return domain.Invoice{}, fmt.Errorf("aggregate by pricing rules for meter %s on cancel [%v, %v): %w", meterID, iv.start, iv.end, err)
+				}
+				for _, agg := range aggs {
+					qty := agg.Quantity
+					// AggregateByPricingRules returns raw (pre-cap)
+					// quantities — apply the cap scale here, same as
+					// billOnePeriod's multi-dim branch.
+					if !capScale.Equal(capOne) {
+						qty = qty.Mul(capScale)
+					}
+					if qty.IsZero() {
+						continue
+					}
+					ratingRuleID := agg.RatingRuleVersionID
+					if ratingRuleID == "" {
+						ratingRuleID = meter.RatingRuleVersionID
+					}
+					if ratingRuleID == "" {
+						// Usage that matched no rule and the meter has no
+						// default binding — bill nothing, but loudly (a
+						// silent skip would hide unbilled revenue).
+						slog.Warn("cancel: usage matched no rating rule and meter has no default binding — not billed",
+							"meter", meter.Key, "quantity", qty.String(),
+							"subscription_id", sub.ID)
+						continue
+					}
+					rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, ratingRuleID)
+					if err != nil {
+						return domain.Invoice{}, fmt.Errorf("get rating rule %s for meter %s on cancel: %w", ratingRuleID, meterID, err)
+					}
+					if override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, ratingRuleID); overrideErr == nil && override.Active {
+						rule = override.ToRatingRule()
+					}
+					amount, err := domain.ComputeAmountCents(rule, qty)
+					if err != nil {
+						return domain.Invoice{}, fmt.Errorf("compute amount for meter %s rule %s on cancel: %w", meterID, ratingRuleID, err)
+					}
+					unitAmount := decimal.NewFromInt(amount).Div(qty).RoundBank(0).IntPart()
+					lineItems = append(lineItems, domain.InvoiceLineItem{
+						LineType:            domain.LineTypeUsage,
+						MeterID:             meterID,
+						Description:         usageLineDescription(meter, rulesByID[agg.RuleID]) + " - canceled mid-period",
+						Quantity:            qty.IntPart(),
+						QuantityDecimal:     qty,
+						UnitAmountCents:     unitAmount,
+						AmountCents:         amount,
+						TotalAmountCents:    amount,
+						Currency:            invoiceCurrency,
+						PricingMode:         string(rule.Mode),
+						RatingRuleVersionID: rule.ID,
+						BillingPeriodStart:  &ivStart,
+						BillingPeriodEnd:    &ivEnd,
+					})
+					subtotal += amount
+				}
+			}
+			continue
+		}
+
+		// ---- Single-rule path (pre-multi-dim meters). ----
 		for _, iv := range merged {
 			var quantity decimal.Decimal
 			fullPeriod := iv.start.Equal(periodStart) && iv.end.Equal(canceledAt)
@@ -3186,6 +3306,12 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 					intervalAggCache[key] = t
 				}
 				quantity = totals[meterID]
+				// Sub-period aggregates are raw — apply the cap scale so
+				// the per-interval sum matches the capped window total
+				// (usageTotals above is already scaled in place).
+				if !capScale.Equal(capOne) {
+					quantity = quantity.Mul(capScale)
+				}
 			}
 			if quantity.IsZero() {
 				continue
@@ -3248,7 +3374,12 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		return domain.Invoice{}, fmt.Errorf("apply tax on cancel: %w", err)
 	}
 
-	netDays := 0
+	// Fallback 30 — the schema default — matching billOnePeriod, the
+	// threshold writer, and the subscription handler's proration path.
+	// Pre-fix this was 0: when settings were unreadable this invoice
+	// stamped DueAt == IssuedAt (immediately overdue, dunning fires on
+	// day 0) while every sibling cycle invoice stayed Net-30.
+	netDays := 30
 	if e.settings != nil {
 		if ts, err := e.settings.Get(ctx, sub.TenantID); err == nil && ts.NetPaymentTerms > 0 {
 			netDays = ts.NetPaymentTerms

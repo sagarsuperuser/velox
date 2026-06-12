@@ -386,3 +386,58 @@ func TestScanThresholds_NoCandidates(t *testing.T) {
 		t.Errorf("fired count: got %d, want 0", fired)
 	}
 }
+
+// TestThresholdFire_ClockPinned_StampsIsSimulated locks the writer-drift fix:
+// the threshold invoice writer omitted IsSimulated, so a threshold invoice
+// fired on a test-clock-pinned subscription persisted is_simulated=false and
+// rendered without the Simulated badge while sibling cycle/proration invoices
+// on the same clock showed it. The frontend reads the field authoritatively
+// (no timestamp inference), so the write-time stamp is the only source.
+func TestThresholdFire_ClockPinned_StampsIsSimulated(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 100000}
+	engine, subs, invoices := setupThresholdEngine(thresholds, 1000)
+
+	// Pin the sub to a test clock frozen 5 days into the cycle.
+	pinned := subs.candidates[0]
+	pinned.TestClockID = "tc_1"
+	subs.candidates = []domain.Subscription{pinned}
+	subs.subs["sub_1"] = pinned
+	frozen := pinned.CurrentBillingPeriodStart.AddDate(0, 0, 5)
+	engine.SetTestClockReader(&stubClockReader{clk: domain.TestClock{ID: "tc_1", FrozenTime: frozen}})
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want 1", fired)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("invoices = %d, want 1", len(invoices.invoices))
+	}
+	inv := invoices.invoices[0]
+	if !inv.IsSimulated {
+		t.Error("threshold invoice on a clock-pinned sub must stamp IsSimulated=true (Simulated badge)")
+	}
+	if !inv.IssuedAt.Equal(frozen) {
+		t.Errorf("issued_at = %v, want frozen time %v (simulation timeline)", inv.IssuedAt, frozen)
+	}
+	if inv.BillingReason != domain.BillingReasonThreshold {
+		t.Errorf("billing_reason = %q, want threshold", inv.BillingReason)
+	}
+	// Usage lines must carry the exact decimal quantity (cycle-writer
+	// parity) — the threshold writer used to truncate to the integer only.
+	var sawUsage bool
+	for _, li := range invoices.lineItems {
+		if li.LineType != domain.LineTypeUsage {
+			continue
+		}
+		sawUsage = true
+		if li.QuantityDecimal.IsZero() {
+			t.Errorf("usage line %q: QuantityDecimal is zero — fractional quantities would truncate on display", li.Description)
+		}
+	}
+	if !sawUsage {
+		t.Fatal("expected at least one usage line on the threshold invoice")
+	}
+}

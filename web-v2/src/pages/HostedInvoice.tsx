@@ -44,6 +44,9 @@ interface HostedInvoicePayload {
   line_items: {
     description: string
     quantity: number
+    // Exact fractional usage quantity (decimal string); when present it is
+    // the display quantity — the integer `quantity` is its truncation.
+    quantity_decimal?: string
     unit_amount_cents: number
     amount_cents: number
     tax_amount_cents?: number
@@ -386,7 +389,9 @@ export default function HostedInvoicePage() {
                       <tr key={i} className="border-t">
                         <td className="px-4 py-3 text-foreground">{li.description}</td>
                         <td className="px-4 py-3 text-right text-muted-foreground tabular-nums">
-                          {li.quantity}
+                          {li.quantity_decimal && Number(li.quantity_decimal) !== 0
+                            ? Number(li.quantity_decimal).toLocaleString(undefined, { maximumFractionDigits: 12 })
+                            : li.quantity}
                         </td>
                         <td className="px-4 py-3 text-right text-muted-foreground tabular-nums hidden sm:table-cell">
                           {formatCents(li.unit_amount_cents, li.currency)}
