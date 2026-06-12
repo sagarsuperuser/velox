@@ -4026,6 +4026,49 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 	charged := 0
 	var errs []error
 	for _, inv := range pending {
+		// Re-apply customer credits BEFORE charging. An invoice lands in this
+		// sweep precisely when its finalize-time flow didn't complete — and the
+		// most important such case is a FAILED credit application at cycle
+		// close (billOnePeriod flags auto_charge_pending and deliberately skips
+		// the charge to avoid overcharging). Charging the raw amount_due here
+		// without re-applying credits would consummate exactly that overcharge
+		// on the retry. ApplyToInvoiceAtomic is safe to re-run: it drains
+		// min(amount_due, current balance) — an already-applied invoice or an
+		// empty balance applies nothing. Failure → skip this invoice this tick
+		// (flag stays set; next sweep retries) rather than charge pre-credit.
+		if e.credits != nil && inv.AmountDueCents > 0 {
+			at, nowErr := e.EffectiveNowForInvoice(ctx, inv.TenantID, inv.ID)
+			if nowErr != nil {
+				at = e.clock.Now(ctx) // ADR-030: injected clock, never bare wall-clock
+			}
+			if _, err := e.credits.ApplyToInvoiceAt(ctx, inv.TenantID, inv.CustomerID, inv.ID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
+				slog.Warn("auto-charge retry: credit re-apply failed — skipping charge to avoid overcharging; will retry next tick",
+					"invoice_id", inv.ID, "error", err)
+				continue
+			}
+			// Refresh: credits may have reduced (or fully covered) amount_due.
+			refreshed, err := e.invoices.GetInvoice(ctx, inv.TenantID, inv.ID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("refresh invoice %s after credit apply: %w", inv.ID, err))
+				continue
+			}
+			inv = refreshed
+			if inv.AmountDueCents <= 0 {
+				// Fully credit-covered — settle without a card charge. Sweep
+				// rows are status='finalized' by query predicate, so the
+				// draft gate that protects billOnePeriod's equivalent block
+				// holds here by construction.
+				if _, err := e.invoices.MarkPaid(ctx, inv.TenantID, inv.ID, "", at); err != nil {
+					errs = append(errs, fmt.Errorf("mark credit-covered invoice %s paid: %w", inv.ID, err))
+					continue
+				}
+				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+				charged++
+				slog.Info("auto-charge retry: fully covered by credits, marked paid", "invoice_id", inv.ID)
+				continue
+			}
+		}
+
 		stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
 		if err != nil || !hasDefaultPM || stripeCusID == "" {
 			continue

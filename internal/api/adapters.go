@@ -21,6 +21,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/subscription"
@@ -256,6 +257,7 @@ type paymentRetrierAdapter struct {
 	charger       *payment.Stripe
 	invoiceStore  *invoice.PostgresStore
 	paymentSetups payment.PaymentSetupStore
+	credits       *credit.Service
 }
 
 func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invoiceID, customerID string) error {
@@ -265,6 +267,33 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	}
 	if inv.AmountDueCents <= 0 {
 		return nil // Nothing to charge
+	}
+
+	// Re-apply customer credits before retrying the card — same contract as
+	// the auto-charge sweep (processAutoCharge): credits granted since the
+	// original failure (or whose application failed at cycle close) must
+	// reduce the charge, not sit unconsumed while the card is hit for the
+	// full amount. ApplyToInvoiceAt is idempotent (drains min(due, balance)).
+	// An apply FAILURE maps to ErrTransientSkip: the retry never reaches
+	// Stripe, so it must not burn a dunning attempt.
+	if a.credits != nil {
+		at := clock.Now(ctx) // sim-aware: catchup binds effective-now on ctx
+		if _, err := a.credits.ApplyToInvoiceAt(ctx, tenantID, customerID, invoiceID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
+			return dunning.ErrTransientSkip
+		}
+		inv, err = a.invoiceStore.Get(ctx, tenantID, invoiceID)
+		if err != nil {
+			return fmt.Errorf("refresh invoice after credit apply: %w", err)
+		}
+		if inv.AmountDueCents <= 0 {
+			// Fully covered by credits — settle without a card charge. nil
+			// return = recovered, so the dunning run resolves; MarkPaid fires
+			// the transactional invoice.paid event.
+			if _, err := a.invoiceStore.MarkPaid(ctx, tenantID, invoiceID, "", at); err != nil {
+				return fmt.Errorf("mark credit-covered invoice paid: %w", err)
+			}
+			return nil
+		}
 	}
 
 	ps, err := a.paymentSetups.GetPaymentSetup(ctx, tenantID, customerID)
