@@ -392,6 +392,13 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	if strings.TrimSpace(filter.Search) != "" {
 		return s.listSearch(ctx, filter)
 	}
+	// Encrypted-column sorts can't be done in SQL (ORDER BY would order
+	// ciphertext). With encryption active, take the decrypt-then-sort
+	// path; without it (self-host with no encryption key) the columns
+	// are plaintext and the SQL sort below is correct and cheaper.
+	if k := filter.Sort; (k == "display_name" || k == "name" || k == "email") && s.enc != nil && s.enc.IsEnabled() {
+		return s.listSortedByEncryptedColumn(ctx, filter)
+	}
 
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
 	if err != nil {
@@ -512,28 +519,7 @@ func (s *PostgresStore) listSearch(ctx context.Context, filter ListFilter) ([]do
 	// columns are encrypted), which is meaningless to an operator. On
 	// this path the rows are already decrypted, so re-sort in Go with
 	// the same dir + id tie-break contract as customerOrderBy.
-	if key := filter.Sort; key == "display_name" || key == "name" || key == "email" {
-		desc := filter.SortDir != "asc"
-		val := func(c domain.Customer) string {
-			if key == "email" {
-				return strings.ToLower(c.Email)
-			}
-			return strings.ToLower(c.DisplayName)
-		}
-		sort.SliceStable(matched, func(i, j int) bool {
-			a, b := val(matched[i]), val(matched[j])
-			if a != b {
-				if desc {
-					return a > b
-				}
-				return a < b
-			}
-			if desc {
-				return matched[i].ID > matched[j].ID
-			}
-			return matched[i].ID < matched[j].ID
-		})
-	}
+	sortCustomersByPlaintext(matched, filter.Sort, filter.SortDir)
 
 	total := len(matched)
 	start := filter.Offset
@@ -548,6 +534,104 @@ func (s *PostgresStore) listSearch(ctx context.Context, filter ListFilter) ([]do
 		end = total
 	}
 	return matched[start:end], total, nil
+}
+
+// sortCustomersByPlaintext re-sorts already-decrypted customers in Go for
+// the sort keys whose DB columns are encrypted (display_name / email) —
+// SQL ORDER BY on those columns orders ciphertext, which reads as random
+// to an operator. No-op for other keys. Same dir + id tie-break contract
+// as customerOrderBy.
+func sortCustomersByPlaintext(customers []domain.Customer, key, dir string) {
+	if key != "display_name" && key != "name" && key != "email" {
+		return
+	}
+	desc := dir != "asc"
+	val := func(c domain.Customer) string {
+		if key == "email" {
+			return strings.ToLower(c.Email)
+		}
+		return strings.ToLower(c.DisplayName)
+	}
+	sort.SliceStable(customers, func(i, j int) bool {
+		a, b := val(customers[i]), val(customers[j])
+		if a != b {
+			if desc {
+				return a > b
+			}
+			return a < b
+		}
+		if desc {
+			return customers[i].ID > customers[j].ID
+		}
+		return customers[i].ID < customers[j].ID
+	})
+}
+
+// listSortedByEncryptedColumn serves the plain (no-search) list when the
+// requested sort key lives in an encrypted column: a bounded scan
+// (searchScanCap most-recent rows), decrypt, sort by plaintext in Go,
+// paginate in memory. Mirrors listSearch's trade — exact under the cap,
+// window-truncated above it — and shares its upgrade path (a derived
+// sort-token column) when a tenant outgrows the cap. Without this path
+// the list page's name/email sort ordered rows by ciphertext.
+func (s *PostgresStore) listSortedByEncryptedColumn(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	where, args := buildCustomerWhere(filter)
+	// Deterministic scan window: the searchScanCap most recent rows.
+	query := `SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, COALESCE(test_clock_id,''), created_at, updated_at
+		FROM customers` + where +
+		` ORDER BY created_at DESC, id DESC LIMIT $` + fmt.Sprintf("%d", len(args)+1)
+	args = append(args, searchScanCap)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var customers []domain.Customer
+	for rows.Next() {
+		var c domain.Customer
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		c, err = s.decryptCustomer(c)
+		if err != nil {
+			return nil, 0, err
+		}
+		customers = append(customers, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	sortCustomersByPlaintext(customers, filter.Sort, filter.SortDir)
+
+	total := len(customers)
+	start := filter.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return customers[start:end], total, nil
 }
 
 // ListByTestClockID returns customers pinned to the given test clock,

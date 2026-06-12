@@ -151,3 +151,76 @@ func TestPostgresStore_ListSearch(t *testing.T) {
 		}
 	})
 }
+
+// TestPostgresStore_ListSortByEncryptedColumn locks the decrypt-then-sort
+// fix: with PII encryption ENABLED, sorting the plain (no-search) list by
+// display_name or email must order rows by PLAINTEXT. Pre-fix the SQL
+// ORDER BY ordered the ciphertext — effectively random to an operator.
+func TestPostgresStore_ListSortByEncryptedColumn(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := customer.NewPostgresStore(db)
+	enc, err := crypto.NewEncryptor(strings.Repeat("cd", 32))
+	if err != nil {
+		t.Fatalf("encryptor: %v", err)
+	}
+	store.SetEncryptor(enc)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "SortEnc")
+
+	// Seed out of alphabetical order so insertion order can't fake a pass.
+	seed := []domain.Customer{
+		{ExternalID: "c3", DisplayName: "Zebra Systems", Email: "z@zebra.dev"},
+		{ExternalID: "c1", DisplayName: "Acme Corporation", Email: "billing@acme.com"},
+		{ExternalID: "c5", DisplayName: "Mango Analytics", Email: "ap@mango.io"},
+		{ExternalID: "c2", DisplayName: "Borealis Labs", Email: "fin@borealis.co"},
+		{ExternalID: "c4", DisplayName: "Quartz Cloud", Email: "ops@quartz.gg"},
+	}
+	for _, c := range seed {
+		if _, err := store.Create(ctx, tenantID, c); err != nil {
+			t.Fatalf("seed %s: %v", c.ExternalID, err)
+		}
+	}
+
+	got, total, err := store.List(ctx, customer.ListFilter{
+		TenantID: tenantID, Sort: "display_name", SortDir: "asc", Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("List sort=display_name: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	want := []string{"Acme Corporation", "Borealis Labs", "Mango Analytics", "Quartz Cloud", "Zebra Systems"}
+	for i, w := range want {
+		if got[i].DisplayName != w {
+			t.Fatalf("sort=display_name asc: position %d = %q, want %q (ciphertext ordering leaked through)", i, got[i].DisplayName, w)
+		}
+	}
+
+	// Descending email + in-memory pagination across the sorted set.
+	got, total, err = store.List(ctx, customer.ListFilter{
+		TenantID: tenantID, Sort: "email", SortDir: "desc", Limit: 2, Offset: 2,
+	})
+	if err != nil {
+		t.Fatalf("List sort=email desc paged: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("paged total = %d, want 5", total)
+	}
+	// emails desc: z@zebra.dev, ops@quartz.gg, fin@borealis.co, billing@acme.com, ap@mango.io
+	if len(got) != 2 || got[0].Email != "fin@borealis.co" || got[1].Email != "billing@acme.com" {
+		t.Fatalf("page 2 of email desc = %v, want [fin@borealis.co billing@acme.com]",
+			[]string{got[0].Email, got[1].Email})
+	}
+
+	// created_at sort keeps the plain SQL path (no decrypt-scan) and still works.
+	got, _, err = store.List(ctx, customer.ListFilter{
+		TenantID: tenantID, Sort: "created_at", SortDir: "asc", Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("List sort=created_at: %v", err)
+	}
+	if len(got) != 5 || got[0].DisplayName != "Zebra Systems" {
+		t.Fatalf("created_at asc first row = %q, want the first-seeded Zebra Systems", got[0].DisplayName)
+	}
+}
