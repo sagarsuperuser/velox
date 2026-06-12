@@ -5,6 +5,7 @@ import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatCents, formatRelativeTime, getTenantTimezone } from '@/lib/api'
 import type { Invoice } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 import { SimulatedBadge } from '@/components/TestClockBadge'
 import { cn } from '@/lib/utils'
 import { Card, CardContent } from '@/components/ui/card'
@@ -53,7 +54,7 @@ export default function DashboardPage() {
     queryKey: ['dashboard-chart', period],
     queryFn: () => api.getRevenueChart(period),
   })
-  const { data: recentInvoices } = useQuery({
+  const { data: recentInvoices, isLoading: recentInvoicesLoading } = useQuery({
     queryKey: ['dashboard-recent-invoices'],
     queryFn: () => api.listInvoices('limit=5'),
   })
@@ -247,7 +248,9 @@ export default function DashboardPage() {
                   View all →
                 </Link>
               </div>
-              {recentInvoices?.data && recentInvoices.data.length > 0 ? (
+              {recentInvoicesLoading ? (
+                <FeedSkeleton rows={5} />
+              ) : recentInvoices?.data && recentInvoices.data.length > 0 ? (
                 <div className="divide-y divide-border">
                   {recentInvoices.data.slice(0, 5).map((inv: Invoice) => (
                     <Link
@@ -287,7 +290,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-                  No invoices yet. Trigger a billing run from Settings → Operations.
+                  No invoices yet. They appear here as soon as a subscription bills.
                 </div>
               )}
             </CardContent>

@@ -37,6 +37,7 @@ import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 
 const statusVariant = statusBadgeVariant
 
@@ -143,14 +144,7 @@ export default function MeterDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Link to="/pricing" className="hover:text-foreground transition-colors">Pricing</Link>
-          <span>/</span>
-          <span>Loading...</span>
-        </div>
-        <div className="flex justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
+        <DetailSkeleton to="/pricing" parentLabel="Pricing" />
       </Layout>
     )
   }

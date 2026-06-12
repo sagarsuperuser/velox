@@ -106,7 +106,7 @@ interface ShimmerProps {
 // Shimmer is a single pulsing block. Kept local to this file so list-page
 // loading visuals don't cross-depend on the analytics module's SkeletonBlock.
 // UI-6 may unify the two into a shared `ui/skeleton.tsx` primitive.
-function Shimmer({ className, style }: ShimmerProps) {
+export function Shimmer({ className, style }: ShimmerProps) {
   return (
     <div
       aria-hidden
