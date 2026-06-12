@@ -4039,7 +4039,7 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		if e.credits != nil && inv.AmountDueCents > 0 {
 			at, nowErr := e.EffectiveNowForInvoice(ctx, inv.TenantID, inv.ID)
 			if nowErr != nil {
-				at = time.Now().UTC()
+				at = e.clock.Now(ctx) // ADR-030: never bare time.Now() here
 			}
 			if _, err := e.credits.ApplyToInvoiceAt(ctx, inv.TenantID, inv.CustomerID, inv.ID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
 				slog.Warn("auto-charge retry: credit re-apply failed — skipping charge to avoid overcharging; will retry next tick",
