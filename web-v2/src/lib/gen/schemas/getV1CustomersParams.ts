@@ -7,9 +7,31 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
+import type { GetV1CustomersDir } from './getV1CustomersDir';
 
 export type GetV1CustomersParams = {
 status?: string;
+/**
+ * Exact-match filter on the caller-assigned external ID.
+ */
+external_id?: string;
+/**
+ * Comma-separated customer IDs to fetch exactly.
+ */
+ids?: string;
+/**
+ * Case-insensitive substring match on display name, email,
+external ID, or ID. Matching runs post-decryption (PII
+columns are encrypted at rest), bounded to the first 5000
+rows of the tenant's filtered set.
+
+ */
+search?: string;
+/**
+ * One of display_name, email, external_id, status, created_at (default).
+ */
+sort?: string;
+dir?: GetV1CustomersDir;
 limit?: number;
 offset?: number;
 };

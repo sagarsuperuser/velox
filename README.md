@@ -219,6 +219,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 ### Recently shipped
 
+- **Operator search that actually searches** — server-side `?search=` on customers (matches encrypted name/email post-decryption), invoices, and subscriptions; invoice date-range + past-due filters; ⌘K palette queries the full dataset
 - **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
 - **Decimal per-unit rates** — sub-cent-per-unit pricing (e.g. $3.00 / 1M tokens) bills linearly and exactly via decimal unit prices (Stripe `unit_amount_decimal` model); invoice totals stay whole cents
 - **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`; recipe-picker UI; one-click uninstall

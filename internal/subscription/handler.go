@@ -439,6 +439,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		CustomerID: r.URL.Query().Get("customer_id"),
 		PlanID:     r.URL.Query().Get("plan_id"),
 		Status:     r.URL.Query().Get("status"),
+		Search:     strings.TrimSpace(r.URL.Query().Get("search")),
 		Limit:      limit,
 		Offset:     offset,
 		Sort:       r.URL.Query().Get("sort"),

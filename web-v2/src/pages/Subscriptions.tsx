@@ -8,6 +8,7 @@ import { downloadServerCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -80,19 +81,25 @@ export default function SubscriptionsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
+  // Debounced server-side search (display_name / code) across the
+  // full dataset — not just the visible page.
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
+
   const queryParams = useMemo(() => {
     const params = new URLSearchParams()
     params.set('limit', String(PAGE_SIZE))
     params.set('offset', String((page - 1) * PAGE_SIZE))
     if (filterStatus) params.set('status', filterStatus)
+    if (debouncedSearch) params.set('search', debouncedSearch)
     if (sortKey) params.set('sort', sortKey)
     if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [page, filterStatus, sortKey, sortDir])
+  }, [page, filterStatus, debouncedSearch, sortKey, sortDir])
 
   const { data: subsData, isLoading: loading, error: loadErrorObj, refetch } = useQuery({
-    queryKey: ['subscriptions', page, filterStatus, sortKey, sortDir],
+    queryKey: ['subscriptions', queryParams],
     queryFn: () => api.listSubscriptions(queryParams),
+    placeholderData: (prev) => prev,
   })
 
   // Fetch only the customers referenced by the visible subs (avoids
@@ -145,25 +152,20 @@ export default function SubscriptionsPage() {
   }, [customers])
   const plans = plansData?.data ?? []
 
-  // Client-side search on current page data
-  const filtered = useMemo(() => {
-    return subs.filter((sub: Subscription) => {
-      if (!search) return true
-      const q = search.toLowerCase()
-      return sub.display_name.toLowerCase().includes(q) || sub.code.toLowerCase().includes(q)
-    })
-  }, [subs, search])
-
+  // Search is server-side (search= query param over display_name +
+  // code) — rows arriving here are already filtered across the full
+  // dataset, not just the page.
+  //
   // Server-side sort end-to-end (closed allow-list + id tie-break).
   // Client-side re-sort would only sort the current page, breaking
   // pagination semantics.
   const { onSort } = useSortable(
-    filtered,
+    subs,
     sortKey,
     sortDir,
     (key, dir) => setUrlState({ sort: key, dir }),
   )
-  const sorted = filtered
+  const sorted = subs
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -225,15 +227,17 @@ export default function SubscriptionsPage() {
         </div>
       </div>
 
-      {/* Search */}
-      {total > 0 && (
+      {/* Search — server-side across the full dataset. Stays visible
+          while a search is active so a zero-result query never hides
+          its own input. */}
+      {(total > 0 || search) && (
         <div className="flex items-center gap-3 mt-6">
           <div className="relative flex-1">
             <Search size={16} className="absolute left-3 top-2.5 text-muted-foreground" />
             <Input
               value={search}
-              onChange={e => setUrlState({ search: e.target.value })}
-              placeholder="Search within page..."
+              onChange={e => setUrlState({ search: e.target.value, page: '1' })}
+              placeholder="Search by name or code..."
               className="pl-9"
             />
           </div>
@@ -253,14 +257,18 @@ export default function SubscriptionsPage() {
           ) : loading ? (
             <TableSkeleton columns={6} />
           ) : total === 0 ? (
-            filterStatus ? (
+            filterStatus || debouncedSearch ? (
               <EmptyState
-                title={`No ${filterStatus} subscriptions`}
+                title={
+                  debouncedSearch
+                    ? `No subscriptions match “${debouncedSearch}”`
+                    : `No ${filterStatus} subscriptions`
+                }
                 description="Try a different filter to see more results."
                 action={{
-                  label: 'Clear filter',
+                  label: 'Clear filters',
                   variant: 'outline',
-                  onClick: () => setUrlState({ status: '', page: '1' }),
+                  onClick: () => setUrlState({ status: '', search: '', page: '1' }),
                 }}
               />
             ) : (
@@ -276,9 +284,14 @@ export default function SubscriptionsPage() {
               />
             )
           ) : sorted.length === 0 ? (
-            <p className="px-6 py-8 text-sm text-muted-foreground text-center">
-              No subscriptions match search on this page
-            </p>
+            // Stale ?page= beyond the filtered range — point back to
+            // page 1 rather than rendering a bare table.
+            <div className="px-6 py-8 text-center">
+              <p className="text-sm text-muted-foreground mb-3">This page is out of range for the current filters</p>
+              <Button variant="outline" size="sm" onClick={() => setUrlState({ page: '1' })}>
+                Back to first page
+              </Button>
+            </div>
           ) : (
             <>
               <Table>

@@ -164,6 +164,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		TenantID:   tenantID,
 		Status:     r.URL.Query().Get("status"),
 		ExternalID: r.URL.Query().Get("external_id"),
+		Search:     strings.TrimSpace(r.URL.Query().Get("search")),
 		IDs:        ids,
 		Limit:      limit,
 		Offset:     offset,

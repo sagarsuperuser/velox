@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -388,6 +389,10 @@ func (s *PostgresStore) FindByEmailBlindIndex(ctx context.Context, blind string,
 }
 
 func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error) {
+	if strings.TrimSpace(filter.Search) != "" {
+		return s.listSearch(ctx, filter)
+	}
+
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
 	if err != nil {
 		return nil, 0, err
@@ -436,6 +441,113 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		customers = append(customers, c)
 	}
 	return customers, total, rows.Err()
+}
+
+// searchScanCap bounds the decrypt-and-match scan backing
+// ListFilter.Search. display_name and email are encrypted at rest
+// (SetEncryptor), so SQL ILIKE can't see them — the only correct
+// substring match is post-decrypt in Go. The email blind index
+// (email_bidx) is equality-only and doesn't help a search box.
+// At pre-launch tenant sizes (hundreds of customers) the scan is
+// trivially cheap; if a tenant ever approaches this cap, the upgrade
+// path is a trigram-indexed search-token column, not a bigger cap.
+const searchScanCap = 5000
+
+// listSearch is the Search != "" branch of List. It applies the
+// SQL-expressible filters (status, external_id, ids) and ORDER BY in
+// the database, streams up to searchScanCap rows, decrypts, and
+// substring-matches display_name / email / external_id / id in Go.
+// Pagination (total + offset/limit window) runs over the matched set
+// so the dashboard's "Showing X–Y of N" stays truthful.
+func (s *PostgresStore) listSearch(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	where, args := buildCustomerWhere(filter)
+	query := `SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status, COALESCE(test_clock_id,''), created_at, updated_at
+		FROM customers` + where +
+		` ORDER BY ` + customerOrderBy(filter.Sort, filter.SortDir) +
+		` LIMIT $` + fmt.Sprintf("%d", len(args)+1)
+	args = append(args, searchScanCap)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	q := strings.ToLower(strings.TrimSpace(filter.Search))
+	var matched []domain.Customer
+	for rows.Next() {
+		var c domain.Customer
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		c, err = s.decryptCustomer(c)
+		if err != nil {
+			return nil, 0, err
+		}
+		if strings.Contains(strings.ToLower(c.DisplayName), q) ||
+			strings.Contains(strings.ToLower(c.Email), q) ||
+			strings.Contains(strings.ToLower(c.ExternalID), q) ||
+			strings.Contains(strings.ToLower(c.ID), q) {
+			matched = append(matched, c)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	// display_name / email sort keys order by CIPHERTEXT in SQL (the
+	// columns are encrypted), which is meaningless to an operator. On
+	// this path the rows are already decrypted, so re-sort in Go with
+	// the same dir + id tie-break contract as customerOrderBy.
+	if key := filter.Sort; key == "display_name" || key == "name" || key == "email" {
+		desc := filter.SortDir != "asc"
+		val := func(c domain.Customer) string {
+			if key == "email" {
+				return strings.ToLower(c.Email)
+			}
+			return strings.ToLower(c.DisplayName)
+		}
+		sort.SliceStable(matched, func(i, j int) bool {
+			a, b := val(matched[i]), val(matched[j])
+			if a != b {
+				if desc {
+					return a > b
+				}
+				return a < b
+			}
+			if desc {
+				return matched[i].ID > matched[j].ID
+			}
+			return matched[i].ID < matched[j].ID
+		})
+	}
+
+	total := len(matched)
+	start := filter.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return matched[start:end], total, nil
 }
 
 // ListByTestClockID returns customers pinned to the given test clock,

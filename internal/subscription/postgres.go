@@ -1916,12 +1916,10 @@ func subscriptionSortColumn(key string) string {
 	case "status":
 		return "s.status"
 	case "display_name", "name":
-		// Display-name sort relies on a JOIN with customers — for now
-		// fall back to created_at since the existing query path only
-		// joins items, not customers. SPA shows display_name on the
-		// row but the sort itself uses created_at as a sensible
-		// proxy until the JOIN is added.
-		return "s.created_at"
+		// display_name is a column on subscriptions itself (subCols),
+		// not derived from customers — the previous created_at proxy
+		// (and its JOIN-required comment) was wrong about the schema.
+		return "s.display_name"
 	case "trial_end_at":
 		return "s.trial_end_at"
 	default:
@@ -1951,6 +1949,14 @@ func buildSubWhere(f ListFilter) (string, []any) {
 	if f.Status != "" {
 		clauses = append(clauses, fmt.Sprintf("s.status = $%d", idx))
 		args = append(args, f.Status)
+		idx++
+	}
+	if f.Search != "" {
+		// One placeholder reused across both columns — Postgres
+		// allows repeating $N, and it keeps the pattern arg single-
+		// source. Metacharacters escaped so "100%" matches literally.
+		clauses = append(clauses, fmt.Sprintf("(s.display_name ILIKE $%d OR s.code ILIKE $%d)", idx, idx))
+		args = append(args, "%"+postgres.EscapeLike(f.Search)+"%")
 	}
 
 	prefix := ""

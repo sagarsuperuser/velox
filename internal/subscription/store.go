@@ -242,8 +242,12 @@ type ListFilter struct {
 	CustomerID string
 	PlanID     string // Joins subscription_items to filter by item plan
 	Status     string
-	Limit      int
-	Offset     int
+	// Search filters by display_name OR code, case-insensitive
+	// substring (ILIKE, metacharacters escaped). Empty = no filter.
+	// Backs the dashboard list search box and the command palette.
+	Search string
+	Limit  int
+	Offset int
 	// Sort: column from a closed allow-list (validated in store).
 	// Empty defaults to created_at.
 	Sort string

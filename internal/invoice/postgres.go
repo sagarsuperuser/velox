@@ -2018,6 +2018,40 @@ func buildInvWhere(f ListFilter) (string, []any) {
 		args = append(args, f.PaymentStatus)
 		idx++
 	}
+	if f.Search != "" {
+		clauses = append(clauses, fmt.Sprintf("invoice_number ILIKE $%d", idx))
+		args = append(args, "%"+postgres.EscapeLike(f.Search)+"%")
+		idx++
+	}
+	if !f.CreatedFrom.IsZero() {
+		clauses = append(clauses, fmt.Sprintf("created_at >= $%d", idx))
+		args = append(args, f.CreatedFrom)
+		idx++
+	}
+	if !f.CreatedTo.IsZero() {
+		clauses = append(clauses, fmt.Sprintf("created_at <= $%d", idx))
+		args = append(args, f.CreatedTo)
+		idx++
+	}
+	if f.Overdue {
+		// "Past due" = open, past its due date, not settled, not
+		// mid-payment. Mirrors domain.ClassifyInvoiceAttention's
+		// overdue semantics, but computed in SQL so the filter
+		// paginates server-side. due_at compares against DB
+		// wall-clock now(); test-clock invoices stamp due_at in
+		// simulated time, so a frozen-future clock keeps its
+		// invoices out of this view until wall-clock catches up —
+		// the same trade Stripe's dashboard makes, and the per-row
+		// attention dot still reflects the authoritative state.
+		clauses = append(clauses, fmt.Sprintf(
+			"(status = $%d AND due_at IS NOT NULL AND due_at < now() AND payment_status NOT IN ($%d, $%d))",
+			idx, idx+1, idx+2))
+		args = append(args,
+			string(domain.InvoiceFinalized),
+			string(domain.PaymentSucceeded),
+			string(domain.PaymentProcessing))
+		idx += 3
+	}
 	if len(f.IDs) > 0 {
 		// ids=... filter — same shape as customer.ListFilter.IDs.
 		// Lets CreditNotes-and-similar pages fetch the exact invoices

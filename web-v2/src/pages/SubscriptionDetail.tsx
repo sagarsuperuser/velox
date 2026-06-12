@@ -780,13 +780,19 @@ export default function SubscriptionDetailPage() {
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground w-40 shrink-0">Customer</span>
-              {customer ? (
-                <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-primary hover:underline">
-                  {customer.display_name}
-                </Link>
-              ) : (
-                <span className="text-sm text-foreground font-mono">{sub.customer_id}</span>
-              )}
+              {/* Customer ID stays copyable whether or not the customer
+                  record has resolved — operators paste it into API
+                  calls and support threads. */}
+              <div className="flex items-center gap-1.5">
+                {customer ? (
+                  <Link to={`/customers/${customer.id}`} className="text-sm font-medium text-primary hover:underline">
+                    {customer.display_name}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-foreground font-mono">{sub.customer_id}</span>
+                )}
+                <CopyButton text={sub.customer_id} title="Copy customer ID" />
+              </div>
             </div>
             <div className="flex items-center justify-between px-6 py-3">
               <span className="text-sm text-muted-foreground w-40 shrink-0">Status</span>
