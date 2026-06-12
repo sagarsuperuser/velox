@@ -197,9 +197,20 @@ func (s *PostgresStore) GetFlag(ctx context.Context, key string) (Flag, error) {
 	return f, err
 }
 
+// feature_flag_overrides is tenant-scoped and RLS-protected (migration
+// 0113). The override store methods therefore run inside a TxTenant
+// transaction so the velox_app role's row-level policy filters to the
+// caller's tenant. feature_flags itself is global (no tenant_id, no RLS),
+// so GetFlag/SetGlobal/List stay on the bare pool.
 func (s *PostgresStore) GetOverride(ctx context.Context, key, tenantID string) (FlagOverride, bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return FlagOverride{}, false, err
+	}
+	defer postgres.Rollback(tx)
+
 	var o FlagOverride
-	err := s.db.Pool.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT flag_key, tenant_id, enabled, created_at
 		FROM feature_flag_overrides WHERE flag_key = $1 AND tenant_id = $2
 	`, key, tenantID).Scan(&o.FlagKey, &o.TenantID, &o.Enabled, &o.CreatedAt)
@@ -207,6 +218,9 @@ func (s *PostgresStore) GetOverride(ctx context.Context, key, tenantID string) (
 		return FlagOverride{}, false, nil
 	}
 	if err != nil {
+		return FlagOverride{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return FlagOverride{}, false, err
 	}
 	return o, true, nil
@@ -227,19 +241,35 @@ func (s *PostgresStore) SetGlobal(ctx context.Context, key string, enabled bool)
 }
 
 func (s *PostgresStore) SetOverride(ctx context.Context, tenantID, key string, enabled bool) error {
-	_, err := s.db.Pool.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO feature_flag_overrides (flag_key, tenant_id, enabled)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (flag_key, tenant_id) DO UPDATE SET enabled = $3
-	`, key, tenantID, enabled)
-	return err
+	`, key, tenantID, enabled); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) RemoveOverride(ctx context.Context, tenantID, key string) error {
-	_, err := s.db.Pool.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM feature_flag_overrides WHERE flag_key = $1 AND tenant_id = $2
-	`, key, tenantID)
-	return err
+	`, key, tenantID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
@@ -264,7 +294,13 @@ func (s *PostgresStore) List(ctx context.Context) ([]Flag, error) {
 }
 
 func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID string) ([]FlagOverride, error) {
-	rows, err := s.db.Pool.QueryContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT flag_key, tenant_id, enabled, created_at
 		FROM feature_flag_overrides WHERE tenant_id = $1 ORDER BY flag_key LIMIT 500
 	`, tenantID)
@@ -281,5 +317,11 @@ func (s *PostgresStore) ListOverrides(ctx context.Context, tenantID string) ([]F
 		}
 		overrides = append(overrides, o)
 	}
-	return overrides, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return overrides, tx.Commit()
 }
