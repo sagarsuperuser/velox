@@ -1059,8 +1059,10 @@ func TestMarkUncollectible_WritesAuditAndDispatchesEvent(t *testing.T) {
 	if a := audit.entries[1]; a.metadata["action"] != "marked_uncollectible" {
 		t.Errorf("audit metadata.action: got %v, want marked_uncollectible", a.metadata["action"])
 	}
-	if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoiceMarkedUncollectible {
-		t.Errorf("events: got %+v, want one invoice.marked_uncollectible", events.events)
+	// The fixture finalizes through the service, which (correctly) now
+	// emits invoice.finalized too — assert on the LAST event.
+	if len(events.events) != 2 || events.events[1].eventType != domain.EventInvoiceMarkedUncollectible {
+		t.Errorf("events: got %+v, want [invoice.finalized, invoice.marked_uncollectible]", events.events)
 	}
 }
 
@@ -1112,8 +1114,8 @@ func TestRecordOfflinePayment(t *testing.T) {
 		if audit.entries[1].metadata["note"] != "Cheque #1234" {
 			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[1].metadata["note"])
 		}
-		if len(events.events) != 1 || events.events[0].eventType != domain.EventInvoicePaymentRecorded {
-			t.Errorf("events: got %+v", events.events)
+		if len(events.events) != 2 || events.events[1].eventType != domain.EventInvoicePaymentRecorded {
+			t.Errorf("events: got %+v, want [invoice.finalized, invoice.payment_recorded]", events.events)
 		}
 	})
 

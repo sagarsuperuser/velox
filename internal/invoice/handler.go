@@ -248,29 +248,6 @@ func (h *Handler) SetAuditLogger(l auditWriter) { h.auditLogger = l }
 // fireEvent dispatches a webhook event. Synchronous: with the outbox
 // (RES-1) Dispatch is a short DB insert that must persist-before-return,
 // and logging any failure is preferred to silently losing the event.
-func (h *Handler) fireEvent(ctx context.Context, tenantID, eventType string, inv domain.Invoice) {
-	if h.events == nil {
-		return
-	}
-	if err := h.events.Dispatch(ctx, tenantID, eventType, map[string]any{
-		"invoice_id":         inv.ID,
-		"invoice_number":     inv.InvoiceNumber,
-		"customer_id":        inv.CustomerID,
-		"status":             string(inv.Status),
-		"payment_status":     string(inv.PaymentStatus),
-		"total_amount_cents": inv.TotalAmountCents,
-		"amount_due_cents":   inv.AmountDueCents,
-		"currency":           inv.Currency,
-	}); err != nil {
-		slog.ErrorContext(ctx, "dispatch invoice event",
-			"event_type", eventType,
-			"invoice_id", inv.ID,
-			"tenant_id", tenantID,
-			"error", err,
-		)
-	}
-}
-
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.create)
@@ -475,11 +452,10 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The finalize audit row is written by service.Finalize — the canonical
-	// single writer, covering this endpoint AND the tax-retry auto-finalize.
-	// A handler-level write here would be a duplicate row.
-
-	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceFinalized, inv)
+	// The finalize audit row AND the invoice.finalized webhook are emitted
+	// by service.Finalize — the canonical single writer, covering this
+	// endpoint AND the tax-retry auto-finalize. Pre-fix the webhook fired
+	// from here only, so the tax-retry path silently skipped it.
 
 	// No automatic "here's your invoice" email on finalize. Velox
 	// auto-charges the saved card (Stripe charge_automatically model), so
@@ -588,7 +564,8 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	h.fireEvent(r.Context(), tenantID, domain.EventInvoiceVoided, inv)
+	// invoice.voided is emitted by service.Void (single-writer — covers
+	// this endpoint AND engine-triggered voids via InvoiceVoider).
 
 	respond.JSON(w, r, http.StatusOK, inv)
 }
@@ -1013,7 +990,7 @@ func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
 
 type timelineEvent struct {
 	Timestamp       string `json:"timestamp"`
-	Source          string `json:"source"` // "stripe" / "dunning" / "lifecycle" / "email"
+	Source          string `json:"source"` // "stripe" / "dunning" / "lifecycle" / "email" / "credit_note"
 	EventType       string `json:"event_type"`
 	Status          string `json:"status"`
 	Description     string `json:"description"`
@@ -1465,19 +1442,80 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 			IsSimulated: isSimulated,
 		})
 	}
+	if inv.UncollectibleAt != nil {
+		events = append(events, timelineEvent{
+			Timestamp:   inv.UncollectibleAt.Format(time.RFC3339),
+			Source:      "lifecycle",
+			EventType:   "invoice.marked_uncollectible",
+			Status:      "canceled",
+			Description: "Marked uncollectible — written off as bad debt",
+			IsSimulated: isSimulated,
+		})
+	}
 	if inv.PaidAt != nil {
 		amt := inv.AmountPaidCents
+		desc := "Invoice paid"
+		detail := formatPaymentCardDetail(inv.PaymentCardBrand, inv.PaymentCardLast4)
+		// Operator-recorded offline payments (cheque/wire/cash) stamp a
+		// synthetic out_of_band: payment-intent id — surface them as what
+		// they are instead of rendering identically to a card payment.
+		if strings.HasPrefix(inv.StripePaymentIntentID, "out_of_band:") {
+			desc = "Payment recorded (offline)"
+			detail = "Recorded by an operator — cheque, wire, or other out-of-band payment"
+		}
 		events = append(events, timelineEvent{
 			Timestamp:   inv.PaidAt.Format(time.RFC3339),
 			Source:      "lifecycle",
 			EventType:   "invoice.paid",
 			Status:      "succeeded",
-			Description: "Invoice paid",
+			Description: desc,
 			AmountCents: &amt,
 			Currency:    inv.Currency,
-			Detail:      formatPaymentCardDetail(inv.PaymentCardBrand, inv.PaymentCardLast4),
+			Detail:      detail,
 			IsSimulated: isSimulated,
 		})
+	}
+
+	// Credit-note chronology rows. The settlement waterfall on the page
+	// already shows credit notes channel-by-channel; these rows give the
+	// SAME facts a place in the chronology ("Invoice paid" then silence
+	// after a refund read as nothing-happened). Issued notes only —
+	// drafts aren't activity yet, voided notes vanish from the story the
+	// same way Stripe's do. Source "credit_note": operator-issued CNs
+	// stamp WALL-CLOCK IssuedAt (the HTTP issue path doesn't bind the
+	// customer clock), so on simulated invoices the frontend routes these
+	// to the external (real-time) lane exactly like stripe rows — sorting
+	// them among simulated billing rows would mis-order the story.
+	if h.creditNotes != nil {
+		if cns, err := h.creditNotes.List(r.Context(), tenantID, inv.ID); err == nil {
+			for _, cn := range cns {
+				if cn.Status != domain.CreditNoteIssued || cn.IssuedAt == nil {
+					continue
+				}
+				total := cn.TotalCents
+				desc := "Credit note issued"
+				if cn.RefundAmountCents > 0 && cn.RefundAmountCents == cn.TotalCents {
+					desc = "Refund issued"
+				} else if cn.RefundAmountCents > 0 {
+					desc = "Credit note issued — part refunded to card"
+				}
+				detail := cn.CreditNoteNumber
+				if cn.Reason != "" {
+					detail = cn.CreditNoteNumber + " — " + cn.Reason
+				}
+				events = append(events, timelineEvent{
+					Timestamp:   cn.IssuedAt.Format(time.RFC3339),
+					Source:      "credit_note",
+					EventType:   "credit_note.issued",
+					Status:      "succeeded",
+					Description: desc,
+					AmountCents: &total,
+					Currency:    cn.Currency,
+					Detail:      detail,
+					IsSimulated: isSimulated,
+				})
+			}
+		}
 	}
 
 	// Customer-notification email events. Surfaces "Customer notified

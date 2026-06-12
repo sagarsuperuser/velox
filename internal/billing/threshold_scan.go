@@ -545,6 +545,22 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 				"subscription_id", sub.ID, "tenant_id", sub.TenantID, "error", err)
 		}
 	}
+	// Audit row so the crossing shows on the subscription activity feed —
+	// pre-fix only the webhook fired and the invoice appeared, with no
+	// timeline row explaining WHY an invoice landed mid-cycle.
+	if e.auditLogger != nil {
+		meta := map[string]any{
+			"invoice_id":     inv.ID,
+			"invoice_number": inv.InvoiceNumber,
+			"amount_cents":   inv.TotalAmountCents,
+			"currency":       inv.Currency,
+		}
+		if sub.TestClockID != "" {
+			meta["test_clock_id"] = sub.TestClockID
+			meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+		}
+		_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.threshold_crossed", "subscription", sub.ID, sub.Code, meta)
+	}
 
 	// Cycle reset (when configured): the new cycle starts at fire time and
 	// the next bill is the natural cycle invoice. When reset_billing_cycle

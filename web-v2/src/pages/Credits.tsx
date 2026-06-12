@@ -312,7 +312,7 @@ export default function CreditsPage() {
                   <TableBody>
                     {ledgerPaginated.map(entry => (
                       <TableRow key={entry.id}>
-                        <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.created_at)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground whitespace-nowrap" title={formatDateTime(entry.created_at)}>{formatDate(entry.created_at)}</TableCell>
                         <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entryTypeLabel(entry.entry_type)}</Badge></TableCell>
                         <TableCell className="text-sm text-foreground">
                           {(() => {

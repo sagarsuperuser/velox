@@ -530,6 +530,13 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		// on the subscription timeline.
 		if prorationCreditCents > 0 {
 			meta["prorated_credit_cents"] = prorationCreditCents
+			// Currency rides along so the timeline doesn't hardcode "$"
+			// for non-USD tenants (best-effort: first item's plan).
+			if h.plans != nil && len(sub.Items) > 0 {
+				if pl, err := h.plans.GetPlan(r.Context(), tenantID, sub.Items[0].PlanID); err == nil {
+					meta["currency"] = pl.Currency
+				}
+			}
 		}
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
@@ -1071,6 +1078,21 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 			"item_id":   result.Item.ID,
 			"immediate": input.Immediate,
 		}
+		// Proration OUTCOME (the invoice/credit the change produced) —
+		// pre-fix the feed showed the intent ("Plan changed") but never
+		// what it billed, so operators cross-referenced the invoices list.
+		if result.Proration != nil {
+			payload["proration_type"] = result.Proration.Type
+			payload["proration_amount_cents"] = result.Proration.AmountCents
+			if result.Proration.InvoiceID != "" {
+				payload["proration_invoice_id"] = result.Proration.InvoiceID
+			}
+			if h.plans != nil {
+				if pl, err := h.plans.GetPlan(ctx, tenantID, result.Item.PlanID); err == nil {
+					payload["currency"] = pl.Currency
+				}
+			}
+		}
 		if input.Quantity != nil {
 			payload["action"] = "item_quantity_changed"
 			payload["quantity"] = *input.Quantity
@@ -1305,6 +1327,9 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", subID, subBefore.Code, map[string]any{
 			"action":  "item_removed",
 			"item_id": itemID,
+			// Which plan left — captured for proration math anyway;
+			// without it the feed said "Item removed" with no noun.
+			"plan_id": removedPlanID,
 		})
 	}
 
@@ -2470,6 +2495,26 @@ func planLabel(planID string, planNames map[string]string) string {
 // (activityTimeline) batch-fetches every plan_id referenced in the
 // audit entries before invoking this function. Missing entries fall
 // back to the raw ID (deleted plan / lookup miss).
+// formatAmountForTimeline renders cents for the activity feed with the
+// right currency marker — the previous hardcoded "$" mislabeled every
+// non-USD tenant's amounts. Symbols for the common cases, ISO code
+// suffix otherwise.
+func formatAmountForTimeline(cents int64, currency string) string {
+	v := float64(cents) / 100
+	switch strings.ToUpper(currency) {
+	case "USD", "":
+		return fmt.Sprintf("$%.2f", v)
+	case "EUR":
+		return fmt.Sprintf("€%.2f", v)
+	case "GBP":
+		return fmt.Sprintf("£%.2f", v)
+	case "INR":
+		return fmt.Sprintf("₹%.2f", v)
+	default:
+		return fmt.Sprintf("%.2f %s", v, strings.ToUpper(currency))
+	}
+}
+
 func describeSubscriptionAction(action string, meta map[string]any, planNames map[string]string) (desc, detail, detailTimestamp, status string) {
 	switch action {
 	case domain.AuditActionCreate:
@@ -2489,7 +2534,8 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		// Chargebee / Orb link the credit to the subscription event.
 		d := ""
 		if v, ok := meta["prorated_credit_cents"].(float64); ok && v > 0 {
-			d = fmt.Sprintf("Prorated credit issued: $%.2f", v/100)
+			cur, _ := meta["currency"].(string)
+			d = "Prorated credit issued: " + formatAmountForTimeline(int64(v), cur)
 		}
 		return "Subscription canceled" + by, d, "", "canceled"
 	case domain.AuditActionUpdate:
@@ -2559,9 +2605,11 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			}
 			return "Item added", strings.Join(parts, " · "), "", "info"
 		case "item_removed":
-			// item_id was operator-illegible noise on the row; drop
-			// it entirely. "Item removed" is enough — operators
-			// reading the timeline don't think in vlx_si_ tokens.
+			// Plan NAME (resolved via planNames) is the operator-legible
+			// noun; the vlx_si_ item id stays out of the row.
+			if pid, _ := meta["plan_id"].(string); pid != "" {
+				return "Item removed", planLabel(pid, planNames), "", "info"
+			}
 			return "Item removed", "", "", "info"
 		case "cancel_pending_item_plan_change":
 			return "Pending plan change canceled", "", "", "info"
@@ -2580,6 +2628,22 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 		if immediate {
 			when = "Immediate"
 		}
+		prorationPart := func() string {
+			amt, ok := meta["proration_amount_cents"].(float64)
+			if !ok {
+				return ""
+			}
+			cur, _ := meta["currency"].(string)
+			switch t, _ := meta["proration_type"].(string); t {
+			case "invoice":
+				return "Proration invoice " + formatAmountForTimeline(int64(amt), cur)
+			case "credit":
+				return "Credit " + formatAmountForTimeline(int64(amt), cur)
+			case "adjustment":
+				return "Open invoice adjusted " + formatAmountForTimeline(int64(amt), cur)
+			}
+			return ""
+		}
 		switch a {
 		case "item_plan_changed":
 			parts := []string{}
@@ -2589,6 +2653,9 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 				parts = append(parts, planLabel(oldPlan, planNames)+" → "+planLabel(newPlan, planNames))
 			}
 			parts = append(parts, when)
+			if pp := prorationPart(); pp != "" {
+				parts = append(parts, pp)
+			}
 			return "Plan changed", strings.Join(parts, " · "), "", "info"
 		case "item_quantity_changed":
 			parts := []string{}
@@ -2596,9 +2663,30 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 				parts = append(parts, fmt.Sprintf("To qty %d", int(q)))
 			}
 			parts = append(parts, when)
+			if pp := prorationPart(); pp != "" {
+				parts = append(parts, pp)
+			}
 			return "Quantity changed", strings.Join(parts, " · "), "", "info"
 		}
 		return "Item updated", "", "", "info"
+	case "subscription.pending_change_applied":
+		oldPlan, _ := meta["old_plan_id"].(string)
+		newPlan, _ := meta["new_plan_id"].(string)
+		d := ""
+		if oldPlan != "" && newPlan != "" {
+			d = planLabel(oldPlan, planNames) + " → " + planLabel(newPlan, planNames)
+		}
+		return "Scheduled plan change applied", d, "", "success"
+	case "subscription.threshold_crossed":
+		d := ""
+		if num, _ := meta["invoice_number"].(string); num != "" {
+			d = "Invoice " + num + " issued early"
+			if amt, ok := meta["amount_cents"].(float64); ok {
+				cur, _ := meta["currency"].(string)
+				d += " — " + formatAmountForTimeline(int64(amt), cur)
+			}
+		}
+		return "Spending threshold crossed", d, "", "warning"
 	case "subscription.proration_failed":
 		d := ""
 		if e, ok := meta["error"].(string); ok && e != "" {
@@ -2652,12 +2740,13 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	if h.auditLogger != nil {
 		// Pull a generous slice of audit entries for this sub — the UI
 		// shows the most recent first anyway, and subs rarely have more
-		// than a few dozen mutations over their lifetime. 200 leaves
-		// headroom for pathological cases without unbounded fetches.
+		// than a few dozen mutations over their lifetime. 100 is the
+		// store's hard clamp (audit.Logger.Query) — asking for more was
+		// silently reduced, so say what we get.
 		entries, _, err := h.auditLogger.Query(r.Context(), tenantID, audit.QueryFilter{
 			ResourceType: "subscription",
 			ResourceID:   id,
-			Limit:        200,
+			Limit:        100,
 		})
 		if err == nil {
 			// Plan-name lookup so the timeline shows "Pro Monthly" instead

@@ -338,7 +338,11 @@ function DeliveryRow({
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-sm">Attempt #{delivery.attempt_no}</span>
+            {/* attempt_no is a global sequence across endpoints + replay
+                clones — labeling it "Attempt #" implied per-endpoint
+                numbering. "Delivery #" matches what the number actually
+                counts. */}
+            <span className="font-medium text-sm">Delivery #{delivery.attempt_no}</span>
             <StatusBadge status={delivery.status} />
             {delivery.is_replay && (
               <Badge variant="secondary" className="text-xs">replay clone</Badge>

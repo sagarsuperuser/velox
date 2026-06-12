@@ -483,7 +483,27 @@ export default function SubscriptionDetailPage() {
             })
           }
 
-          if (sub.next_billing_at) {
+          if (sub.cancel_at_period_end || sub.cancel_at) {
+            // A scheduled cancel replaces "Next Billing" — billing the
+            // next period is exactly what won't happen. The bar reads
+            // Period Start → Period End → Cancels.
+            const cancelAt = sub.cancel_at || sub.current_billing_period_end
+            if (cancelAt) {
+              timelinePoints.push({
+                label: 'Cancels',
+                date: formatDate(cancelAt),
+                isPast: new Date(cancelAt) <= now,
+              })
+            }
+          } else if (sub.pause_collection) {
+            // Collection paused: invoices draft but don't charge — the
+            // honest next point is the resume, not "Next Billing".
+            timelinePoints.push({
+              label: sub.pause_collection.resumes_at ? 'Collection resumes' : 'Collection paused',
+              date: sub.pause_collection.resumes_at ? formatDate(sub.pause_collection.resumes_at) : '—',
+              isPast: false,
+            })
+          } else if (sub.next_billing_at) {
             const nextBilling = new Date(sub.next_billing_at)
             timelinePoints.push({
               label: 'Next Billing',

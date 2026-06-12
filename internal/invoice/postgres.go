@@ -168,7 +168,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	payment_status, currency, subtotal_cents, discount_cents, tax_amount_cents, tax_rate,
 	COALESCE(tax_name,''), COALESCE(tax_country,''), COALESCE(tax_id,''),
 	total_amount_cents, amount_due_cents, amount_paid_cents, credits_applied_cents,
-	billing_period_start, billing_period_end, issued_at, due_at, paid_at, voided_at,
+	billing_period_start, billing_period_end, issued_at, due_at, paid_at, voided_at, uncollectible_at,
 	COALESCE(stripe_payment_intent_id,''), COALESCE(last_payment_error,''),
 	payment_overdue, auto_charge_pending, net_payment_term_days, COALESCE(memo,''), COALESCE(footer,''),
 	metadata, created_at, updated_at, source_plan_changed_at, COALESCE(source_subscription_item_id,''),
@@ -470,17 +470,21 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	defer postgres.Rollback(tx)
 
 	now := clock.Now(ctx)
-	var voidedAt *time.Time
+	var voidedAt, uncollectibleAt *time.Time
 	if status == domain.InvoiceVoided {
 		voidedAt = &now
+	}
+	if status == domain.InvoiceUncollectible {
+		uncollectibleAt = &now
 	}
 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
-		UPDATE invoices SET status = $1, voided_at = $2, updated_at = $3
-		WHERE id = $4
+		UPDATE invoices SET status = $1, voided_at = $2,
+			uncollectible_at = COALESCE($3, uncollectible_at), updated_at = $4
+		WHERE id = $5
 		RETURNING `+invCols,
-		status, postgres.NullableTime(voidedAt), now, id,
+		status, postgres.NullableTime(voidedAt), postgres.NullableTime(uncollectibleAt), now, id,
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
@@ -1792,7 +1796,7 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxName, &inv.TaxCountry, &inv.TaxID,
 		&inv.TotalAmountCents, &inv.AmountDueCents, &inv.AmountPaidCents, &inv.CreditsAppliedCents,
 		&inv.BillingPeriodStart, &inv.BillingPeriodEnd,
-		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.VoidedAt,
+		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.VoidedAt, &inv.UncollectibleAt,
 		&inv.StripePaymentIntentID, &inv.LastPaymentError,
 		&inv.PaymentOverdue, &inv.AutoChargePending, &inv.NetPaymentTermDays, &inv.Memo, &inv.Footer,
 		&metaJSON, &inv.CreatedAt, &inv.UpdatedAt, &inv.SourcePlanChangedAt,

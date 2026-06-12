@@ -822,8 +822,10 @@ export interface Invoice {
 // when an operator complains about latency, not before.
 export function pollIntervalForInvoice(invoice?: Invoice): number | false {
   if (!invoice) return false
-  // Drafts + voided are terminal-no-trailing-events.
-  if (invoice.status === 'draft' || invoice.status === 'voided') return false
+  // Drafts + voided + uncollectible are terminal-no-trailing-events.
+  // (uncollectible was missing — a written-off invoice's page polled
+  // the timeline forever.)
+  if (invoice.status === 'draft' || invoice.status === 'voided' || invoice.status === 'uncollectible') return false
   // Just-paid invoices keep polling slowly for ~30s to catch trailing
   // events: receipt email lands 1-5s after MarkPaid (outbox dispatcher
   // drains async), dunning resolution fires after MarkPaid for

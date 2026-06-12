@@ -907,6 +907,15 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Customer ledger shows 5 columns (Date · Type · Description · Amount · Balance) with Amount/Balance fully visible at a 1280px window — nothing clipped at the right edge.
 - [ ] An "Applied to invoice DEMO-NNNN" row's description IS the invoice link; a grant with expiry shows "Expires <date>" as subtext; an expiry row reads "Grant expired" (machine id only as small mono subtext).
 
+## FLOW I13: Timeline completeness (2026-06-13)
+
+- [ ] Tax-deferred invoice that auto-finalizes via tax retry → `invoice.finalized` lands in the webhook event stream (pre-fix: only operator-clicked finalize fired it).
+- [ ] Issue a credit note on a paid invoice → the invoice Activity shows a dated "Credit note issued / Refund issued — $X" row (CN number + reason as subtext).
+- [ ] Mark an invoice uncollectible (operator menu) → Activity shows "Marked uncollectible — written off as bad debt" with the timestamp; the page STOPS polling (network tab quiet).
+- [ ] Record an offline payment → Activity row reads "Payment recorded (offline)", not a card payment.
+- [ ] Plan-change with immediate proration → the subscription Activity row reads "Plan changed · <old> → <new> · Immediate · Proration invoice $X". A scheduled change shows a second row "Scheduled plan change applied" at the boundary; a threshold crossing shows "Spending threshold crossed · Invoice <num> issued early — $X".
+- [ ] Scheduled-cancel sub: period bar reads Period Start → Period End → **Cancels** (no "Next Billing"); paused-collection sub shows **Collection resumes <date>**.
+
 ## FLOW I9: Credit note on void
 
 - [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.
