@@ -20,6 +20,7 @@ export const InvoiceBillingReason = {
   subscription_cycle: 'subscription_cycle',
   subscription_create: 'subscription_create',
   subscription_cancel: 'subscription_cancel',
+  subscription_update: 'subscription_update',
   manual: 'manual',
   threshold: 'threshold',
 } as const;

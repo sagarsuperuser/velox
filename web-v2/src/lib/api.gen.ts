@@ -1924,7 +1924,7 @@ export interface components {
          *     that produced the invoice. Stamped at create time and never mutated.
          * @enum {string}
          */
-        InvoiceBillingReason: "subscription_cycle" | "subscription_create" | "subscription_cancel" | "manual" | "threshold";
+        InvoiceBillingReason: "subscription_cycle" | "subscription_create" | "subscription_cancel" | "subscription_update" | "manual" | "threshold";
         /** @enum {string} */
         InvoiceLineType: "base_fee" | "usage" | "add_on" | "discount" | "tax";
         /**
