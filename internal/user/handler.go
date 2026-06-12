@@ -11,6 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/session"
 )
 
@@ -29,6 +31,44 @@ type Handler struct {
 	email            EmailSender // required — production always wires the adapter
 	dashboardBaseURL string      // canonical dashboard origin for reset links; never from request headers. empty => reset emails disabled
 	smtpConfigured   bool        // SMTP wired at boot (email.Sender.IsConfigured); drives the email_delivery hint
+	auditLogger      AuditRecorder
+}
+
+// AuditRecorder is the narrow audit surface the auth handler needs — kept here
+// (not an import of *audit.Logger) so internal/user stays decoupled. Production
+// wires *audit.Logger via SetAuditLogger in router.go. Optional: nil = the
+// handler skips audit writes (login/logout/reset still work; they just leave no
+// row), which is the safe default for the unit tests that build a bare handler.
+type AuditRecorder interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// SetAuditLogger wires the audit recorder used to log authenticated auth events
+// (login, logout, mode change, password reset). Without it those events are not
+// audited. Failed logins are NOT routed here — they're pre-auth (no tenant to
+// scope a per-tenant audit row, and surfacing email-existence in the log would
+// be an enumeration oracle), so they go to the structured security log instead.
+func (h *Handler) SetAuditLogger(a AuditRecorder) { h.auditLogger = a }
+
+// auditAuthEvent writes one audit row for an authenticated auth event. It
+// stamps the actor (the operator's user id, since these endpoints run outside
+// session middleware so the ctx carries no identity) and the client IP (the
+// TrustedRealIP-corrected r.RemoteAddr) onto the ctx the recorder reads. When
+// actorUserID is "" the actor stays unresolved → recorded as 'system' (used for
+// a password-reset REQUEST, which any unauthenticated party can trigger).
+// Best-effort: a write failure is logged, never surfaced — auth must not fail
+// because the audit row didn't land.
+func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, actorUserID, tenantID, action, resourceID, label string, meta map[string]any) {
+	if h.auditLogger == nil || tenantID == "" {
+		return
+	}
+	if actorUserID != "" {
+		ctx = auth.WithUserID(ctx, actorUserID)
+	}
+	ctx = audit.WithClientIP(ctx, audit.ExtractClientIP(r))
+	if err := h.auditLogger.Log(ctx, tenantID, action, "user", resourceID, label, meta); err != nil {
+		slog.ErrorContext(ctx, "audit: auth event write failed", "action", action, "tenant_id", tenantID, "error", err)
+	}
 }
 
 // EmailSender is the narrow surface this handler uses to dispatch
@@ -115,10 +155,19 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		// recording on lockout — already locked.
 		if errors.Is(err, ErrBadCredentials) {
 			h.users.RecordFailedAttempt(r.Context(), req.Email)
+			// Failed logins are a SOC-2 CC6.1 signal (brute force / credential
+			// stuffing). They can't go to the per-tenant audit_log — there's no
+			// resolved tenant pre-auth, and recording email-existence there would
+			// be an enumeration oracle — so they land in the structured security
+			// log (the right home for pre-auth events).
+			slog.WarnContext(r.Context(), "auth: failed login attempt",
+				"email", req.Email, "ip", audit.ExtractClientIP(r), "reason", "bad_credentials")
 			respond.Unauthorized(w, r, "invalid email or password")
 			return
 		}
 		if errors.Is(err, ErrAccountLocked) {
+			slog.WarnContext(r.Context(), "auth: login blocked — account locked",
+				"email", req.Email, "ip", audit.ExtractClientIP(r), "reason", "account_locked")
 			// Return the SAME generic 401 as a wrong password / unknown email.
 			// A distinct 429 'account_locked' was an enumeration oracle: it
 			// confirmed the email belongs to a real account (only real accounts
@@ -152,6 +201,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.cookie.SetCookie(w, rawID, sess.ExpiresAt)
+	h.auditAuthEvent(r.Context(), r, u.ID, tenant.TenantID, "login", u.ID, u.Email,
+		map[string]any{"livemode": sess.Livemode})
 	respond.JSON(w, r, http.StatusOK, loginResp{
 		UserID:    u.ID,
 		TenantID:  tenant.TenantID,
@@ -191,6 +242,11 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
+		h.auditAuthEvent(r.Context(), r, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
+			map[string]any{"livemode": req.Livemode})
+	}
+
 	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"livemode": req.Livemode,
 	})
@@ -201,6 +257,11 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(session.CookieName)
 	if err == nil && c.Value != "" {
+		// Resolve before revoke so the audit row carries the operator identity;
+		// a stale/expired cookie just yields no row.
+		if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
+			h.auditAuthEvent(r.Context(), r, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
+		}
 		if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
 			slog.Error("session: revoke failed", "err", revokeErr)
 		}
@@ -251,6 +312,13 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		} else if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
+		// Audit the reset request against the matched account's tenant. The actor
+		// is anonymous (any unauthenticated party can trigger a reset email) so
+		// it records as 'system'; the email identifies the targeted account. Only
+		// written on a match, so it neither leaks to the requester (the response
+		// is identical match-or-not) nor pollutes the log with spray attempts.
+		h.auditAuthEvent(r.Context(), r, "", tenantID, "password_reset_requested", "", req.Email,
+			map[string]any{"email": req.Email})
 	}
 
 	// Whether reset emails can actually be DELIVERED on this deployment —
@@ -334,6 +402,13 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 	if revokeErr := h.sessions.RevokeAllForUser(r.Context(), u.ID); revokeErr != nil {
 		slog.Error("session: revoke-all-for-user after password reset failed",
 			"user_id", u.ID, "err", revokeErr)
+	}
+
+	// Audit the completed reset — a password change + all-session revocation is
+	// a high-value account-takeover signal. Actor is the account owner (they
+	// held the token); tenant resolved separately since domain.User carries none.
+	if tenantID, terr := h.users.TenantForUser(r.Context(), u.ID); terr == nil {
+		h.auditAuthEvent(r.Context(), r, u.ID, tenantID, "password_reset_completed", u.ID, u.Email, nil)
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{

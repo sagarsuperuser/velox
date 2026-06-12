@@ -24,12 +24,21 @@ type fakeUserStore struct {
 	resetTokenHash  string // the single valid token hash
 	consumed        bool
 	setPasswordHash string
+	// loginUser, when set, is returned by GetByEmail on a matching email so the
+	// login path can run end-to-end; tenants is returned by TenantsForUser. Both
+	// default to zero (GetByEmail misses, no tenants) — the value the existing
+	// reset tests rely on.
+	loginUser *domain.User
+	tenants   []domain.UserTenant
 }
 
 func (f *fakeUserStore) Create(ctx context.Context, email, passwordHash string) (domain.User, error) {
 	return domain.User{}, errs.ErrNotFound
 }
 func (f *fakeUserStore) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	if f.loginUser != nil && f.loginUser.Email == email {
+		return *f.loginUser, nil
+	}
 	return domain.User{}, errs.ErrNotFound
 }
 func (f *fakeUserStore) GetByID(ctx context.Context, id string) (domain.User, error) {
@@ -50,7 +59,7 @@ func (f *fakeUserStore) AttachTenant(ctx context.Context, userID, tenantID, role
 	return nil
 }
 func (f *fakeUserStore) TenantsForUser(ctx context.Context, userID string) ([]domain.UserTenant, error) {
-	return nil, nil
+	return f.tenants, nil
 }
 func (f *fakeUserStore) CreateResetToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) (domain.PasswordResetToken, error) {
 	return domain.PasswordResetToken{}, nil

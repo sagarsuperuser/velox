@@ -195,12 +195,14 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
 - [ ] Reload → still signed in.
 - [ ] Sign out → cookie cleared, redirect to /login. Stale cookie → 401.
+- [ ] **Auth events are audited (2026-06-12)**: after the above, open `/audit-log` → a **"login"** row (resource `user`, Actor = the operator, **not** "System"), a **"logout"** row, and (if you toggled test/live) a **"mode_changed"** row — each with the operator as actor and your IP. A **failed** login writes **NO** audit row (it's in the server security log instead); confirm the failed attempts above did not add audit-log rows.
 
 ### Password reset
 
 - [ ] Forgot password → submit any email → 200 (no enumeration).
 - [ ] Reset email lands in Mailpit (http://localhost:8025).
 - [ ] Click link → set new password (12+ chars) → /login?reset=success → sign in.
+- [ ] **Reset is audited (2026-06-12)**: `/audit-log` shows a **"password_reset_requested"** row (when the email matched a real account) and a **"password_reset_completed"** row on the affected `user`, scoped to the operator's tenant.
 - [ ] Reused token → 422. Token >1h old → 422. Password <12 chars → 422.
 
 ## FLOW A2: /v1/whoami

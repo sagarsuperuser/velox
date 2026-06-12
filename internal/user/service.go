@@ -270,6 +270,22 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 	return u, tenants, nil
 }
 
+// TenantForUser returns the user's (single, v1) tenant id. The auth handler
+// needs it to scope a password-reset-completed audit row, where it holds only
+// the domain.User (which carries no tenant). Returns "" + nil when the user has
+// no tenant membership — the caller treats that as "nothing to audit," not an
+// error worth failing the reset over.
+func (s *Service) TenantForUser(ctx context.Context, userID string) (string, error) {
+	tenants, err := s.store.TenantsForUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if len(tenants) == 0 {
+		return "", nil
+	}
+	return tenants[0].TenantID, nil
+}
+
 // RecordFailedAttempt is called by the login handler after a bad-
 // credentials response. Bumps the per-email counter; only locks the
 // account once the counter crosses FailedLoginThreshold. Counter
