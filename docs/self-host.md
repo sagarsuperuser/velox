@@ -105,9 +105,9 @@ Optional:
 | Var | Default | Purpose |
 |---|---|---|
 | `RUN_MIGRATIONS_ON_BOOT` | `false` | Run migrations on startup |
-| `APP_ENV` | `dev` | `dev`/`staging`/`production`; gates cookie `Secure` flag |
-| `VELOX_DASHBOARD_URL` | `http://localhost:5173` | Used in password-reset and invite emails |
-| `SMTP_HOST` / `SMTP_PORT` | `localhost:1025` | Outbound email; default points at mailpit |
+| `APP_ENV` | `local` | `local`/`staging`/`production`. Gates the cookie `Secure` flag and RLS fail-closed boot — `staging`/`production` refuse to start without the `velox_app` role (see Postgres above) |
+| `DASHBOARD_BASE_URL` | _(unset)_ | Canonical dashboard origin for password-reset links. **Unset disables password-reset emails** — the origin is never derived from request headers (host-header poisoning). Set to e.g. `http://localhost:5173` in dev |
+| `SMTP_HOST` / `SMTP_PORT` | _(unset)_ | Outbound email relay. Unset → emails are not sent (`ErrSMTPNotConfigured`). The compose path points these at mailpit (`localhost:1025`) |
 
 Stripe is configured per-tenant via the dashboard (`POST /v1/settings/stripe`), not env vars — each tenant connects their own Stripe account.
 
