@@ -235,7 +235,7 @@ export default function InvoiceDetailPage() {
   //     simulated paid/dunning rows upstream; only standalone failed/canceled
   //     events without a dunning twin reach here.)
   const isExternalRow = (e: typeof timeline[number]) =>
-    e.source === 'email' || (!!invoice?.is_simulated && e.source === 'stripe')
+    e.source === 'email' || (!!invoice?.is_simulated && (e.source === 'stripe' || e.source === 'credit_note'))
   const billingTimeline = timeline.filter(e => !isExternalRow(e))
   const externalTimeline = timeline.filter(isExternalRow)
   // Honest title: "Notifications" when it's only emails, "Real-time activity"
@@ -1184,7 +1184,7 @@ export default function InvoiceDetailPage() {
                       <p className="text-sm text-foreground min-w-0">{event.description}</p>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
                     </div>
-                    {event.error && event.status === 'failed' && (
+                    {event.error && (event.status === 'failed' || event.status === 'canceled') && (
                       <p className="text-xs text-destructive mt-0.5">{event.error}</p>
                     )}
                     {event.amount_cents != null && event.amount_cents > 0 && (

@@ -200,6 +200,7 @@ type Invoice struct {
 	DueAt                 *time.Time `json:"due_at,omitempty"`
 	PaidAt                *time.Time `json:"paid_at,omitempty"`
 	VoidedAt              *time.Time `json:"voided_at,omitempty"`
+	UncollectibleAt       *time.Time `json:"uncollectible_at,omitempty"`
 	StripePaymentIntentID string     `json:"stripe_payment_intent_id,omitempty"`
 	LastPaymentError      string     `json:"last_payment_error,omitempty"`
 	PaymentOverdue        bool       `json:"payment_overdue"`

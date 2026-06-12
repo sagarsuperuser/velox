@@ -100,25 +100,46 @@ func (e *Engine) SetAuditLogger(a AuditWriter) {
 // tenants whose first invoice was engine-generated (the normal path).
 //
 // Skips drafts (tax-pending / pause-collection): those finalize later via
-// the tax-retry chain, which writes the row in service.Finalize — writing
-// here too would double-count. Clock-pinned subs get the simulated
-// effective time in metadata (ADR-030: created_at stays wall-clock).
+// the tax-retry chain, which writes the row AND fires the webhook in
+// service.Finalize — doing either here too would double-count. Clock-
+// pinned subs get the simulated effective time in metadata (ADR-030:
+// created_at stays wall-clock).
+//
+// The invoice.finalized WEBHOOK fires here too: engine-born invoices are
+// born finalized and never pass service.Finalize, so until 2026-06-13 the
+// normal billing path (cycle / create / cancel-final / threshold) emitted
+// NO invoice.finalized at all — integrators only ever saw operator-clicked
+// finalizes. Same skip-drafts gate keeps the emit exactly-once per invoice.
 func (e *Engine) auditInvoiceFinalized(ctx context.Context, sub domain.Subscription, inv domain.Invoice, now time.Time) {
-	if e.auditLogger == nil || inv.Status != domain.InvoiceFinalized {
+	if inv.Status != domain.InvoiceFinalized {
 		return
 	}
-	meta := map[string]any{
-		"invoice_number":     inv.InvoiceNumber,
-		"customer_id":        inv.CustomerID,
-		"total_amount_cents": inv.TotalAmountCents,
-		"currency":           inv.Currency,
-		"triggered_by":       string(inv.BillingReason),
+	if e.auditLogger != nil {
+		meta := map[string]any{
+			"invoice_number":     inv.InvoiceNumber,
+			"customer_id":        inv.CustomerID,
+			"total_amount_cents": inv.TotalAmountCents,
+			"currency":           inv.Currency,
+			"triggered_by":       string(inv.BillingReason),
+		}
+		if sub.TestClockID != "" {
+			meta["test_clock_id"] = sub.TestClockID
+			meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+		}
+		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
 	}
-	if sub.TestClockID != "" {
-		meta["test_clock_id"] = sub.TestClockID
-		meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+	if e.events != nil {
+		_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventInvoiceFinalized, map[string]any{
+			"invoice_id":         inv.ID,
+			"invoice_number":     inv.InvoiceNumber,
+			"customer_id":        inv.CustomerID,
+			"status":             string(inv.Status),
+			"payment_status":     string(inv.PaymentStatus),
+			"total_amount_cents": inv.TotalAmountCents,
+			"amount_due_cents":   inv.AmountDueCents,
+			"currency":           inv.Currency,
+		})
 	}
-	_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
 }
 
 // SetCreditGranter wires the credit-grant issuer used by BillOnCancel
@@ -1689,6 +1710,22 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 							"tenant_id", sub.TenantID,
 							"error", err,
 						)
+					}
+					// Audit row so the APPLICATION shows on the subscription
+					// activity feed — pre-fix only the scheduling showed
+					// (and the webhook fired), so the timeline never said
+					// the swap actually happened at the boundary.
+					if e.auditLogger != nil {
+						meta := map[string]any{
+							"item_id":     was.ID,
+							"old_plan_id": was.PlanID,
+							"new_plan_id": newPlanByItem[was.ID],
+						}
+						if sub.TestClockID != "" {
+							meta["test_clock_id"] = sub.TestClockID
+							meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
+						}
+						_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.pending_change_applied", "subscription", sub.ID, sub.Code, meta)
 					}
 				}
 			}

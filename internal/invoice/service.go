@@ -576,6 +576,22 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 			"currency":           finalized.Currency,
 		})
 	}
+	// invoice.finalized webhook — emitted HERE for the same single-writer
+	// reason as the audit row above: pre-fix the handler fired it, so the
+	// tax-retry auto-finalize chain (RetryTax → Finalize) silently never
+	// notified integrators that a tax-deferred invoice finalized.
+	if s.events != nil {
+		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceFinalized, map[string]any{
+			"invoice_id":         finalized.ID,
+			"invoice_number":     finalized.InvoiceNumber,
+			"customer_id":        finalized.CustomerID,
+			"status":             string(finalized.Status),
+			"payment_status":     string(finalized.PaymentStatus),
+			"total_amount_cents": finalized.TotalAmountCents,
+			"amount_due_cents":   finalized.AmountDueCents,
+			"currency":           finalized.Currency,
+		})
+	}
 	return finalized, nil
 }
 
@@ -619,7 +635,28 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		}
 	}
 
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
+	voided, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	// invoice.voided webhook — single-writer at the service layer (same
+	// pattern as finalized/marked_uncollectible/payment_recorded). Pre-fix
+	// it fired from the HTTP handler only, so engine-triggered voids (the
+	// unpaid-prebill relief on immediate cancel routes through this method
+	// via the InvoiceVoider interface) silently skipped it.
+	if s.events != nil {
+		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceVoided, map[string]any{
+			"invoice_id":         voided.ID,
+			"invoice_number":     voided.InvoiceNumber,
+			"customer_id":        voided.CustomerID,
+			"status":             string(voided.Status),
+			"payment_status":     string(voided.PaymentStatus),
+			"total_amount_cents": voided.TotalAmountCents,
+			"amount_due_cents":   voided.AmountDueCents,
+			"currency":           voided.Currency,
+		})
+	}
+	return voided, nil
 }
 
 // MarkUncollectible flips a finalized-but-unpaid invoice to
