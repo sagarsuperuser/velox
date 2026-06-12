@@ -77,7 +77,6 @@ type EventDispatcher interface {
 
 // Well-known event types emitted by Velox.
 const (
-	EventInvoiceCreated   = "invoice.created"
 	EventInvoiceFinalized = "invoice.finalized"
 	EventInvoicePaid      = "invoice.paid"
 	EventInvoiceVoided    = "invoice.voided"
@@ -113,11 +112,8 @@ const (
 	EventSubscriptionTrialEnded             = "subscription.trial_ended"
 	EventSubscriptionTrialExtended          = "subscription.trial_extended"
 	EventSubscriptionThresholdCrossed       = "subscription.threshold_crossed"
-	EventCustomerCreated                    = "customer.created"
 	EventCustomerEmailBounced               = "customer.email_bounced"
 	EventDunningStarted                     = "dunning.started"
 	EventDunningEscalated                   = "dunning.escalated"
 	EventDunningResolved                    = "dunning.resolved"
-	EventCreditGranted                      = "credit.granted"
-	EventCreditNoteIssued                   = "credit_note.issued"
 )
