@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -103,6 +104,7 @@ function SortableHead({
 }
 
 export default function CreditNotesPage() {
+  usePageTitle('Credit notes')
   const [showCreate, setShowCreate] = useState(false)
   const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
   const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
@@ -121,6 +123,11 @@ export default function CreditNotesPage() {
   // Server-side sort: pass sort/dir; backend tie-breaks on id.
   const notesQueryParams = useMemo(() => {
     const params = new URLSearchParams()
+    // Explicit page-size ceiling (server clamps at 100; the implicit
+    // default was 25, silently truncating the list under the client-side
+    // pagination). Search here spans joined customer/invoice fields, so
+    // rows stay client-paginated; the notice below surfaces truncation.
+    params.set('limit', '100')
     if (filterStatus) params.set('status', filterStatus)
     if (sortKey) params.set('sort', sortKey)
     if (sortDir) params.set('dir', sortDir)
@@ -233,6 +240,7 @@ export default function CreditNotesPage() {
   )
   const sorted = filtered
 
+  const truncated = notes.length >= 100
   const totalPages = Math.ceil(sorted.length / PAGE_SIZE)
   const currentPage = Math.min(page, totalPages || 1)
   const paginated = sorted.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
@@ -484,6 +492,12 @@ export default function CreditNotesPage() {
                   })}
                 </TableBody>
               </Table>
+
+              {truncated && (
+                <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+                  Showing the 100 most recent credit notes. Use the status filter to narrow older ones.
+                </div>
+              )}
 
               {/* Pagination */}
               {totalPages > 1 && (

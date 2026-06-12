@@ -1644,7 +1644,7 @@ export function formatCents(cents: number, currency?: string): string {
   const sign = cents < 0 ? '-' : ''
   const abs = Math.abs(cents)
   const symbol = getCurrencySymbol(currency)
-  return `${sign}${symbol}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
+  return `${sign}${symbol}${Math.floor(abs / 100).toLocaleString('en-US')}.${String(abs % 100).padStart(2, '0')}`
 }
 
 // formatTaxRate renders a tax-rate percent (without the % sign) at up to 4

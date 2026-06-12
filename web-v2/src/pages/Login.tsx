@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApiError } from '@/lib/api'
@@ -10,6 +11,7 @@ import { Loader2, Eye, EyeOff } from 'lucide-react'
 import { VeloxLogo } from '@/components/VeloxLogo'
 
 export default function LoginPage() {
+  usePageTitle('Sign in')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)

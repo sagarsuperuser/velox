@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { VeloxLogo } from '@/components/VeloxLogo'
@@ -26,6 +27,7 @@ import { VeloxLogo } from '@/components/VeloxLogo'
 // UX to give the confirmation immediately than to spin a loader on
 // data we can't guarantee.
 export default function PaymentMethodAddedPage() {
+  usePageTitle('Payment method added')
   const [searchParams] = useSearchParams()
   const canceled = searchParams.get('status') === 'cancel'
 

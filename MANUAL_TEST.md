@@ -888,6 +888,15 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Tenant default USD → switch to EUR → new invoices EUR, existing unchanged.
 - [ ] Customer with `billing_profile.currency=GBP` → invoices GBP regardless of tenant default.
 
+## FLOW U12: Dashboard consistency sweep (2026-06-13)
+
+- [ ] Browser tab reads "Invoices · Velox" on the list, "INV-…-NNNN · Velox" on an invoice; two different tabs are distinguishable.
+- [ ] An invoice ≥ $1,000 renders with thousands separators everywhere ($10,000.00, not $10000.00).
+- [ ] On /customers/:id the sidebar still highlights Customers; on /plans/:id it highlights Pricing.
+- [ ] Dunning policies → Delete asks via an in-app dialog (no native browser confirm). Webhooks → Rotate Secret shows "Rotating…" and can't be double-clicked.
+- [ ] Webhook live tail shows customer names, not raw vlx_cus ids (unknown ids show shortened, full id on hover).
+- [ ] ⌘K → type a plan name → Enter lands on the plan's detail page.
+
 ## FLOW I9: Credit note on void
 
 - [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.

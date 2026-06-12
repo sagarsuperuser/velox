@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { formatCents, formatDate, formatTaxRate } from '@/lib/api'
@@ -120,6 +121,7 @@ export default function HostedInvoicePage() {
     retry: false,
   })
   const data = invoiceQuery.data ?? null
+  usePageTitle(data?.invoice?.invoice_number ?? 'Invoice')
   const loading = !!token && invoiceQuery.isLoading
   const error = !token
     ? 'Invoice link is missing.'

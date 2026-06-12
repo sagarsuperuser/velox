@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { authApi } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
@@ -20,6 +21,7 @@ import { VeloxLogo } from '@/components/VeloxLogo'
 // errors come back via 422 with field=password and bubble up
 // inline.
 export default function ResetPasswordPage() {
+  usePageTitle('Reset password')
   const [params] = useSearchParams()
   const token = params.get('token') ?? ''
   const [password, setPassword] = useState('')

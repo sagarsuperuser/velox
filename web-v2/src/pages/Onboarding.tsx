@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -157,6 +158,7 @@ const STEPS: Step[] = [
 ]
 
 export default function OnboardingPage() {
+  usePageTitle('Onboarding')
   const [params, setParams] = useSearchParams()
   const stepParam = params.get('step') || STEPS[0].key
   const stepIndex = useMemo(() => {

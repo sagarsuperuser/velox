@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { api, formatDateTime } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
@@ -35,6 +36,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 const PAGE_SIZE = 25
 
 export default function UsageEventsPage() {
+  usePageTitle('Usage events')
   const [urlState, setUrlState] = useUrlState({
     customer: '',
     meter: '',
@@ -323,7 +325,8 @@ export default function UsageEventsPage() {
             <EmptyState
               icon={Activity}
               title="No usage events yet"
-              description="Ingest events via the API to start tracking usage against your meters."
+              description="Usage events are how metered activity reaches Velox — send them from your backend via the API. Each event needs a meter to land against."
+              action={{ label: 'Set up a meter', to: '/pricing?tab=meters' }}
             />
           </CardContent>
         </Card>

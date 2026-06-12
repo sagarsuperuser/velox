@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Pencil, Trash2, Plus, Star, AlertTriangle } from 'lucide-react'
@@ -10,6 +11,7 @@ import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 import { showApiError } from '@/lib/formErrors'
 
 import { Button } from '@/components/ui/button'
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -54,9 +56,11 @@ const FINAL_ACTION_OPTIONS = [
 ]
 
 export default function DunningPoliciesPage() {
+  usePageTitle('Dunning policies')
   const queryClient = useQueryClient()
   const [editingPolicy, setEditingPolicy] = useState<DunningPolicyWithCount | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<DunningPolicyWithCount | null>(null)
 
   const { data: policiesData, isLoading } = useQuery({
     queryKey: ['dunning-policies'],
@@ -85,13 +89,19 @@ export default function DunningPoliciesPage() {
       toast.error(`${p.assigned_customers} customer(s) assigned — reassign them first`)
       return
     }
-    if (!confirm(`Delete policy "${p.name}"?`)) return
+    setDeleteTarget(p)
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return
     try {
-      await api.deleteDunningPolicy(p.id)
+      await api.deleteDunningPolicy(deleteTarget.id)
       invalidate()
       toast.success('Policy deleted')
     } catch (err) {
       showApiError(err, 'Failed to delete')
+    } finally {
+      setDeleteTarget(null)
     }
   }
 
@@ -178,6 +188,20 @@ export default function DunningPoliciesPage() {
           onSaved={() => { setEditingPolicy(null); invalidate(); toast.success('Policy saved') }}
         />
       )}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete policy &ldquo;{deleteTarget?.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The policy is removed permanently. Customers fall back to the tenant default policy for future failed payments.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep policy</AlertDialogCancel>
+            <Button variant="destructive" onClick={confirmDelete}>Delete policy</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Layout>
   )
 }

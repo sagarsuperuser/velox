@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, Controller } from 'react-hook-form'
@@ -339,6 +340,8 @@ export default function CustomerDetailPage() {
 
   const loading = isLoading
   const error = loadError instanceof Error ? loadError.message : loadError ? String(loadError) : null
+
+  usePageTitle(customer?.display_name)
 
   if (loading) {
     return (

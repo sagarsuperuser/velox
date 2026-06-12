@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Activity, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
@@ -38,11 +39,23 @@ const MAX_BUFFER = 200
 type StreamStatus = 'connecting' | 'live' | 'reconnecting' | 'error'
 
 export default function WebhookEventsPage() {
+  usePageTitle('Webhook events')
   // Buffer of frames keyed by event_id. We dedupe on event_id because the
   // bus can emit two frames for the same event (pending → succeeded), and
   // the snapshot path can race with the first live frame; collapsing in
   // place is what keeps the row from flickering or duplicating.
   const [frames, setFrames] = useState<WebhookEventStreamFrame[]>([])
+  // Resolve customer ids to display names for the tail rows. Bounded
+  // fetch — ids beyond the first page fall back to the raw id (titled).
+  const { data: customersData } = useQuery({
+    queryKey: ['we-customers'],
+    queryFn: () => api.listCustomers('limit=100'),
+  })
+  const customerName = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const c of customersData?.data ?? []) m[c.id] = c.display_name
+    return m
+  }, [customersData])
   const [status, setStatus] = useState<StreamStatus>('connecting')
   const [expanded, setExpanded] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -161,6 +174,7 @@ export default function WebhookEventsPage() {
                   const isExpanded = expanded === frame.event_id
                   return (
                     <FrameRows
+                      customerName={customerName}
                       key={frame.event_id}
                       frame={frame}
                       expanded={isExpanded}
@@ -187,11 +201,13 @@ function FrameRows({
   expanded,
   onToggle,
   onReplay,
+  customerName,
 }: {
   frame: WebhookEventStreamFrame
   expanded: boolean
   onToggle: () => void
   onReplay: () => void
+  customerName: Record<string, string>
 }) {
   return (
     <>
@@ -213,8 +229,11 @@ function FrameRows({
             {frame.event_id}
           </div>
         </TableCell>
-        <TableCell className="font-mono text-sm text-muted-foreground">
-          {frame.customer_id || '\u2014'}
+        <TableCell className="text-sm text-muted-foreground">
+          {frame.customer_id
+            ? (customerName[frame.customer_id]
+              ?? <span className="font-mono" title={frame.customer_id}>{frame.customer_id.slice(0, 12)}…</span>)
+            : '\u2014'}
         </TableCell>
         <TableCell>
           <StatusBadge status={frame.status} />

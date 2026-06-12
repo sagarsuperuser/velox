@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -103,6 +104,7 @@ function SortableHead({
 }
 
 export default function CustomersPage() {
+  usePageTitle('Customers')
   const [showCreate, setShowCreate] = useState(false)
   const [urlState, setUrlState] = useUrlState({
     search: '',

@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
@@ -123,6 +124,7 @@ function entryTypeVariant(type: string): 'default' | 'secondary' | 'destructive'
 }
 
 export default function CreditsPage() {
+  usePageTitle('Credits')
   const queryClient = useQueryClient()
   const ledgerPageSize = 25
 

@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -67,6 +68,7 @@ function SortableHead({
 }
 
 export default function SubscriptionsPage() {
+  usePageTitle('Subscriptions')
   const [showCreate, setShowCreate] = useState(false)
   const [urlState, setUrlState] = useUrlState({
     search: '',
