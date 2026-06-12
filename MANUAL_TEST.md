@@ -1104,6 +1104,7 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 - [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions.
 - [ ] Destructive rows have red left border. Expand → metadata + "View" link.
 - [ ] Filters: resource type, action, date range. Export CSV → all entries.
+- [ ] **Export honors the tenant timezone (2026-06-12)**: on a non-UTC tenant (e.g. IST), set a date-range filter so a row sits within an hour of a day boundary; the exported CSV contains exactly the rows shown on screen for that range — no edge row silently dropped from (or added to) the export. Pre-fix the export anchored dates at UTC while the list used tenant-TZ, so the windows diverged by the UTC offset.
 - [ ] **Date filter accepts both formats**: `?date_from=2026-01-01&date_to=2026-12-31` (bare YYYY-MM-DD) and `?date_from=2026-01-01T00:00:00Z` (RFC3339) both work. Invalid input (`?date_from=garbage`) → 400 with field-level error. Same shared parser (`internal/api/timefilter`) as the export + usage endpoints.
 
 ## FLOW P2A: Audit log — customer-initiated + Tier 2 coverage
