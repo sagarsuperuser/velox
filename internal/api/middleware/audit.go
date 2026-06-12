@@ -29,13 +29,13 @@ type AuditSettingsLookup interface {
 // tested without a live database. Production uses the postgres-backed
 // implementation below.
 type auditWriter interface {
-	Write(ctx context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error
+	Write(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel, path string) error
 }
 
 type postgresAuditWriter struct{ db *postgres.DB }
 
-func (p *postgresAuditWriter) Write(ctx context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
-	return writeAudit(ctx, p.db, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path)
+func (p *postgresAuditWriter) Write(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel, path string) error {
+	return writeAudit(ctx, p.db, tenantID, action, resourceType, resourceID, resourceLabel, path)
 }
 
 // bufferedResponse captures status, headers, and body so the middleware can
@@ -149,7 +149,7 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 				resourceID = extractID(buf.body.Bytes())
 			}
 
-			if err := writer.Write(r.Context(), tenantID, auth.KeyID(r.Context()),
+			if err := writer.Write(r.Context(), tenantID,
 				action, resourceType, resourceID, resourceLabel, r.URL.Path); err != nil {
 				RecordAuditWriteError(tenantID)
 
@@ -356,7 +356,7 @@ func canonicalResourceType(s string) string {
 
 // writeAudit persists an audit entry synchronously. Returns nil on success
 // or the first DB error — the caller decides whether to fail the request.
-func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
+func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, action, resourceType, resourceID, resourceLabel, path string) error {
 	// Use a detached timeout context so a client disconnect on the parent request
 	// does not abort the audit write mid-flight. 3s is generous for a single INSERT.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), 3*time.Second)
@@ -371,11 +371,10 @@ func writeAudit(parentCtx context.Context, db *postgres.DB, tenantID, actorID, a
 	id := postgres.NewID("vlx_aud")
 	metaJSON, _ := json.Marshal(map[string]string{"path": path})
 
-	actorType := "api_key"
-	if actorID == "" {
-		actorType = "system"
-		actorID = "system"
-	}
+	// Resolve actor from the original request ctx (session user / api key /
+	// customer / system) — same shared helper Logger.Log uses, so a dashboard
+	// operator on a session cookie records actor_type='user', not 'system'.
+	actorType, actorID := audit.ResolveActor(parentCtx)
 
 	ipAddress := audit.ClientIP(parentCtx)
 	requestID := chimw.GetReqID(parentCtx)

@@ -1099,6 +1099,8 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 ## FLOW P2: Audit log
 
 - [ ] Several actions (create customer, grant credits, void invoice, change plan) → all logged.
+- [ ] **Dashboard actions are attributed to the operator, not "System" (2026-06-12)**: any action taken from the signed-in dashboard records `actor_type=user` with the operator's user id (Actor column shows the user, not "System"). Only genuine background work (engine auto-cancel, scheduler) records `actor_type=system`. API-key (Bearer) callers still record `actor_type=api_key` with the key name. Pre-fix every dashboard click logged as "System".
+- [ ] **Append-only is TRUNCATE-proof (migration 0115)**: `TRUNCATE audit_log` (even as the app role / with `app.bypass_rls='on'`) fails with `audit_log is append-only; TRUNCATE is not permitted` — matching the existing UPDATE/DELETE block. Rows remain intact.
 - [ ] Stat cards: Total, Today, Unique Actors, Destructive Actions.
 - [ ] Destructive rows have red left border. Expand → metadata + "View" link.
 - [ ] Filters: resource type, action, date range. Export CSV → all entries.

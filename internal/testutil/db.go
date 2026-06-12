@@ -79,8 +79,14 @@ func cleanDB(t *testing.T, pool *sql.DB) {
 	// Truncate all data tables. Uses DO block to skip tables that don't exist
 	// yet (e.g., on first run before migrations). This is safe because
 	// TRUNCATE CASCADE handles FK ordering.
+	//
+	// audit_log carries a statement-level BEFORE TRUNCATE trigger (migration
+	// 0115) that blocks TRUNCATE to keep the log tamper-evident; disable
+	// triggers for this transaction-scoped reset (replica mode, reverts at
+	// block end) so the harness can still wipe it between tests.
 	_, err := pool.ExecContext(context.Background(), `
 		DO $$ BEGIN
+			PERFORM set_config('session_replication_role', 'replica', true);
 			TRUNCATE
 				invoice_dunning_events, invoice_dunning_runs, dunning_policies,
 				invoice_line_items, invoices, billed_entries, usage_events,

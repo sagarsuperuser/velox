@@ -61,6 +61,15 @@ func TestAuditLog_AppendOnly(t *testing.T) {
 			sql:  `DELETE FROM audit_log WHERE id = $1`,
 			args: []any{auditID},
 		},
+		{
+			// 0115: row-level triggers never fire on TRUNCATE, so without a
+			// statement-level BEFORE TRUNCATE trigger the app role could wipe
+			// the entire log in one statement. Runs inside the rolled-back
+			// TxBypass tx, so a regression here cannot actually erase data.
+			name: "TRUNCATE blocked",
+			sql:  `TRUNCATE audit_log`,
+			args: nil,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

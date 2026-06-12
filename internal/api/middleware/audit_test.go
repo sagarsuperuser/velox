@@ -19,7 +19,7 @@ type stubAuditWriter struct {
 	calls int
 }
 
-func (s *stubAuditWriter) Write(_ context.Context, _, _, _, _, _, _, _ string) error {
+func (s *stubAuditWriter) Write(_ context.Context, _, _, _, _, _, _ string) error {
 	s.calls++
 	return s.err
 }
@@ -180,14 +180,14 @@ func TestAudit_Non2xx_SkipsAudit(t *testing.T) {
 // recordingAuditWriter captures the args of each Write so tests can assert
 // on what the middleware persisted (resource_id in particular).
 type recordingAuditWriter struct {
-	tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string
-	calls                                                                    int
+	tenantID, action, resourceType, resourceID, resourceLabel, path string
+	calls                                                           int
 }
 
-func (r *recordingAuditWriter) Write(_ context.Context, tenantID, actorID, action, resourceType, resourceID, resourceLabel, path string) error {
+func (r *recordingAuditWriter) Write(_ context.Context, tenantID, action, resourceType, resourceID, resourceLabel, path string) error {
 	r.calls++
-	r.tenantID, r.actorID, r.action, r.resourceType, r.resourceID, r.resourceLabel, r.path =
-		tenantID, actorID, action, resourceType, resourceID, resourceLabel, path
+	r.tenantID, r.action, r.resourceType, r.resourceID, r.resourceLabel, r.path =
+		tenantID, action, resourceType, resourceID, resourceLabel, path
 	return nil
 }
 
