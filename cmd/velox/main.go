@@ -388,8 +388,20 @@ func deriveAppURL(adminURL string) string {
 func openAppPool(cfg config.Config, adminPool *sql.DB) (*sql.DB, func()) {
 	noop := func() {}
 
+	// Outside local dev, falling back to the admin pool means RLS is NOT
+	// enforced — every request runs as the table owner and bypasses tenant
+	// isolation on every table (the most likely self-host misconfig: a
+	// superuser DATABASE_URL + no velox_app role). Fail closed rather than
+	// silently serve cross-tenant data. Local dev keeps warn-and-continue
+	// (single operator, single tenant, often a superuser URL).
+	failClosed := cfg.Env != "local"
+
 	appURL := deriveAppURL(cfg.DB.URL)
 	if appURL == "" || appURL == cfg.DB.URL {
+		if failClosed {
+			slog.Error("refusing to start: could not derive a velox_app role URL from DATABASE_URL, so RLS would not be enforced and tenants would not be isolated. Create the velox_app role and point DATABASE_URL at credentials swappable to velox_app — see docs/self-host.md.", "env", cfg.Env)
+			os.Exit(1)
+		}
 		slog.Warn("running with admin database connection — RLS NOT enforced. Create the velox_app role.")
 		return adminPool, noop
 	}
@@ -398,6 +410,10 @@ func openAppPool(cfg config.Config, adminPool *sql.DB) (*sql.DB, func()) {
 	appCfg.URL = appURL
 	appPool, err := config.OpenPostgres(appCfg)
 	if err != nil {
+		if failClosed {
+			slog.Error("refusing to start: could not open the velox_app database connection, so RLS would not be enforced and tenants would not be isolated. Ensure the velox_app role exists with LOGIN — see docs/self-host.md.", "error", err, "env", cfg.Env)
+			os.Exit(1)
+		}
 		slog.Warn("could not open app database connection, falling back to admin", "error", err)
 		return adminPool, noop
 	}

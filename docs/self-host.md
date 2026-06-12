@@ -59,6 +59,24 @@ For your own VM:
 - Version: 16.x
 - Extensions: none required (Velox uses standard `gen_random_bytes`,
   `LATERAL`, RLS — all built-in).
+- **`velox_app` role (required for tenant isolation).** Velox enforces
+  multi-tenant isolation with Row-Level Security, which only applies to a
+  **non-owner** role. At request time it connects as `velox_app`, derived from
+  `DATABASE_URL` by swapping the credentials to `velox_app`/`velox_app`. The
+  compose path creates this role automatically
+  ([`deploy/compose/postgres-init.sql`](../deploy/compose/postgres-init.sql));
+  on your own Postgres you must create it:
+
+  ```sql
+  CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
+  GRANT velox_app TO <the role in your DATABASE_URL>;
+  -- migrations GRANT the needed table privileges to velox_app
+  ```
+
+  **With `APP_ENV=staging` or `production`, Velox refuses to start** if it
+  can't open the `velox_app` pool — running as the table owner would bypass
+  RLS and leak data across tenants. (In `local` it warns and continues, since
+  a single-tenant dev box often uses one superuser URL.)
 - Backups: take a `pg_dump` snapshot on whatever cadence your data loss
   tolerance allows. Stripe's webhook outbox + Velox's audit log are the
   two surfaces where lost rows are most expensive; both are covered by a
@@ -87,9 +105,9 @@ Optional:
 | Var | Default | Purpose |
 |---|---|---|
 | `RUN_MIGRATIONS_ON_BOOT` | `false` | Run migrations on startup |
-| `APP_ENV` | `dev` | `dev`/`staging`/`production`; gates cookie `Secure` flag |
-| `VELOX_DASHBOARD_URL` | `http://localhost:5173` | Used in password-reset and invite emails |
-| `SMTP_HOST` / `SMTP_PORT` | `localhost:1025` | Outbound email; default points at mailpit |
+| `APP_ENV` | `local` | `local`/`staging`/`production`. Gates the cookie `Secure` flag and RLS fail-closed boot — `staging`/`production` refuse to start without the `velox_app` role (see Postgres above) |
+| `DASHBOARD_BASE_URL` | _(unset)_ | Canonical dashboard origin for password-reset links. **Unset disables password-reset emails** — the origin is never derived from request headers (host-header poisoning). Set to e.g. `http://localhost:5173` in dev |
+| `SMTP_HOST` / `SMTP_PORT` | _(unset)_ | Outbound email relay. Unset → emails are not sent (`ErrSMTPNotConfigured`). The compose path points these at mailpit (`localhost:1025`) |
 
 Stripe is configured per-tenant via the dashboard (`POST /v1/settings/stripe`), not env vars — each tenant connects their own Stripe account.
 
