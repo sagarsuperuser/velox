@@ -313,7 +313,6 @@ export default function MeterDetailPage() {
                   <TableHead className="text-xs font-medium">Dimension match</TableHead>
                   <TableHead className="text-xs font-medium w-40">Aggregation</TableHead>
                   <TableHead className="text-xs font-medium">Rating rule</TableHead>
-                  <TableHead className="text-xs font-medium w-44">Created</TableHead>
                   <TableHead className="text-xs font-medium w-12 text-right" />
                 </TableRow>
               </TableHeader>
@@ -346,7 +345,6 @@ export default function MeterDetailPage() {
                           <span className="font-mono text-xs">{rule.rating_rule_version_id.slice(0, 16)}…</span>
                         )}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{formatDateTime(rule.created_at)}</TableCell>
                       <TableCell className="text-right">
                         <Button
                           variant="ghost"

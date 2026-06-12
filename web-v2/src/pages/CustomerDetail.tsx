@@ -863,7 +863,7 @@ export default function CustomerDetailPage() {
       />
 
       {/* Subscriptions & Invoices grid */}
-      <div className="grid grid-cols-2 gap-6 mt-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
         {/* Subscriptions — compact one-line rows, sorted by status
             priority (trialing → active → past_due). Terminal subs
             (canceled / ended) collapse under a toggle so they don't
@@ -961,7 +961,7 @@ export default function CustomerDetailPage() {
             this isn't an industry-converging pattern. Kept for the
             operator-audit gap it fills ("did the customer get the
             dunning warning?"). */}
-        <Card>
+        <Card className="lg:col-span-2">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">
@@ -1811,7 +1811,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
             </div>
 
             <div className="rounded-md border border-border overflow-hidden">
-              <div className="grid grid-cols-[1fr_120px_140px_160px_44px] gap-0 bg-muted/40 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <div className="grid grid-cols-[1fr_150px_140px_160px_44px] gap-0 bg-muted/40 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 <div className="px-3 py-2">Description</div>
                 <div className="px-3 py-2">Type</div>
                 <div className="px-3 py-2">Qty</div>
@@ -1827,7 +1827,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
                     ? Math.round(qty) * Math.round(unit)
                     : 0
                   return (
-                    <div key={idx} className="grid grid-cols-[1fr_120px_140px_160px_44px] items-start gap-0">
+                    <div key={idx} className="grid grid-cols-[1fr_150px_140px_160px_44px] items-start gap-0">
                       <div className="px-3 py-2 space-y-1">
                         <Input
                           placeholder="Implementation services"
