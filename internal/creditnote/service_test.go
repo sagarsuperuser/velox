@@ -14,6 +14,10 @@ import (
 type memStore struct {
 	notes     map[string]domain.CreditNote
 	lineItems map[string][]domain.CreditNoteLineItem
+	// lastLockLines records the lines passed INTO CreateUnderInvoiceLock —
+	// the runtime pin that lines travel in the same call (one tx) as the
+	// header, not in a post-commit loop (the orphan-CN shape).
+	lastLockLines []domain.CreditNoteLineItem
 }
 
 func newMemStore() *memStore {
@@ -32,7 +36,8 @@ func (m *memStore) Create(_ context.Context, tenantID string, cn domain.CreditNo
 	return cn, nil
 }
 
-func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	m.lastLockLines = lines
 	var existing []domain.CreditNote
 	for _, cn := range m.notes {
 		if cn.TenantID == tenantID && cn.InvoiceID == invoiceID {
@@ -43,7 +48,18 @@ func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoice
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
-	return m.Create(ctx, tenantID, cn)
+	created, err := m.Create(ctx, tenantID, cn)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	// Lines land with the header, mirroring the real store's single-tx write.
+	for _, line := range lines {
+		line.ID = fmt.Sprintf("vlx_cnli_%d", len(m.lineItems[created.ID])+1)
+		line.TenantID = tenantID
+		line.CreditNoteID = created.ID
+		m.lineItems[created.ID] = append(m.lineItems[created.ID], line)
+	}
+	return created, nil
 }
 
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.CreditNote, error) {
@@ -138,15 +154,23 @@ func (m *memStore) SetTaxTransaction(_ context.Context, tenantID, id, taxTransac
 	return nil
 }
 
-func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
-	item.ID = fmt.Sprintf("vlx_cnli_%d", len(m.lineItems[item.CreditNoteID])+1)
-	item.TenantID = tenantID
-	m.lineItems[item.CreditNoteID] = append(m.lineItems[item.CreditNoteID], item)
-	return item, nil
-}
-
 func (m *memStore) ListLineItems(_ context.Context, _, creditNoteID string) ([]domain.CreditNoteLineItem, error) {
 	return m.lineItems[creditNoteID], nil
+}
+
+// fakeCNNumbers is the test NumberGenerator — the service now REQUIRES one
+// (no synthesized fallback), matching the invoice-numbering contract.
+type fakeCNNumbers struct {
+	n   int
+	err error
+}
+
+func (f *fakeCNNumbers) NextCreditNoteNumber(_ context.Context, _ string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	f.n++
+	return fmt.Sprintf("CN-TEST-%04d", f.n), nil
 }
 
 type memInvoiceReader struct {
@@ -191,6 +215,7 @@ func TestCreate_CreditNote(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	t.Run("valid credit note", func(t *testing.T) {
@@ -456,7 +481,9 @@ func TestCreate_ExplicitAllocation(t *testing.T) {
 	mkSvc := func(inv domain.Invoice) (*Service, *memStore) {
 		store := newMemStore()
 		invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
-		return NewService(store, invoices, nil), store
+		svc := NewService(store, invoices, nil)
+		svc.SetNumberGenerator(&fakeCNNumbers{})
+		return svc, store
 	}
 	ctx := context.Background()
 
@@ -668,6 +695,7 @@ func TestCreate_SmartBucketTaxResidual(t *testing.T) {
 	store := newMemStore()
 	invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	// CN-A: $2.60 — proportional tax floor(1260*260/8260) = floor(39.66) = 39c.
@@ -724,6 +752,7 @@ func TestCreate_PartialCNUsesPureProportional(t *testing.T) {
 	store := newMemStore()
 	invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	// Single $40 CN — doesn't exhaust the $82.60 invoice. Should use
@@ -751,6 +780,7 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 		},
 	}
 	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	cn, _ := svc.Create(ctx, "t1", CreateInput{
@@ -802,4 +832,105 @@ func TestIssueAndVoid_CreditNote(t *testing.T) {
 			t.Errorf("status: got %q, want voided", voided.Status)
 		}
 	})
+}
+
+// TestCreate_NumberAllocatorErrorAborts locks the no-silent-fallbacks fix:
+// a failed credit-note-number allocation must ABORT Create — the previous
+// behavior swallowed the error and synthesized a timestamp-based number
+// (CN-YYYYMM-<unixnano%1e6>), which is non-monotonic and collision-prone.
+// A duplicate document number corrupts accounting; a failed Create retries.
+func TestCreate_NumberAllocatorErrorAborts(t *testing.T) {
+	store := newMemStore()
+	invoices := &memInvoiceReader{
+		invoices: map[string]domain.Invoice{
+			"inv_1": {
+				ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+				Status: domain.InvoiceFinalized, Currency: "USD",
+				TotalAmountCents: 10000, AmountDueCents: 10000,
+			},
+		},
+	}
+	in := CreateInput{
+		InvoiceID: "inv_1", Reason: "adjustment",
+		Lines: []CreditLineInput{{Description: "adj", Quantity: 1, UnitAmountCents: 5000}},
+	}
+
+	t.Run("allocator error → abort, nothing persisted", func(t *testing.T) {
+		svc := NewService(store, invoices, nil)
+		svc.SetNumberGenerator(&fakeCNNumbers{err: fmt.Errorf("sequence unavailable")})
+		_, err := svc.Create(context.Background(), "t1", in)
+		if err == nil {
+			t.Fatal("expected Create to fail when the number allocator errors (no synthesized fallback)")
+		}
+		if !strings.Contains(err.Error(), "allocate credit note number") {
+			t.Errorf("error %q: want the wrapped allocator error", err)
+		}
+		if len(store.notes) != 0 {
+			t.Errorf("store has %d notes, want 0 — a failed allocation must not persist a credit note", len(store.notes))
+		}
+	})
+
+	t.Run("generator unwired → loud config error", func(t *testing.T) {
+		svc := NewService(store, invoices, nil)
+		_, err := svc.Create(context.Background(), "t1", in)
+		if err == nil || !strings.Contains(err.Error(), "number generator not wired") {
+			t.Fatalf("error = %v, want the not-wired config error", err)
+		}
+	})
+}
+
+// TestCreate_LinesCommitWithHeader pins the atomicity refactor's WIRE SHAPE
+// at runtime: the line items must arrive INSIDE the CreateUnderInvoiceLock
+// call (one transaction with the header) — asserted via the store spy — not
+// in a per-line loop after the header committed (the shape that left an
+// orphan CN with a non-zero total and no lines). The single-transaction
+// guarantee itself is structural (insertLineItemTx is only reachable inside
+// the lock's tx) and enforced at compile time by the Store interface.
+func TestCreate_LinesCommitWithHeader(t *testing.T) {
+	store := newMemStore()
+	invoices := &memInvoiceReader{
+		invoices: map[string]domain.Invoice{
+			"inv_1": {
+				ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+				Status: domain.InvoiceFinalized, Currency: "USD",
+				TotalAmountCents: 10000, AmountDueCents: 10000,
+			},
+		},
+	}
+	svc := NewService(store, invoices, nil)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
+
+	cn, err := svc.Create(context.Background(), "t1", CreateInput{
+		InvoiceID: "inv_1", Reason: "partial credit",
+		Lines: []CreditLineInput{
+			{Description: "line a", Quantity: 2, UnitAmountCents: 1000},
+			{Description: "line b", Quantity: 1, UnitAmountCents: 3000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The runtime pin: the two lines were handed to the lock call itself.
+	// Pre-fix this slice was empty — lines were inserted in a loop AFTER the
+	// header's transaction committed.
+	if len(store.lastLockLines) != 2 {
+		t.Fatalf("lines passed into CreateUnderInvoiceLock = %d, want 2 (lines must commit with the header)", len(store.lastLockLines))
+	}
+	lines, err := store.ListLineItems(context.Background(), "t1", cn.ID)
+	if err != nil {
+		t.Fatalf("ListLineItems: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want 2 (committed with the header)", len(lines))
+	}
+	var sum int64
+	for _, l := range lines {
+		if l.CreditNoteID != cn.ID {
+			t.Errorf("line %s: credit_note_id %q, want %q", l.ID, l.CreditNoteID, cn.ID)
+		}
+		sum += l.AmountCents
+	}
+	if sum != cn.TotalCents || cn.TotalCents != 5000 {
+		t.Errorf("Σ line amounts %d vs CN total %d, want both 5000 (gross lines sum to Credit Total)", sum, cn.TotalCents)
+	}
 }

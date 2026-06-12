@@ -57,6 +57,7 @@ func setupRefundSvc(t *testing.T) (*Service, *memStore, *memInvoiceReader, *fake
 	}
 	refunder := &fakeRefunder{}
 	svc := NewService(store, invoices, refunder)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	return svc, store, invoices, refunder
 }
 

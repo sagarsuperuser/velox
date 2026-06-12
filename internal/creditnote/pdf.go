@@ -384,7 +384,17 @@ func RenderPDF(
 		y += 16
 	}
 
-	totalsRow("Subtotal", cnFormatCents(cn.SubtotalCents, symbol), false, 80, 80, 80, 40, 40, 40)
+	// Line amounts above are GROSS (tax-inclusive — ADR-048 anchors the
+	// reversal on the gross the customer paid), so they sum to Credit Total,
+	// not to this net figure. "Subtotal" implied sum-of-lines and made the
+	// document look like it didn't add up ($110.00 line vs $100.00
+	// "Subtotal"); label the net row for what it is instead — and only
+	// render it when there IS tax to exclude (or a reverse-charge row to
+	// explain). On a zero-tax CN net == gross, and printing the same figure
+	// twice ("Total excluding tax" then "Credit Total") reads as a bug.
+	if cn.TaxAmountCents > 0 || orig.ReverseCharge {
+		totalsRow("Total excluding tax", cnFormatCents(cn.SubtotalCents, symbol), false, 80, 80, 80, 40, 40, 40)
+	}
 
 	if cn.TaxAmountCents > 0 {
 		taxLabel := "Tax"

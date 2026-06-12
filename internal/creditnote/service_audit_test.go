@@ -38,6 +38,7 @@ func TestIssue_ReDerivesAllocationWhenInvoicePaidAfterCreate(t *testing.T) {
 	}
 	granter := &fakeCreditGranter{}
 	svc := NewService(store, invoices, nil, granter)
+	svc.SetNumberGenerator(&fakeCNNumbers{})
 	ctx := context.Background()
 
 	// Create the CN while the invoice is still unpaid → allocation frozen
@@ -110,6 +111,7 @@ func TestVoid_RefusesCreditNoteWithExecutedRefund(t *testing.T) {
 		store := newMemStore()
 		invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{}}
 		svc := NewService(store, invoices, nil)
+		svc.SetNumberGenerator(&fakeCNNumbers{})
 
 		// Draft CN that already carries an executed Stripe refund.
 		cn, err := store.Create(ctx, "t1", domain.CreditNote{
@@ -149,6 +151,7 @@ func TestVoid_RefusesCreditNoteWithExecutedRefund(t *testing.T) {
 		store := newMemStore()
 		invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{}}
 		svc := NewService(store, invoices, nil)
+		svc.SetNumberGenerator(&fakeCNNumbers{})
 
 		cn, err := store.Create(ctx, "t1", domain.CreditNote{
 			InvoiceID:         "inv_2",
@@ -173,6 +176,7 @@ func TestVoid_RefusesCreditNoteWithExecutedRefund(t *testing.T) {
 		store := newMemStore()
 		invoices := &memInvoiceReader{invoices: map[string]domain.Invoice{}}
 		svc := NewService(store, invoices, nil)
+		svc.SetNumberGenerator(&fakeCNNumbers{})
 
 		cn, err := store.Create(ctx, "t1", domain.CreditNote{
 			InvoiceID:         "inv_3",

@@ -42,11 +42,17 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 // a transaction-scoped advisory lock keyed on (tenant, invoice), lists the
 // invoice's existing credit notes inside the same transaction, hands them to
 // `build` (which runs the over-credit / over-refund cap checks and returns the
-// credit note to insert), and inserts it — all atomically. A concurrent Create
-// for the same invoice blocks on the lock until this transaction commits, then
-// sees this credit note in its own list, so the caps can't be bypassed by a
-// time-of-check/time-of-use race. The lock releases automatically on commit.
-func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+// credit note to insert), and inserts the note PLUS its line items — all in
+// the one transaction. A concurrent Create for the same invoice blocks on the
+// lock until this transaction commits, then sees this credit note in its own
+// list, so the caps can't be bypassed by a time-of-check/time-of-use race.
+// The lock releases automatically on commit.
+//
+// Lines commit with the header or not at all. Pre-fix the header committed
+// here and each line was inserted afterwards in its own transaction — a crash
+// or failure between them left an orphan credit note with a non-zero total
+// and zero lines, which Issue() would still act on.
+func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -70,6 +76,12 @@ func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, in
 	created, err := s.insertCreditNoteTx(ctx, tx, tenantID, cn)
 	if err != nil {
 		return domain.CreditNote{}, err
+	}
+	for i, line := range lines {
+		line.CreditNoteID = created.ID
+		if _, err := s.insertLineItemTx(ctx, tx, tenantID, line); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("create line item %d: %w", i+1, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.CreditNote{}, err
@@ -390,16 +402,13 @@ func (s *PostgresStore) UpdateAllocation(ctx context.Context, tenantID, id strin
 	return tx.Commit()
 }
 
-func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CreditNoteLineItem{}, err
-	}
-	defer postgres.Rollback(tx)
-
+// insertLineItemTx writes one line item inside the caller's transaction —
+// only ever called from CreateUnderInvoiceLock so a line can't exist without
+// its committed header (and vice versa).
+func (s *PostgresStore) insertLineItemTx(ctx context.Context, tx *sql.Tx, tenantID string, item domain.CreditNoteLineItem) (domain.CreditNoteLineItem, error) {
 	id := postgres.NewID("vlx_cnli")
 	now := clock.Now(ctx)
-	_, err = tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		INSERT INTO credit_note_line_items (id, credit_note_id, tenant_id,
 			invoice_line_item_id, description, quantity, unit_amount_cents, amount_cents, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -411,9 +420,6 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 	item.ID = id
 	item.TenantID = tenantID
 	item.CreatedAt = now
-	if err := tx.Commit(); err != nil {
-		return domain.CreditNoteLineItem{}, err
-	}
 	return item, nil
 }
 

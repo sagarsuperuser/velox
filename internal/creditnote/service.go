@@ -8,7 +8,6 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
-	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -173,13 +172,28 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		subtotal += line.Quantity * line.UnitAmountCents
 	}
 
+	// Line rows are built up front and committed in the SAME transaction as
+	// the header (CreateUnderInvoiceLock) — pre-fix they were inserted one by
+	// one after the header committed, so a partial failure left an orphan
+	// credit note with a non-zero total and zero lines.
+	lineRows := make([]domain.CreditNoteLineItem, 0, len(input.Lines))
+	for _, line := range input.Lines {
+		lineRows = append(lineRows, domain.CreditNoteLineItem{
+			InvoiceLineItemID: line.InvoiceLineItemID,
+			Description:       line.Description,
+			Quantity:          line.Quantity,
+			UnitAmountCents:   line.UnitAmountCents,
+			AmountCents:       line.Quantity * line.UnitAmountCents,
+		})
+	}
+
 	// Build + insert the credit note under a per-invoice advisory lock so the
 	// over-credit / over-refund caps are evaluated against a snapshot that
 	// can't change underneath us. Two concurrent Create calls for the same
 	// invoice serialize on the lock: the second sees the first's note in
 	// `existingCNs` and is capped correctly, closing the TOCTOU where both
 	// read the same pre-state and both inserted past the invoice total.
-	cn, err := s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
+	cn, err := s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, lineRows, func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
 		// Validate: total credit notes cannot exceed invoice total.
 		// For unpaid invoices, also cap at current amount_due.
 		var existingTotal, existingTaxReversed int64
@@ -207,20 +221,6 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.CreditNote{}, err
 	}
 
-	// Create line items
-	for _, line := range input.Lines {
-		_, err := s.store.CreateLineItem(ctx, tenantID, domain.CreditNoteLineItem{
-			CreditNoteID:      cn.ID,
-			InvoiceLineItemID: line.InvoiceLineItemID,
-			Description:       line.Description,
-			Quantity:          line.Quantity,
-			UnitAmountCents:   line.UnitAmountCents,
-			AmountCents:       line.Quantity * line.UnitAmountCents,
-		})
-		if err != nil {
-			return domain.CreditNote{}, fmt.Errorf("create line item: %w", err)
-		}
-	}
 	return cn, nil
 }
 
@@ -360,17 +360,21 @@ func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input Cr
 		}
 	}
 
-	now := clock.Now(ctx)
-	var cnNumber string
-	if s.numbers != nil {
-		num, err := s.numbers.NextCreditNoteNumber(ctx, tenantID)
-		if err == nil && num != "" {
-			cnNumber = num
-		}
+	// Credit-note numbers are a strictly monotonic per-tenant sequence, same
+	// contract as invoice numbers. No fallback: the previous synthesized
+	// CN-YYYYMM-<unixnano%1e6> number was non-monotonic and collision-prone,
+	// and swallowing the allocator error hid the misconfiguration — a
+	// duplicate document number corrupts accounting downstream, while a
+	// failed Create just retries.
+	if s.numbers == nil {
+		return domain.CreditNote{}, fmt.Errorf("credit-note number generator not wired (call SetNumberGenerator)")
+	}
+	cnNumber, err := s.numbers.NextCreditNoteNumber(ctx, tenantID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("allocate credit note number: %w", err)
 	}
 	if cnNumber == "" {
-		// Fallback if number generator not configured
-		cnNumber = fmt.Sprintf("CN-%s-%06d", now.Format("200601"), now.UnixNano()%1000000)
+		return domain.CreditNote{}, fmt.Errorf("credit-note number generator returned an empty number")
 	}
 
 	return domain.CreditNote{
