@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -471,7 +472,37 @@ func (s *Service) RetryAdvance(ctx context.Context, tenantID, id string) (domain
 // CatchupTimeout (10 min, set on the worker's ctx) bounds the total
 // operation. The engine's per-sub safety counter (maxPeriodsPerSubPerCall)
 // is the inner ceiling.
-func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) error {
+func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
+	// A panic anywhere in the catchup (a nil-deref in one of the billing
+	// phases, etc.) must not strand the clock at status='advancing' —
+	// that state has no operator exit: Advance requires 'ready' and
+	// Retry advance requires 'internal_failure', so a wedged clock is
+	// stuck until someone hand-edits the row. The worker's recover (and
+	// chi's, on the inline path) only saves the process; neither flips
+	// the clock. Convert the panic into the same internal_failure flip
+	// the error path below takes — on a detached ctx, since the panic
+	// may itself stem from ctx expiry — and return it as an error so
+	// callers log it once. Reason text stays generic: panic strings
+	// carry Go internals the dashboard banner must not leak (ADR-026).
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("test-clock catchup panicked",
+				"clock_id", job.ClockID,
+				"tenant_id", job.TenantID,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			reason := errs.SanitizeForOperator(fmt.Errorf("internal error during catchup"), job.ClockID)
+			if _, ferr := s.store.MarkFailed(failCtx, job.TenantID, job.ClockID, reason); ferr != nil {
+				slog.Error("test clock: failed to mark clock as failed after catchup panic",
+					"clock_id", job.ClockID, "panic", r, "mark_err", ferr)
+			}
+			err = fmt.Errorf("catchup panicked: %v", r)
+		}
+	}()
+
 	if s.billing == nil {
 		// No billing wired — just complete the state transition.
 		// Used by narrow unit tests that exercise the state machine
