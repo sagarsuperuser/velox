@@ -45,6 +45,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 
 const statusVariant = statusBadgeVariant
 
@@ -401,14 +402,7 @@ export default function InvoiceDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Link to="/invoices" className="hover:text-foreground transition-colors">Invoices</Link>
-          <span>/</span>
-          <span>Loading...</span>
-        </div>
-        <div className="flex justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
+        <DetailSkeleton to="/invoices" parentLabel="Invoices" />
       </Layout>
     )
   }
@@ -490,7 +484,7 @@ export default function InvoiceDetailPage() {
             if (!taxBlocked) {
               return (
                 <Button size="sm" onClick={() => finalizeMutation.mutate()} disabled={acting}>
-                  Finalize
+                  {finalizeMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Finalizing…</> : 'Finalize'}
                 </Button>
               )
             }
@@ -517,7 +511,7 @@ export default function InvoiceDetailPage() {
               </Tooltip>
             ) : (
               <Button size="sm" onClick={() => collectMutation.mutate()} disabled={acting}>
-                Collect Payment
+                {collectMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Collecting…</> : 'Collect Payment'}
               </Button>
             )
           )}

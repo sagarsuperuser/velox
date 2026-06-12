@@ -37,6 +37,7 @@ import { Loader2, Pencil, CreditCard, Archive, Wand2, FilePlus2, Plus, Trash2, C
 import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 import { Combobox } from '@/components/Combobox'
 import {
   COUNTRIES,
@@ -342,14 +343,7 @@ export default function CustomerDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Link to="/customers" className="hover:text-foreground transition-colors">Customers</Link>
-          <span>/</span>
-          <span>Loading...</span>
-        </div>
-        <div className="flex justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
+        <DetailSkeleton to="/customers" parentLabel="Customers" />
       </Layout>
     )
   }
@@ -819,7 +813,7 @@ export default function CustomerDetailPage() {
                           onClick={() => handleSetPMDefault(pm.id)}
                           disabled={pmActionLoading === pm.id}
                         >
-                          Set as default
+                          {pmActionLoading === pm.id ? <><Loader2 size={14} className="animate-spin mr-1.5" />Updating…</> : 'Set as default'}
                         </Button>
                       )}
                       <AlertDialog>
@@ -832,7 +826,7 @@ export default function CustomerDetailPage() {
                             />
                           }
                         >
-                          <Trash2 size={14} />
+                          {pmActionLoading === pm.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>

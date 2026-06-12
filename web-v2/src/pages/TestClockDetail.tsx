@@ -7,6 +7,7 @@ import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/ap
 import { showApiError } from '@/lib/formErrors'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
+import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -133,9 +134,7 @@ export default function TestClockDetailPage() {
   if (clockQ.isLoading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="animate-spin" />
-        </div>
+        <DetailSkeleton to="/test-clocks" parentLabel="Test Clocks" />
       </Layout>
     )
   }

@@ -1,10 +1,11 @@
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 
 interface DetailBreadcrumbProps {
   to: string
   parentLabel: string
-  currentLabel: string
+  currentLabel: ReactNode
 }
 
 export function DetailBreadcrumb({ to, parentLabel, currentLabel }: DetailBreadcrumbProps) {

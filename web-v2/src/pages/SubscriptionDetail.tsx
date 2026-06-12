@@ -39,6 +39,7 @@ import {
 import { Loader2, Plus, HelpCircle, History } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
+import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 const statusVariant = statusBadgeVariant
@@ -243,14 +244,7 @@ export default function SubscriptionDetailPage() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Link to="/subscriptions" className="hover:text-foreground transition-colors">Subscriptions</Link>
-          <span>/</span>
-          <span>Loading...</span>
-        </div>
-        <div className="flex justify-center py-16">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
+        <DetailSkeleton to="/subscriptions" parentLabel="Subscriptions" />
       </Layout>
     )
   }
@@ -307,7 +301,7 @@ export default function SubscriptionDetailPage() {
           </Button>
           {sub.status === 'draft' && (
             <Button onClick={() => activateMutation.mutate()} disabled={acting}>
-              Activate
+              {activateMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Activating…</> : 'Activate'}
             </Button>
           )}
           {sub.status === 'active' && (
@@ -341,7 +335,7 @@ export default function SubscriptionDetailPage() {
                 Extend trial
               </Button>
               <Button variant="outline" className="border-primary text-primary hover:bg-primary/10" onClick={() => endTrialMutation.mutate()} disabled={acting}>
-                End trial now
+                {endTrialMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Ending trial…</> : 'End trial now'}
               </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
                 Cancel
@@ -384,7 +378,7 @@ export default function SubscriptionDetailPage() {
             onClick={() => clearScheduledCancelMutation.mutate()}
             disabled={acting}
           >
-            Undo
+            {clearScheduledCancelMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Undoing…</> : 'Undo'}
           </Button>
         </div>
       )}
@@ -408,7 +402,7 @@ export default function SubscriptionDetailPage() {
             onClick={() => resumeCollectionMutation.mutate()}
             disabled={acting}
           >
-            Resume collection
+            {resumeCollectionMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Resuming…</> : 'Resume collection'}
           </Button>
         </div>
       )}
@@ -1153,7 +1147,9 @@ export default function SubscriptionDetailPage() {
                 }
               }}
             >
-              {cancelMode === 'immediately' ? 'Cancel immediately…' : 'Schedule cancellation'}
+              {scheduleCancelMutation.isPending
+                ? <><Loader2 size={14} className="animate-spin mr-1.5" />Scheduling…</>
+                : cancelMode === 'immediately' ? 'Cancel immediately…' : 'Schedule cancellation'}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

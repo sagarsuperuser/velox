@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Pencil, Trash2, Plus, Star } from 'lucide-react'
+import { Pencil, Trash2, Plus, Star, AlertTriangle } from 'lucide-react'
 
 import { api, type DunningPolicy, type DunningPolicyWithCount } from '@/lib/api'
 import { Layout } from '@/components/Layout'
+import { EmptyState } from '@/components/EmptyState'
+import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 import { showApiError } from '@/lib/formErrors'
 
 import { Button } from '@/components/ui/button'
@@ -113,11 +115,14 @@ export default function DunningPoliciesPage() {
             <CardTitle className="text-sm">Policies ({policies.length})</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            {isLoading && (
-              <p className="px-6 py-6 text-sm text-muted-foreground text-center">Loading…</p>
-            )}
+            {isLoading && <FeedSkeleton rows={3} />}
             {!isLoading && policies.length === 0 && (
-              <p className="px-6 py-6 text-sm text-muted-foreground text-center">No policies yet</p>
+              <EmptyState
+                icon={AlertTriangle}
+                title="No dunning policies yet"
+                description="A dunning policy decides how failed payments are retried and when customers are emailed. Create one to start recovering failed payments automatically."
+                action={{ label: 'New policy', onClick: () => setShowCreate(true), icon: Plus }}
+              />
             )}
             <div className="divide-y divide-border">
               {policies.map(p => (
