@@ -316,8 +316,12 @@ export default function AuditLogPage() {
       if (action) filters.set('action', action)
       if (resourceIdFilter) filters.set('resource_id', resourceIdFilter)
       if (actorFilter) filters.set('actor_id', actorFilter)
-      if (dateFrom) filters.set('date_from', dateFrom)
-      if (dateTo) filters.set('date_to', dateTo)
+      // Wrap to tenant-TZ start/end-of-day instants, identical to the list
+      // query above — otherwise the export anchors bare YYYY-MM-DD at UTC and
+      // a non-UTC tenant's CSV silently drops (or adds) rows near day edges
+      // vs. what's on screen.
+      if (dateFrom) filters.set('date_from', startOfDayInTZ(dateFrom))
+      if (dateTo) filters.set('date_to', endOfDayInTZ(dateTo))
 
       const all: AuditEntry[] = []
       let offset = 0

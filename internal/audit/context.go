@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"strings"
 	"sync/atomic"
 )
 
@@ -81,21 +80,15 @@ func ClientIP(ctx context.Context) string {
 	return ""
 }
 
-// ExtractClientIP picks the best-available source-IP string from an HTTP
-// request: first entry of X-Forwarded-For, then X-Real-IP, then RemoteAddr
-// with any port stripped. Trusts proxy headers unconditionally — the server
-// is expected to run behind a known L7 proxy that strips client-supplied
-// copies.
+// ExtractClientIP returns the source IP recorded on audit rows: the host of
+// r.RemoteAddr, which the global TrustedRealIP middleware has already resolved
+// from X-Forwarded-For / X-Real-IP — but ONLY when the immediate peer is a
+// configured trusted proxy. It deliberately does NOT re-read those headers
+// itself: doing so trusted them unconditionally, so any client could forge
+// audit_log.ip_address (and the boot log even claims headers are ignored when
+// TRUST_PROXY is unset). Deferring to TrustedRealIP makes the audit IP match
+// the real-IP policy the rest of the stack (rate limiter, logs) already uses.
 func ExtractClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
