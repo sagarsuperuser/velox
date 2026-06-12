@@ -229,8 +229,13 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		if input.DisplayName != "" {
 			meta["display_name"] = input.DisplayName
 		}
+		// Record THAT the email changed, never the address itself: audit_log
+		// is append-only (DB-trigger enforced), so customer PII written here
+		// can never be erased — incompatible with a GDPR deletion request.
+		// The current address lives on the (mutable, erasable) customer row
+		// this audit row links to.
 		if input.Email != "" {
-			meta["email"] = input.Email
+			meta["email_changed"] = true
 		}
 		if input.Status != "" {
 			meta["status"] = input.Status
@@ -270,7 +275,9 @@ func (h *Handler) upsertBillingProfile(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "customer", customerID, profile.LegalName, map[string]any{
 			"action":     "billing_profile_upserted",
 			"tax_status": string(profile.TaxStatus),
-			"tax_id":     profile.TaxID,
+			// tax_id is a personal identifier for sole proprietors — record
+			// presence only; the value stays on the erasable profile row.
+			"tax_id_set": profile.TaxID != "",
 			"country":    profile.Country,
 		})
 	}

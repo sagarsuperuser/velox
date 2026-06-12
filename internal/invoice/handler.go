@@ -789,10 +789,12 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 
 	// Explicit audit row so an operator-initiated send is recorded as
 	// "Emailed INV-NNN", not the middleware catch-all's generic "create".
+	// No recipient address in the append-only row (GDPR erasure) — the email
+	// outbox is the delivery record; the row links the invoice + customer.
 	if h.auditLogger != nil {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number": inv.InvoiceNumber,
-			"to":             body.Email,
+			"customer_id":    inv.CustomerID,
 		})
 	}
 

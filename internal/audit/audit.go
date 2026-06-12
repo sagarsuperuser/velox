@@ -235,13 +235,14 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 	//
 	// Also LEFT JOIN customers for actor_type='customer' rows (customer-
 	// portal-driven mutations) and users for actor_type='user' rows
-	// (dashboard session operators — actor identity from #225): display
-	// name preferred, email as the identity operators recognize. users is
+	// (dashboard session operators — actor identity from #225): the
+	// operator's email is the identity they recognize (the post-ADR-011
+	// users table carries email only — no display_name column). users is
 	// a global (non-RLS) table so the join works under TxTenant. COALESCE
 	// order is safe — the joins are mutually exclusive in practice
 	// (an actor_id is exactly one of key / customer / user).
 	query := `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
-		COALESCE(NULLIF(k.name, ''), c.display_name, NULLIF(u.display_name, ''), u.email, '') AS actor_name,
+		COALESCE(NULLIF(k.name, ''), c.display_name, u.email::text, '') AS actor_name,
 		al.action, al.resource_type, al.resource_id,
 		COALESCE(al.resource_label,''), al.metadata,
 		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
