@@ -350,7 +350,7 @@ components:
 
     InvoiceBillingReason:
       type: string
-      enum: [subscription_cycle, subscription_create, subscription_cancel, manual, threshold]
+      enum: [subscription_cycle, subscription_create, subscription_cancel, subscription_update, manual, threshold]
       description: |
         Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
         that produced the invoice. Stamped at create time and never mutated.

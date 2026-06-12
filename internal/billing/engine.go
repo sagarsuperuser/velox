@@ -4086,6 +4086,20 @@ func (e *Engine) TenantLocation(ctx context.Context, tenantID string) *time.Loca
 	return e.tenantLocation(ctx, tenantID)
 }
 
+// NetPaymentTermDays exposes the tenant's configured Net payment terms so the
+// subscription handler's proration invoice stamps the same terms + due date
+// the engine's own cycle/create invoices do (which read ts.NetPaymentTerms
+// inline). Falls back to 30 — the schema default — when settings are
+// unreadable. Wired via subH.SetNetTermsReader(engine).
+func (e *Engine) NetPaymentTermDays(ctx context.Context, tenantID string) int {
+	if e.settings != nil {
+		if ts, err := e.settings.Get(ctx, tenantID); err == nil && ts.NetPaymentTerms > 0 {
+			return ts.NetPaymentTerms
+		}
+	}
+	return 30
+}
+
 // tenantLocation resolves the tenant's billing timezone. It anchors every
 // month/year calendar advance (period boundaries AND proration denominators,
 // ADR-050) so billing date-math is independent of the host time.Local and the

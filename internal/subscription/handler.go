@@ -143,6 +143,15 @@ type TenantLocator interface {
 	TenantLocation(ctx context.Context, tenantID string) *time.Location
 }
 
+// NetTermsReader resolves the tenant's configured Net payment terms so the
+// proration invoice stamps the same terms + due date the engine's
+// cycle/create invoices do. *billing.Engine satisfies it. Optional: when
+// unwired (narrow tests) the proration path falls back to Net 30 — the
+// pre-wiring hardcode, kept as the fallback only.
+type NetTermsReader interface {
+	NetPaymentTermDays(ctx context.Context, tenantID string) int
+}
+
 // ProrationGrantInput carries the downgrade/removal/reduction credit payload
 // plus the provenance fields required for dedup. SourceChangeType
 // distinguishes plan-downgrade from qty-reduction from item-remove when the
@@ -175,6 +184,7 @@ type Handler struct {
 	credits     ProrationCreditGranter
 	creditNotes CreditNoteIssuer
 	tzLocator   TenantLocator
+	netTerms    NetTermsReader
 	tax         ProrationTaxApplier
 	events      domain.EventDispatcher
 	auditLogger auditRecorder
@@ -283,6 +293,11 @@ func (h *Handler) SetProrationTaxApplier(a ProrationTaxApplier) {
 // engine) so proration day-math anchors its denominator in the tenant zone
 // (ADR-050). When unset, fullBillingCycleDays falls back to UTC.
 func (h *Handler) SetTenantLocator(l TenantLocator) { h.tzLocator = l }
+
+// SetNetTermsReader wires the tenant Net-terms resolver (the billing engine)
+// so proration invoices stamp the operator-configured terms instead of a
+// hardcoded Net 30; wired from router.go.
+func (h *Handler) SetNetTermsReader(r NetTermsReader) { h.netTerms = r }
 
 // tenantLoc resolves the tenant billing timezone, UTC when unwired.
 func (h *Handler) tenantLoc(ctx context.Context, tenantID string) *time.Location {
@@ -1808,7 +1823,17 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		// Honors ctx-bound effective-now (PR-12) so proration invoice
 		// IssuedAt/DueAt land in sim-time on clock-pinned subs.
 		now := clock.Now(ctx)
-		dueAt := now.AddDate(0, 0, 30)
+		// Tenant-configured Net terms, same resolution as the engine's
+		// cycle/create invoices. Pre-fix this hardcoded 30, so a Net-15
+		// tenant's proration invoice carried a different due date (and
+		// dunning timing) than every sibling invoice.
+		netDays := 30
+		if h.netTerms != nil {
+			if d := h.netTerms.NetPaymentTermDays(ctx, tenantID); d > 0 {
+				netDays = d
+			}
+		}
+		dueAt := now.AddDate(0, 0, netDays)
 
 		periodStart := spec.changeAt
 		var periodEnd time.Time
@@ -1950,9 +1975,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// showed no "Simulated" marker (while the sibling cycle invoice
 			// did). The frontend badge reads this field authoritatively and
 			// deliberately does NOT infer simulation from a future date.
-			IsSimulated:              sub.TestClockID != "",
-			NetPaymentTermDays:       30,
-			Memo:                     memo,
+			IsSimulated: sub.TestClockID != "",
+			NetPaymentTermDays: netDays,
+			// Stripe stamps subscription_update for every mid-period
+			// change invoice (plan / quantity / item add). Pre-fix this
+			// path was the only invoice writer that left the reason
+			// NULL, so the dashboard couldn't label the trigger.
+			BillingReason: domain.BillingReasonSubscriptionUpdate,
+			Memo:          memo,
 			SourcePlanChangedAt:      &changeAt,
 			SourceSubscriptionItemID: spec.itemID,
 			SourceChangeType:         spec.changeType,

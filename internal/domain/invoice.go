@@ -41,6 +41,12 @@ const (
 	// from subscription_cycle so reporting / dashboard can label this as
 	// a cancel-time true-up, not a normal cycle close.
 	BillingReasonSubscriptionCancel InvoiceBillingReason = "subscription_cancel"
+	// BillingReasonSubscriptionUpdate is the immediate proration invoice cut
+	// by a mid-period subscription change — plan upgrade, quantity increase,
+	// or item add (Stripe stamps the same `subscription_update` reason for
+	// all of these). Previously these invoices persisted a NULL reason, so
+	// the dashboard couldn't label what triggered them.
+	BillingReasonSubscriptionUpdate InvoiceBillingReason = "subscription_update"
 	BillingReasonManual             InvoiceBillingReason = "manual"
 	BillingReasonThreshold          InvoiceBillingReason = "threshold"
 )

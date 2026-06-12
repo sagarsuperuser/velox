@@ -174,6 +174,7 @@ const (
 	SubscriptionCancel InvoiceBillingReason = "subscription_cancel"
 	SubscriptionCreate InvoiceBillingReason = "subscription_create"
 	SubscriptionCycle  InvoiceBillingReason = "subscription_cycle"
+	SubscriptionUpdate InvoiceBillingReason = "subscription_update"
 	Threshold          InvoiceBillingReason = "threshold"
 )
 
@@ -187,6 +188,8 @@ func (e InvoiceBillingReason) Valid() bool {
 	case SubscriptionCreate:
 		return true
 	case SubscriptionCycle:
+		return true
+	case SubscriptionUpdate:
 		return true
 	case Threshold:
 		return true

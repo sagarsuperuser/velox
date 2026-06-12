@@ -644,6 +644,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// boundaries in — so the cycle length can't disagree with the period and
 	// is independent of the host time.Local.
 	subH.SetTenantLocator(engine)
+	// Proration invoices stamp the tenant's configured Net terms (and the
+	// due date derived from them), same resolution as engine cycle/create
+	// invoices — pre-fix the handler hardcoded Net 30, so a Net-15 tenant's
+	// proration invoice carried a different due date than its siblings.
+	subH.SetNetTermsReader(engine)
 	// Wire the db handle so addItem (and updateItem / removeItem when
 	// they migrate to the same pattern) can open an outer tx wrapping
 	// the sub-item insert + proration writes — atomic guarantee that
