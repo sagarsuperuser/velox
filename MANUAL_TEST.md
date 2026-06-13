@@ -909,6 +909,12 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Tenant default USD → switch to EUR → new invoices EUR, existing unchanged.
 - [ ] Customer with `billing_profile.currency=GBP` → invoices GBP regardless of tenant default.
 
+## FLOW SUB7: Mid-period change outcome on the timeline + invoice (2026-06-14)
+
+- [ ] On a clock-pinned sub, do each mid-period change and check the subscription Activity feed shows the financial outcome, not just the intent: plan upgrade → "Plan changed · … · Proration invoice $X"; downgrade on a PAID prebill → "… · Credit $X"; downgrade on an UNPAID prebill → "… · Open invoice adjusted $X"; quantity increase → "Quantity changed · … · Proration invoice $X"; item add → "Item added · … · Proration invoice $X"; item remove → "Item removed · <plan> · Credit $X". Non-USD tenant shows the right currency symbol, never a hardcoded $.
+- [ ] Open the UNPAID invoice that a downgrade adjusted: the credit-note row shows the reason ("Plan downgrade") AND "↳ Tax reversed $X (Stripe Tax)" — same disclosure a paid invoice's post-payment refund shows. Pre-fix the unpaid row was a bare "Credit CN-NNNN -$X".
+- [ ] Credit Notes page: an adjustment CN (no refund/credit/out-of-band) shows "applied to invoice" in the channel column (not "—"), and the reason renders as "Plan downgrade" not "subscription_downgrade".
+
 ## FLOW I9: Credit note on void
 
 - [ ] Void invoice → issue CN → error "cannot create credit notes for voided invoices". CN not created.

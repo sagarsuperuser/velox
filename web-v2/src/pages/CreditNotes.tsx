@@ -14,7 +14,7 @@ import { Layout } from '@/components/Layout'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
+import { statusBadgeVariant, statusBorderColor, creditNoteReasonLabel } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -409,7 +409,9 @@ export default function CreditNotesPage() {
                     if (note.refund_amount_cents > 0) channels.push('refund')
                     if (note.credit_amount_cents > 0) channels.push('credit')
                     if ((note.out_of_band_amount_cents ?? 0) > 0) channels.push('out of band')
-                    const channelLabel = channels.length === 0 ? '—' : channels.join(' + ')
+                    // All three channels zero = an adjustment that reduced the
+                    // invoice's amount_due (the unpaid-downgrade path), not a refund/credit.
+                    const channelLabel = channels.length === 0 ? 'applied to invoice' : channels.join(' + ')
                     return (
                       <TableRow key={note.id} className={cn('border-l-[3px]', statusBorderColor(note.status))}>
                         <TableCell>
@@ -427,7 +429,7 @@ export default function CreditNotesPage() {
                           </Link>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground max-w-[220px] truncate" title={note.reason}>
-                          {note.reason}
+                          {creditNoteReasonLabel(note.reason)}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1.5">

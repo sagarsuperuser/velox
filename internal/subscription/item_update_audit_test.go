@@ -112,6 +112,18 @@ func TestHandler_UpdateItem_PlanChangeAuditCarriesSimContext(t *testing.T) {
 	if s, ok := entry.meta["sim_effective_at"].(string); !ok || s == "" {
 		t.Errorf("meta.sim_effective_at: got %v, want a non-empty RFC3339 string", entry.meta["sim_effective_at"])
 	}
+	// This upgrade runs the LEGACY (non-atomic) proration path — h.db is
+	// unwired here. The audit row must STILL carry the proration outcome,
+	// because the audit write was moved to after proration resolves. Pre-
+	// fix the legacy path wrote the row before result.Proration was set, so
+	// the timeline showed "Plan changed" with no amount on cross-interval /
+	// unwired-db changes.
+	if entry.meta["proration_type"] != "invoice" {
+		t.Errorf("meta.proration_type: got %v, want invoice (legacy path must stamp the outcome too)", entry.meta["proration_type"])
+	}
+	if _, ok := entry.meta["proration_amount_cents"]; !ok {
+		t.Errorf("meta.proration_amount_cents missing — the legacy-path proration outcome was dropped from the audit row")
+	}
 }
 
 // A plan change on a WALL-CLOCK (non-pinned) subscription must NOT inject

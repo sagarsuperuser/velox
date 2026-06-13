@@ -19,7 +19,7 @@ import { taxReasonLabel } from '@/lib/taxReasons'
 import { DueBadge } from '@/components/DueBadge'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
-import { statusBadgeVariant } from '@/lib/status'
+import { statusBadgeVariant, creditNoteReasonLabel } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -49,6 +49,26 @@ import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
 
 const statusVariant = statusBadgeVariant
+
+// TaxReversedLine renders the "↳ Tax reversed $X (Stripe Tax)" sub-fact for a
+// credit note, shared by the pre-payment and post-payment settlement blocks so
+// the disclosure can't drift (pre-fix it lived only in the post-payment block,
+// so unpaid-invoice adjustment CNs reversed tax with no on-screen disclosure).
+function TaxReversedLine({ cn, currency }: { cn: CreditNote; currency: string }) {
+  const taxReversed = cn.tax_amount_cents ?? 0
+  if (taxReversed <= 0) return null
+  const taxTxID = cn.tax_transaction_id
+  return (
+    <div
+      className="text-[11px] mt-0.5 leading-snug pl-3 text-muted-foreground/80"
+      title={taxTxID ? `Stripe Tax reversal: ${taxTxID}` : undefined}
+    >
+      {taxTxID
+        ? `↳ Tax reversed ${formatCents(taxReversed, currency)} (Stripe Tax)`
+        : `↳ Tax: ${formatCents(taxReversed, currency)} (no upstream provider)`}
+    </div>
+  )
+}
 
 const LINE_TYPE_LABELS: Record<string, string> = {
   base_fee: 'Base Fee',
@@ -1053,9 +1073,15 @@ export default function InvoiceDetailPage() {
                 return (
                   <>
                     {prePaymentCNs.map(cn => (
-                      <div key={cn.id} className="flex justify-between text-sm text-emerald-600">
-                        <span className="truncate mr-2">Credit {cn.credit_note_number}</span>
-                        <span className="font-mono tabular-nums shrink-0">-{formatCents(cn.total_cents, invoice.currency)}</span>
+                      <div key={cn.id} className="text-sm text-emerald-600">
+                        <div className="flex justify-between gap-2">
+                          <span className="truncate mr-2">
+                            Credit {cn.credit_note_number}
+                            {cn.reason ? <span className="text-muted-foreground"> · {creditNoteReasonLabel(cn.reason)}</span> : null}
+                          </span>
+                          <span className="font-mono tabular-nums shrink-0">-{formatCents(cn.total_cents, invoice.currency)}</span>
+                        </div>
+                        <TaxReversedLine cn={cn} currency={invoice.currency} />
                       </div>
                     ))}
 
@@ -1100,32 +1126,18 @@ export default function InvoiceDetailPage() {
                         <div className="mt-3 pt-3 border-t border-dashed border-border space-y-2">
                           <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Post-payment adjustments</p>
                           {completedCNs.map(cn => {
-                            const taxReversed = cn.tax_amount_cents ?? 0
-                            const taxTxID = cn.tax_transaction_id
                             return (
                               <div key={cn.id} className="text-xs text-muted-foreground">
                                 <div className="flex justify-between gap-2">
                                   <span className="truncate">
-                                    {cn.credit_note_number} -- {cn.reason}
+                                    {cn.credit_note_number} -- {creditNoteReasonLabel(cn.reason)}
                                   </span>
                                   <span className="font-mono tabular-nums shrink-0">{formatCents(cn.total_cents, invoice.currency)}</span>
                                 </div>
                                 <div className="text-[11px] mt-0.5 leading-snug">
                                   {channelDescription(cn)}
                                 </div>
-                                {taxReversed > 0 && (
-                                  <div
-                                    className="text-[11px] mt-0.5 leading-snug pl-3 text-muted-foreground/80"
-                                    title={taxTxID ? `Stripe Tax reversal: ${taxTxID}` : undefined}
-                                  >
-                                    {/* U+21B3 (↳) marks this as a sub-fact of the row above —
-                                        same nesting affordance Linear / Vercel use for metadata
-                                        that belongs to a parent row but isn't a peer item. */}
-                                    {taxTxID
-                                      ? `↳ Tax reversed ${formatCents(taxReversed, invoice.currency)} (Stripe Tax)`
-                                      : `↳ Tax: ${formatCents(taxReversed, invoice.currency)} (no upstream provider)`}
-                                  </div>
-                                )}
+                                <TaxReversedLine cn={cn} currency={invoice.currency} />
                               </div>
                             )
                           })}

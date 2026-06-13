@@ -24,3 +24,18 @@ export function statusBorderColor(status: string): string {
     default: return 'border-l-transparent'
   }
 }
+
+// creditNoteReasonLabel humanizes the credit-note `reason` for display.
+// System-generated credit notes carry machine-categorical codes
+// (subscription_downgrade, subscription_item_removed, …); operator-issued
+// ones carry free text. Map the known codes to finance-readable phrases;
+// pass anything else through unchanged (it's operator free text).
+export function creditNoteReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'subscription_downgrade': return 'Plan downgrade'
+    case 'subscription_quantity_decrease': return 'Quantity decrease'
+    case 'subscription_item_removed': return 'Item removed'
+    case 'subscription_cancellation': return 'Cancellation'
+    default: return reason
+  }
+}
