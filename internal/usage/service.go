@@ -8,6 +8,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -199,7 +200,7 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	// to true-up closed periods, reject past a window, or surface a
 	// late-event counter — all need a billing-policy call, not a silent
 	// per-event subscription lookup on this hot path.
-	return s.store.Ingest(ctx, tenantID, domain.UsageEvent{
+	event, err := s.store.Ingest(ctx, tenantID, domain.UsageEvent{
 		CustomerID:     input.CustomerID,
 		MeterID:        input.MeterID,
 		Quantity:       input.Quantity,
@@ -208,6 +209,14 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		Timestamp:      ts,
 		Origin:         origin,
 	})
+	if err == nil {
+		// Count only rows that actually landed. An idempotency-replay errors
+		// out of store.Ingest (no new row), so it isn't counted — the metric
+		// is true ingest throughput, not request volume. Every path funnels
+		// here (live POST, batch, backfill, LiteLLM).
+		mw.RecordUsageIngested(1)
+	}
+	return event, err
 }
 
 // BatchIngest ingests multiple usage events. Returns successfully ingested count
