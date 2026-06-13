@@ -3,7 +3,10 @@ package testclock_test
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -74,10 +77,200 @@ func TestPostgresStore_Delete_SoftDeletes_CascadesPinnedSubs(t *testing.T) {
 	}
 }
 
+// TestPostgresStore_Delete_DetachesPinnedCustomers locks the fix for the
+// customer-level stranding bug: when a clock is soft-deleted, customers
+// pinned to it must be detached (test_clock_id → NULL), realizing the
+// `ON DELETE SET NULL` the FK declares but soft-delete defeats. Without
+// this, a customer keeps pointing at the dead clock and its NEXT
+// subscription inherits it (ADR-027 customer-level pin) — landing
+// stranded (excluded from both the wall-clock cron and the catchup path,
+// so it never bills).
+func TestPostgresStore_Delete_DetachesPinnedCustomers(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := testclock.NewPostgresStore(db)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Tenant")
+
+	clk, err := store.Create(ctx, tenantID, domain.TestClock{
+		Name:       "trial",
+		FrozenTime: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("create clock: %v", err)
+	}
+
+	// Customer pinned to the clock (the ADR-027 customer-level pin), plus
+	// an active sub on it. A second, unpinned customer must be left alone.
+	pinned := insertCustomer(t, db, tenantID)
+	pinCustomerToClock(t, db, pinned, clk.ID)
+	insertSub(t, db, "sub_active", tenantID, pinned, clk.ID, "active")
+	other := insertCustomer(t, db, tenantID) // no pin
+
+	if err := store.Delete(ctx, tenantID, clk.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// The pinned customer is detached — its next sub will be a clean
+	// wall-clock sub, not a stranded dead-clock one.
+	if got := customerClockID(t, db, pinned); got != "" {
+		t.Errorf("pinned customer test_clock_id after delete: got %q, want empty (detached)", got)
+	}
+	// The sub is canceled (terminal) and KEEPS its pointer (denormalized
+	// historical cache) — only customers detach.
+	if got := subStatus(t, db, "sub_active"); got != "canceled" {
+		t.Errorf("sub status: got %q, want canceled", got)
+	}
+	// The unrelated customer is untouched.
+	if got := customerClockID(t, db, other); got != "" {
+		t.Errorf("unrelated customer test_clock_id changed: got %q, want empty", got)
+	}
+}
+
+// TestRepairMigration_0117_DetachesDanglingPins exercises the actual
+// shipped repair SQL (migration 0117) against state already broken by the
+// pre-fix behavior: a customer + subs left pinned to a SOFT-deleted clock.
+// It reads the real .up.sql so the test can't drift from what ships.
+//
+//	dangling customer            → detached (test_clock_id NULL)
+//	active sub on the dead clock  → detached (un-stranded; bills wall-clock)
+//	canceled sub on the dead clock→ KEEPS pointer (denormalized history)
+//	customer on a LIVE clock      → untouched
+func TestRepairMigration_0117_DetachesDanglingPins(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := testclock.NewPostgresStore(db)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Tenant")
+
+	// A soft-deleted clock with dangling pins (the broken state).
+	dead, err := store.Create(ctx, tenantID, domain.TestClock{Name: "dead", FrozenTime: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("create dead clock: %v", err)
+	}
+	deadCust := insertCustomer(t, db, tenantID)
+	pinCustomerToClock(t, db, deadCust, dead.ID)
+	insertSub(t, db, "stranded_active", tenantID, deadCust, dead.ID, "active")
+	insertSub(t, db, "dead_canceled", tenantID, deadCust, dead.ID, "canceled")
+	softDeleteClock(t, db, dead.ID)
+
+	// A still-live clock with a pinned customer — the repair must not touch it.
+	live, err := store.Create(ctx, tenantID, domain.TestClock{Name: "live", FrozenTime: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("create live clock: %v", err)
+	}
+	liveCust := insertCustomer(t, db, tenantID)
+	pinCustomerToClock(t, db, liveCust, live.ID)
+
+	runMigrationSQL(t, db, "0117_repair_dangling_test_clock_pins.up.sql")
+
+	if got := customerClockID(t, db, deadCust); got != "" {
+		t.Errorf("dangling customer: got %q, want detached", got)
+	}
+	if got := subClockID(t, db, "stranded_active"); got != "" {
+		t.Errorf("stranded active sub: got %q, want detached (un-stranded)", got)
+	}
+	if got := subClockID(t, db, "dead_canceled"); got != dead.ID {
+		t.Errorf("canceled sub: got %q, want %q (keeps historical pointer)", got, dead.ID)
+	}
+	if got := customerClockID(t, db, liveCust); got != live.ID {
+		t.Errorf("live-clock customer was wrongly detached: got %q, want %q", got, live.ID)
+	}
+}
+
 // Helpers — minimal raw inserts so the test doesn't pull the
 // subscription package's full Create surface (plans, items,
 // currency) which the soft-delete behavior doesn't care about.
 // Use TxBypass so the RLS predicate doesn't block fixture setup.
+
+func softDeleteClock(t *testing.T, db *postgres.DB, clockID string) {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(context.Background(),
+		`UPDATE test_clocks SET deleted_at = now() WHERE id = $1`, clockID); err != nil {
+		t.Fatalf("soft-delete clock: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+func runMigrationSQL(t *testing.T, db *postgres.DB, file string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "platform", "migrate", "sql", file))
+	if err != nil {
+		t.Fatalf("read migration %s: %v", file, err)
+	}
+	tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(context.Background(),
+		`SELECT set_config('app.livemode', 'off', true)`); err != nil {
+		t.Fatalf("set livemode: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(), string(raw)); err != nil {
+		t.Fatalf("exec migration %s: %v", file, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit migration: %v", err)
+	}
+}
+
+func subClockID(t *testing.T, db *postgres.DB, code string) string {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	var clockID sql.NullString
+	if err := tx.QueryRowContext(context.Background(),
+		`SELECT test_clock_id FROM subscriptions WHERE code = $1`, code,
+	).Scan(&clockID); err != nil {
+		t.Fatalf("read sub test_clock_id: %v", err)
+	}
+	return clockID.String
+}
+
+func pinCustomerToClock(t *testing.T, db *postgres.DB, customerID, clockID string) {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(context.Background(),
+		`SELECT set_config('app.livemode', 'off', true)`); err != nil {
+		t.Fatalf("set livemode: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`UPDATE customers SET test_clock_id = $2 WHERE id = $1`, customerID, clockID); err != nil {
+		t.Fatalf("pin customer: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+func customerClockID(t *testing.T, db *postgres.DB, customerID string) string {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	var clockID sql.NullString
+	if err := tx.QueryRowContext(context.Background(),
+		`SELECT test_clock_id FROM customers WHERE id = $1`, customerID,
+	).Scan(&clockID); err != nil {
+		t.Fatalf("read customer test_clock_id: %v", err)
+	}
+	return clockID.String
+}
 
 func insertCustomer(t *testing.T, db *postgres.DB, tenantID string) string {
 	t.Helper()

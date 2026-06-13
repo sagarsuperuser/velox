@@ -119,12 +119,28 @@ DB-layer:
 
 ### Cascade
 
-When a clock is soft-deleted (ADR-016): existing cascade-cancels
-pinned subs by `subscriptions.test_clock_id`. Unchanged — the
-denormalized cache means the cascade scope is the same set as it
-would be from a customer-driven traversal. The clock-detail-page
-"attached customers" surface continues showing the row even after
-soft-delete (live filter on `test_clocks.deleted_at`).
+When a clock is soft-deleted (ADR-016): cascade-cancels pinned subs
+by `subscriptions.test_clock_id`, **and (added 2026-06-13) detaches
+pinned customers** (`customers.test_clock_id → NULL`) in the same
+transaction.
+
+The customer detach closes a stranding gap this ADR introduced: by
+moving the pin to the customer (immutable, create-only, inherited by
+new subs), a customer left pinned to a soft-deleted clock would have
+its next subscription inherit the dead clock and never bill (excluded
+from the wall-clock cron — it's pinned — and from the catchup path —
+the clock is deleted). The `customers.test_clock_id` FK declares
+`ON DELETE SET NULL`, but ADR-016's soft-delete means the row is
+never DELETEd, so that cascade never fired — the detach realizes it
+in application code. See ADR-016 ("Customer detach") and migration
+0117 (repair of rows already broken before the fix).
+
+Consequence: the clock-detail-page "attached customers" surface goes
+empty for a deleted clock (its customers are no longer pinned to it).
+That surface was only reachable for a soft-deleted clock by id anyway
+(the live filter hides it from the list); "which customers ran on
+this clock" stays answerable through the canceled subs' retained
+`test_clock_id` pointers.
 
 ## Consequences
 
