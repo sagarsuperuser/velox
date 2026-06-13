@@ -1058,6 +1058,7 @@ Rebuild trigger: first DP names a load-bearing promo-code use case.
 - [ ] Trigger event → row streams in <1s without refresh (SSE).
 - [ ] Click delivery → side panel: URL, status, headers, body.
 - [ ] Replay failed → fresh attempt fires; original preserved.
+- [ ] **Test-mode replay stays test-mode (2026-06-13):** in **test** mode, replay a webhook event → the new delivery row appears in the test-mode Events view and `SELECT livemode FROM webhook_deliveries WHERE id='<new>'` is `false`. Pre-fix the replay goroutine wrote the delivery under `livemode=true`, so it vanished from the test-mode view.
 - [ ] Multi-retry event → "Diff" tab shows payload diff between attempts.
 - [ ] Stop Redis or dispatcher → readiness degraded; UI loads but stops streaming.
 

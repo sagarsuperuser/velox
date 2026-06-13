@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,19 @@ type memStore struct {
 	endpoints  map[string]domain.WebhookEndpoint
 	events     []domain.WebhookEvent
 	deliveries []domain.WebhookDelivery
+	// deliveryLivemodes records postgres.Livemode(ctx) for each
+	// CreateDelivery call so tests can assert the delivery write landed
+	// on the right RLS mode partition (H5: the Replay goroutine path
+	// used a bare ctx and wrote test-mode replays to the live partition).
+	deliveryLivemodes []bool
+	// deliverySignal, when non-nil, receives the captured livemode after
+	// each CreateDelivery append — lets a test deterministically wait on
+	// the async (goroutine) delivery path instead of sleeping.
+	deliverySignal chan bool
+	// dmu guards the delivery slices so the async (goroutine) delivery
+	// path can be exercised under -race. Only the delivery-touching
+	// methods take it; the rest of the store is used single-threaded.
+	dmu sync.Mutex
 }
 
 func newMemStore() *memStore {
@@ -175,15 +189,25 @@ func (m *memStore) CreateReplayEvent(ctx context.Context, tenantID, originalEven
 	return domain.WebhookEvent{}, errs.ErrNotFound
 }
 
-func (m *memStore) CreateDelivery(_ context.Context, tenantID string, d domain.WebhookDelivery) (domain.WebhookDelivery, error) {
+func (m *memStore) CreateDelivery(ctx context.Context, tenantID string, d domain.WebhookDelivery) (domain.WebhookDelivery, error) {
+	m.dmu.Lock()
 	d.ID = fmt.Sprintf("vlx_whd_%d", len(m.deliveries)+1)
 	d.TenantID = tenantID
 	d.CreatedAt = time.Now().UTC()
 	m.deliveries = append(m.deliveries, d)
+	lm := postgres.Livemode(ctx)
+	m.deliveryLivemodes = append(m.deliveryLivemodes, lm)
+	signal := m.deliverySignal
+	m.dmu.Unlock()
+	if signal != nil {
+		signal <- lm
+	}
 	return d, nil
 }
 
 func (m *memStore) UpdateDelivery(_ context.Context, _ string, d domain.WebhookDelivery) (domain.WebhookDelivery, error) {
+	m.dmu.Lock()
+	defer m.dmu.Unlock()
 	for i, existing := range m.deliveries {
 		if existing.ID == d.ID {
 			m.deliveries[i] = d
@@ -194,6 +218,8 @@ func (m *memStore) UpdateDelivery(_ context.Context, _ string, d domain.WebhookD
 }
 
 func (m *memStore) ListDeliveries(_ context.Context, _, eventID string) ([]domain.WebhookDelivery, error) {
+	m.dmu.Lock()
+	defer m.dmu.Unlock()
 	// Build the replay-tree set: the eventID itself plus every event
 	// whose replay_of points back at it. Mirrors the postgres store's
 	// JOIN-based walk so behavior parity holds in unit tests.
@@ -239,6 +265,8 @@ func (m *memStore) GetEndpointStats(_ context.Context, tenantID string) ([]Endpo
 }
 
 func (m *memStore) ListPendingDeliveries(_ context.Context, limit int) ([]domain.WebhookDelivery, error) {
+	m.dmu.Lock()
+	defer m.dmu.Unlock()
 	var result []domain.WebhookDelivery
 	now := time.Now()
 	for _, d := range m.deliveries {
@@ -591,6 +619,58 @@ func TestReplay(t *testing.T) {
 	// Should have 2 deliveries now (original + replay clone's delivery)
 	if len(store.deliveries) != 2 {
 		t.Errorf("deliveries after replay: got %d, want 2", len(store.deliveries))
+	}
+}
+
+// TestReplay_PinsLivemodeOnDelivery locks the H5 fix on the ASYNC
+// (goroutine) delivery path — the production path, and the one the bug
+// lived in. Pre-fix, Replay fired `go s.deliver(context.Background(), …)`
+// with a bare ctx, so the delivery's CreateDelivery ran under
+// postgres.Livemode's default of TRUE. A test-mode event's replay
+// therefore wrote its delivery rows into the LIVE RLS partition —
+// invisible in the test-mode dashboard, FK to the test-mode event broken.
+// The fix pins the delivery ctx to the clone's livemode, mirroring
+// Dispatch. We use NewService (async) and a signal channel to wait on the
+// goroutine deterministically rather than sleeping.
+func TestReplay_PinsLivemodeOnDelivery(t *testing.T) {
+	store := newMemStore()
+	store.deliverySignal = make(chan bool, 4)
+	svc := NewService(store, &mockHTTPClient{statusCode: 200}) // async delivery
+
+	// Endpoint + original event in TEST mode.
+	testCtx := postgres.WithLivemode(context.Background(), false)
+	_, _ = svc.CreateEndpoint(testCtx, "t1", CreateEndpointInput{
+		URL:    "http://localhost:9999/hook",
+		Events: []string{"invoice.created"},
+	})
+	_ = svc.Dispatch(testCtx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
+
+	// Drain the original dispatch's delivery signal (also async on this
+	// service) and assert it was test-mode — proves the harness captures
+	// the right thing.
+	select {
+	case lm := <-store.deliverySignal:
+		if lm != false {
+			t.Fatalf("dispatch delivery livemode: got %v, want false", lm)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch delivery goroutine did not fire")
+	}
+
+	eventID := store.events[0].ID
+	if _, err := svc.Replay(testCtx, "t1", eventID); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	// The replay's delivery goroutine must write under the clone's TEST
+	// mode. Pre-fix this arrived as TRUE (bare context.Background()).
+	select {
+	case lm := <-store.deliverySignal:
+		if lm != false {
+			t.Errorf("replay delivery livemode: got %v, want false — Replay goroutine ran the delivery write under the live partition", lm)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replay delivery goroutine did not fire")
 	}
 }
 

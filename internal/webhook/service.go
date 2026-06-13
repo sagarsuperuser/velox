@@ -656,10 +656,19 @@ func (s *Service) Replay(ctx context.Context, tenantID, eventID string) (ReplayR
 		if !ep.Active || ep.Livemode != clone.Livemode || !matchesEvent(ep.Events, clone.EventType) {
 			continue
 		}
+		// Pin the event's livemode on the delivery ctx, exactly as Dispatch
+		// does. The goroutine path starts from context.Background() (the
+		// replay request may have returned before delivery fires), and a
+		// bare ctx makes postgres.Livemode default to TRUE — so CreateDelivery
+		// / UpdateDelivery would write a test-mode replay's rows into the LIVE
+		// RLS partition (invisible in the test-mode dashboard, FK to a
+		// test-mode event broken). The sync path re-pins too: the caller ctx
+		// might carry the wrong mode. Mirrors Dispatch's pin above.
+		dCtx := postgres.WithLivemode(context.Background(), clone.Livemode)
 		if s.syncDeliver {
-			s.deliver(ctx, tenantID, ep, clone)
+			s.deliver(postgres.WithLivemode(ctx, clone.Livemode), tenantID, ep, clone)
 		} else {
-			go s.deliver(context.Background(), tenantID, ep, clone)
+			go s.deliver(dCtx, tenantID, ep, clone)
 		}
 	}
 
