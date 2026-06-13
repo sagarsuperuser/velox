@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { api, formatDateTime, getTenantTimezone, type TestClock } from '@/lib/api'
+import { api, formatDateTime, getTenantTimezone, type TestClock, type AdvanceSummary } from '@/lib/api'
 import { showApiError } from '@/lib/formErrors'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
 import { Layout } from '@/components/Layout'
@@ -24,6 +24,65 @@ import {
 import { useAuth } from '@/contexts/AuthContext'
 import { ChevronLeft, FastForward, Loader2, Trash2, AlertTriangle, Clock as ClockIcon, Users } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
+
+// LastAdvanceCard summarises what the most recent advance produced, so the
+// operator sees the outcome inline instead of cross-checking the Invoices,
+// Audit, and Dunning pages. Only non-zero counts are shown; zero across the
+// board reads as an honest "nothing was due".
+function LastAdvanceCard({ summary }: { summary: AdvanceSummary }) {
+  const rows = (
+    [
+      ['Invoices generated', summary.invoices_generated],
+      ['Trials activated', summary.trials_activated],
+      ['Collections resumed', summary.pauses_resumed],
+      ['Spending thresholds crossed', summary.thresholds_fired],
+      ['Tax retries', summary.tax_retried],
+      ['Auto-charges retried', summary.charges_retried],
+      ['Credit grants expired', summary.credits_expired],
+      ['Dunning steps advanced', summary.dunning_advanced],
+    ] as Array<[string, number]>
+  ).filter(([, n]) => n > 0)
+
+  // advanced_from is the Go zero time on the recover-in-flight path, and equals
+  // advanced_to on a retry — in both cases show only the destination.
+  const noFrom = !summary.advanced_from || summary.advanced_from.startsWith('0001-01-01')
+  const span =
+    noFrom || summary.advanced_from === summary.advanced_to
+      ? `Advanced to ${formatDateTime(summary.advanced_to)}`
+      : `Advanced ${formatDateTime(summary.advanced_from)} → ${formatDateTime(summary.advanced_to)}`
+
+  return (
+    <Card className="mt-4 border-amber-300/60 bg-amber-50/60 dark:bg-amber-500/5">
+      <CardContent className="px-6 py-5">
+        <div className="flex items-center gap-2">
+          <FastForward size={16} className="text-amber-600" />
+          <p className="text-sm font-semibold text-foreground">Last advance results</p>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{span}</p>
+        {rows.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No billing activity — nothing was due in this period.
+          </p>
+        ) : (
+          <dl className="mt-3 grid grid-cols-2 gap-x-8 gap-y-2 sm:grid-cols-3">
+            {rows.map(([label, n]) => (
+              <div key={label} className="flex items-baseline justify-between gap-3">
+                <dt className="text-sm text-muted-foreground">{label}</dt>
+                <dd className="text-sm font-semibold tabular-nums">{n}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {summary.had_errors && (
+          <p className="mt-3 text-xs text-amber-700 dark:text-amber-500">
+            This advance ended with an error — the counts above reflect only the work that
+            completed before it failed.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
 
 function StatusBadge({ status }: { status: TestClock['status'] }) {
   switch (status) {
@@ -234,6 +293,12 @@ export default function TestClockDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Last advance results — shown once the catchup has finished (status is
+          no longer 'advancing') and a summary exists. */}
+      {clock.status !== 'advancing' && clock.last_advance_summary && (
+        <LastAdvanceCard summary={clock.last_advance_summary} />
+      )}
 
       {/* Attached customers — Stripe-parity primary surface for a
           test clock detail page (ADR-027 Tier 3). Subs are listed

@@ -2,6 +2,7 @@ package testclock
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -377,7 +378,7 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 		// RunCatchup. If enqueue fails (buffer full), revert to
 		// internal_failure so the operator gets visible feedback
 		// rather than a clock stuck in 'advancing' forever.
-		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id, PrevFrozenTime: current.FrozenTime}); err != nil {
 			if _, ferr := s.store.MarkFailed(ctx, tenantID, id, "catchup queue full: "+err.Error()); ferr != nil {
 				slog.Error("test clock: failed to mark clock as failed after enqueue error",
 					"clock_id", id, "enqueue_err", err, "mark_err", ferr)
@@ -388,7 +389,7 @@ func (s *Service) Advance(ctx context.Context, tenantID, id string, input Advanc
 	}
 
 	// Sync fallback (tests / narrow setups without a queue).
-	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id, PrevFrozenTime: current.FrozenTime}); err != nil {
 		return domain.TestClock{}, err
 	}
 	return s.store.Get(ctx, tenantID, id)
@@ -427,7 +428,7 @@ func (s *Service) RetryAdvance(ctx context.Context, tenantID, id string) (domain
 	}
 
 	if s.queue != nil {
-		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+		if err := s.queue.Enqueue(CatchupJob{TenantID: tenantID, ClockID: id, PrevFrozenTime: current.FrozenTime}); err != nil {
 			if _, ferr := s.store.MarkFailed(ctx, tenantID, id, "catchup queue full on retry: "+err.Error()); ferr != nil {
 				slog.Error("test clock: failed to mark clock as failed after retry-enqueue error",
 					"clock_id", id, "enqueue_err", err, "mark_err", ferr)
@@ -438,7 +439,7 @@ func (s *Service) RetryAdvance(ctx context.Context, tenantID, id string) (domain
 	}
 
 	// Sync fallback (tests).
-	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id}); err != nil {
+	if err := s.RunCatchup(ctx, CatchupJob{TenantID: tenantID, ClockID: id, PrevFrozenTime: current.FrozenTime}); err != nil {
 		return domain.TestClock{}, err
 	}
 	return s.store.Get(ctx, tenantID, id)
@@ -498,7 +499,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 	// a fast, deterministic failure regardless of sub count.
 	var (
 		runErr         error
-		operatorReason string // sanitized via errs.SummarizeForOperator (ADR-026)
+		operatorReason string                 // sanitized via errs.SummarizeForOperator (ADR-026)
+		summary        *domain.AdvanceSummary // per-phase counts, persisted before the transition
 	)
 	if reason := injectedCatchupFailureReason(); reason != "" {
 		runErr = fmt.Errorf("%s", reason)
@@ -517,6 +519,12 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// is collected but doesn't stop subsequent phases (failure
 		// isolation; retry-advance picks up wherever this left off).
 		var runErrs []error
+
+		// Accumulate the per-phase counts into the advance summary as we go.
+		// AdvancedFrom is the pre-advance frozen_time the operator's request
+		// captured (zero on the recover-in-flight path); AdvancedTo is filled
+		// once we read the (now-advanced) frozen_time below.
+		sum := domain.AdvanceSummary{AdvancedFrom: job.PrevFrozenTime}
 
 		// Read frozen_time ONCE and bind it to ctx via
 		// clock.WithEffectiveNow. Every downstream `clock.Now(ctx)` —
@@ -540,6 +548,7 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		} else {
 			frozen = clk.FrozenTime
 			ctx = clock.WithEffectiveNow(ctx, frozen)
+			sum.AdvancedTo = frozen
 		}
 		trialExpiryFrozen := frozen
 
@@ -556,7 +565,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// items' first paid period is covered at the activation
 		// instant (Bug #6 carry-through).
 		if s.trialExpirer != nil && !trialExpiryFrozen.IsZero() {
-			_, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			trialCount, trialErrs := s.trialExpirer.ProcessExpiredTrialsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			sum.TrialsActivated = trialCount
 			runErrs = append(runErrs, trialErrs...)
 		}
 
@@ -569,13 +579,15 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// already read above for Phase 0.5; reuse it. Skips silently
 		// if the wiring is absent.
 		if s.pauseResumer != nil && !trialExpiryFrozen.IsZero() {
-			_, pauseErrs := s.pauseResumer.ProcessExpiredPauseCollectionsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			pauseCount, pauseErrs := s.pauseResumer.ProcessExpiredPauseCollectionsForClock(ctx, job.TenantID, job.ClockID, trialExpiryFrozen)
+			sum.PausesResumed = pauseCount
 			runErrs = append(runErrs, pauseErrs...)
 		}
 
 		// Phase 1 (ADR-028): generate any newly-due periods. Multi-period
 		// catchup happens inside billSubscription's per-sub loop.
-		_, periodErrs := s.billing.RunCycleForClock(ctx, job.TenantID, job.ClockID, 100)
+		periodCount, periodErrs := s.billing.RunCycleForClock(ctx, job.TenantID, job.ClockID, 100)
+		sum.InvoicesGenerated = periodCount
 		runErrs = append(runErrs, periodErrs...)
 
 		// Phase 1.5 (ADR-029 Phase 3): threshold scan for hard-cap
@@ -583,7 +595,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// running cycle is the one being evaluated) but before tax
 		// retry / charge so any threshold-fired invoices get the
 		// same downstream treatment as period-generated ones.
-		_, thresholdErrs := s.billing.ScanThresholdsForClock(ctx, job.TenantID, job.ClockID, 100)
+		thresholdCount, thresholdErrs := s.billing.ScanThresholdsForClock(ctx, job.TenantID, job.ClockID, 100)
+		sum.ThresholdsFired = thresholdCount
 		runErrs = append(runErrs, thresholdErrs...)
 
 		// Phase 2 (ADR-029): tax retry on clock-pinned invoices left
@@ -593,7 +606,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// gets unstuck would have to wait for the next advance to fire
 		// its charge attempt.
 		if s.taxRetry != nil {
-			_, taxErrs := s.taxRetry.RetryPendingTaxForClock(ctx, job.TenantID, job.ClockID, 100)
+			taxCount, taxErrs := s.taxRetry.RetryPendingTaxForClock(ctx, job.TenantID, job.ClockID, 100)
+			sum.TaxRetried = taxCount
 			runErrs = append(runErrs, taxErrs...)
 		}
 
@@ -602,7 +616,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// PM via the customer portal between advances — without this
 		// hook, neither cron nor catchup would charge until an operator
 		// clicked Advance. This call closes that loop.
-		_, chargeErrs := s.billing.RetryPendingChargesForClock(ctx, job.TenantID, job.ClockID, 100)
+		chargeCount, chargeErrs := s.billing.RetryPendingChargesForClock(ctx, job.TenantID, job.ClockID, 100)
+		sum.ChargesRetried = chargeCount
 		runErrs = append(runErrs, chargeErrs...)
 
 		// Phases 4 and 5 both need frozen_time — already read once at
@@ -615,7 +630,8 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// customers pinned to this clock. expires_at compared against
 		// simulated time, not wall-clock.
 		if s.creditExpirer != nil && needFrozen {
-			_, creditErrs := s.creditExpirer.ExpireCreditsForClock(ctx, job.TenantID, job.ClockID, frozen)
+			creditCount, creditErrs := s.creditExpirer.ExpireCreditsForClock(ctx, job.TenantID, job.ClockID, frozen)
+			sum.CreditsExpired = creditCount
 			runErrs = append(runErrs, creditErrs...)
 		}
 
@@ -624,9 +640,16 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// dunning state; no point advancing dunning on an invoice that
 		// just got paid. next_action_at compared against simulated time.
 		if s.dunning != nil && needFrozen {
-			_, dunningErrs := s.dunning.ProcessDueRunsForClock(ctx, job.TenantID, job.ClockID, frozen, 50)
+			dunningCount, dunningErrs := s.dunning.ProcessDueRunsForClock(ctx, job.TenantID, job.ClockID, frozen, 50)
+			sum.DunningAdvanced = dunningCount
 			runErrs = append(runErrs, dunningErrs...)
 		}
+
+		// Billing ran — capture the summary (counts are exact, from the phase
+		// returns) regardless of whether a phase errored; HadErrors records the
+		// partial-failure case so the dashboard can caveat it.
+		sum.HadErrors = len(runErrs) > 0
+		summary = &sum
 
 		if len(runErrs) > 0 {
 			runErr = fmt.Errorf("catchup errors: %v", runErrs)
@@ -640,6 +663,26 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 			// below — operator gets a clean banner, support has
 			// the unredacted chain in logs.
 			operatorReason = errs.SummarizeForOperator(runErrs, job.ClockID)
+		}
+	}
+
+	// persistSummary writes the accumulated per-phase counts onto the clock row
+	// just before the transition, so CompleteAdvance / MarkFailed read it back.
+	// Best-effort: the summary is operator-facing display data, not on the
+	// critical path — a save failure is logged but never blocks the transition
+	// (the clock just shows no summary). The marshal is in-memory; failCtx vs
+	// ctx is passed by the caller because the error path runs on a detached ctx.
+	persistSummary := func(c context.Context) {
+		if summary == nil {
+			return
+		}
+		b, mErr := json.Marshal(summary)
+		if mErr != nil {
+			slog.Error("test clock: marshal advance summary", "clock_id", job.ClockID, "error", mErr)
+			return
+		}
+		if sErr := s.store.SaveAdvanceSummary(c, job.TenantID, job.ClockID, b); sErr != nil {
+			slog.Error("test clock: persist advance summary", "clock_id", job.ClockID, "error", sErr)
 		}
 	}
 
@@ -665,6 +708,7 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		// internal_failure where the operator can retry or delete it.
 		failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
+		persistSummary(failCtx)
 		if _, ferr := s.store.MarkFailed(failCtx, job.TenantID, job.ClockID, reason); ferr != nil {
 			slog.Error("test clock: failed to mark clock as failed after catchup error",
 				"clock_id", job.ClockID, "catchup_err", runErr, "mark_err", ferr)
@@ -672,6 +716,7 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		return fmt.Errorf("billing catchup failed: %w", runErr)
 	}
 
+	persistSummary(ctx)
 	if _, err := s.store.CompleteAdvance(ctx, job.TenantID, job.ClockID); err != nil {
 		return fmt.Errorf("complete advance: %w", err)
 	}

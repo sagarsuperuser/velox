@@ -3,6 +3,7 @@ package testclock
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -22,7 +23,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 
 const clockCols = `id, tenant_id, name, frozen_time, status,
 	created_at, updated_at, deleted_at,
-	COALESCE(last_failure_reason,'')`
+	COALESCE(last_failure_reason,''), last_advance_summary`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.TestClock) (domain.TestClock, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -406,6 +407,60 @@ func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,
 		&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
-		&c.LastFailureReason,
+		&c.LastFailureReason, advanceSummaryScan{&c.LastAdvanceSummary},
 	}
+}
+
+// advanceSummaryScan adapts the nullable last_advance_summary JSONB column to
+// the *domain.AdvanceSummary field: NULL (or empty) → nil, otherwise unmarshal.
+type advanceSummaryScan struct{ dst **domain.AdvanceSummary }
+
+func (a advanceSummaryScan) Scan(src any) error {
+	if src == nil {
+		*a.dst = nil
+		return nil
+	}
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("last_advance_summary: unexpected scan type %T", src)
+	}
+	if len(b) == 0 {
+		*a.dst = nil
+		return nil
+	}
+	var s domain.AdvanceSummary
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("decode last_advance_summary: %w", err)
+	}
+	*a.dst = &s
+	return nil
+}
+
+// SaveAdvanceSummary persists the per-phase counts the catchup produced onto
+// the clock row. Written by RunCatchup just before the advancing → ready /
+// internal_failure transition, so the transition's RETURNING clause reads it
+// back. A plain column write (not gated on status): the catchup is the only
+// writer and the clock is 'advancing' at this point. Best-effort relative to
+// the transition — if the process dies between the two writes the clock simply
+// shows no summary, which is strictly better than blocking the transition.
+func (s *PostgresStore) SaveAdvanceSummary(ctx context.Context, tenantID, id string, summaryJSON []byte) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE test_clocks SET last_advance_summary = $1::jsonb, updated_at = now()
+		 WHERE id = $2 AND deleted_at IS NULL`,
+		summaryJSON, id,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
