@@ -345,6 +345,16 @@ export default function InvoiceDetailPage() {
     onError: (err) => showApiError(err, 'Payment failed'),
   })
 
+  // No-payment-method nudge: re-send the SAME setup-link email the engine sent
+  // at finalize (Stripe Checkout in setup mode → add a card → engine
+  // auto-charges). Goes straight to the customer's email — no recipient modal,
+  // unlike the hosted-invoice "pay" email behind setShowEmailModal.
+  const resendSetupLinkMutation = useMutation({
+    mutationFn: () => api.resendSetupLink(id!),
+    onSuccess: () => toast.success('Setup link resent to the customer'),
+    onError: (err) => showApiError(err, 'Failed to resend setup link'),
+  })
+
   // Stripe-parity operator actions on finalized / uncollectible invoices.
   // markUncollectibleMutation halts dunning + flips status to bad debt.
   // recordPaymentMutation accepts an operator-recorded out-of-band payment
@@ -703,13 +713,18 @@ export default function InvoiceDetailPage() {
         invoice={invoice as unknown as ApiInvoice}
         onRetryTax={() => retryTaxMutation.mutate()}
         onChargeNow={() => collectMutation.mutate()}
-        // send_reminder action opens the existing email dialog. The
-        // hosted invoice page that lands the customer in Stripe
-        // Checkout handles both has-PM and no-PM cases, so a single
-        // wiring covers awaiting_payment, no_payment_method, and
-        // overdue. Operator confirms the recipient and clicks Send;
-        // server fires the same template that already exists.
-        onSendReminder={() => setShowEmailModal(true)}
+        // send_reminder is state-aware. At the no_payment_method stage the
+        // matching action is to re-send the payment-METHOD setup link the
+        // engine already emailed (Checkout setup mode → add a card → engine
+        // auto-charges); that goes straight to the customer, no recipient
+        // modal. Every other reason (awaiting_payment, payment_failed,
+        // overdue) opens the email dialog to send the hosted-invoice "pay"
+        // link, where the operator confirms the recipient.
+        onSendReminder={() =>
+          invoice?.attention?.reason === 'no_payment_method'
+            ? resendSetupLinkMutation.mutate()
+            : setShowEmailModal(true)
+        }
         retrying={retryTaxMutation.isPending}
         charging={collectMutation.isPending}
         // ADR-030 / simulated-time discipline: pass the owning sub's

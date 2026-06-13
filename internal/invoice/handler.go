@@ -258,6 +258,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/void", h.void)
 	r.Post("/{id}/line-items", h.addLineItem)
 	r.Post("/{id}/send", h.sendEmail)
+	r.Post("/{id}/resend-setup-link", h.resendSetupLink)
 	r.Post("/{id}/collect", h.collectPayment)
 	r.Post("/{id}/refund", h.refund)
 	r.Post("/{id}/retry-tax", h.retryTax)
@@ -568,6 +569,57 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	// this endpoint AND engine-triggered voids via InvoiceVoider).
 
 	respond.JSON(w, r, http.StatusOK, inv)
+}
+
+// resendSetupLink re-emails the customer the payment-METHOD setup link for a
+// finalized, unpaid invoice with no card on file — the "Resend setup link"
+// nudge on the no_payment_method attention card. It re-sends the SAME email the
+// engine auto-sent at finalize (NotifyNoPaymentMethod → Stripe Checkout in
+// SETUP mode → engine auto-charges once a card is attached), which matches that
+// state's auto-charge-on-attach model. This is deliberately distinct from
+// POST /{id}/send, which emails the hosted-invoice "pay this invoice" link
+// (Checkout in PAYMENT mode) — a different collection path for states where the
+// operator wants the customer to pay directly.
+func (h *Handler) resendSetupLink(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	inv, err := h.svc.Get(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "invoice")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+	// Only meaningful while collection is still pending: a finalized invoice
+	// that hasn't been paid. Draft/voided/paid invoices have no setup link to
+	// resend.
+	if inv.Status != domain.InvoiceFinalized || inv.PaymentStatus == domain.PaymentSucceeded {
+		respond.Error(w, r, http.StatusConflict, "invalid_state", "invoice_not_collectible",
+			"setup link can only be resent for a finalized, unpaid invoice")
+		return
+	}
+	if h.noPMNotifier == nil {
+		slog.ErrorContext(r.Context(), "resend setup link: no-PM notifier not wired", "invoice_id", inv.ID)
+		respond.InternalError(w, r)
+		return
+	}
+	if err := h.noPMNotifier.NotifyNoPaymentMethod(r.Context(), tenantID, inv); err != nil {
+		respond.FromError(w, r, err, "invoice")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+			"action":         "resend_setup_link",
+			"invoice_number": inv.InvoiceNumber,
+			"customer_id":    inv.CustomerID,
+		})
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 // markUncollectible is the operator-driven Stripe-parity bad-debt
