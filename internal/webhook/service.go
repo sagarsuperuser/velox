@@ -27,7 +27,16 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
 )
 
-const maxAttempts = 5
+// maxRetries is how many times a failed delivery is retried after its
+// initial attempt — one per slot in retryBackoffs. Total attempts =
+// 1 initial + maxRetries (so 6 with the current ladder).
+//
+// Was named maxAttempts and compared with `>=`, which capped the delivery
+// at maxAttempts TOTAL attempts and so left the final backoff slot
+// (retryBackoffs[maxRetries-1] = 24h) permanently unreachable: a delivery
+// gave up after attempt 5 / ~2.5h instead of running the full ~26.5h
+// ladder the 24h tail implies.
+const maxRetries = 5
 
 // retryLeaseWindow is how far ListPendingDeliveries pushes next_retry_at
 // forward when it claims a due delivery, so a concurrent retry worker on
@@ -38,8 +47,10 @@ const maxAttempts = 5
 // delays a legitimate scheduled retry.
 const retryLeaseWindow = 1 * time.Minute
 
-// retryBackoffs defines the delay before each retry attempt (index 0 = after attempt 1).
-var retryBackoffs = [maxAttempts]time.Duration{
+// retryBackoffs is the delay before each retry: slot i is the wait after
+// the (i+1)-th attempt fails. All maxRetries slots are reachable — the
+// final 24h slot fires after the 5th attempt, before the 6th and last.
+var retryBackoffs = [maxRetries]time.Duration{
 	1 * time.Minute,
 	5 * time.Minute,
 	30 * time.Minute,
@@ -488,7 +499,13 @@ func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d do
 	}
 	d.ErrorMessage = errMsg
 
-	if d.AttemptCount >= maxAttempts {
+	// Permanent fail once every retry slot is spent: after the
+	// AttemptCount-th failure the next retry would read
+	// retryBackoffs[AttemptCount-1], so when AttemptCount exceeds
+	// maxRetries the ladder is exhausted (nothing left to wait on).
+	// Using `>` here — not `>=` — is what makes the final 24h slot
+	// reachable: AttemptCount==maxRetries still schedules the last retry.
+	if d.AttemptCount > maxRetries {
 		now := time.Now().UTC()
 		d.Status = domain.DeliveryFailed
 		d.CompletedAt = &now

@@ -585,6 +585,79 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 	}
 }
 
+// TestRetryLadder_AllBackoffsReachable locks the retry-ladder off-by-one
+// fix: a delivery must walk EVERY retryBackoffs slot — including the final
+// 24h one — before it permanently fails, and the fail must land on the
+// attempt after the last slot is spent. Pre-fix the guard was
+// `AttemptCount >= maxAttempts(5)`, so a delivery failed on attempt 5
+// before retryBackoffs[4]=24h could ever schedule — the ladder ended at
+// ~2.5h instead of the ~26.5h the 24h tail implies.
+func TestRetryLadder_AllBackoffsReachable(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &mockHTTPClient{statusCode: 500}) // unused; we drive scheduleRetryOrFail directly
+
+	// Seed a fresh delivery (AttemptCount=0, as CreateDelivery makes it).
+	d := domain.WebhookDelivery{
+		ID: "vlx_whd_ladder", TenantID: "t1", WebhookEndpointID: "ep_1",
+		WebhookEventID: "evt_gone", Status: domain.DeliveryPending,
+	}
+	store.deliveries = append(store.deliveries, d)
+	store.deliveryLivemodes = append(store.deliveryLivemodes, false)
+
+	read := func() domain.WebhookDelivery {
+		for _, dd := range store.deliveries {
+			if dd.ID == "vlx_whd_ladder" {
+				return dd
+			}
+		}
+		t.Fatal("delivery vanished")
+		return domain.WebhookDelivery{}
+	}
+
+	// Each of the maxRetries failures must schedule the matching backoff
+	// slot (1m, 5m, 30m, 2h, 24h) and keep the delivery pending.
+	for i := 0; i < maxRetries; i++ {
+		before := time.Now()
+		svc.scheduleRetryOrFail(context.Background(), "t1", read(), "HTTP 500")
+		got := read()
+		if got.AttemptCount != i+1 {
+			t.Fatalf("after failure %d: attempt_count=%d, want %d", i+1, got.AttemptCount, i+1)
+		}
+		if got.Status != domain.DeliveryPending {
+			t.Fatalf("after failure %d (slot %v): status=%q, want pending — the ladder ended early", i+1, retryBackoffs[i], got.Status)
+		}
+		if got.NextRetryAt == nil {
+			t.Fatalf("after failure %d: next_retry_at nil, want scheduled (backoff %v)", i+1, retryBackoffs[i])
+		}
+		// next_retry ≈ stamp + retryBackoffs[i] + jitter(0–30s).
+		lo := before.Add(retryBackoffs[i])
+		hi := time.Now().Add(retryBackoffs[i] + 30*time.Second)
+		if got.NextRetryAt.Before(lo) || got.NextRetryAt.After(hi) {
+			t.Errorf("failure %d backoff: next_retry=%v, want slot %v within [%v,%v]", i+1, *got.NextRetryAt, retryBackoffs[i], lo, hi)
+		}
+	}
+
+	// The 24h slot (the previously-dead one) must have been the last
+	// scheduled wait.
+	last := read()
+	if d24 := time.Until(*last.NextRetryAt); d24 < 23*time.Hour {
+		t.Errorf("final scheduled wait = %v, want ~24h (retryBackoffs[%d]) — the 24h slot was never reached", d24, maxRetries-1)
+	}
+
+	// One more failure exhausts the ladder → permanent fail, no further retry.
+	svc.scheduleRetryOrFail(context.Background(), "t1", read(), "HTTP 500")
+	final := read()
+	if final.Status != domain.DeliveryFailed {
+		t.Errorf("after %d attempts: status=%q, want failed", maxRetries+1, final.Status)
+	}
+	if final.NextRetryAt != nil {
+		t.Errorf("permanently-failed delivery must clear next_retry_at, got %v", *final.NextRetryAt)
+	}
+	if final.AttemptCount != maxRetries+1 {
+		t.Errorf("final attempt_count=%d, want %d (1 initial + %d retries)", final.AttemptCount, maxRetries+1, maxRetries)
+	}
+}
+
 func TestReplay(t *testing.T) {
 	store := newMemStore()
 	httpClient := &mockHTTPClient{statusCode: 200}

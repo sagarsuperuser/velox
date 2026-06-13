@@ -1061,6 +1061,7 @@ Rebuild trigger: first DP names a load-bearing promo-code use case.
 - [ ] **Test-mode replay stays test-mode (2026-06-13):** in **test** mode, replay a webhook event → the new delivery row appears in the test-mode Events view and `SELECT livemode FROM webhook_deliveries WHERE id='<new>'` is `false`. Pre-fix the replay goroutine wrote the delivery under `livemode=true`, so it vanished from the test-mode view.
 - [ ] Multi-retry event → "Diff" tab shows payload diff between attempts.
 - [ ] Stop Redis or dispatcher → readiness degraded; UI loads but stops streaming.
+- [ ] **Failed delivery walks the full retry ladder (2026-06-13):** point an endpoint at a URL that always 5xxs, trigger an event → the delivery row stays `pending` across **five** scheduled retries with backoffs 1m → 5m → 30m → 2h → **24h** (`next_retry_at` steps match), and only flips to `failed` after the attempt past the 24h slot (`attempt_count=6`). Pre-fix it gave up at ~2.5h and the 24h step never fired.
 
 ---
 
