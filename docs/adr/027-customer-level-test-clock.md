@@ -132,8 +132,9 @@ from the wall-clock cron — it's pinned — and from the catchup path —
 the clock is deleted). The `customers.test_clock_id` FK declares
 `ON DELETE SET NULL`, but ADR-016's soft-delete means the row is
 never DELETEd, so that cascade never fired — the detach realizes it
-in application code. See ADR-016 ("Customer detach") and migration
-0117 (repair of rows already broken before the fix).
+in application code. See ADR-016 ("Customer detach"). Going-forward
+only; no data-repair migration ships (pre-launch — any rows already
+broken are corrected directly in the local DB).
 
 Consequence: the clock-detail-page "attached customers" surface goes
 empty for a deleted clock (its customers are no longer pinned to it).

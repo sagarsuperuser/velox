@@ -77,8 +77,9 @@ pinned) and the catchup path skips it (the clock is deleted), so it
 never billed. Unlike a sub, a customer has no period fields to go
 stale, so detaching it is safe — its next subscription is a clean,
 billable wall-clock sub. "Which customers were on this clock" stays
-answerable through the canceled subs' retained pointers. Migration
-0117 applies the same detach to rows already broken before this fix.
+answerable through the canceled subs' retained pointers. This is a
+going-forward fix only; no data-repair migration ships (pre-launch —
+any rows already broken are corrected directly in the local DB).
 
 ### TTL sweeper (reverted 2026-05-06)
 
