@@ -15,14 +15,16 @@ import (
 )
 
 type memStore struct {
-	invoices  map[string]domain.Invoice
-	lineItems map[string][]domain.InvoiceLineItem
+	invoices    map[string]domain.Invoice
+	lineItems   map[string][]domain.InvoiceLineItem
+	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		invoices:  make(map[string]domain.Invoice),
-		lineItems: make(map[string][]domain.InvoiceLineItem),
+		invoices:    make(map[string]domain.Invoice),
+		lineItems:   make(map[string][]domain.InvoiceLineItem),
+		failNotedPI: make(map[string]string),
 	}
 }
 
@@ -222,6 +224,26 @@ func (m *memStore) UpdatePayment(_ context.Context, tenantID, id string, ps doma
 	inv.PaidAt = paidAt
 	m.invoices[id] = inv
 	return inv, nil
+}
+
+func (m *memStore) MarkPaymentFailedReportingTransition(_ context.Context, tenantID, id, piID, errMsg string) (domain.Invoice, bool, error) {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return domain.Invoice{}, false, errs.ErrNotFound
+	}
+	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
+		return inv, false, nil
+	}
+	if m.failNotedPI == nil {
+		m.failNotedPI = make(map[string]string)
+	}
+	first := m.failNotedPI[id] != piID
+	inv.PaymentStatus = domain.PaymentFailed
+	inv.StripePaymentIntentID = piID
+	inv.LastPaymentError = errMsg
+	m.invoices[id] = inv
+	m.failNotedPI[id] = piID
+	return inv, first, nil
 }
 
 func (m *memStore) MarkPaid(_ context.Context, tenantID, id, stripeID string, paidAt time.Time) (domain.Invoice, error) {

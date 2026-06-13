@@ -138,6 +138,86 @@ func TestMarkPaidReportingTransition_FlagsTheRealTransition(t *testing.T) {
 	}
 }
 
+// TestMarkPaymentFailedReportingTransition_FlagsTheRealNotification locks the
+// store-level signal the SettleFailed concurrent-dedup relies on. Failure is
+// non-terminal, so the dedup key is the PaymentIntent id (failure_notified_pi),
+// not the status: the first failure for a PI reports firstForThisPI=true; a
+// duplicate of the SAME PI reports false (so the customer isn't emailed twice
+// and integrators don't get two payment.failed events); a fresh PI from a later
+// retry reports true again; and an out-of-order failure for an already-paid
+// invoice leaves it paid and reports false.
+func TestMarkPaymentFailedReportingTransition_FlagsTheRealNotification(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	store := invoice.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "MarkFailed Transition Flag")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET subtotal_cents = 1000, total_amount_cents = 1000,
+		    amount_due_cents = 1000, tax_status = 'ok' WHERE id = $1`, invID); err != nil {
+		t.Fatalf("seed amounts: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+	if _, err := store.UpdateStatus(ctx, tenantID, invID, domain.InvoiceFinalized); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// First failure for pi_a → first notification for this PI.
+	inv, first, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_a", "card declined")
+	if err != nil {
+		t.Fatalf("first failure: %v", err)
+	}
+	if !first {
+		t.Error("first failure for pi_a must report firstForThisPI=true")
+	}
+	if inv.PaymentStatus != domain.PaymentFailed || inv.LastPaymentError != "card declined" {
+		t.Errorf("after first failure: payment_status=%q error=%q, want failed/'card declined'", inv.PaymentStatus, inv.LastPaymentError)
+	}
+
+	// Duplicate delivery of the SAME PI → not a fresh notification.
+	_, dup, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_a", "card declined")
+	if err != nil {
+		t.Fatalf("duplicate failure: %v", err)
+	}
+	if dup {
+		t.Error("duplicate failure for pi_a must report firstForThisPI=false (no double-notify)")
+	}
+
+	// A later retry fails on a fresh PI → a genuinely new event.
+	_, retry, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_b", "card declined again")
+	if err != nil {
+		t.Fatalf("retry failure: %v", err)
+	}
+	if !retry {
+		t.Error("a new retry PI (pi_b) must report firstForThisPI=true (a distinct failure event)")
+	}
+
+	// Settle the invoice, then deliver a stale failure: the out-of-order guard
+	// must leave it paid and report no fresh notification.
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.MarkPaid(ctx, tenantID, invID, "pi_b", now); err != nil {
+		t.Fatalf("mark paid: %v", err)
+	}
+	stale, staleFirst, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_stale", "late decline")
+	if err != nil {
+		t.Fatalf("stale failure: %v", err)
+	}
+	if staleFirst {
+		t.Error("out-of-order failure on a paid invoice must report firstForThisPI=false")
+	}
+	if stale.PaymentStatus != domain.PaymentSucceeded || stale.Status != domain.InvoicePaid {
+		t.Errorf("out-of-order failure corrupted a paid invoice: payment_status=%q status=%q", stale.PaymentStatus, stale.Status)
+	}
+}
+
 // recordingOutbox captures the events MarkPaid enqueues, ignoring the tx.
 type recordingOutbox struct{ events []string }
 
