@@ -365,16 +365,16 @@ func TestResolver_Routing(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown_provider_defaults_to_none", func(t *testing.T) {
-		// Defensive: if a new provider is added to the enum but the
-		// resolver switch isn't updated, billing must not crash.
+	t.Run("unknown_provider_errors", func(t *testing.T) {
+		// tax_provider is constrained to {none,manual,stripe_tax} by
+		// validateSettings, so an unrecognized value means a corrupted
+		// settings row. Fail loud (no silent $0-tax fallback) so the
+		// misconfiguration surfaces as a stuck billing cycle rather than
+		// silent under-collection.
 		r := NewResolver(nil)
 		p, err := r.Resolve(context.Background(), domain.TenantSettings{TaxProvider: "avalara"})
-		if err != nil {
-			t.Fatalf("Resolve: %v", err)
-		}
-		if p.Name() != "none" {
-			t.Errorf("Name = %q, want none (unknown falls through)", p.Name())
+		if err == nil {
+			t.Fatalf("Resolve(avalara): want error, got provider %v", p)
 		}
 	})
 
@@ -390,6 +390,47 @@ func TestResolver_Routing(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("Resolve: expected error when stripe_tax selected without wired client")
+		}
+	})
+}
+
+// TestNoneProvider_HonorsExemptionStatus locks the consistency fix: a
+// none-provider tenant's exempt / reverse_charge customer still gets the
+// exemption flags on the result so the invoice renders the legally-required
+// legend — same as the manual and stripe providers.
+func TestNoneProvider_HonorsExemptionStatus(t *testing.T) {
+	p := NewNoneProvider()
+	line := []RequestLine{{Ref: "l1", AmountCents: 1000}}
+
+	t.Run("exempt sets Exempt + reason, zero tax", func(t *testing.T) {
+		res, err := p.Calculate(context.Background(), Request{
+			CustomerStatus: StatusExempt, CustomerExemptReason: "Non-profit", LineItems: line,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Exempt || res.ExemptReason != "Non-profit" || res.TotalTaxCents != 0 {
+			t.Errorf("got Exempt=%v reason=%q tax=%d, want true/Non-profit/0", res.Exempt, res.ExemptReason, res.TotalTaxCents)
+		}
+	})
+
+	t.Run("reverse_charge sets ReverseCharge, zero tax", func(t *testing.T) {
+		res, err := p.Calculate(context.Background(), Request{CustomerStatus: StatusReverseCharge, LineItems: line})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.ReverseCharge || res.Exempt || res.TotalTaxCents != 0 {
+			t.Errorf("got ReverseCharge=%v Exempt=%v tax=%d, want true/false/0", res.ReverseCharge, res.Exempt, res.TotalTaxCents)
+		}
+	})
+
+	t.Run("standard stays plain zero-tax (no flags)", func(t *testing.T) {
+		res, err := p.Calculate(context.Background(), Request{CustomerStatus: StatusStandard, LineItems: line})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Exempt || res.ReverseCharge {
+			t.Errorf("standard should not set exempt/reverse flags: Exempt=%v ReverseCharge=%v", res.Exempt, res.ReverseCharge)
 		}
 	})
 }

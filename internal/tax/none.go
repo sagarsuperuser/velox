@@ -15,6 +15,18 @@ func NewNoneProvider() *NoneProvider { return &NoneProvider{} }
 func (*NoneProvider) Name() string { return "none" }
 
 func (*NoneProvider) Calculate(_ context.Context, req Request) (*Result, error) {
+	// Honor the customer's exemption status so the invoice still renders the
+	// legally-required legend — a reverse-charge or exemption notice is owed to
+	// the buyer even when the seller collects no tax. Mirrors manual/stripe via
+	// the shared exemptResult helper, so all three providers are consistent
+	// (pre-fix none ignored CustomerStatus, so a none-tenant's reverse-charge
+	// customer got a bare $0 invoice with no legend).
+	switch req.CustomerStatus {
+	case StatusExempt:
+		return exemptResult("none", req, false, req.CustomerExemptReason), nil
+	case StatusReverseCharge:
+		return exemptResult("none", req, true, ""), nil
+	}
 	lines := make([]ResultLine, len(req.LineItems))
 	for i, li := range req.LineItems {
 		lines[i] = ResultLine{Ref: li.Ref, NetAmountCents: li.AmountCents}

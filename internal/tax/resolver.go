@@ -17,19 +17,25 @@ type Resolver struct {
 
 // NewResolver returns a resolver that serves NoneProvider and ManualProvider
 // unconditionally, plus StripeTaxProvider when stripeClients != nil. A nil
-// stripeClients resolver still accepts tax_provider='stripe_tax' — callers
-// fall back to a ManualProvider so billing continues when Stripe isn't
-// wired (e.g. local dev without credentials).
+// stripeClients resolver does NOT silently fall back for tax_provider=
+// 'stripe_tax' — Resolve returns an error (ADR-041 no-silent-fallback);
+// operators wanting manual must select tax_provider=manual explicitly.
 func NewResolver(stripeClients StripeClientResolver) *Resolver {
 	return &Resolver{stripe: stripeClients}
 }
 
-// Resolve picks the right Provider for the tenant. Unknown or empty
-// provider string falls through to NoneProvider so a mis-seeded tenant
-// can't take billing offline. tax_provider=stripe_tax without a wired
-// Stripe client now defers the invoice (per ADR-041) instead of silently
-// substituting manual; operators wanting manual must explicitly select
-// tax_provider=manual at the tenant level.
+// Resolve picks the right Provider for the tenant.
+//
+//   - 'none' / ” → NoneProvider (a legitimate "we don't collect tax" choice).
+//   - 'manual'    → ManualProvider at the tenant's flat rate.
+//   - 'stripe_tax' with a wired client → StripeTaxProvider; without one,
+//     returns an error (defers the invoice per ADR-041, never substitutes
+//     manual or zero).
+//   - any OTHER string → error. tax_provider is constrained to the known set
+//     by validateSettings at write time, so an unrecognized value means a
+//     corrupted/hand-edited settings row. Failing loud is correct: a stuck
+//     billing cycle is far more discoverable than silently emitting $0-tax
+//     invoices (under-collection nobody notices until an audit).
 func (r *Resolver) Resolve(_ context.Context, ts domain.TenantSettings) (Provider, error) {
 	switch ts.TaxProvider {
 	case "stripe_tax":
@@ -42,6 +48,6 @@ func (r *Resolver) Resolve(_ context.Context, ts domain.TenantSettings) (Provide
 	case "none", "":
 		return NewNoneProvider(), nil
 	default:
-		return NewNoneProvider(), nil
+		return nil, fmt.Errorf("unrecognized tax_provider %q — expected one of none/manual/stripe_tax (settings row is corrupted)", ts.TaxProvider)
 	}
 }

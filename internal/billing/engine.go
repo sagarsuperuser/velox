@@ -1096,11 +1096,11 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	}
 	app.TaxName = ts.TaxName
 
-	// Resolver is exhaustive: switch over ts.TaxProvider always
-	// returns a non-nil Provider with nil error
-	// (none / manual / stripe_tax → falls back to manual when
-	// Stripe wiring isn't there). The previous err-or-nil branch
-	// was dead code.
+	// The resolver fails loud (ADR-041): tax_provider=stripe_tax with no
+	// wired client, or an unrecognized provider string, returns an error
+	// rather than silently substituting manual/none. A Resolve error aborts
+	// invoice creation here — surfacing the misconfiguration instead of
+	// emitting a wrong-tax invoice.
 	provider, err := e.taxProviders.Resolve(ctx, ts)
 	if err != nil {
 		return TaxApplication{}, fmt.Errorf("resolve tax provider: %w", err)
