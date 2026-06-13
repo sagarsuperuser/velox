@@ -237,6 +237,12 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/collect`),
   sendInvoiceEmail: (invoiceId: string, email: string) =>
     apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
+  // Resends the payment-METHOD setup link email (Stripe Checkout in setup
+  // mode) for a finalized, unpaid invoice with no card on file — the
+  // no_payment_method attention card's "Resend setup link" nudge. Distinct
+  // from sendInvoiceEmail, which emails the hosted-invoice "pay" link.
+  resendSetupLink: (invoiceId: string) =>
+    apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/resend-setup-link`, {}),
   getPaymentTimeline: (invoiceId: string) =>
     apiRequest<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
   getSubscriptionTimeline: (subscriptionId: string) =>

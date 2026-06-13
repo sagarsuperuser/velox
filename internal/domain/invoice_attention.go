@@ -687,7 +687,7 @@ func classifyNoPaymentMethod(inv Invoice) *Attention {
 		Message:  "No payment method on file. The customer has been emailed a setup link — the engine will auto-charge once a method is attached. Resend the link if they haven't acted, or open the customer page to drive setup live.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
-			{Code: AttentionActionSendReminder, Label: "Resend payment link"},
+			{Code: AttentionActionSendReminder, Label: "Resend setup link"},
 			{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
 		},
 		Since: &since,
