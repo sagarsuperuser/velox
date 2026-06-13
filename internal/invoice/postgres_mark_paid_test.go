@@ -278,3 +278,62 @@ func TestMarkPaid_FiresInvoicePaidOnceOnTransition(t *testing.T) {
 		t.Errorf("REGRESSION: duplicate MarkPaid re-emitted invoice.paid: got %v, want exactly one", rec.events)
 	}
 }
+
+// TestListPendingTaxCommit_FiltersToOrphans locks the commit-reconciler SQL
+// filter against real Postgres: it returns ONLY finalized stripe_tax invoices
+// with a calculation id but no transaction id (the orphan left when CommitTax
+// succeeded at Stripe but the local persist failed), and excludes already-
+// committed and non-stripe invoices.
+func TestListPendingTaxCommit_FiltersToOrphans(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	store := invoice.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "Tax Commit Reconciler")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	exec := func(q string, args ...any) {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
+
+	// The orphan: finalized stripe_tax, calc id set, transaction id NULL.
+	exec(`UPDATE invoices SET status='finalized', tax_status='ok', tax_provider='stripe_tax',
+	         tax_calculation_id='taxcalc_orphan', tax_transaction_id=NULL, updated_at=now() WHERE id=$1`, invID)
+	got, err := store.ListPendingTaxCommit(ctx, 50, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != invID {
+		t.Fatalf("orphan not returned: got %d rows %+v", len(got), got)
+	}
+
+	// Once the transaction id is persisted → recovered, excluded.
+	exec(`UPDATE invoices SET tax_transaction_id='tx_committed' WHERE id=$1`, invID)
+	got, err = store.ListPendingTaxCommit(ctx, 50, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("committed invoice still returned: %d rows", len(got))
+	}
+
+	// A manual-provider invoice (no calc to commit) is never an orphan.
+	exec(`UPDATE invoices SET tax_provider='manual', tax_calculation_id='', tax_transaction_id=NULL WHERE id=$1`, invID)
+	got, err = store.ListPendingTaxCommit(ctx, 50, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("manual invoice returned: %d rows", len(got))
+	}
+}

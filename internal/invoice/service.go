@@ -1138,6 +1138,40 @@ func (s *Service) RetryPendingTax(ctx context.Context, batch int) (int, []error)
 	return s.processTaxRetryBatch(ctx, stuck)
 }
 
+// RetryPendingTaxCommit recovers the orphan state where CommitTax created the
+// Stripe tax_transaction at finalize but the local tax_transaction_id write
+// failed (or the process crashed between the two). Those invoices are
+// finalized + tax_status=ok with a calculation id but no transaction id — tax
+// was charged and reported upstream, but Velox can't reverse it on a later void
+// (the reversal guard keys on tax_transaction_id). Re-committing is safe:
+// CommitTax's idempotency key makes Stripe return the ORIGINAL transaction
+// (never a duplicate), and CommitTax persists it. Self-healing — a re-commit
+// whose persist fails again is simply picked up on the next tick until it
+// sticks; once persisted the invoice falls out of the scan.
+//
+// Runs on the wall-clock scheduler tick (clock-pinned invoices are excluded by
+// the store query). Per-row errors collected, not aborted-on.
+func (s *Service) RetryPendingTaxCommit(ctx context.Context, batch int) (int, []error) {
+	if s.taxCommitter == nil {
+		return 0, nil
+	}
+	livemode := postgres.Livemode(ctx)
+	orphans, err := s.store.ListPendingTaxCommit(ctx, batch, livemode)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending tax commits: %w", err)}
+	}
+	var errsOut []error
+	recovered := 0
+	for _, inv := range orphans {
+		if err := s.taxCommitter.CommitTax(ctx, inv.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("re-commit tax for invoice %s: %w", inv.ID, err))
+			continue
+		}
+		recovered++
+	}
+	return recovered, errsOut
+}
+
 // RetryPendingTaxForClock is the catchup-path counterpart to
 // RetryPendingTax. ADR-029 Phase 2: tax retries on clock-pinned
 // invoices fire only when an operator advances the clock — the

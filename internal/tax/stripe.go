@@ -163,8 +163,21 @@ func (p *StripeTaxProvider) handleFailure(ctx context.Context, _ Request, reason
 }
 
 // Commit creates a tax_transaction from an earlier calculation. Called at
-// invoice finalize time. Idempotent via the invoice-scoped reference so a
-// retried finalize does not create duplicate transactions.
+// invoice finalize time, and again by the commit reconciler when the original
+// finalize created the Stripe transaction but failed to persist its id locally.
+//
+// Two dedup layers, both keyed on the invoice:
+//   - Reference uniqueness (invoice id): Stripe rejects a second transaction
+//     with the same reference, so a duplicate can never be created.
+//   - Idempotency-Key (invoice id): on a retry WITHIN Stripe's 24h window,
+//     Stripe returns the CACHED response — i.e. the ORIGINAL transaction's id —
+//     instead of the reference-already-used error. This is what lets the
+//     reconciler RECOVER the transaction id of a commit that succeeded upstream
+//     but whose local SetTaxTransaction write failed. (Beyond 24h the
+//     calculation itself has expired and the engine's expiry guard blocks the
+//     re-commit before it reaches Stripe — so there is never a late duplicate;
+//     the invoice just stays uncommitted for manual re-calc.) Same pattern as
+//     payment.StripeRefunder and the Reverse path below.
 func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID string) (string, error) {
 	if calcRef == "" {
 		return "", nil
@@ -179,6 +192,7 @@ func (p *StripeTaxProvider) Commit(ctx context.Context, calcRef, invoiceID strin
 		Calculation: stripe.String(calcRef),
 		Reference:   stripe.String(invoiceID),
 	}
+	params.IdempotencyKey = stripe.String("velox_tax_commit_" + invoiceID)
 	txn, err := client.V1TaxTransactions.CreateFromCalculation(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("stripe tax: commit calculation %s for invoice %s: %w", calcRef, invoiceID, err)
