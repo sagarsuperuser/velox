@@ -47,10 +47,16 @@ type CreditNote struct {
 	// when Issue succeeds. Empty while the credit note is draft, or when
 	// the invoice has no upstream tax state to reverse (manual/none
 	// provider, or legacy invoice pre-dating invoice.tax_transaction_id).
-	TaxTransactionID string         `json:"tax_transaction_id,omitempty"`
-	Metadata         map[string]any `json:"metadata,omitempty"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	TaxTransactionID string `json:"tax_transaction_id,omitempty"`
+	// IsSimulated marks a credit note whose issued_at is in simulated
+	// (test-clock) time — true for engine clawbacks on a clock-pinned sub,
+	// false for operator HTTP issuance (always wall-clock). Drives the
+	// invoice activity-timeline lane so a simulated CN isn't shown with a
+	// simulated timestamp in the wall-clock "Real-time activity" lane.
+	IsSimulated bool           `json:"is_simulated"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
 type CreditNoteLineItem struct {

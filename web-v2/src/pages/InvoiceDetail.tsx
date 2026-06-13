@@ -234,8 +234,16 @@ export default function InvoiceDetailPage() {
   //     in the billing story. (Most stripe rows are already folded into the
   //     simulated paid/dunning rows upstream; only standalone failed/canceled
   //     events without a dunning twin reach here.)
+  //   - credit_note rows → external lane ONLY when the CN itself is
+  //     wall-clock (operator-issued via HTTP). Engine clawbacks
+  //     (downgrade/cancel proration) issue under the clock-pinned sub's
+  //     bound time → e.is_simulated → they belong in Activity, sorted with
+  //     the other simulated rows. Routing them externally showed a
+  //     simulated timestamp in the wall-clock lane (the bug this fixes).
   const isExternalRow = (e: typeof timeline[number]) =>
-    e.source === 'email' || (!!invoice?.is_simulated && (e.source === 'stripe' || e.source === 'credit_note'))
+    e.source === 'email' ||
+    (!!invoice?.is_simulated &&
+      (e.source === 'stripe' || (e.source === 'credit_note' && !e.is_simulated)))
   const billingTimeline = timeline.filter(e => !isExternalRow(e))
   const externalTimeline = timeline.filter(isExternalRow)
   // Honest title: "Notifications" when it's only emails, "Real-time activity"

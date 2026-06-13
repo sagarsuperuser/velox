@@ -21,6 +21,29 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+// cnReadCols is the canonical credit-note SELECT/RETURNING column list.
+// Every read site uses it with cnScanDest so a schema change (e.g. adding
+// is_simulated) updates one place and can't drift a positional scan.
+const cnReadCols = `id, tenant_id, invoice_id, customer_id, credit_note_number,
+	status, reason, subtotal_cents, tax_amount_cents, total_cents,
+	refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
+	currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
+	COALESCE(tax_transaction_id,''), is_simulated,
+	metadata, created_at, updated_at`
+
+// cnScanDest returns Scan destinations in cnReadCols order. metaJSON is the
+// raw metadata bytes the caller unmarshals into cn.Metadata after Scan.
+func cnScanDest(cn *domain.CreditNote, metaJSON *[]byte) []any {
+	return []any{
+		&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
+		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
+		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
+		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
+		&cn.TaxTransactionID, &cn.IsSimulated,
+		metaJSON, &cn.CreatedAt, &cn.UpdatedAt,
+	}
+}
+
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.CreditNote) (domain.CreditNote, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -104,25 +127,14 @@ func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tena
 		INSERT INTO credit_notes (id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, refund_status, metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
-		RETURNING id, tenant_id, invoice_id, customer_id, credit_note_number,
-			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
-			COALESCE(tax_transaction_id,''),
-			metadata, created_at, updated_at
-	`, id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
+			currency, refund_status, is_simulated, metadata, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
+		RETURNING `+cnReadCols,
+		id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
 		cn.Status, cn.Reason, cn.SubtotalCents, cn.TaxAmountCents, cn.TotalCents,
 		cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents,
-		cn.Currency, cn.RefundStatus, metaJSON, now,
-	).Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
-		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
-		&cn.Currency,
-		&cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
-		&cn.TaxTransactionID,
-		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
+		cn.Currency, cn.RefundStatus, cn.IsSimulated, metaJSON, now,
+	).Scan(cnScanDest(&cn, &metaJSON)...)
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
@@ -134,13 +146,7 @@ func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tena
 // transaction (used under the advisory lock in CreateUnderInvoiceLock). Mirrors
 // List's column projection.
 func (s *PostgresStore) listByInvoiceTx(ctx context.Context, tx *sql.Tx, invoiceID string) ([]domain.CreditNote, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
-			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
-			COALESCE(tax_transaction_id,''),
-			metadata, created_at, updated_at
+	rows, err := tx.QueryContext(ctx, `SELECT `+cnReadCols+`
 		FROM credit_notes WHERE invoice_id = $1`, invoiceID)
 	if err != nil {
 		return nil, err
@@ -151,12 +157,7 @@ func (s *PostgresStore) listByInvoiceTx(ctx context.Context, tx *sql.Tx, invoice
 	for rows.Next() {
 		var cn domain.CreditNote
 		var metaJSON []byte
-		if err := rows.Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
-			&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
-			&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
-			&cn.TaxTransactionID,
-			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
+		if err := rows.Scan(cnScanDest(&cn, &metaJSON)...); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &cn.Metadata)
@@ -174,20 +175,9 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cr
 
 	var cn domain.CreditNote
 	var metaJSON []byte
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
-			status, reason, subtotal_cents, tax_amount_cents, total_cents,
-			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
-			COALESCE(tax_transaction_id,''),
-			metadata, created_at, updated_at
+	err = tx.QueryRowContext(ctx, `SELECT `+cnReadCols+`
 		FROM credit_notes WHERE id = $1
-	`, id).Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
-		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
-		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
-		&cn.TaxTransactionID,
-		&metaJSON, &cn.CreatedAt, &cn.UpdatedAt)
+	`, id).Scan(cnScanDest(&cn, &metaJSON)...)
 	if err == sql.ErrNoRows {
 		return domain.CreditNote{}, errs.ErrNotFound
 	}
@@ -213,13 +203,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		limit = 100
 	}
 
-	query := `SELECT id, tenant_id, invoice_id, customer_id, credit_note_number,
-		status, reason, subtotal_cents, tax_amount_cents, total_cents,
-		refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-		currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
-		COALESCE(tax_transaction_id,''),
-		metadata, created_at, updated_at
-		FROM credit_notes`
+	query := `SELECT ` + cnReadCols + ` FROM credit_notes`
 	args := []any{}
 	idx := 1
 	clauses := []string{}
@@ -256,12 +240,7 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 	for rows.Next() {
 		var cn domain.CreditNote
 		var metaJSON []byte
-		if err := rows.Scan(&cn.ID, &cn.TenantID, &cn.InvoiceID, &cn.CustomerID, &cn.CreditNoteNumber,
-			&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
-			&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
-			&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
-			&cn.TaxTransactionID,
-			&metaJSON, &cn.CreatedAt, &cn.UpdatedAt); err != nil {
+		if err := rows.Scan(cnScanDest(&cn, &metaJSON)...); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &cn.Metadata)

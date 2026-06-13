@@ -121,6 +121,14 @@ type CreateInput struct {
 	// explicit *_cents fields directly.
 	RefundType string `json:"refund_type,omitempty"`
 	AutoIssue  bool   `json:"auto_issue"` // create + issue atomically
+	// IsSimulated marks this issuance as running in the invoice's
+	// (possibly simulated) time domain — set true by the engine clawback
+	// path, which issues under the clock-pinned sub's bound effective-now.
+	// The operator HTTP path leaves it false (it never binds a clock, so
+	// issued_at is wall-clock). buildCreditNote ANDs it with the invoice's
+	// own is_simulated, so an engine CN on a non-simulated invoice still
+	// resolves to false. NOT a JSON/API field — callers set it in Go.
+	IsSimulated bool `json:"-"`
 }
 
 type CreditLineInput struct {
@@ -245,6 +253,10 @@ func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoic
 			Quantity:        1,
 			UnitAmountCents: grossCents,
 		}},
+		// Engine-issued under the clock-pinned sub's bound effective-now —
+		// so issued_at is in the invoice's (possibly simulated) time domain.
+		// ANDed with inv.IsSimulated in buildCreditNote.
+		IsSimulated: true,
 	})
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -391,6 +403,10 @@ func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input Cr
 		OutOfBandAmountCents: outOfBandAmount,
 		Currency:             inv.Currency,
 		RefundStatus:         domain.RefundNone,
+		// Simulated iff issued under the invoice's bound clock (engine path,
+		// input.IsSimulated) AND the invoice itself is simulated. Operator
+		// HTTP issuance (input.IsSimulated=false) is always wall-clock.
+		IsSimulated: input.IsSimulated && inv.IsSimulated,
 	}, nil
 }
 
