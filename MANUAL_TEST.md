@@ -983,7 +983,8 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 ## FLOW D2: Resolution
 
 - [ ] "Payment recovered" → invoice marked **paid** (`paid_at` stamped; clock-pinned invoices land in sim-time), run closed.
-- [ ] "Manually resolved" → invoice is **voided** (`status='voided'`), any applied credits **reversed** back to the customer's balance, and the Stripe PaymentIntent **canceled**. It is NOT a no-op. (Note: the dialog describes this as "offline payment, negotiation, etc." but the effect is a full void — if collecting offline you likely want "Payment recovered" instead. Behavior mismatch worth revisiting.)
+- [ ] "Void invoice" (resolution `manually_resolved`) → invoice **voided** (`status='voided'`); any applied credits **reversed** to the customer's balance; the Stripe PaymentIntent **canceled**.
+- [ ] The void option reads **"Void invoice"** with destructive (red) styling and copy steering offline payments to "Payment recovered" — NOT a benign "Manually resolved / offline payment" label (which would trap an operator into voiding an invoice they actually collected).
 
 ## FLOW D4: Self-service payment update
 
