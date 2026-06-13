@@ -18,6 +18,13 @@ import (
 type CatchupJob struct {
 	TenantID string
 	ClockID  string
+	// PrevFrozenTime is the clock's frozen_time BEFORE this advance (the
+	// simulated "from" instant), captured by Advance before MarkAdvancing
+	// overwrites it. RunCatchup records it as the advance summary's
+	// AdvancedFrom so the dashboard can show the span the advance covered.
+	// Zero on the recover-in-flight path (the pre-advance value is no longer
+	// available after a restart); the summary then shows only the destination.
+	PrevFrozenTime time.Time
 }
 
 // CatchupQueue is the narrow contract the service uses to dispatch

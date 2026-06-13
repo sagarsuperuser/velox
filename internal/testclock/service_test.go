@@ -2,6 +2,7 @@ package testclock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -604,6 +605,20 @@ func (m *mockStore) MarkFailed(_ context.Context, _, id, reason string) (domain.
 	return c, nil
 }
 
+func (m *mockStore) SaveAdvanceSummary(_ context.Context, _, id string, summaryJSON []byte) error {
+	c, ok := m.clocks[id]
+	if !ok {
+		return errs.ErrNotFound
+	}
+	var s domain.AdvanceSummary
+	if err := json.Unmarshal(summaryJSON, &s); err != nil {
+		return err
+	}
+	c.LastAdvanceSummary = &s
+	m.clocks[id] = c
+	return nil
+}
+
 func (m *mockStore) RetryFromFailed(_ context.Context, _, id string) (domain.TestClock, error) {
 	c, ok := m.clocks[id]
 	if !ok {
@@ -637,6 +652,90 @@ func (m *mockStore) ListAllAdvancing(_ context.Context) ([]domain.TestClock, err
 // by cycleDur in a loop until it overshoots frozen_time. Returns the
 // number of "invoices" generated. Track call count for tests that
 // assert RunCycle is invoked exactly once per RunCatchup.
+// countingRunner is a deterministic BillingRunner: RunCycleForClock returns a
+// fixed invoice count (or a fixed error), and the other phases are no-ops. Used
+// to assert the advance summary captures the phase counts exactly.
+type countingRunner struct {
+	invoices int
+	err      error
+}
+
+func (r *countingRunner) RunCycleForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	if r.err != nil {
+		return 0, []error{r.err}
+	}
+	return r.invoices, nil
+}
+func (r *countingRunner) ScanThresholdsForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+func (r *countingRunner) RetryPendingChargesForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+
+// TestRunCatchup_RecordsAdvanceSummary verifies the post-advance summary
+// captures the (exact) per-phase counts and the simulated span, on both the
+// success transition and the partial-failure transition.
+func TestRunCatchup_RecordsAdvanceSummary(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("success persists exact counts and span", func(t *testing.T) {
+		store := newMockStore()
+		store.clocks["c1"] = domain.TestClock{
+			ID: "c1", TenantID: "t1", Status: domain.TestClockStatusAdvancing, FrozenTime: to,
+		}
+		s := NewService(store)
+		s.SetBillingRunner(&countingRunner{invoices: 3})
+
+		if err := s.RunCatchup(context.Background(),
+			CatchupJob{TenantID: "t1", ClockID: "c1", PrevFrozenTime: from}); err != nil {
+			t.Fatalf("RunCatchup: %v", err)
+		}
+		got := store.clocks["c1"]
+		if got.Status != domain.TestClockStatusReady {
+			t.Fatalf("status: got %q, want ready", got.Status)
+		}
+		sum := got.LastAdvanceSummary
+		if sum == nil {
+			t.Fatal("LastAdvanceSummary was not persisted")
+		}
+		if !sum.AdvancedFrom.Equal(from) || !sum.AdvancedTo.Equal(to) {
+			t.Errorf("span: got %s → %s, want %s → %s", sum.AdvancedFrom, sum.AdvancedTo, from, to)
+		}
+		if sum.InvoicesGenerated != 3 {
+			t.Errorf("InvoicesGenerated: got %d, want 3", sum.InvoicesGenerated)
+		}
+		if sum.HadErrors {
+			t.Error("HadErrors should be false on a clean advance")
+		}
+	})
+
+	t.Run("partial failure still persists the summary with HadErrors", func(t *testing.T) {
+		store := newMockStore()
+		store.clocks["c1"] = domain.TestClock{
+			ID: "c1", TenantID: "t1", Status: domain.TestClockStatusAdvancing, FrozenTime: to,
+		}
+		s := NewService(store)
+		s.SetBillingRunner(&countingRunner{err: errors.New("phase boom")})
+
+		if err := s.RunCatchup(context.Background(),
+			CatchupJob{TenantID: "t1", ClockID: "c1", PrevFrozenTime: from}); err == nil {
+			t.Fatal("expected RunCatchup to surface the phase error")
+		}
+		got := store.clocks["c1"]
+		if got.Status != domain.TestClockStatusInternalFailed {
+			t.Fatalf("status: got %q, want internal_failure", got.Status)
+		}
+		if got.LastAdvanceSummary == nil {
+			t.Fatal("summary must persist even on a partial-failure advance")
+		}
+		if !got.LastAdvanceSummary.HadErrors {
+			t.Error("HadErrors should be true when a phase errored")
+		}
+	})
+}
+
 type stubRunner struct {
 	store    *mockStore
 	clockID  string

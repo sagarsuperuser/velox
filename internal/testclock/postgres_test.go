@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -83,6 +84,75 @@ func TestPostgresStore_Delete_SoftDeletes_CascadesPinnedSubs(t *testing.T) {
 // subscription inherits it (ADR-027 customer-level pin) — landing
 // stranded (excluded from both the wall-clock cron and the catchup path,
 // so it never bills).
+// TestPostgresStore_AdvanceSummary_RoundTrips locks the last_advance_summary
+// JSONB column + the scan adapter: a never-advanced clock reads back a nil
+// summary; after SaveAdvanceSummary the next Get decodes the stored counts and
+// span exactly; and the advancing → ready transition's RETURNING carries it.
+func TestPostgresStore_AdvanceSummary_RoundTrips(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := testclock.NewPostgresStore(db)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Tenant")
+
+	clk, err := store.Create(ctx, tenantID, domain.TestClock{
+		Name:       "summary",
+		FrozenTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("create clock: %v", err)
+	}
+	// A fresh clock has never been advanced → nil summary.
+	if clk.LastAdvanceSummary != nil {
+		t.Fatalf("fresh clock should have nil summary, got %+v", clk.LastAdvanceSummary)
+	}
+
+	to := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.MarkAdvancing(ctx, tenantID, clk.ID, to); err != nil {
+		t.Fatalf("mark advancing: %v", err)
+	}
+
+	want := domain.AdvanceSummary{
+		AdvancedFrom:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		AdvancedTo:        to,
+		InvoicesGenerated: 2,
+		DunningAdvanced:   1,
+		CreditsExpired:    3,
+	}
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := store.SaveAdvanceSummary(ctx, tenantID, clk.ID, b); err != nil {
+		t.Fatalf("save summary: %v", err)
+	}
+
+	// The completing transition's RETURNING reads the summary back.
+	done, err := store.CompleteAdvance(ctx, tenantID, clk.ID)
+	if err != nil {
+		t.Fatalf("complete advance: %v", err)
+	}
+	if done.LastAdvanceSummary == nil {
+		t.Fatal("CompleteAdvance did not return the persisted summary")
+	}
+	got := *done.LastAdvanceSummary
+	if got.InvoicesGenerated != 2 || got.DunningAdvanced != 1 || got.CreditsExpired != 3 {
+		t.Errorf("counts: got inv=%d dun=%d cred=%d, want 2/1/3",
+			got.InvoicesGenerated, got.DunningAdvanced, got.CreditsExpired)
+	}
+	if !got.AdvancedTo.Equal(to) {
+		t.Errorf("advanced_to: got %s, want %s", got.AdvancedTo, to)
+	}
+
+	// And a plain Get decodes it too.
+	reloaded, err := store.Get(ctx, tenantID, clk.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if reloaded.LastAdvanceSummary == nil || reloaded.LastAdvanceSummary.InvoicesGenerated != 2 {
+		t.Errorf("Get did not decode the summary: %+v", reloaded.LastAdvanceSummary)
+	}
+}
+
 func TestPostgresStore_Delete_DetachesPinnedCustomers(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	store := testclock.NewPostgresStore(db)

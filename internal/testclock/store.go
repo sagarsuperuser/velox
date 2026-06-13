@@ -38,6 +38,11 @@ type Store interface {
 	// at the end of a successful catchup run. Clears any
 	// last_failure_reason from a prior failed-then-retried advance.
 	CompleteAdvance(ctx context.Context, tenantID, id string) (domain.TestClock, error)
+	// SaveAdvanceSummary persists the per-phase counts the catchup produced
+	// (domain.AdvanceSummary as JSON) onto the clock row. Called by RunCatchup
+	// just before the advancing → ready / internal_failure transition so the
+	// transition reads it back into the returned clock.
+	SaveAdvanceSummary(ctx context.Context, tenantID, id string, summaryJSON []byte) error
 	// MarkFailed flips advancing → internal_failure when a catchup run
 	// errors. The reason is persisted on the clock row so the dashboard
 	// can show "Catchup failed: <reason>" without forcing the operator

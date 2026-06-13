@@ -629,6 +629,26 @@ export interface TestClock {
   // explain the prior catchup error. Cleared on retry success or
   // a fresh advance. ADR-018.
   last_failure_reason?: string | null
+  // last_advance_summary records what the most recent advance produced.
+  // Null until the clock has been advanced with billing wired; rendered as
+  // the "Last advance results" card once status is back to 'ready'.
+  last_advance_summary?: AdvanceSummary | null
+}
+
+// AdvanceSummary mirrors domain.AdvanceSummary: the per-phase counts a
+// test-clock advance produced, plus the simulated span it covered.
+export interface AdvanceSummary {
+  advanced_from: string
+  advanced_to: string
+  invoices_generated: number
+  trials_activated: number
+  pauses_resumed: number
+  thresholds_fired: number
+  tax_retried: number
+  charges_retried: number
+  credits_expired: number
+  dunning_advanced: number
+  had_errors: boolean
 }
 
 export interface Subscription {
