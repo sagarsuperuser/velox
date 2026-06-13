@@ -186,6 +186,19 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		ts = input.Timestamp.UTC()
 	}
 
+	// KNOWN BEHAVIOR (no lower bound on live timestamps): an event whose
+	// timestamp falls inside an ALREADY-FINALIZED billing period is
+	// accepted and stored, but the cycle that closed that period won't be
+	// re-billed (finalized invoices reference billed entries, not live
+	// aggregations) — so it is effectively unbilled. This is deliberate:
+	// late-arriving events are industry-standard (Stripe Meter Events,
+	// Lago, Orb all accept out-of-order events), so a hard reject would
+	// break legitimate retries / stream pipelines. Intentional historical
+	// posting into closed periods goes through Backfill (origin='backfill',
+	// documented safe). Deferred decision (no design partner yet): whether
+	// to true-up closed periods, reject past a window, or surface a
+	// late-event counter — all need a billing-policy call, not a silent
+	// per-event subscription lookup on this hot path.
 	return s.store.Ingest(ctx, tenantID, domain.UsageEvent{
 		CustomerID:     input.CustomerID,
 		MeterID:        input.MeterID,

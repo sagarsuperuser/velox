@@ -3,7 +3,6 @@ package invoice_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -11,12 +10,12 @@ import (
 )
 
 // TestPerClockQueries_SQLValid is a regression for the ambiguous-column
-// bug surfaced 2026-05-08 — the three per-clock invoice queries
-// (ListAutoChargePendingForClock, ListPendingTaxRetryForClock,
-// ListApproachingDueForClock) JOIN invoices to subscriptions, and the
-// SELECT had bare invCols (no alias prefix), so Postgres rejected
-// `id`/`tenant_id`/etc. as ambiguous (SQLSTATE 42702). Live operator
-// hit this on the first real Advance after ADR-029 shipped.
+// bug surfaced 2026-05-08 — the per-clock invoice queries
+// (ListAutoChargePendingForClock, ListPendingTaxRetryForClock) JOIN
+// invoices to subscriptions, and the SELECT had bare invCols (no alias
+// prefix), so Postgres rejected `id`/`tenant_id`/etc. as ambiguous
+// (SQLSTATE 42702). Live operator hit this on the first real Advance
+// after ADR-029 shipped.
 //
 // This test executes each query against a real Postgres against an
 // empty table — it asserts the SQL is valid (no syntax / ambiguous-
@@ -53,14 +52,4 @@ func TestPerClockQueries_SQLValid(t *testing.T) {
 		}
 	})
 
-	t.Run("ListApproachingDueForClock", func(t *testing.T) {
-		got, err := store.ListApproachingDueForClock(ctx, "vlx_ten_test", "vlx_tclk_test",
-			time.Now(), 3)
-		if err != nil {
-			t.Fatalf("expected nil error on empty DB; got: %v", err)
-		}
-		if len(got) != 0 {
-			t.Errorf("expected empty slice; got %d rows", len(got))
-		}
-	})
 }

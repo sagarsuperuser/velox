@@ -35,12 +35,6 @@ type Store interface {
 	ApplyCredits(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 
 	UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error)
-	ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error)
-
-	// ListApproachingDueForClock is the catchup-path counterpart.
-	// ADR-029 Phase 6: clock-pinned reminder candidates use the
-	// clock's frozen_time as the "now" anchor, not wall-clock.
-	ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error)
 
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)

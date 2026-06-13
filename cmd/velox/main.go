@@ -136,7 +136,6 @@ func serve() {
 		billingInterval = 5 * time.Minute
 	}
 	scheduler := billing.NewScheduler(server.BillingEngine, billingInterval, 50, server.DunningSvc, server.SettingsStore, nil, server.CreditSvc)
-	scheduler.SetReminders(server.InvoiceSvc)
 	if server.TokenSvc != nil {
 		scheduler.SetTokenCleaner(server.TokenSvc)
 	}

@@ -921,18 +921,6 @@ func buildLineItem(input AddLineItemInput, currency string) (domain.InvoiceLineI
 	}, nil
 }
 
-func (s *Service) ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error) {
-	return s.store.ListApproachingDue(ctx, daysBeforeDue)
-}
-
-// ListApproachingDueForClock returns clock-pinned invoices approaching
-// their simulated due_at. ADR-029 Phase 6 — the catchup orchestrator
-// uses this to drive reminder dispatch on operator Advance instead of
-// the wall-clock cron tick.
-func (s *Service) ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error) {
-	return s.store.ListApproachingDueForClock(ctx, tenantID, clockID, frozenTime, daysBeforeDue)
-}
-
 // RetryTax routes a "Retry tax" action through the billing engine.
 // Called from both the operator-triggered HTTP handler and the
 // background reconciler (RetryPendingTax). The engine owns the

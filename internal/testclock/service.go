@@ -140,15 +140,6 @@ type DunningProcessor interface {
 	ProcessDueRunsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, limit int) (int, []error)
 }
 
-// ReminderLister is the narrow hook the catchup orchestrator uses to
-// list clock-pinned invoices approaching simulated due. ADR-029 Phase
-// 6. Today's cron path just logs the count (no email dispatch wired
-// yet); the catchup mirror keeps the same shape so the two paths stay
-// symmetric — when dispatch lands, both get it.
-type ReminderLister interface {
-	ListApproachingDueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, daysBeforeDue int) ([]domain.Invoice, error)
-}
-
 // Service provides the test-clock API surface. Depends on Store for
 // persistence, optionally BillingRunner to drive the billing engine
 // during catchup, and optionally CatchupQueue to dispatch catchup
@@ -167,7 +158,6 @@ type Service struct {
 	taxRetry      TaxRetrier
 	creditExpirer CreditExpirer
 	dunning       DunningProcessor
-	reminders     ReminderLister
 }
 
 func NewService(store Store) *Service {
@@ -198,14 +188,6 @@ func (s *Service) SetBillingRunner(b BillingRunner) {
 // nil so Advance runs catchup inline.
 func (s *Service) SetCatchupQueue(q CatchupQueue) {
 	s.queue = q
-}
-
-// SetReminders wires the per-clock reminder-list phase of catchup.
-// Optional. When the cron path's reminder-dispatch eventually grows
-// from the current "list and log" to actual email sending, the
-// catchup mirror inherits it for free. ADR-029 Phase 6.
-func (s *Service) SetReminders(r ReminderLister) {
-	s.reminders = r
 }
 
 // SetDunning wires the per-clock dunning-advance phase of catchup.
@@ -644,24 +626,6 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		if s.dunning != nil && needFrozen {
 			_, dunningErrs := s.dunning.ProcessDueRunsForClock(ctx, job.TenantID, job.ClockID, frozen, 50)
 			runErrs = append(runErrs, dunningErrs...)
-		}
-
-		// Phase 6 (ADR-029): reminder candidate list for clock-pinned
-		// invoices approaching simulated due_at. Today: just logs the
-		// count, mirroring the cron's current behavior. When reminder
-		// dispatch is wired (separate work), this hook fans out the
-		// list to the email outbox in simulated time. Last phase
-		// because it's read-only — failures here don't roll back any
-		// earlier state-mutating phase.
-		if s.reminders != nil && needFrozen {
-			const daysBeforeDue = 3
-			approaching, remErr := s.reminders.ListApproachingDueForClock(ctx, job.TenantID, job.ClockID, frozen, daysBeforeDue)
-			if remErr != nil {
-				runErrs = append(runErrs, fmt.Errorf("list approaching-due for clock: %w", remErr))
-			} else if len(approaching) > 0 {
-				slog.Info("clock-pinned invoices approaching simulated due_at",
-					"clock_id", job.ClockID, "count", len(approaching))
-			}
 		}
 
 		if len(runErrs) > 0 {
