@@ -88,6 +88,56 @@ func TestMarkPaid_IdempotentPreservesAmountPaid(t *testing.T) {
 	}
 }
 
+// TestMarkPaidReportingTransition_FlagsTheRealTransition locks the store-level
+// signal H7 relies on: the first MarkPaidReportingTransition on a finalized
+// invoice reports transitioned=true; a second call on the now-paid invoice
+// reports transitioned=false (the idempotent no-op branch). The SELECT … FOR
+// UPDATE serializes concurrent callers, so for two at-least-once webhook
+// deliveries of the same charge exactly one sees true — which is what lets
+// SettleSucceeded fire the receipt email / payment.succeeded event once.
+func TestMarkPaidReportingTransition_FlagsTheRealTransition(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	store := invoice.NewPostgresStore(db)
+	tenantID := testutil.CreateTestTenant(t, db, "MarkPaid Transition Flag")
+	invID := seedDraftInvoice(t, db, tenantID)
+
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET subtotal_cents = 1000, total_amount_cents = 1000,
+		    amount_due_cents = 1000, tax_status = 'ok' WHERE id = $1`, invID); err != nil {
+		t.Fatalf("seed amounts: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+	if _, err := store.UpdateStatus(ctx, tenantID, invID, domain.InvoiceFinalized); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	_, transitioned, err := store.MarkPaidReportingTransition(ctx, tenantID, invID, "pi_1", now)
+	if err != nil {
+		t.Fatalf("first MarkPaidReportingTransition: %v", err)
+	}
+	if !transitioned {
+		t.Error("first call on a finalized invoice must report transitioned=true")
+	}
+
+	_, transitioned2, err := store.MarkPaidReportingTransition(ctx, tenantID, invID, "pi_2", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second MarkPaidReportingTransition: %v", err)
+	}
+	if transitioned2 {
+		t.Error("second call on an already-paid invoice must report transitioned=false (idempotent no-op)")
+	}
+}
+
 // recordingOutbox captures the events MarkPaid enqueues, ignoring the tx.
 type recordingOutbox struct{ events []string }
 

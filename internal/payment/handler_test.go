@@ -394,14 +394,20 @@ func (m *mockInvoiceUpdaterHandler) Get(_ context.Context, _, id string) (domain
 	return domain.Invoice{ID: id, TenantID: inv.tenantID}, nil
 }
 
-func (m *mockInvoiceUpdaterHandler) MarkPaid(_ context.Context, _, id string, piID string, paidAt time.Time) (domain.Invoice, error) {
+func (m *mockInvoiceUpdaterHandler) MarkPaid(ctx context.Context, tenantID, id string, piID string, paidAt time.Time) (domain.Invoice, error) {
+	inv, _, err := m.MarkPaidReportingTransition(ctx, tenantID, id, piID, paidAt)
+	return inv, err
+}
+
+func (m *mockInvoiceUpdaterHandler) MarkPaidReportingTransition(_ context.Context, _, id string, piID string, paidAt time.Time) (domain.Invoice, bool, error) {
 	if m.markPaidErr != nil {
-		return domain.Invoice{}, m.markPaidErr
+		return domain.Invoice{}, false, m.markPaidErr
 	}
 	inv, ok := m.invoices[id]
 	if !ok {
-		return domain.Invoice{}, fmt.Errorf("not found")
+		return domain.Invoice{}, false, fmt.Errorf("not found")
 	}
+	alreadyPaid := inv.paymentStatus == "succeeded"
 	inv.paymentStatus = "succeeded"
 	inv.stripePI = piID
 	inv.paidAt = &paidAt
@@ -409,7 +415,7 @@ func (m *mockInvoiceUpdaterHandler) MarkPaid(_ context.Context, _, id string, pi
 	if piID != "" {
 		m.byPI[piID] = id
 	}
-	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, nil
+	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, !alreadyPaid, nil
 }
 
 func (m *mockInvoiceUpdaterHandler) SetPaymentCard(_ context.Context, _, _ string, _, _ string) error {

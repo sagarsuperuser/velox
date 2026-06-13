@@ -561,10 +561,29 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	return inv, nil
 }
 
+// MarkPaid settles an invoice (status→paid, amount_due→0) and is the
+// single transactional outbox point for invoice.paid. Thin wrapper over
+// MarkPaidReportingTransition for the many callers that don't care
+// whether THIS call did the transition.
 func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error) {
+	inv, _, err := s.MarkPaidReportingTransition(ctx, tenantID, id, stripePaymentIntentID, paidAt)
+	return inv, err
+}
+
+// MarkPaidReportingTransition is MarkPaid plus a `transitioned` flag:
+// true when THIS call moved the invoice finalized/uncollectible → paid,
+// false when it was already paid (the idempotent no-op branch). The
+// SELECT … FOR UPDATE serializes concurrent callers, so for two
+// at-least-once webhook deliveries of the SAME charge exactly one gets
+// transitioned=true. SettleSucceeded gates its post-paid side-effects
+// (payment.succeeded event, receipt email, card stamp) on the flag so a
+// concurrent redelivery — which the stale-read fast-path guard can't
+// catch — fires them once, not twice. invoice.paid itself is already
+// once-only (enqueued inside this tx, after the no-op branch returns).
+func (s *PostgresStore) MarkPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
 	defer postgres.Rollback(tx)
 
@@ -594,9 +613,9 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		`SELECT status, tax_status FROM invoices WHERE id = $1 FOR UPDATE`, id,
 	).Scan(&status, &taxStatus); err != nil {
 		if err == sql.ErrNoRows {
-			return domain.Invoice{}, errs.ErrNotFound
+			return domain.Invoice{}, false, errs.ErrNotFound
 		}
-		return domain.Invoice{}, fmt.Errorf("load invoice for mark-paid: %w", err)
+		return domain.Invoice{}, false, fmt.Errorf("load invoice for mark-paid: %w", err)
 	}
 	switch domain.InvoiceStatus(status) {
 	case domain.InvoiceFinalized, domain.InvoiceUncollectible:
@@ -619,14 +638,14 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		if err := tx.QueryRowContext(ctx,
 			`SELECT `+invCols+` FROM invoices WHERE id = $1`, id,
 		).Scan(s.scanInvDest(&inv)...); err != nil {
-			return domain.Invoice{}, fmt.Errorf("reload already-paid invoice: %w", err)
+			return domain.Invoice{}, false, fmt.Errorf("reload already-paid invoice: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return domain.Invoice{}, err
+			return domain.Invoice{}, false, err
 		}
-		return inv, nil
+		return inv, false, nil
 	default:
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+		return domain.Invoice{}, false, errs.InvalidState(fmt.Sprintf(
 			"cannot mark invoice paid from status %q — finalize the invoice first (tax-pending invoices stay draft until tax resolves; voided invoices are terminal)",
 			status,
 		))
@@ -640,7 +659,7 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 		// (Tax-exempt customers / regions resolve to tax_status='ok'
 		// with tax_amount_cents=0 + tax_exempt_reason — they're not a
 		// separate status.)
-		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+		return domain.Invoice{}, false, errs.InvalidState(fmt.Sprintf(
 			"cannot mark invoice paid with tax_status=%q — wait for tax retry to resolve, then re-attempt",
 			taxStatus,
 		))
@@ -663,10 +682,10 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
 	}
 	if err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
 	// invoice.paid — enqueued in the SAME tx as the finalized/uncollectible →
 	// paid transition. The already-paid branch above returns before reaching
@@ -685,13 +704,13 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 			"currency":          inv.Currency,
 			"paid_at":           paidAt.UTC(),
 		}); err != nil {
-			return domain.Invoice{}, fmt.Errorf("enqueue invoice.paid: %w", err)
+			return domain.Invoice{}, false, fmt.Errorf("enqueue invoice.paid: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
+		return domain.Invoice{}, false, err
 	}
-	return inv, nil
+	return inv, true, nil
 }
 
 // SetPaymentCard stamps the card brand + last4 used to settle an
