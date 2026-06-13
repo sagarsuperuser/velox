@@ -33,6 +33,11 @@ type CreditExpirer interface {
 // batch.
 type TaxRetrier interface {
 	RetryPendingTax(ctx context.Context, batch int) (int, []error)
+	// RetryPendingTaxCommit re-commits finalized stripe_tax invoices whose
+	// Stripe tax_transaction was created but whose id never persisted locally
+	// (so a later void couldn't reverse it). Idempotent — Stripe returns the
+	// original transaction, never a duplicate.
+	RetryPendingTaxCommit(ctx context.Context, batch int) (int, []error)
 }
 
 // TrialExpirer is the narrow hook the scheduler uses to flip
@@ -304,6 +309,18 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, e := range taxErrs {
 			slog.Error("tax retry error", "mode", mode, "error", e)
+		}
+
+		// Commit reconciler: recover invoices whose Stripe tax_transaction
+		// was created at finalize but whose id never persisted locally — else
+		// a later void/uncollectible can't reverse the tax (the reversal guard
+		// keys on tax_transaction_id) and the tax authority over-reports.
+		committed, commitErrs := s.taxRetrier.RetryPendingTaxCommit(ctx, s.batch)
+		if committed > 0 || len(commitErrs) > 0 {
+			slog.Info("tax commit recoveries", "mode", mode, "recovered", committed, "errors", len(commitErrs))
+		}
+		for _, e := range commitErrs {
+			slog.Error("tax commit recovery error", "mode", mode, "error", e)
 		}
 	}
 

@@ -1668,6 +1668,62 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 	return out, rows.Err()
 }
 
+// ListPendingTaxCommit finds finalized stripe_tax invoices whose Stripe Tax
+// calculation succeeded (tax_status=ok, tax_calculation_id set) but whose
+// tax_transaction_id never got persisted — the orphan state left when
+// CommitTax's Stripe commit succeeded upstream but the local SetTaxTransaction
+// write failed (or the process crashed in between). Powers the commit
+// reconciler, which re-commits each to recover the transaction id (idempotency
+// makes Stripe return the original transaction, never a duplicate).
+//
+// Bounded to invoices touched within the last 24h: beyond that the Stripe Tax
+// calculation has expired, so the engine's expiry guard blocks the re-commit
+// anyway — chasing them every tick would only log churn. An aged-out orphan
+// needs a manual tax re-calc. Clock-pinned invoices are excluded for the same
+// reason ListPendingTaxRetry excludes them (the catchup path owns those).
+func (s *PostgresStore) ListPendingTaxCommit(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.livemode = $1
+		  AND i.status = 'finalized'
+		  AND i.tax_status = 'ok'
+		  AND i.tax_provider = 'stripe_tax'
+		  AND COALESCE(i.tax_calculation_id, '') <> ''
+		  AND COALESCE(i.tax_transaction_id, '') = ''
+		  AND i.updated_at > now() - interval '24 hours'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM subscriptions s
+		    WHERE s.id = i.subscription_id
+		      AND s.test_clock_id IS NOT NULL
+		  )
+		ORDER BY i.updated_at ASC
+		LIMIT $2
+	`, livemode, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
 // ListPendingTaxRetryForClock is the catchup-path counterpart to
 // ListPendingTaxRetry. ADR-029 Phase 2.
 //

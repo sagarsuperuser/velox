@@ -581,6 +581,26 @@ func (m *memStore) ListPendingTaxRetry(_ context.Context, batch int, retryableCo
 	return out, nil
 }
 
+func (m *memStore) ListPendingTaxCommit(_ context.Context, batch int, _ bool) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.Status != domain.InvoiceFinalized || inv.TaxStatus != domain.InvoiceTaxOK {
+			continue
+		}
+		if inv.TaxProvider != "stripe_tax" || inv.TaxCalculationID == "" || inv.TaxTransactionID != "" {
+			continue
+		}
+		out = append(out, inv)
+		if len(out) >= batch {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// that exercise retry-after-partial-failure paths silently double-insert
@@ -1268,4 +1288,55 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 			t.Errorf("idempotent re-MarkPaid should succeed: %v", err)
 		}
 	})
+}
+
+// recordingTaxCommitter captures CommitTax calls for the reconciler test.
+type recordingTaxCommitter struct {
+	calls []string // invoice ids
+	err   error
+}
+
+func (r *recordingTaxCommitter) CommitTax(_ context.Context, _, invoiceID, _ string) error {
+	r.calls = append(r.calls, invoiceID)
+	return r.err
+}
+
+// TestRetryPendingTaxCommit verifies the commit reconciler re-commits only the
+// orphan invoices — finalized stripe_tax with a calculation id but no
+// transaction id — and leaves already-committed / non-stripe invoices alone.
+func TestRetryPendingTaxCommit(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil, nil)
+	committer := &recordingTaxCommitter{}
+	svc.SetTaxCommitter(committer)
+	ctx := context.Background()
+
+	// The orphan: commit succeeded at Stripe, local tax_transaction_id lost.
+	store.invoices["orphan"] = domain.Invoice{
+		ID: "orphan", TenantID: "t1", Status: domain.InvoiceFinalized,
+		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
+		TaxCalculationID: "taxcalc_1", TaxTransactionID: "",
+	}
+	// Already committed — excluded.
+	store.invoices["committed"] = domain.Invoice{
+		ID: "committed", TenantID: "t1", Status: domain.InvoiceFinalized,
+		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
+		TaxCalculationID: "taxcalc_2", TaxTransactionID: "tx_2",
+	}
+	// Manual provider (no calc id, nothing to commit) — excluded.
+	store.invoices["manual"] = domain.Invoice{
+		ID: "manual", TenantID: "t1", Status: domain.InvoiceFinalized,
+		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "manual",
+	}
+
+	recovered, errs := svc.RetryPendingTaxCommit(ctx, 50)
+	if len(errs) != 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if recovered != 1 {
+		t.Errorf("recovered = %d, want 1 (only the orphan)", recovered)
+	}
+	if len(committer.calls) != 1 || committer.calls[0] != "orphan" {
+		t.Errorf("CommitTax calls = %v, want exactly [orphan]", committer.calls)
+	}
 }
