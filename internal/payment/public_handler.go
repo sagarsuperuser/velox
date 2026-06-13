@@ -26,6 +26,18 @@ type PublicPaymentCustomerReader interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 }
 
+// StripeCustomerEnsurer resolves — or lazily creates — the Stripe Customer for
+// a Velox customer. The public first-payment-method flow needs this: a customer
+// setting up their first card legitimately has no Stripe Customer yet, so
+// requiring a pre-existing customers.stripe_customer_id dead-ends exactly the
+// case this email exists to serve. Every sibling payment-setup path (operator
+// "Add payment method", hosted-invoice Pay) already creates it on demand via
+// this same helper. Satisfied by paymentmethods.StripeAdapter.EnsureStripeCustomer
+// (which is built to run on public token-authenticated requests).
+type StripeCustomerEnsurer interface {
+	EnsureStripeCustomer(ctx context.Context, tenantID, customerID string) (string, error)
+}
+
 // PublicPaymentHandler serves tokenized payment update endpoints.
 // These routes require NO auth — the token itself is the credential.
 //
@@ -40,10 +52,11 @@ type PublicPaymentHandler struct {
 	db        *postgres.DB
 	clients   *StripeClients
 	customers PublicPaymentCustomerReader
+	ensurer   StripeCustomerEnsurer
 	returnURL string
 }
 
-func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, clients *StripeClients, customers PublicPaymentCustomerReader, returnURL string) *PublicPaymentHandler {
+func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, clients *StripeClients, customers PublicPaymentCustomerReader, ensurer StripeCustomerEnsurer, returnURL string) *PublicPaymentHandler {
 	if tokens == nil || !clients.Has() {
 		return nil
 	}
@@ -52,6 +65,7 @@ func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, clients *Str
 		db:        db,
 		clients:   clients,
 		customers: customers,
+		ensurer:   ensurer,
 		returnURL: returnURL,
 	}
 }
@@ -165,17 +179,49 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	}
 
 	// Scope ctx to the token's resolved (tenant, livemode) for all
-	// downstream tenant-scoped DB work.
+	// downstream tenant-scoped work, including the Stripe client lookup.
 	scopedCtx := postgres.WithLivemode(r.Context(), token.Livemode)
 
-	// Atomically consume the single-use token BEFORE creating the checkout
-	// session. Validate's `used_at IS NULL` is only a read, so two concurrent
-	// requests for the same token both passed it and both opened a setup
-	// session (TOCTOU). The conditional UPDATE here is the compare-and-swap:
-	// only the winner proceeds; a loser (or a replay) sees consumed=false and
-	// gets the same generic invalid-token response. Consuming first means a
-	// later Stripe failure burns the token — acceptable for a single-use
-	// security credential; the customer requests a fresh link.
+	// Resolve — or lazily create — the customer's Stripe Customer. A customer
+	// setting up their FIRST payment method (the whole point of this email) has
+	// no customers.stripe_customer_id yet; EnsureStripeCustomer creates one on
+	// demand and persists it, the same as the operator "Add payment method" and
+	// hosted-invoice Pay paths. Pre-fix this read stripe_customer_id directly
+	// and dead-ended with "customer does not have a Stripe payment setup" — for
+	// the one flow whose job is to create that setup.
+	//
+	// This runs BEFORE the token is consumed (below), so a recoverable failure
+	// here — e.g. Stripe not yet connected for this mode — does NOT burn the
+	// single-use link: the customer retries the same email once it's fixed.
+	// EnsureStripeCustomer is idempotent (short-circuits on the persisted id),
+	// so a replay/retry doesn't mint duplicate Stripe Customers.
+	stripeCustomerID, err := h.ensurer.EnsureStripeCustomer(scopedCtx, token.TenantID, token.CustomerID)
+	if err != nil {
+		slog.ErrorContext(scopedCtx, "public payment: ensure stripe customer",
+			"customer_id", token.CustomerID, "error", err)
+		// Customer-facing endpoint — TIER 2 sanitization (ADR-026): neutral
+		// copy + reference id only, never operator/config detail.
+		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
+			"We couldn't start the payment update right now. Please contact your billing administrator if the problem persists.")
+		return
+	}
+
+	sc := h.clients.For(scopedCtx, token.TenantID, token.Livemode)
+	if sc == nil {
+		// EnsureStripeCustomer just succeeded for this (tenant, mode), so a nil
+		// client here would be a config change between the two calls.
+		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
+			"We couldn't start the payment update right now. Please contact your billing administrator if the problem persists.")
+		return
+	}
+
+	// Atomically consume the single-use token NOW — immediately before the
+	// side-effecting Checkout-session create. Validate's `used_at IS NULL` is
+	// only a read, so two concurrent requests both pass it; this conditional
+	// UPDATE is the compare-and-swap that lets exactly one open a setup session
+	// (a loser or a replay sees consumed=false → invalid-token). Consuming here
+	// rather than up-front means only a genuine external Stripe failure past
+	// this point burns the token — not a recoverable precondition.
 	consumed, err := h.tokens.Consume(scopedCtx, token.TenantID, rawToken)
 	if err != nil {
 		slog.ErrorContext(scopedCtx, "public payment: consume token", "error", err)
@@ -185,39 +231,6 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	if !consumed {
 		respond.Error(w, r, http.StatusUnauthorized, "authentication_error", "invalid_token",
 			"invalid or expired token")
-		return
-	}
-
-	// Look up the customer's Stripe customer ID under TxTenant scoped
-	// to the token's resolved (tenant, livemode). RLS stays in play
-	// past the token gate; the token's JOIN already resolved livemode
-	// authoritatively, so no extra bypass-required lookup is needed.
-	tx, err := h.db.BeginTx(scopedCtx, postgres.TxTenant, token.TenantID)
-	if err != nil {
-		slog.ErrorContext(scopedCtx, "public payment: begin tx", "error", err)
-		respond.InternalError(w, r)
-		return
-	}
-	defer postgres.Rollback(tx)
-
-	// Single source of truth (migration 0096): customers.stripe_customer_id.
-	// Replaced the old customer_payment_setups.stripe_customer_id read
-	// when the summary table was retired.
-	var stripeCustomerID string
-	err = tx.QueryRowContext(scopedCtx, `
-		SELECT COALESCE(stripe_customer_id, '') FROM customers
-		WHERE id = $1 AND tenant_id = $2
-	`, token.CustomerID, token.TenantID).Scan(&stripeCustomerID)
-	if err != nil || stripeCustomerID == "" {
-		respond.Error(w, r, http.StatusBadRequest, "validation_error", "missing_payment_setup",
-			"customer does not have a Stripe payment setup")
-		return
-	}
-
-	sc := h.clients.For(scopedCtx, token.TenantID, token.Livemode)
-	if sc == nil {
-		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
-			"stripe not configured for this mode")
 		return
 	}
 

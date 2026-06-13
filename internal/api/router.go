@@ -394,7 +394,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// stripeAdapter. Keep this declaration near the constructor; the
 	// resolver-wiring block is the canonical place to find clock.Resolver
 	// hookups across the router.
-	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients, customerSvc,
+	publicPaymentH := payment.NewPublicPaymentHandler(tokenSvc, db, stripeClients, customerSvc, paymentMethodsStripe,
 		strings.TrimSpace(os.Getenv("PAYMENT_UPDATE_RETURN_URL")))
 
 	// paymentmethods.StripeAdapter constructed early so the hosted-invoice
