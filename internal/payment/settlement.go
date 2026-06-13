@@ -62,8 +62,23 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	now := clock.Now(ctx)
 
 	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at.
-	if _, err := s.invoices.MarkPaid(ctx, tenantID, inv.ID, paymentIntentID, now); err != nil {
+	// transitioned reports whether THIS call did the finalized→paid move.
+	// The line-47 guard is a fast path that catches the SERIAL redelivery
+	// (re-read sees paid); a truly CONCURRENT redelivery of the same charge
+	// slips past it because both readers saw `processing`. MarkPaid's
+	// SELECT … FOR UPDATE serializes those two, and exactly one gets
+	// transitioned=true — the authoritative once-only gate for the
+	// non-transactional side-effects below (the receipt email + the
+	// payment.succeeded event). invoice.paid is already once-only (enqueued
+	// inside MarkPaid's tx).
+	_, transitioned, err := s.invoices.MarkPaidReportingTransition(ctx, tenantID, inv.ID, paymentIntentID, now)
+	if err != nil {
 		return fmt.Errorf("mark invoice paid: %w", err)
+	}
+	if !transitioned {
+		slog.Info("payment already settled by a concurrent settler; skipping duplicate side-effects",
+			"invoice_id", inv.ID, "payment_intent_id", paymentIntentID, "source", source)
+		return nil
 	}
 
 	slog.Info("payment succeeded",

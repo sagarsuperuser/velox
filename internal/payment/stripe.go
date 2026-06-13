@@ -143,6 +143,12 @@ type InvoiceUpdater interface {
 	UpdatePayment(ctx context.Context, tenantID, id string, paymentStatus domain.InvoicePaymentStatus, stripePaymentIntentID, lastPaymentError string, paidAt *time.Time) (domain.Invoice, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
+	// MarkPaidReportingTransition is MarkPaid plus a `transitioned` flag —
+	// true only when THIS call moved the invoice into paid (false on the
+	// already-paid no-op). SettleSucceeded gates its post-paid side-effects
+	// on it so a concurrent redelivery of the same charge doesn't double-
+	// fire the receipt email / payment.succeeded event.
+	MarkPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error)
 	// SetPaymentCard stamps the card brand + last4 used to settle
 	// an invoice. Optional — empty values render no sub-line in
 	// the timeline. Called by handlePaymentSucceeded after MarkPaid

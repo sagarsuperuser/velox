@@ -16,6 +16,75 @@ import (
 // recovered settlement must fire the SAME consequences (dunning, mark) as the
 // webhook, and inherit the out-of-order guard.
 
+// recordingEventDispatcher counts outbound events by type.
+type recordingEventDispatcher struct{ byType map[string]int }
+
+func (r *recordingEventDispatcher) Dispatch(_ context.Context, _, eventType string, _ map[string]any) error {
+	if r.byType == nil {
+		r.byType = map[string]int{}
+	}
+	r.byType[eventType]++
+	return nil
+}
+
+// recordingReceiptEmail counts payment-receipt enqueues.
+type recordingReceiptEmail struct{ sends int }
+
+func (r *recordingReceiptEmail) SendPaymentReceipt(_ context.Context, _, _, _, _ string, _ int64, _, _ string) error {
+	r.sends++
+	return nil
+}
+
+type staticCustomerEmail struct{}
+
+func (staticCustomerEmail) GetCustomerEmail(_ context.Context, _, _ string) (string, string, error) {
+	return "buyer@example.com", "Buyer", nil
+}
+
+// TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce locks the H7
+// fix: two at-least-once deliveries of the SAME payment_intent.succeeded that
+// race — both fetch the invoice while it's still `processing`, so both carry a
+// stale snapshot that slips past the fast-path already-paid guard — must settle
+// the invoice once and fire the non-transactional side-effects (payment.succeeded
+// event + receipt email) EXACTLY once. MarkPaid's SELECT … FOR UPDATE serializes
+// the two; only the transition-winner fires the side-effects. Pre-fix both fired,
+// double-emailing the customer and double-firing the outbound webhook.
+func TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", InvoiceNumber: "VLX-1",
+		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_abc", TotalAmountCents: 2900, Currency: "USD",
+	}
+	invoices.byPI["pi_abc"] = "inv_1"
+
+	events := &recordingEventDispatcher{}
+	email := &recordingReceiptEmail{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+	s.SetEventDispatcher(events)
+	s.SetEmailReceipt(email, staticCustomerEmail{})
+
+	// The stale snapshot both racing deliveries hold: invoice still
+	// `processing`, so it passes the line-47 fast-path guard each time. The
+	// transition gate (MarkPaidReportingTransition) is what de-dupes them.
+	stale := invoices.invoices["inv_1"]
+	for i := 0; i < 2; i++ {
+		if err := s.SettleSucceeded(context.Background(), "t1", stale, "pi_abc", SourceWebhook); err != nil {
+			t.Fatalf("settle attempt %d: %v", i+1, err)
+		}
+	}
+
+	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentSucceeded {
+		t.Fatalf("invoice not settled: payment_status=%q", got)
+	}
+	if got := events.byType[domain.EventPaymentSucceeded]; got != 1 {
+		t.Errorf("payment.succeeded fired %d times, want exactly 1 (concurrent redelivery must not double-fire the webhook)", got)
+	}
+	if email.sends != 1 {
+		t.Errorf("receipt email enqueued %d times, want exactly 1 (no double-notify)", email.sends)
+	}
+}
+
 func TestSettleSucceeded_MarksPaidFromAnySource(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{

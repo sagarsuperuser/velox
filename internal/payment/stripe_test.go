@@ -109,10 +109,20 @@ func (m *mockInvoiceUpdater) Get(_ context.Context, _, id string) (domain.Invoic
 	return inv, nil
 }
 
-func (m *mockInvoiceUpdater) MarkPaid(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, error) {
+func (m *mockInvoiceUpdater) MarkPaid(ctx context.Context, tenantID, id string, stripePI string, paidAt time.Time) (domain.Invoice, error) {
+	inv, _, err := m.MarkPaidReportingTransition(ctx, tenantID, id, stripePI, paidAt)
+	return inv, err
+}
+
+func (m *mockInvoiceUpdater) MarkPaidReportingTransition(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, bool, error) {
 	inv, ok := m.invoices[id]
 	if !ok {
-		return domain.Invoice{}, errs.ErrNotFound
+		return domain.Invoice{}, false, errs.ErrNotFound
+	}
+	// Mirror the store: already-paid is a no-op (transitioned=false),
+	// matching the FOR UPDATE serialized semantics.
+	if inv.Status == domain.InvoicePaid {
+		return inv, false, nil
 	}
 	inv.Status = domain.InvoicePaid
 	inv.PaymentStatus = domain.PaymentSucceeded
@@ -120,7 +130,7 @@ func (m *mockInvoiceUpdater) MarkPaid(_ context.Context, _, id string, stripePI 
 	inv.PaidAt = &paidAt
 	inv.AmountDueCents = 0
 	m.invoices[id] = inv
-	return inv, nil
+	return inv, true, nil
 }
 
 func (m *mockInvoiceUpdater) SetPaymentCard(_ context.Context, _, id, brand, last4 string) error {
@@ -655,10 +665,16 @@ func TestHandleWebhook_TransientFailureNotConsumed(t *testing.T) {
 	}
 }
 
-// transientMarkPaidInvoices wraps the mock to make MarkPaid fail with a
-// transient (non-ErrNotFound) error.
+// transientMarkPaidInvoices wraps the mock to make the settle write fail
+// with a transient (non-ErrNotFound) error. SettleSucceeded calls
+// MarkPaidReportingTransition, so that's the override that matters; the
+// plain MarkPaid is overridden too for any path that still uses it.
 type transientMarkPaidInvoices struct {
 	*mockInvoiceUpdater
+}
+
+func (t *transientMarkPaidInvoices) MarkPaidReportingTransition(_ context.Context, _, _ string, _ string, _ time.Time) (domain.Invoice, bool, error) {
+	return domain.Invoice{}, false, fmt.Errorf("connection reset by peer")
 }
 
 func (t *transientMarkPaidInvoices) MarkPaid(_ context.Context, _, _ string, _ string, _ time.Time) (domain.Invoice, error) {
