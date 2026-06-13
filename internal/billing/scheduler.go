@@ -366,6 +366,12 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 
 	// 1. Billing cycle — generate invoices
 	generated, errs := s.engine.RunCycle(ctx, s.batch)
+	// Record the cycle execution + its invoice count. Per-mode (live, then
+	// test), so billing_cycles_total counts mode-passes and invoices_generated
+	// accumulates the per-mode totals. Recorded unconditionally — a run with
+	// errors still ran and may have generated some invoices; the error counter
+	// (below) is the separate failure signal.
+	mw.RecordBillingCycle(generated)
 	if len(errs) > 0 {
 		slog.Error("billing cycle completed with errors",
 			"mode", mode,
