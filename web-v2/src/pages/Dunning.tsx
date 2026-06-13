@@ -67,7 +67,7 @@ function effectiveNowMs(effectiveNowISO?: string): number {
 // "payment_recovered" are backend identifiers, not operator copy.
 const RESOLUTION_LABELS: Record<string, string> = {
   payment_recovered: 'Payment recovered',
-  manually_resolved: 'Manually resolved',
+  manually_resolved: 'Voided',
   write_off: 'Written off',
   invoice_not_collectible: 'Uncollectible',
 }
@@ -534,7 +534,7 @@ function ResolveDialog({ run, invoiceMap, onClose, onResolved }: {
 
   const resolutionOptions = [
     { value: 'payment_recovered', label: 'Payment recovered', description: 'Customer has paid -- mark invoice as paid and close dunning.', variant: 'default' as const },
-    { value: 'manually_resolved', label: 'Manually resolved', description: 'Issue resolved through other means (offline payment, negotiation, etc.)', variant: 'default' as const },
+    { value: 'manually_resolved', label: 'Void invoice', description: 'Annul the invoice and stop collection — e.g. billed in error or waived. Reverses any applied credits and cancels the pending charge; the invoice no longer counts as revenue. For a payment collected offline, use "Payment recovered" instead.', variant: 'destructive' as const },
     { value: 'invoice_not_collectible', label: 'Write off invoice', description: 'Marks the invoice as uncollectible (bad debt). Halts dunning automation. The invoice stays on the books for audit. Subscription stays active — cancel separately if needed.', variant: 'destructive' as const },
   ]
 
