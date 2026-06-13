@@ -203,6 +203,54 @@ func (m *memInvoiceReader) ApplyCreditNote(_ context.Context, tenantID, id strin
 	return inv, nil
 }
 
+// TestCreate_IsSimulated locks the per-CN time-domain flag (migration 0117):
+// it's true ONLY when the issuance runs in the invoice's bound time domain
+// (engine clawback, input.IsSimulated) AND the invoice itself is simulated.
+// Operator HTTP issuance (input.IsSimulated=false) is always wall-clock. The
+// invoice activity timeline lanes a CN by this flag, so getting it wrong shows
+// a simulated timestamp in the wall-clock "Real-time activity" lane.
+func TestCreate_IsSimulated(t *testing.T) {
+	ctx := context.Background()
+	mk := func(id string, simulated bool) domain.Invoice {
+		return domain.Invoice{
+			ID: id, TenantID: "t1", CustomerID: "cus_1",
+			Status: domain.InvoiceFinalized, Currency: "USD",
+			TotalAmountCents: 10000, AmountDueCents: 10000, IsSimulated: simulated,
+		}
+	}
+	newSvc := func(inv domain.Invoice) *Service {
+		s := NewService(newMemStore(), &memInvoiceReader{invoices: map[string]domain.Invoice{inv.ID: inv}}, nil)
+		s.SetNumberGenerator(&fakeCNNumbers{})
+		return s
+	}
+	line := []CreditLineInput{{Description: "adj", Quantity: 1, UnitAmountCents: 1000}}
+
+	cases := []struct {
+		name      string
+		invoice   domain.Invoice
+		input     CreateInput
+		wantSimul bool
+	}{
+		{"engine clawback on simulated invoice → simulated",
+			mk("inv_sim", true), CreateInput{InvoiceID: "inv_sim", Reason: "subscription_downgrade", Lines: line, IsSimulated: true}, true},
+		{"operator HTTP issue on simulated invoice → wall-clock",
+			mk("inv_sim2", true), CreateInput{InvoiceID: "inv_sim2", Reason: "billing error", Lines: line, IsSimulated: false}, false},
+		{"engine clawback on a non-simulated invoice → wall-clock",
+			mk("inv_real", false), CreateInput{InvoiceID: "inv_real", Reason: "subscription_downgrade", Lines: line, IsSimulated: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cn, err := newSvc(tc.invoice).Create(ctx, "t1", tc.input)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if cn.IsSimulated != tc.wantSimul {
+				t.Errorf("is_simulated: got %v, want %v", cn.IsSimulated, tc.wantSimul)
+			}
+		})
+	}
+}
+
 func TestCreate_CreditNote(t *testing.T) {
 	store := newMemStore()
 	invoices := &memInvoiceReader{
