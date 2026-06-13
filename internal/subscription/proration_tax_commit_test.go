@@ -69,6 +69,62 @@ func TestUpdateItem_ProrationStampsProviderAndCommitsTax(t *testing.T) {
 	}
 }
 
+// A reverse-charge or exempt customer's proration invoice must carry the
+// exemption status onto the invoice. Pre-fix ProrationTaxResult and its adapter
+// dropped TaxReverseCharge + TaxExemptReason, so a mid-cycle upgrade for a
+// reverse-charge customer produced a proration invoice with
+// tax_reverse_charge=false and a blank exempt reason — silently dropping the
+// legally required reverse-charge / exemption legend on exactly that invoice.
+func TestUpdateItem_ProrationCarriesExemptionStatus(t *testing.T) {
+	t.Run("reverse_charge flag flows to the invoice", func(t *testing.T) {
+		ctx := context.Background()
+		taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
+			TaxAmountCents:   0,
+			TaxProvider:      "stripe_tax",
+			TaxReverseCharge: true,
+			TaxStatus:        domain.InvoiceTaxOK,
+		}}
+		h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
+		body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+		req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), "t1"), subID, itemID, body)
+		rr := httptest.NewRecorder()
+		h.updateItem(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+		}
+		if len(invoices.createdInvoices) != 1 {
+			t.Fatalf("got %d proration invoices, want 1", len(invoices.createdInvoices))
+		}
+		if !invoices.createdInvoices[0].TaxReverseCharge {
+			t.Error("proration invoice tax_reverse_charge = false, want true — the reverse-charge legend would be dropped on this invoice")
+		}
+	})
+
+	t.Run("exempt reason flows to the invoice", func(t *testing.T) {
+		ctx := context.Background()
+		taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
+			TaxAmountCents:  0,
+			TaxProvider:     "manual",
+			TaxExemptReason: "Reseller certificate",
+			TaxStatus:       domain.InvoiceTaxOK,
+		}}
+		h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
+		body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+		req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), "t1"), subID, itemID, body)
+		rr := httptest.NewRecorder()
+		h.updateItem(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+		}
+		if len(invoices.createdInvoices) != 1 {
+			t.Fatalf("got %d proration invoices, want 1", len(invoices.createdInvoices))
+		}
+		if got := invoices.createdInvoices[0].TaxExemptReason; got != "Reseller certificate" {
+			t.Errorf("proration invoice tax_exempt_reason = %q, want %q", got, "Reseller certificate")
+		}
+	})
+}
+
 // Manual / none providers produce no calculation id — CommitTax must NOT fire
 // (the guard is provider AND calc id non-empty), but the provider is still
 // recorded on the invoice for provenance.

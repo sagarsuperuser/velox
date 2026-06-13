@@ -93,6 +93,15 @@ type ProrationTaxResult struct {
 	// was never committed — so the tax was charged but never reported.
 	TaxProvider      string
 	TaxCalculationID string
+	// TaxReverseCharge / TaxExemptReason carry the customer's exemption
+	// status onto the proration invoice — the same fields the cycle/create
+	// paths stamp. Dropping them was a bug: a reverse_charge or exempt
+	// customer's mid-cycle proration invoice came out with
+	// tax_reverse_charge=false and a blank exempt reason, so the legally
+	// required reverse-charge / exemption legend silently vanished on
+	// exactly those invoices (the rest of the customer's invoices carry it).
+	TaxReverseCharge bool
+	TaxExemptReason  string
 	SubtotalCents    int64
 	DiscountCents    int64
 	// TaxStatus signals whether the provider's tax calculation
@@ -2001,6 +2010,8 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			TaxID:              taxResult.TaxID,
 			TaxProvider:        taxResult.TaxProvider,
 			TaxCalculationID:   taxResult.TaxCalculationID,
+			TaxReverseCharge:   taxResult.TaxReverseCharge,
+			TaxExemptReason:    taxResult.TaxExemptReason,
 			TaxAmountCents:     taxResult.TaxAmountCents,
 			TaxStatus:          taxResult.TaxStatus,
 			TotalAmountCents:   netProrated,

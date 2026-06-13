@@ -666,6 +666,8 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		TaxID:            r.TaxID,
 		TaxProvider:      r.TaxProvider,
 		TaxCalculationID: r.TaxCalculationID,
+		TaxReverseCharge: r.TaxReverseCharge,
+		TaxExemptReason:  r.TaxExemptReason,
 		SubtotalCents:    r.SubtotalCents,
 		DiscountCents:    r.DiscountCents,
 		TaxStatus:        r.TaxStatus,
