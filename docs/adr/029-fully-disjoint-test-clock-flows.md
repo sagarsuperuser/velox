@@ -151,21 +151,23 @@ Service entry: `Service.ExpireCredits` becomes cron path;
 
 ### 6. Invoice reminders (N-days-before-due nudges)
 
-| | Existing | After |
-|---|---|---|
-| **Entity** | `invoices` with `due_at = now() + N days`, `payment_status = pending` | same |
-| **Cron filter** | none | `AND NOT EXISTS (clock pinning JOIN)` |
-| **Per-clock variant** | none | `ListApproachingDueForClock(ctx, tenantID, clockID, frozenTime, daysBeforeDue)` |
-| **Time predicate** | wall-clock now | clock.frozen_time |
+**REMOVED 2026-06-13 — descoped, never built past "list and log."** This
+phase only ever queried invoices approaching `due_at` and logged the
+count; no reminder email was ever dispatched. Both the cron hook
+(`Scheduler` reminders) and the per-clock catchup mirror, their
+`InvoiceReminder` / `ReminderLister` interfaces, the
+`Service.ListApproachingDue` / `…ForClock` entries, and the
+`PostgresStore` queries were deleted.
 
-Service entry: `Service.ListApproachingDue` becomes cron path;
-`Service.ListApproachingDueForClock` is added for catchup.
-
-The reminder dispatcher (cmd/velox wiring) iterates the returned list
-and queues emails. For clock-pinned reminders, the email is real (the
-customer is real), but the timing is simulated — that's the operator's
-explicit intent in test mode (verify the reminder template + timing
-logic without waiting wall-clock days).
+Rationale: a proactive **pre-due** payment-reminder email to the
+customer is a B2C/SMB pattern, not the B2B/AI-infra norm Velox targets —
+where operators own collection and **dunning** (Phase 5, post-due) is the
+real money-protection path. Carrying inert scaffolding for an unbuilt,
+off-wedge feature is the kind of doc/code-that-lies this codebase
+deletes rather than maintains. The disjoint catchup orchestrator now ends
+at Phase 5 (dunning). Rebuild trigger: a design partner explicitly asks
+for pre-due reminders — at which point it returns as a real
+outbox-dispatching phase, not a logging stub.
 
 ## The orchestration sequence
 
@@ -205,10 +207,8 @@ process(job CatchupJob):
     //          may have used credits we shouldn't expire mid-flight).
     creditSvc.ExpireCreditsForClock(ctx, job.tenantID, job.clockID, frozen)
 
-    // Phase 6 — reminder dispatch for invoices approaching simulated
-    //          due. Last because it queues emails (network-side
-    //          effect); failures here don't roll back earlier phases.
-    invoiceSvc.SendApproachingDueRemindersForClock(ctx, job.tenantID, job.clockID, frozen, daysBeforeDue)
+    // Phase 6 — REMOVED 2026-06-13 (invoice reminders descoped; see
+    //          section 6 above). The orchestrator ends at Phase 5.
 
     // Phase 7 — threshold scan is implicit per-period inside
     //          billOnePeriod (existing). The cron-side scan is
@@ -279,9 +279,8 @@ Plus one e2e:
 
 3. **`TestCatchupOrchestration_FullSequence`** — set up a clock-pinned
    sub with: due period, pending tax invoice, auto-charge-pending
-   invoice, past-due dunning run, expiring credit grant, reminder due.
-   Click Advance, assert all six phases ran and end state is
-   consistent.
+   invoice, past-due dunning run, expiring credit grant. Click Advance,
+   assert all phases ran and end state is consistent.
 
 ## Rollout order
 
@@ -296,11 +295,11 @@ Single PR per phase, in dependency order:
 4. **Phase 4** — credit expiry. Simple SQL filter, simple per-clock.
 5. **Phase 5** — dunning advance. Most invasive (state machine);
    ship after the others to validate the pattern at scale first.
-6. **Phase 6** — invoice reminders. Last, optional-feeling, but ship
-   for completeness.
+6. ~~**Phase 6** — invoice reminders.~~ Removed 2026-06-13 (descoped;
+   see section 6).
 
-After all six: amend ADR-028's "deferred decoupling" section to point
-at ADR-029, mark the deferred work complete.
+After the remaining phases: amend ADR-028's "deferred decoupling"
+section to point at ADR-029, mark the deferred work complete.
 
 ## Alternatives considered
 

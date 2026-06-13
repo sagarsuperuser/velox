@@ -6,7 +6,6 @@ import (
 	"time"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
-	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/platform/scheduler"
@@ -25,11 +24,6 @@ type TenantLister interface {
 // CreditExpirer expires credit grants past their expiry date.
 type CreditExpirer interface {
 	ExpireCredits(ctx context.Context) (int, []error)
-}
-
-// InvoiceReminder queries invoices approaching their due date.
-type InvoiceReminder interface {
-	ListApproachingDue(ctx context.Context, daysBeforeDue int) ([]domain.Invoice, error)
 }
 
 // TaxRetrier is the narrow hook the scheduler uses to drive the
@@ -101,7 +95,6 @@ type Scheduler struct {
 	dunning           DunningProcessor
 	tenants           TenantLister
 	credits           CreditExpirer
-	reminders         InvoiceReminder
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
 	taxRetrier        TaxRetrier
@@ -135,11 +128,6 @@ func NewScheduler(engine *Engine, interval time.Duration, batch int, dunning Dun
 		s.credits = credits[0]
 	}
 	return s
-}
-
-// SetReminders sets the invoice reminder dependency for due-date notifications.
-func (s *Scheduler) SetReminders(reminders InvoiceReminder) {
-	s.reminders = reminders
 }
 
 // SetTokenCleaner sets the token cleanup dependency for expired payment update tokens.
@@ -405,16 +393,6 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		if expired > 0 {
 			slog.Info("credits expired", "mode", mode, "count", expired)
-		}
-	}
-
-	// 4. Invoice payment reminders (3 days before due)
-	if s.reminders != nil {
-		approaching, err := s.reminders.ListApproachingDue(ctx, 3)
-		if err != nil {
-			slog.Error("approaching due query failed", "mode", mode, "error", err)
-		} else if len(approaching) > 0 {
-			slog.Info("invoices approaching due date", "mode", mode, "count", len(approaching))
 		}
 	}
 }

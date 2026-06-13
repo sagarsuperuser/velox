@@ -723,12 +723,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// in the catchup orchestrator against the clock's frozen_time, not
 	// on the wall-clock 5-min tick.
 	testClockSvc.SetDunning(dunningSvc)
-	// ADR-029 Phase 6: clock-pinned reminder candidate listing in the
-	// catchup orchestrator. Today the cron just logs the count; the
-	// catchup mirror is symmetric. Wires the invoice service which
-	// implements ListApproachingDueForClock against the clock's
-	// frozen_time.
-	testClockSvc.SetReminders(invoiceSvc)
 	// No-payment-method finalize notifier: at finalize-time when a
 	// customer has no PaymentSetup ready, the engine queues for retry
 	// (so attaching a PM later auto-collects) AND emails the customer

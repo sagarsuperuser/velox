@@ -335,17 +335,6 @@ func (m *memStore) AddLineItemAtomic(_ context.Context, tenantID, invoiceID stri
 	return item, inv, nil
 }
 
-// ListApproachingDueForClock — ADR-029 Phase 6 stub. Narrow tests
-// don't exercise per-clock reminder dispatch; postgres integration
-// covers the SQL.
-func (m *memStore) ListApproachingDueForClock(_ context.Context, _, _ string, _ time.Time, _ int) ([]domain.Invoice, error) {
-	return nil, nil
-}
-
-func (m *memStore) ListApproachingDue(_ context.Context, _ int) ([]domain.Invoice, error) {
-	return nil, nil
-}
-
 func (m *memStore) UpdateTaxAtomic(_ context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error) {
 	inv, ok := m.invoices[invoiceID]
 	if !ok || inv.TenantID != tenantID {
