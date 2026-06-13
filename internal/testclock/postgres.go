@@ -145,15 +145,37 @@ func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 
 	// Cascade-cancel pinned subs. Filter excludes subs already in
 	// terminal states so an operator who manually canceled a sub
-	// before deleting the clock keeps the more-specific state. We
-	// don't NULL out test_clock_id — keeping the historical pointer
-	// lets future tooling answer "which clock did this sub belong
-	// to" without a separate audit query.
+	// before deleting the clock keeps the more-specific state. Subs
+	// KEEP their test_clock_id — they're now in a terminal state (no
+	// further billing), and the retained pointer is the denormalized
+	// "which clock did this belong to" cache (ADR-027). The stale
+	// simulation-time period fields are exactly why subs are canceled
+	// rather than detached: a detached sub would carry sim-time
+	// next_billing_at the wall-clock scheduler can't reconcile and
+	// would misfire (the bug ADR-016 was written to kill).
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE subscriptions SET status = 'canceled', updated_at = now()
 		 WHERE test_clock_id = $1 AND status NOT IN ('canceled', 'archived')`, id,
 	); err != nil {
 		return fmt.Errorf("cascade-cancel pinned subs: %w", err)
+	}
+
+	// Detach pinned customers — realize the customers.test_clock_id
+	// `ON DELETE SET NULL` that ADR-016's soft-delete defeated (the row
+	// isn't DELETEd, so the FK cascade never fires). Unlike subs, a
+	// customer has no period fields to go stale, so detaching is safe:
+	// it returns the customer to wall-clock so its NEXT subscription is
+	// a clean, billable wall-clock sub instead of inheriting this dead
+	// clock and stranding (excluded from both the cron — pinned — and
+	// the catchup path — clock deleted). Without this the customer-level
+	// pin (ADR-027) keeps spawning stranded subs after the clock is
+	// gone. "Which customers were on this clock" stays answerable
+	// through the canceled subs' retained pointers.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE customers SET test_clock_id = NULL, updated_at = now()
+		 WHERE test_clock_id = $1`, id,
+	); err != nil {
+		return fmt.Errorf("detach pinned customers: %w", err)
 	}
 
 	return tx.Commit()

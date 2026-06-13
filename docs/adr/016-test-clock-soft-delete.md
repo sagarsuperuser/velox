@@ -42,7 +42,8 @@ service-layer `Delete` operation:
 
 1. `UPDATE test_clocks SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`
 2. `UPDATE subscriptions SET status = 'canceled' WHERE test_clock_id = $1 AND status NOT IN ('canceled', 'archived')`
-3. Both in the same transaction.
+3. `UPDATE customers SET test_clock_id = NULL WHERE test_clock_id = $1` (added 2026-06-13 — see below)
+4. All in the same transaction.
 
 All read paths (`Get`, `List`, `ListAllAdvancing`, the status
 transition CAS) filter `WHERE deleted_at IS NULL` so a soft-deleted
@@ -59,6 +60,25 @@ query can still resolve them by id.
 `test_clock_id` is intentionally NOT set to NULL on cascade-canceled
 subs — keeping the historical pointer lets future tooling answer
 "which clock did this sub belong to" without a separate audit query.
+Subs are safe to keep pinned because cancellation is terminal: the
+stale simulation-time `next_billing_at` they carry never fires.
+
+### Customer detach (added 2026-06-13)
+
+Step 3 above detaches pinned **customers** (`test_clock_id → NULL`).
+This was a gap, not part of the original ADR: when ADR-027 moved the
+pin to the customer level the day after this ADR shipped, the
+customer kept pointing at the soft-deleted clock — and because the
+FK's `ON DELETE SET NULL` only fires on a row DELETE (never on our
+soft `deleted_at`), nothing cleared it. A new subscription for that
+customer then **inherited the dead clock** (ADR-027 customer-level
+inheritance) and landed stranded: the wall-clock cron skips it (it's
+pinned) and the catchup path skips it (the clock is deleted), so it
+never billed. Unlike a sub, a customer has no period fields to go
+stale, so detaching it is safe — its next subscription is a clean,
+billable wall-clock sub. "Which customers were on this clock" stays
+answerable through the canceled subs' retained pointers. Migration
+0117 applies the same detach to rows already broken before this fix.
 
 ### TTL sweeper (reverted 2026-05-06)
 
