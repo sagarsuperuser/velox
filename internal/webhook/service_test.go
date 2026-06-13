@@ -281,16 +281,29 @@ func (m *memStore) ListPendingDeliveries(_ context.Context, limit int) ([]domain
 }
 
 // mockHTTPClient captures requests and returns configurable responses.
+//
+// The webhook service delivers ASYNCHRONOUSLY (go s.deliver(...)), so a test
+// that fires two overlapping deliveries — e.g. TestReplay_PinsLivemodeOnDelivery
+// dispatches an event AND replays it — has two goroutines calling Do at once.
+// mu guards the captured fields so those concurrent writes don't data-race
+// under `-race` (the same reason the neighbouring memStore carries `dmu`).
+// statusCode is set once at construction and never mutated, so Do reads it
+// without the lock; lastRequest/lastBody are read back only by synchronous-
+// delivery (NewTestService) tests, where program order already places the read
+// after the write.
 type mockHTTPClient struct {
+	mu          sync.Mutex
 	lastRequest *http.Request
 	lastBody    []byte
 	statusCode  int
 }
 
 func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
-	m.lastRequest = req
 	body, _ := io.ReadAll(req.Body)
+	m.mu.Lock()
+	m.lastRequest = req
 	m.lastBody = body
+	m.mu.Unlock()
 	return &http.Response{
 		StatusCode: m.statusCode,
 		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
