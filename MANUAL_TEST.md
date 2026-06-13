@@ -636,6 +636,8 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Customer `tax_status=exempt` → $0 tax, invoice `tax_reason='customer_exempt'`, PDF carries the customer-exemption legend.
 - [ ] Customer `tax_status=reverse_charge` (India B2B): $0 tax; PDF carries supplier GSTIN under the company line + "Tax payable on reverse charge basis: YES".
 - [ ] EU `reverse_charge` customer → $0 tax, PDF retains the EU reverse-charge wording.
+- [ ] **Exemption inputs are enforced (2026-06-14):** PUT a billing profile with `tax_status=exempt` and no `tax_exempt_reason` → **400** (`tax_exempt_reason` required). `tax_status=reverse_charge` with no `tax_id` → **400** (buyer `tax_id` required). Both save once the field is supplied. (Direct-API guard; the dashboard already blocks these.)
+- [ ] **`tax_provider=none` still renders the legend:** on a `none` tenant, a `reverse_charge` (or `exempt`) customer's invoice is $0 AND carries the reverse-charge / exemption legend (not a bare $0 with no notice).
 - [ ] Stripe-Tax path: `taxability_reason=not_collecting` round-trips → line item `tax_reason='not_collecting'`, badge in dashboard.
 
 ## FLOW B11: Tax-ID validation

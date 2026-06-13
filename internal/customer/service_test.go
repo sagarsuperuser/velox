@@ -435,4 +435,44 @@ func TestCustomerService_BillingProfile(t *testing.T) {
 			t.Fatal("expected error for missing customer_id")
 		}
 	})
+
+	// Non-standard tax statuses must carry the data their invoice legend
+	// legally requires — enforced server-side, not just in the dashboard.
+	t.Run("exempt requires a reason", func(t *testing.T) {
+		_, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: "US", TaxStatus: domain.TaxStatusExempt,
+		})
+		if err == nil {
+			t.Fatal("expected error: exempt with no tax_exempt_reason")
+		}
+		bp, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: "US", TaxStatus: domain.TaxStatusExempt,
+			TaxExemptReason: "Reseller certificate",
+		})
+		if err != nil {
+			t.Fatalf("exempt + reason should save: %v", err)
+		}
+		if bp.TaxExemptReason != "Reseller certificate" {
+			t.Errorf("tax_exempt_reason = %q, want preserved", bp.TaxExemptReason)
+		}
+	})
+
+	t.Run("reverse_charge requires a buyer tax id", func(t *testing.T) {
+		_, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: "DE", TaxStatus: domain.TaxStatusReverseCharge,
+		})
+		if err == nil {
+			t.Fatal("expected error: reverse_charge with no tax_id")
+		}
+		bp, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: "DE", TaxStatus: domain.TaxStatusReverseCharge,
+			TaxIDType: "eu_vat", TaxID: "DE123456789",
+		})
+		if err != nil {
+			t.Fatalf("reverse_charge + tax_id should save: %v", err)
+		}
+		if bp.TaxStatus != domain.TaxStatusReverseCharge {
+			t.Errorf("tax_status = %q, want reverse_charge", bp.TaxStatus)
+		}
+	})
 }

@@ -378,6 +378,26 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 		return domain.CustomerBillingProfile{}, errs.Invalid("tax_status", "must be 'standard', 'exempt', or 'reverse_charge'")
 	}
 	bp.TaxExemptReason = strings.TrimSpace(bp.TaxExemptReason)
+	// Enforce the data each non-standard status legally requires so the
+	// invoice can render a defensible legend:
+	//   - exempt needs a reason (reseller certificate, non-profit, government)
+	//     for the invoice + audit trail.
+	//   - reverse_charge needs the buyer's tax ID — "tax payable by the
+	//     recipient" is only valid when the buyer is a registered business, so
+	//     a $0 reverse-charge invoice with no buyer VAT number is legally
+	//     unsupportable.
+	// The dashboard already guards both; enforcing here closes the direct-API
+	// bypass the tax-flow audit surfaced.
+	switch bp.TaxStatus {
+	case tax.StatusExempt:
+		if bp.TaxExemptReason == "" {
+			return domain.CustomerBillingProfile{}, errs.Invalid("tax_exempt_reason", "a reason is required when tax_status is 'exempt'")
+		}
+	case tax.StatusReverseCharge:
+		if bp.TaxID == "" {
+			return domain.CustomerBillingProfile{}, errs.Invalid("tax_id", "a buyer tax ID is required when tax_status is 'reverse_charge'")
+		}
+	}
 	if bp.ProfileStatus == "" {
 		bp.ProfileStatus = domain.BillingProfileIncomplete
 	}
