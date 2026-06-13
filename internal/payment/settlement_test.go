@@ -35,6 +35,14 @@ func (r *recordingReceiptEmail) SendPaymentReceipt(_ context.Context, _, _, _, _
 	return nil
 }
 
+// recordingFailedEmail counts payment-failed enqueues.
+type recordingFailedEmail struct{ sends int }
+
+func (r *recordingFailedEmail) SendPaymentFailed(_ context.Context, _, _, _, _, _, _ string) error {
+	r.sends++
+	return nil
+}
+
 type staticCustomerEmail struct{}
 
 func (staticCustomerEmail) GetCustomerEmail(_ context.Context, _, _ string) (string, string, error) {
@@ -106,6 +114,115 @@ func TestSettleSucceeded_MarksPaidFromAnySource(t *testing.T) {
 	}
 	if inv.PaidAt == nil {
 		t.Error("paid_at must be set")
+	}
+}
+
+// TestSettleFailed_ConcurrentRedeliveryFiresSideEffectsOnce is the failed-path
+// twin of the H7 success-path test: two at-least-once deliveries of the SAME
+// payment_intent.payment_failed that race — both holding a stale `processing`
+// snapshot, so both slip past the line-159 already-settled fast-path guard —
+// must fire the failure-notification set (payment.failed event + customer
+// email + dunning) EXACTLY once. The PI-keyed transition gate in
+// MarkPaymentFailedReportingTransition de-dupes them. Pre-fix both fired,
+// double-emailing the customer and double-firing the outbound webhook.
+func TestSettleFailed_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", InvoiceNumber: "VLX-1",
+		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_x", TotalAmountCents: 4200, Currency: "USD",
+	}
+	invoices.byPI["pi_x"] = "inv_1"
+
+	events := &recordingEventDispatcher{}
+	failedEmail := &recordingFailedEmail{}
+	dunning := &recordingDunningStarter{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil, dunning)
+	s.SetEventDispatcher(events)
+	s.SetEmailPaymentFailed(failedEmail, staticCustomerEmail{})
+
+	// Both racers hold the same stale `processing` snapshot.
+	stale := invoices.invoices["inv_1"]
+	for i := 0; i < 2; i++ {
+		if err := s.SettleFailed(context.Background(), "t1", stale, "pi_x", "Your card was declined.", false, SourceWebhook); err != nil {
+			t.Fatalf("settle attempt %d: %v", i+1, err)
+		}
+	}
+
+	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentFailed {
+		t.Fatalf("invoice not marked failed: payment_status=%q", got)
+	}
+	if got := events.byType[domain.EventPaymentFailed]; got != 1 {
+		t.Errorf("payment.failed fired %d times, want exactly 1 (concurrent redelivery must not double-fire the webhook)", got)
+	}
+	if failedEmail.sends != 1 {
+		t.Errorf("payment-failed email enqueued %d times, want exactly 1 (no double-notify)", failedEmail.sends)
+	}
+	if len(dunning.calls) != 1 {
+		t.Errorf("StartDunning called %d times, want exactly 1", len(dunning.calls))
+	}
+}
+
+// TestSettleFailed_InlinePresetThenWebhookStillNotifiesOnce guards the trap that
+// makes a naive status-keyed gate WRONG: the synchronous charge path stamps
+// payment_status='failed' (same PI) WITHOUT firing notifications, deferring them
+// to the payment_intent.payment_failed webhook. The webhook's SettleFailed must
+// still fire the notification set exactly once — the PI marker (which the inline
+// preset never writes), not the status, is the dedup key.
+func TestSettleFailed_InlinePresetThenWebhookStillNotifiesOnce(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	// Inline charge path already flipped payment_status=failed with pi_y but did
+	// NOT notify (failNotedPI for inv_1 stays empty).
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", InvoiceNumber: "VLX-2",
+		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentFailed,
+		StripePaymentIntentID: "pi_y", LastPaymentError: "declined",
+	}
+	invoices.byPI["pi_y"] = "inv_1"
+
+	events := &recordingEventDispatcher{}
+	failedEmail := &recordingFailedEmail{}
+	dunning := &recordingDunningStarter{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil, dunning)
+	s.SetEventDispatcher(events)
+	s.SetEmailPaymentFailed(failedEmail, staticCustomerEmail{})
+
+	if err := s.SettleFailed(context.Background(), "t1", invoices.invoices["inv_1"], "pi_y", "Your card was declined.", false, SourceWebhook); err != nil {
+		t.Fatalf("SettleFailed: %v", err)
+	}
+	if got := events.byType[domain.EventPaymentFailed]; got != 1 {
+		t.Errorf("payment.failed fired %d times after inline preset, want 1 (status was already failed but notifications had not fired)", got)
+	}
+	if failedEmail.sends != 1 {
+		t.Errorf("payment-failed email enqueued %d times, want 1", failedEmail.sends)
+	}
+}
+
+// TestSettleFailed_NewRetryPIFiresAgain ensures the gate does NOT suppress a
+// genuinely new failure: a later dunning retry uses a fresh PI, so its failure
+// is a distinct event and must fire its own notification set.
+func TestSettleFailed_NewRetryPIFiresAgain(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_a",
+	}
+	events := &recordingEventDispatcher{}
+	dunning := &recordingDunningStarter{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil, dunning)
+	s.SetEventDispatcher(events)
+
+	// First failure (pi_a), then a retry's failure on a fresh PI (pi_b).
+	// suppressCustomerEmail=true (dunning-retry PIs), so we assert on the event.
+	for _, pi := range []string{"pi_a", "pi_b"} {
+		cur := invoices.invoices["inv_1"]
+		if err := s.SettleFailed(context.Background(), "t1", cur, pi, "declined", true, SourceWebhook); err != nil {
+			t.Fatalf("SettleFailed %s: %v", pi, err)
+		}
+	}
+	if got := events.byType[domain.EventPaymentFailed]; got != 2 {
+		t.Errorf("payment.failed fired %d times across two distinct PIs, want 2 (a new retry failure is a fresh event)", got)
 	}
 }
 

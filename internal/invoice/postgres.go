@@ -561,6 +561,91 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	return inv, nil
 }
 
+// MarkPaymentFailedReportingTransition records a payment failure and reports
+// whether THIS call is the first to fire the failure-NOTIFICATION set for this
+// PaymentIntent — the payment.failed outbound event, the customer "payment
+// failed" email, and auto-started dunning. It is the failed-path analogue of
+// MarkPaidReportingTransition, but the dedup key is the PaymentIntent id, not
+// the status, because failure is non-terminal: an invoice legitimately re-fails
+// once per dunning retry, each with a distinct PI.
+//
+// SELECT … FOR UPDATE serializes concurrent callers. The inbound webhook dedup
+// is a non-atomic read pre-check (payment.HandleWebhook), so two at-least-once
+// deliveries of the SAME payment_intent.payment_failed — or a reconciler
+// recovery racing the original webhook — can both reach here. The first sets
+// failure_notified_pi to this PI and returns firstForThisPI=true; the duplicate
+// sees the marker already equals this PI and returns false, so SettleFailed
+// fires the notification set once, not twice.
+//
+// The synchronous charge path stamps payment_status='failed' (same PI) WITHOUT
+// firing notifications, deferring them to the webhook — so the marker, which
+// that path never writes, is the only reliable discriminator (a status-keyed
+// gate would suppress the webhook's notifications entirely).
+//
+// An already-settled invoice (an out-of-order failure for a charge that already
+// succeeded) is left untouched and returns false — the authoritative form of
+// SettleFailed's stale-snapshot guard, so a stale failure can never flip a paid
+// invoice back to failed.
+func (s *PostgresStore) MarkPaymentFailedReportingTransition(ctx context.Context, tenantID, id, paymentIntentID, lastPaymentError string) (domain.Invoice, bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, false, err
+	}
+	defer postgres.Rollback(tx)
+
+	var status, paymentStatus string
+	var notifiedPI sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, payment_status, failure_notified_pi FROM invoices WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&status, &paymentStatus, &notifiedPI); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Invoice{}, false, errs.ErrNotFound
+		}
+		return domain.Invoice{}, false, fmt.Errorf("load invoice for mark-failed: %w", err)
+	}
+
+	// Out-of-order failure for an already-settled invoice: never flip paid back
+	// to failed (would null paid_at, relink a stale PI, and dun a paid invoice).
+	// Return the row unchanged; not a fresh notification.
+	if domain.InvoiceStatus(status) == domain.InvoicePaid || domain.InvoicePaymentStatus(paymentStatus) == domain.PaymentSucceeded {
+		var inv domain.Invoice
+		if err := tx.QueryRowContext(ctx,
+			`SELECT `+invCols+` FROM invoices WHERE id = $1`, id,
+		).Scan(s.scanInvDest(&inv)...); err != nil {
+			return domain.Invoice{}, false, fmt.Errorf("reload settled invoice: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Invoice{}, false, err
+		}
+		return inv, false, nil
+	}
+
+	firstForThisPI := !notifiedPI.Valid || notifiedPI.String != paymentIntentID
+
+	now := clock.Now(ctx)
+	var inv domain.Invoice
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE invoices SET
+			payment_status = 'failed',
+			stripe_payment_intent_id = $1,
+			last_payment_error = $2,
+			failure_notified_pi = $1,
+			updated_at = $3
+		WHERE id = $4
+		RETURNING `+invCols,
+		postgres.NullableString(paymentIntentID), postgres.NullableString(lastPaymentError), now, id,
+	).Scan(s.scanInvDest(&inv)...); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Invoice{}, false, errs.ErrNotFound
+		}
+		return domain.Invoice{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, false, err
+	}
+	return inv, firstForThisPI, nil
+}
+
 // MarkPaid settles an invoice (status→paid, amount_due→0) and is the
 // single transactional outbox point for invoice.paid. Thin wrapper over
 // MarkPaidReportingTransition for the many callers that don't care

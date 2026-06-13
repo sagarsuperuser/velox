@@ -56,14 +56,16 @@ func (m *mockStripeClient) GetPaymentIntent(_ context.Context, piID string) (Pay
 }
 
 type mockInvoiceUpdater struct {
-	invoices map[string]domain.Invoice
-	byPI     map[string]string // PI ID -> invoice ID
+	invoices    map[string]domain.Invoice
+	byPI        map[string]string // PI ID -> invoice ID
+	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
 }
 
 func newMockInvoiceUpdater() *mockInvoiceUpdater {
 	return &mockInvoiceUpdater{
-		invoices: make(map[string]domain.Invoice),
-		byPI:     make(map[string]string),
+		invoices:    make(map[string]domain.Invoice),
+		byPI:        make(map[string]string),
+		failNotedPI: make(map[string]string),
 	}
 }
 
@@ -131,6 +133,32 @@ func (m *mockInvoiceUpdater) MarkPaidReportingTransition(_ context.Context, _, i
 	inv.AmountDueCents = 0
 	m.invoices[id] = inv
 	return inv, true, nil
+}
+
+func (m *mockInvoiceUpdater) MarkPaymentFailedReportingTransition(_ context.Context, _, id, piID, errMsg string) (domain.Invoice, bool, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, false, errs.ErrNotFound
+	}
+	// Out-of-order failure for an already-settled invoice: no-op, never a
+	// fresh notification (mirrors the FOR UPDATE store guard).
+	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
+		return inv, false, nil
+	}
+	if m.failNotedPI == nil {
+		m.failNotedPI = make(map[string]string)
+	}
+	// firstForThisPI: have we NOT yet fired failure notifications for this PI?
+	first := m.failNotedPI[id] != piID
+	inv.PaymentStatus = domain.PaymentFailed
+	inv.StripePaymentIntentID = piID
+	inv.LastPaymentError = errMsg
+	m.invoices[id] = inv
+	m.failNotedPI[id] = piID
+	if piID != "" {
+		m.byPI[piID] = id
+	}
+	return inv, first, nil
 }
 
 func (m *mockInvoiceUpdater) SetPaymentCard(_ context.Context, _, id, brand, last4 string) error {

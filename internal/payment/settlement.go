@@ -175,9 +175,31 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 		failureMsg = "payment failed"
 	}
 
-	if _, err := s.invoices.UpdatePayment(ctx, tenantID, inv.ID,
-		domain.PaymentFailed, paymentIntentID, failureMsg, nil); err != nil {
+	// Record the failure and learn whether THIS delivery is the first to fire
+	// the failure-notification set (payment.failed event + customer email +
+	// dunning) for this PaymentIntent. Stripe delivers at-least-once and the
+	// inbound dedup is a non-atomic read pre-check (HandleWebhook), so two
+	// concurrent deliveries of the SAME payment_intent.payment_failed — or a
+	// reconciler recovery racing the original webhook — can both reach here.
+	// The FOR UPDATE in MarkPaymentFailedReportingTransition serializes them;
+	// only the first gets firstForThisPI=true. The duplicate returns false and
+	// skips the side-effects below, so the customer isn't emailed twice and
+	// integrators don't get two payment.failed events.
+	//
+	// This is the failed-path twin of SettleSucceeded's transition gate. It is
+	// PI-keyed rather than status-keyed because (a) failure is non-terminal —
+	// an invoice legitimately re-fails once per dunning retry, each a new PI,
+	// and each is a real event that SHOULD notify; and (b) the synchronous
+	// charge path stamps payment_status='failed' (same PI) WITHOUT notifying,
+	// so a status gate would suppress the webhook's notifications entirely.
+	_, firstForThisPI, err := s.invoices.MarkPaymentFailedReportingTransition(ctx, tenantID, inv.ID, paymentIntentID, failureMsg)
+	if err != nil {
 		return fmt.Errorf("update payment status: %w", err)
+	}
+	if !firstForThisPI {
+		slog.Info("duplicate or out-of-order payment failure for this payment intent; skipping duplicate side-effects",
+			"invoice_id", inv.ID, "payment_intent_id", paymentIntentID, "source", source)
+		return nil
 	}
 
 	slog.Info("payment failed",

@@ -341,13 +341,15 @@ type mockInvoice struct {
 type mockInvoiceUpdaterHandler struct {
 	invoices    map[string]mockInvoice
 	byPI        map[string]string
-	markPaidErr error // when set, MarkPaid returns this (simulates a transient DB failure)
+	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
+	markPaidErr error             // when set, MarkPaid returns this (simulates a transient DB failure)
 }
 
 func newMockInvoiceUpdaterH() *mockInvoiceUpdaterHandler {
 	return &mockInvoiceUpdaterHandler{
-		invoices: make(map[string]mockInvoice),
-		byPI:     make(map[string]string),
+		invoices:    make(map[string]mockInvoice),
+		byPI:        make(map[string]string),
+		failNotedPI: make(map[string]string),
 	}
 }
 
@@ -416,6 +418,29 @@ func (m *mockInvoiceUpdaterHandler) MarkPaidReportingTransition(_ context.Contex
 		m.byPI[piID] = id
 	}
 	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, !alreadyPaid, nil
+}
+
+func (m *mockInvoiceUpdaterHandler) MarkPaymentFailedReportingTransition(_ context.Context, _, id, piID, errMsg string) (domain.Invoice, bool, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return domain.Invoice{}, false, fmt.Errorf("not found")
+	}
+	if inv.paymentStatus == "succeeded" {
+		return domain.Invoice{ID: id, TenantID: inv.tenantID}, false, nil
+	}
+	if m.failNotedPI == nil {
+		m.failNotedPI = make(map[string]string)
+	}
+	first := m.failNotedPI[id] != piID
+	inv.paymentStatus = "failed"
+	inv.stripePI = piID
+	inv.lastError = errMsg
+	m.invoices[id] = inv
+	m.failNotedPI[id] = piID
+	if piID != "" {
+		m.byPI[piID] = id
+	}
+	return domain.Invoice{ID: id, TenantID: inv.tenantID, PaymentStatus: domain.PaymentFailed}, first, nil
 }
 
 func (m *mockInvoiceUpdaterHandler) SetPaymentCard(_ context.Context, _, _ string, _, _ string) error {

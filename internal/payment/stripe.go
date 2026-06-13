@@ -149,6 +149,16 @@ type InvoiceUpdater interface {
 	// on it so a concurrent redelivery of the same charge doesn't double-
 	// fire the receipt email / payment.succeeded event.
 	MarkPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error)
+	// MarkPaymentFailedReportingTransition records a failure and reports
+	// whether THIS call is the first to fire the failure-notification set
+	// (payment.failed event + customer email + dunning) for this
+	// PaymentIntent. SettleFailed gates those side-effects on the flag so a
+	// concurrent at-least-once redelivery of the same
+	// payment_intent.payment_failed doesn't double-notify. PI-keyed because
+	// failure is non-terminal — one fresh failure per dunning retry — and
+	// because the synchronous charge path stamps payment_status='failed'
+	// before deferring the notifications here.
+	MarkPaymentFailedReportingTransition(ctx context.Context, tenantID, id, paymentIntentID, lastPaymentError string) (domain.Invoice, bool, error)
 	// SetPaymentCard stamps the card brand + last4 used to settle
 	// an invoice. Optional — empty values render no sub-line in
 	// the timeline. Called by handlePaymentSucceeded after MarkPaid
