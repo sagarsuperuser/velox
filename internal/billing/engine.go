@@ -1045,6 +1045,26 @@ func displayTaxRate(lines []tax.ResultLine, effectiveRate float64) float64 {
 	return rate
 }
 
+// domesticReverseCharge reports whether a reverse_charge customer sits in the
+// seller's own registration country — a likely-wrong override, since reverse
+// charge applies only to CROSS-BORDER B2B (the buyer self-accounts in their own
+// country; a buyer in the seller's country is taxed normally). Returns false
+// when the status isn't reverse_charge or when either country is unknown (can't
+// judge). Case- and whitespace-insensitive. CompanyCountry is a single-
+// registration proxy (ADR-052), so this is a best-effort home-country signal,
+// not full multi-registration enforcement.
+func domesticReverseCharge(status domain.CustomerTaxStatus, customerCountry, registrationCountry string) bool {
+	if status != domain.TaxStatusReverseCharge {
+		return false
+	}
+	c := strings.TrimSpace(customerCountry)
+	r := strings.TrimSpace(registrationCountry)
+	if c == "" || r == "" {
+		return false
+	}
+	return strings.EqualFold(c, r)
+}
+
 // ApplyTaxToLineItems resolves the tenant's configured tax provider, calls
 // Calculate, and stamps the per-line + invoice-level results back onto the
 // supplied domain types. Shared by the main billing path and proration so
@@ -1127,6 +1147,21 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 			app.TaxCountry = bp.Country
 			app.TaxID = bp.TaxID
 		}
+	}
+
+	// Domestic reverse charge is a contradiction: reverse charge applies only to
+	// CROSS-BORDER B2B. A buyer in the seller's own registration country is taxed
+	// normally. We do NOT block — the operator's explicit override is honored
+	// (same trust model as exempt, and the only mechanism for manual/none
+	// providers) — but we log it, because the override silently zero-rates a sale
+	// that should be taxed. For a standard customer the cross-border decision is
+	// deferred to the tax engine (Stripe auto-applies reverse charge from the
+	// tax ID + jurisdictions); ADR-052. Non-blocking; no-op when either country
+	// is unknown, and CompanyCountry is a single-registration proxy.
+	if domesticReverseCharge(profile.TaxStatus, profile.Country, ts.CompanyCountry) {
+		slog.WarnContext(ctx, "tax: domestic reverse charge — buyer is in the seller's registration country, so reverse charge does not apply; invoice zero-rated on the operator's explicit override. Verify this customer's tax status (reverse charge is cross-border B2B only).",
+			"tenant_id", tenantID, "customer_id", customerID,
+			"customer_country", profile.Country, "registration_country", ts.CompanyCountry)
 	}
 
 	onFailure := ts.TaxOnFailure

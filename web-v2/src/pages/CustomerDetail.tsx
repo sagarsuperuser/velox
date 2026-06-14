@@ -1362,10 +1362,10 @@ function EditBillingProfileDialog({ customerId, customer, profile, onClose, onSa
               />
               <p className="text-xs text-muted-foreground">
                 {form.tax_status === 'exempt'
-                  ? 'Invoice ships with zero tax and the exempt reason printed on the PDF audit trail.'
+                  ? 'Forces zero tax with the exempt reason printed on the PDF audit trail. Use for a certificate or non-profit the tax provider can\'t see.'
                   : form.tax_status === 'reverse_charge'
-                    ? 'Invoice ships with zero tax and the reverse-charge VAT legend directing the buyer to self-assess.'
-                    : 'Tax is calculated by the tenant\'s configured provider.'}
+                    ? 'Forces zero tax with the reverse-charge legend (buyer self-assesses). For most B2B customers, prefer Standard + a Tax ID — reverse charge is then applied automatically only where it\'s valid. It never applies to a buyer in your own country.'
+                    : 'Tax is calculated by your provider. For a B2B customer, add their Tax ID below — reverse charge is then applied automatically where it applies (cross-border).'}
               </p>
             </div>
 
