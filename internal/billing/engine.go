@@ -535,7 +535,7 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 			// tax_transaction_id — and the wall-clock reconciler excludes
 			// clock-pinned invoices, so nothing recovered it. Real elapsed
 			// time is the only correct measure of a Stripe-side TTL.
-			if age := time.Now().UTC().Sub(createdAt); age > taxCalculationMaxAge {
+			if age := time.Now().UTC().Sub(createdAt); age > taxCalculationMaxAge { // wall-clock: Stripe's calc TTL is a real-world 24h, never the simulated clock
 				return errs.InvalidState(fmt.Sprintf(
 					"tax calculation expired (age %s, max %s) — retry tax to refresh, then finalize",
 					age.Truncate(time.Minute), taxCalculationMaxAge))
