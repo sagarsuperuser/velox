@@ -16,6 +16,12 @@ import (
 
 var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
+// countryPattern matches an uppercase ISO-3166-1 alpha-2 code. Stripe (Tax and
+// payments) expects alpha-2 for every address; validating the format here turns
+// a bad code ("USA") into a clean 400 instead of an opaque Stripe-side
+// rejection at invoice-compute time. Mirrors the tenant company_country check.
+var countryPattern = regexp.MustCompile(`^[A-Z]{2}$`)
+
 // StripeSyncer syncs billing profile data to Stripe when a Stripe customer exists.
 type StripeSyncer interface {
 	SyncBillingProfile(ctx context.Context, stripeCustomerID, customerEmail string, bp domain.CustomerBillingProfile) error
@@ -356,6 +362,15 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 		if !phonePattern.MatchString(phone) {
 			return domain.CustomerBillingProfile{}, errs.Invalid("phone", "must be 7-20 characters and contain only digits, spaces, +, -, (, )")
 		}
+	}
+	// Normalize + format-validate the billing country to ISO-3166 alpha-2 so it
+	// stores canonically ("US", not "us"/" US ") and a bad code fails as a clean
+	// 400 here rather than as an opaque Stripe Tax rejection at invoice time. The
+	// dashboard already sends a code from a fixed list; this closes the
+	// direct-API bypass, like the tax-status enforcement below.
+	bp.Country = strings.ToUpper(strings.TrimSpace(bp.Country))
+	if bp.Country != "" && !countryPattern.MatchString(bp.Country) {
+		return domain.CustomerBillingProfile{}, errs.Invalid("country", "must be an ISO-3166 alpha-2 country code (e.g. 'IN', 'US')")
 	}
 	// Normalize + format-validate tax IDs. Unknown kinds pass through untouched
 	// so we don't reject jurisdictions we haven't added explicit support for.
