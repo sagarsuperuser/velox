@@ -120,6 +120,20 @@ added for catchup.
 ADR-019's Stripe-reconnect-flush remains; that's a different trigger
 (operator-driven, not time-driven) and stays cross-mode.
 
+**Tax-commit reconciler — intentionally NOT split (added #267, 2026-06-14).**
+A sibling reconciler, `RetryPendingTaxCommit`, recovers a *different* orphan:
+a finalized invoice whose Stripe `tax_transaction` committed but whose local
+`tax_transaction_id` write failed/crashed. Its cron query (`ListPendingTaxCommit`)
+excludes clock-pinned invoices per the rule above, but — unlike tax retry — it
+has **no** `*ForClock` half, so a clock-pinned commit orphan is never
+auto-recovered. This deviation from the "every excluded path gets a per-clock
+variant" pattern is deliberate: clock-pinned invoices are test-mode by
+construction (test clocks are `livemode=false` by CHECK constraint → `sk_test_`
+Stripe account, no real tax authority), so a stranded id only breaks *simulated*
+reversal fidelity, recoverable by replaying the clock. Build the `*ForClock`
+half only when a design partner's test-clock void/credit-note simulation reports
+a silently no-op'd tax reversal.
+
 ### 4. Dunning advance
 
 | | Existing | After |
