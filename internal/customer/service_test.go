@@ -475,4 +475,25 @@ func TestCustomerService_BillingProfile(t *testing.T) {
 			t.Errorf("tax_status = %q, want reverse_charge", bp.TaxStatus)
 		}
 	})
+
+	// Country must be ISO-3166 alpha-2 — a bad code is rejected at the API
+	// boundary instead of detonating as an opaque Stripe rejection later, and a
+	// lowercase/padded code normalizes rather than rejects.
+	t.Run("country must be ISO alpha-2", func(t *testing.T) {
+		_, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: "USA",
+		})
+		if err == nil {
+			t.Fatal("expected error: non-alpha-2 country 'USA'")
+		}
+		bp, err := svc.UpsertBillingProfile(ctx, "tenant1", domain.CustomerBillingProfile{
+			CustomerID: created.ID, Country: " us ",
+		})
+		if err != nil {
+			t.Fatalf("lowercase/padded country should normalize, not error: %v", err)
+		}
+		if bp.Country != "US" {
+			t.Errorf("country = %q, want normalized %q", bp.Country, "US")
+		}
+	})
 }
