@@ -165,9 +165,18 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if metaTenant == "" {
+	if metaTenant == "" && !endpointAuthoritativeEvent(raw.Type) {
 		// Not a Velox-originated payment intent (tenant fires their own
 		// Stripe objects at the same endpoint). Acknowledge and skip.
+		//
+		// Exception: a few event types are recognized as Velox-originated from
+		// the object itself, not a metadata marker — Stripe Checkout doesn't
+		// copy a session's metadata onto the SetupIntent it creates, so a
+		// Velox setup_intent.succeeded legitimately arrives with empty
+		// metadata. Dropping it here silently loses the saved card; the
+		// handler instead maps the SetupIntent's `customer` back to the Velox
+		// customer. The endpoint's tenant is already authoritative (per-tenant
+		// secret + HMAC), and the cross-tenant mismatch guard above still runs.
 		respond.JSON(w, r, http.StatusOK, map[string]string{"status": "skipped", "reason": "no velox metadata"})
 		return
 	}
@@ -224,6 +233,24 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+// endpointAuthoritativeEvent reports whether an event type may be processed
+// using only the endpoint's authoritative tenant + the object's own
+// references, without a velox_tenant_id metadata marker. Stripe Checkout
+// doesn't copy a session's metadata onto the SetupIntent it creates, so a
+// Velox-originated setup_intent.* arrives with empty metadata; these are
+// recognized downstream by mapping the SetupIntent's `customer` back to the
+// Velox customer (setup_failed is a no-op log). Kept deliberately narrow —
+// payment_intent.* still requires the metadata marker so a tenant's own
+// unrelated charges at the same endpoint aren't ingested.
+func endpointAuthoritativeEvent(eventType string) bool {
+	switch eventType {
+	case "setup_intent.succeeded", "setup_intent.setup_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 // verifyStripeSignature verifies the Stripe-Signature header using HMAC-SHA256.

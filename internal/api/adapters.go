@@ -99,6 +99,23 @@ func (a *compositePaymentSetupStore) UpsertPaymentSetup(ctx context.Context, ten
 	return a.GetPaymentSetup(ctx, tenantID, ps.CustomerID)
 }
 
+// stripeCustomerResolverAdapter implements payment.CustomerByStripeIDResolver
+// over the customer store. Lets the setup_intent.succeeded webhook map a
+// SetupIntent's `customer` (a Stripe Customer ID) back to the Velox customer
+// without payment/ importing customer/ — same composition-root pattern as the
+// other adapters here.
+type stripeCustomerResolverAdapter struct {
+	customers *customer.PostgresStore
+}
+
+func (a *stripeCustomerResolverAdapter) CustomerIDByStripeID(ctx context.Context, tenantID, stripeCustomerID string) (string, error) {
+	c, err := a.customers.GetByStripeCustomerID(ctx, tenantID, stripeCustomerID)
+	if err != nil {
+		return "", err
+	}
+	return c.ID, nil
+}
+
 // paymentReadinessAdapter implements billing.PaymentReadiness by
 // combining customer.PostgresStore (for the Stripe Customer ID
 // mapping) and paymentmethods.Service (for the canonical "has
