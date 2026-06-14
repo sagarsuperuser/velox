@@ -870,6 +870,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// name is AttachForWebhook so the two AttachFromSetupIntent callers
 	// (tests, webhook) keep their own signatures.
 	stripeAdapter.SetPaymentMethodAttacher(paymentMethodsSvc)
+	// Authoritative fallback when a SetupIntent carries no velox_customer_id
+	// metadata (hosted "update payment" / operator add-card Checkout flows
+	// don't set setup_intent_data.metadata): resolve the velox customer from
+	// the SetupIntent's `customer` field so the saved card still persists.
+	stripeAdapter.SetCustomerResolver(&stripeCustomerResolverAdapter{customers: customerStore})
 
 	// GDPR data export + erasure was removed 2026-05-29 pre-launch.
 	// The prior implementation was a half-fix (didn't sync erasure

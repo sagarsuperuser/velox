@@ -1004,7 +1004,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 - [ ] Trigger payment failure → email/log carries `http://localhost:5173/update-payment?token=vlx_pt_…`.
 - [ ] Open in incognito → page loads without login, shows customer + invoice + amount, "Secured by Stripe".
-- [ ] Click Update → Stripe Checkout setup → new card → redirect → webhook updates PM.
+- [ ] Click Update → Stripe Checkout setup → new card → redirect → the `setup_intent.succeeded` webhook records the card. The **customer detail page now shows it** under "Payment method" (brand + last 4), and the previously-unpaid invoice auto-charges on the next sweep (or clock advance for a clock-pinned customer). The card persists **even though** the hosted Checkout puts `velox_customer_id` only on the session, not the SetupIntent — the webhook resolves the customer from the SetupIntent's `customer` field (2026-06-14).
 - [ ] First-time customer (no Stripe Customer yet — the usual no-saved-card case this email targets): clicking Update creates the Stripe Customer on demand and opens Checkout, NOT a "customer does not have a Stripe payment setup" error.
 - [ ] A failed attempt does NOT spend the link: if the Update click errors before Checkout opens (e.g. Stripe momentarily unreachable), re-opening the same link still works — only a successful Checkout open consumes the token.
 - [ ] Re-open same URL after a successful use → "Link expired or invalid". Random token → same. No token → "No payment update token provided".

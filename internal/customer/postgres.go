@@ -323,6 +323,49 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 	return s.decryptCustomer(c)
 }
 
+// GetByStripeCustomerID resolves a customer from its Stripe Customer ID.
+// The (tenant_id, livemode, stripe_customer_id) index is unique, so the
+// TxTenant RLS scope (tenant + livemode) makes this a 1:1 lookup. Used by
+// the setup_intent.succeeded webhook to map the SetupIntent's authoritative
+// `customer` field back to the Velox customer when the SetupIntent carries
+// no velox_customer_id metadata (Stripe Checkout doesn't copy session
+// metadata onto the SetupIntent). An empty id never matches — the partial
+// unique index excludes blank ids — so we fail closed rather than scan.
+func (s *PostgresStore) GetByStripeCustomerID(ctx context.Context, tenantID, stripeCustomerID string) (domain.Customer, error) {
+	if stripeCustomerID == "" {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var c domain.Customer
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
+			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
+			COALESCE(cost_dashboard_token, ''),
+			COALESCE(test_clock_id, ''),
+			COALESCE(dunning_policy_id, ''),
+			created_at, updated_at
+		FROM customers WHERE stripe_customer_id = $1
+	`, stripeCustomerID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
+		(*string)(&c.EmailStatus), &c.EmailLastBouncedAt, &c.EmailBounceReason,
+		&c.CostDashboardToken,
+		&c.TestClockID,
+		&c.DunningPolicyID,
+		&c.CreatedAt, &c.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return domain.Customer{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	return s.decryptCustomer(c)
+}
+
 // EmailMatch is the narrow result row from FindByEmailBlindIndex — enough
 // identity to mint a magic link but no PII. Returned cross-tenant, so the
 // caller (the public magic-link handler) iterates one match per (tenant,

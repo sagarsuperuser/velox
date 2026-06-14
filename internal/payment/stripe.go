@@ -87,7 +87,8 @@ type Stripe struct {
 	emailPaymentFailed EmailPaymentFailed
 	breaker            *breaker.Breaker // optional; nil = no breaker
 	pmAttacher         PaymentMethodAttacher
-	resolver           clock.Resolver // optional; binds effective-now from invoice
+	customerResolver   CustomerByStripeIDResolver // optional; resolves SetupIntent.customer → velox id
+	resolver           clock.Resolver             // optional; binds effective-now from invoice
 }
 
 // SetResolver wires the unified clock.Resolver. Webhook handlers fire
@@ -248,6 +249,26 @@ type PaymentMethodAttacher interface {
 // setup_intent.succeeded events.
 func (s *Stripe) SetPaymentMethodAttacher(a PaymentMethodAttacher) {
 	s.pmAttacher = a
+}
+
+// CustomerByStripeIDResolver maps a Stripe Customer ID back to the Velox
+// customer ID. Optional fallback for setup_intent.succeeded: a Checkout
+// session in setup mode only carries velox_customer_id on the SetupIntent
+// when its creator set setup_intent_data.metadata — and not every call site
+// does. Rather than depend on that discipline at every session-creation
+// site, the webhook resolves the customer from the SetupIntent's `customer`
+// field, which Stripe always populates for our customer-scoped setup flows.
+// This makes PM persistence authoritative-by-construction instead of
+// best-effort-by-metadata.
+type CustomerByStripeIDResolver interface {
+	CustomerIDByStripeID(ctx context.Context, tenantID, stripeCustomerID string) (string, error)
+}
+
+// SetCustomerResolver wires the Stripe-customer → velox-customer resolver
+// used as the setup_intent.succeeded fallback. Optional: nil leaves the
+// handler dependent on SetupIntent metadata alone (test default).
+func (s *Stripe) SetCustomerResolver(r CustomerByStripeIDResolver) {
+	s.customerResolver = r
 }
 
 // IsUnknownPaymentFailure classifies an error returned from ChargeInvoice
@@ -714,6 +735,26 @@ func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string
 
 	customerID := parsed.Data.Object.Metadata["velox_customer_id"]
 	pmID := parsed.Data.Object.PaymentMethod
+
+	// Metadata is best-effort: Stripe Checkout doesn't copy a session's
+	// metadata onto the underlying SetupIntent unless the creator set
+	// setup_intent_data.metadata, and the hosted "update payment" and
+	// operator add-card Checkout flows don't. Fall back to the SetupIntent's
+	// authoritative `customer` field — always set for our customer-scoped
+	// setup flows — so a saved card lands in payment_methods regardless of
+	// which flow created the session. A non-NotFound resolver error is
+	// transient (return → Stripe redelivers); NotFound (the Stripe customer
+	// isn't ours) leaves customerID empty and falls through to the skip below.
+	if customerID == "" && s.customerResolver != nil {
+		if stripeCustomerID := parsed.Data.Object.Customer; stripeCustomerID != "" {
+			resolved, rerr := s.customerResolver.CustomerIDByStripeID(ctx, tenantID, stripeCustomerID)
+			if rerr != nil && !errors.Is(rerr, errs.ErrNotFound) {
+				return fmt.Errorf("resolve customer by stripe id %s: %w", stripeCustomerID, rerr)
+			}
+			customerID = resolved
+		}
+	}
+
 	if customerID == "" || pmID == "" {
 		slog.Warn("setup_intent.succeeded missing velox_customer_id or payment_method — skipping",
 			"stripe_event_id", event.StripeEventID)

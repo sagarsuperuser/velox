@@ -2,6 +2,7 @@ package customer_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/customer"
@@ -41,6 +42,37 @@ func TestPostgresStore_CreateAndGet(t *testing.T) {
 	}
 	if got.Email != "billing@acme.com" {
 		t.Errorf("email: got %q", got.Email)
+	}
+}
+
+func TestPostgresStore_GetByStripeCustomerID(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := customer.NewPostgresStore(db)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Test Tenant")
+
+	created, err := store.Create(ctx, tenantID, domain.Customer{ExternalID: "cus_ext_stripe", DisplayName: "Acme"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.SetStripeCustomerID(ctx, tenantID, created.ID, "cus_stripe_abc"); err != nil {
+		t.Fatalf("set stripe id: %v", err)
+	}
+
+	got, err := store.GetByStripeCustomerID(ctx, tenantID, "cus_stripe_abc")
+	if err != nil {
+		t.Fatalf("get by stripe id: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("resolved wrong customer: got %q, want %q", got.ID, created.ID)
+	}
+
+	// Unknown stripe id and empty id both fail closed with NotFound.
+	if _, err := store.GetByStripeCustomerID(ctx, tenantID, "cus_stripe_nope"); !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("unknown stripe id: want NotFound, got %v", err)
+	}
+	if _, err := store.GetByStripeCustomerID(ctx, tenantID, ""); !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("empty stripe id: want NotFound, got %v", err)
 	}
 }
 

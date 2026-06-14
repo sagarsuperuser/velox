@@ -172,6 +172,61 @@ func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	}
 }
 
+// TestWebhookHandler_SetupIntentEmptyMetadata_StillAttaches — the end-to-end
+// regression for the hosted "update payment" / operator add-card Checkout
+// bug: a setup_intent.succeeded created by Stripe Checkout carries NO metadata
+// on the SetupIntent (Checkout doesn't copy session metadata), so it has no
+// velox_tenant_id. It must NOT be dropped at the HTTP gate the way a foreign
+// payment_intent is — it reaches HandleWebhook, which resolves the customer
+// from the SetupIntent's `customer` field and attaches the PM.
+func TestWebhookHandler_SetupIntentEmptyMetadata_StillAttaches(t *testing.T) {
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
+	attacher := &recordingAttacher{}
+	stripeAdapter.SetPaymentMethodAttacher(attacher)
+	stripeAdapter.SetCustomerResolver(&recordingCustomerResolver{wantStripeID: "cus_stripe_99", veloxID: "cus_local_7"})
+
+	secret := "whsec_seti_test"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
+
+	event := map[string]any{
+		"id":       "evt_seti_http",
+		"type":     "setup_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
+		"data": map[string]any{
+			"object": map[string]any{
+				"id":             "seti_http_1",
+				"object":         "setup_intent",
+				"payment_method": "pm_stripe_77",
+				"customer":       "cus_stripe_99",
+				"metadata":       map[string]string{}, // Checkout left this empty
+			},
+		},
+	}
+	body, _ := json.Marshal(event)
+
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
+	req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["status"] != "processed" {
+		t.Fatalf("setup_intent with empty metadata must be processed, not %q", resp["status"])
+	}
+	if attacher.called != 1 || attacher.customerID != "cus_local_7" || attacher.pmID != "pm_stripe_77" {
+		t.Fatalf("expected attach(cus_local_7, pm_stripe_77), got called=%d customer=%q pm=%q",
+			attacher.called, attacher.customerID, attacher.pmID)
+	}
+}
+
 func TestWebhookHandler_UnknownEndpoint404(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
 	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{}}

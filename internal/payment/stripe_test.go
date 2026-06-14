@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -802,8 +803,8 @@ func TestHandleWebhook_SetupIntent_NoAttacher(t *testing.T) {
 }
 
 // TestHandleWebhook_SetupIntent_MissingMetadata — a setup_intent with no
-// velox metadata shouldn't error (someone else's SI passing through); we
-// just skip.
+// velox metadata AND no resolvable customer shouldn't error (someone else's
+// SI passing through); we just skip.
 func TestHandleWebhook_SetupIntent_MissingMetadata(t *testing.T) {
 	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 	attacher := &recordingAttacher{}
@@ -821,6 +822,129 @@ func TestHandleWebhook_SetupIntent_MissingMetadata(t *testing.T) {
 	}
 	if attacher.called != 0 {
 		t.Fatalf("attacher must not be called when velox_customer_id is missing")
+	}
+}
+
+// recordingCustomerResolver is a fake CustomerByStripeIDResolver. Maps one
+// Stripe customer id → velox id; everything else is NotFound.
+type recordingCustomerResolver struct {
+	wantStripeID string
+	veloxID      string
+	called       int
+	err          error
+}
+
+func (r *recordingCustomerResolver) CustomerIDByStripeID(_ context.Context, _ /*tenantID*/, stripeCustomerID string) (string, error) {
+	r.called++
+	if r.err != nil {
+		return "", r.err
+	}
+	if stripeCustomerID == r.wantStripeID {
+		return r.veloxID, nil
+	}
+	return "", errs.ErrNotFound
+}
+
+// TestHandleWebhook_SetupIntent_ResolvesCustomerByStripeID — the bug fix:
+// a setup_intent.succeeded created by Stripe Checkout carries metadata on the
+// session, NOT the SetupIntent, so velox_customer_id is absent. The handler
+// must fall back to the SetupIntent's `customer` field, resolve it to the
+// velox customer, and still attach the PM.
+func TestHandleWebhook_SetupIntent_ResolvesCustomerByStripeID(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+	resolver := &recordingCustomerResolver{wantStripeID: "cus_stripe_99", veloxID: "cus_local_7"}
+	stripe.SetCustomerResolver(resolver)
+
+	// No metadata on the SetupIntent — only the authoritative `customer`.
+	rawPayload := `{
+		"id": "evt_seti_nometa",
+		"type": "setup_intent.succeeded",
+		"data": { "object": {
+			"id": "seti_3",
+			"payment_method": "pm_stripe_77",
+			"customer": "cus_stripe_99",
+			"metadata": {}
+		}}
+	}`
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_nometa",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": rawPayload},
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if resolver.called != 1 {
+		t.Fatalf("expected resolver called once, got %d", resolver.called)
+	}
+	if attacher.called != 1 {
+		t.Fatalf("expected attacher called once, got %d", attacher.called)
+	}
+	if attacher.customerID != "cus_local_7" || attacher.pmID != "pm_stripe_77" {
+		t.Fatalf("attacher got wrong args: customer=%q pm=%q", attacher.customerID, attacher.pmID)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_MetadataWinsOverResolver — when the SetupIntent
+// DOES carry velox_customer_id (the paymentmethods portal flow sets it), the
+// metadata fast-path is used and the resolver is never consulted.
+func TestHandleWebhook_SetupIntent_MetadataWinsOverResolver(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+	resolver := &recordingCustomerResolver{wantStripeID: "cus_stripe_99", veloxID: "cus_should_not_be_used"}
+	stripe.SetCustomerResolver(resolver)
+
+	rawPayload := `{
+		"data": { "object": {
+			"id": "seti_4",
+			"payment_method": "pm_meta",
+			"customer": "cus_stripe_99",
+			"metadata": { "velox_customer_id": "cus_from_metadata" }
+		}}
+	}`
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_meta_wins",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": rawPayload},
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if resolver.called != 0 {
+		t.Fatalf("resolver must not be consulted when metadata is present, called %d", resolver.called)
+	}
+	if attacher.customerID != "cus_from_metadata" {
+		t.Fatalf("metadata customer id should win, got %q", attacher.customerID)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_ResolverTransientErrorRedelivers — a
+// non-NotFound resolver error (e.g. DB blip) must surface so the HTTP layer
+// 5xxs and Stripe redelivers, rather than silently dropping a saved card.
+func TestHandleWebhook_SetupIntent_ResolverTransientErrorRedelivers(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+	resolver := &recordingCustomerResolver{err: errors.New("db unavailable")}
+	stripe.SetCustomerResolver(resolver)
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_dberr",
+		EventType:     "setup_intent.succeeded",
+		Payload: map[string]any{"raw": `{
+			"data": {"object": {"id": "seti_5", "payment_method": "pm_x", "customer": "cus_y", "metadata": {}}}
+		}`},
+	})
+	if err == nil {
+		t.Fatal("expected transient resolver error to surface for redelivery")
+	}
+	if attacher.called != 0 {
+		t.Fatalf("attacher must not run when customer resolution failed")
 	}
 }
 
