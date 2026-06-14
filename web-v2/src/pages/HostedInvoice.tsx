@@ -31,6 +31,7 @@ interface HostedInvoicePayload {
     tax_rate: number // ADR-042/043: percent rate (7.25 = 7.25%), 4-decimal precision
     tax_name?: string
     tax_reverse_charge?: boolean
+    tax_exempt_reason?: string
     total_amount_cents: number
     amount_due_cents: number
     amount_paid_cents: number
@@ -443,6 +444,11 @@ export default function HostedInvoicePage() {
                 {invoice.tax_reverse_charge && (
                   <p className="text-xs text-muted-foreground">
                     Reverse charge — customer self-assesses VAT/GST.
+                  </p>
+                )}
+                {invoice.tax_exempt_reason && !invoice.tax_reverse_charge && (
+                  <p className="text-xs text-muted-foreground">
+                    Tax-exempt — {invoice.tax_exempt_reason}
                   </p>
                 )}
                 {invoice.credits_applied_cents > 0 && (

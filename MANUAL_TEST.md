@@ -936,7 +936,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Loads without login. Header: tenant logo + company_name + support_url. Optional 3px accent bar.
 - [ ] Invoice meta: number (mono), amount due (large tabular), due date.
 - [ ] Bill-to + From columns. Line-items table with tabular numerals.
-- [ ] Totals: subtotal, optional discount, optional tax with rate, reverse-charge note if applicable, total, amount paid, **Amount due** bold.
+- [ ] Totals: subtotal, optional discount, optional tax with rate, reverse-charge **or tax-exempt** notice if applicable (`Tax-exempt — <reason>` for an exempt customer; previously dropped on the hosted page), total, amount paid, **Amount due** bold.
 - [ ] **Pay {amount}** primary button (brand_color). **Download PDF** secondary.
 - [ ] Footer: "Secured by Stripe" + "Powered by Velox Billing".
 

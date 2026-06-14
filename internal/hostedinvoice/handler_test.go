@@ -564,3 +564,35 @@ func TestViewInvoice_FractionalQuantity_CarriesQuantityDecimal(t *testing.T) {
 		t.Errorf("whole-qty line quantity_decimal = %q, want empty", resp2.LineItems[0].QuantityDecimal)
 	}
 }
+
+// TestViewInvoice_CarriesTaxExemptReason locks the projection fix: the hosted
+// invoice page renders its exemption legend from tax_exempt_reason, but the
+// field was dropped from viewInvoice — so an exempt ($0-tax, non-reverse-charge)
+// invoice showed no disclosure on the public page while reverse-charge did.
+func TestViewInvoice_CarriesTaxExemptReason(t *testing.T) {
+	fi := newFakeInvoices()
+	fc := newFakeCustomers()
+	fs := newFakeSettings()
+	inv := seedFinalized(t, fi, fc, fs, "vlx_pinv_exempt")
+	// Exempt invoice: $0 tax, an operator-supplied reason, not reverse-charge.
+	inv.TaxAmountCents = 0
+	inv.TaxExemptReason = "Reseller — resale certificate"
+	inv.TaxReverseCharge = false
+	fi.byToken["vlx_pinv_exempt"] = inv
+
+	h := newTestHandler(fi, fc, fs, &fakeCheckout{})
+	r := mountRouter(h)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/vlx_pinv_exempt", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp hostedInvoicePayload
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp.Invoice.TaxExemptReason != "Reseller — resale certificate" {
+		t.Errorf("tax_exempt_reason = %q, want the operator reason carried through to the hosted page", resp.Invoice.TaxExemptReason)
+	}
+}
