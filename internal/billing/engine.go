@@ -522,7 +522,20 @@ func (e *Engine) CommitTax(ctx context.Context, tenantID, invoiceID, calculation
 		}
 		createdAt, lookupErr := e.taxCalcStore.LookupCalculationCreatedAt(ctx, tenantID, invoiceID, calculationID)
 		if lookupErr == nil {
-			if age := clock.Now(ctx).Sub(createdAt); age > taxCalculationMaxAge {
+			// REAL wall-clock on BOTH sides — never clock.Now(ctx). The
+			// calc's 24h TTL lives at Stripe, which knows nothing about a
+			// Velox test clock; the row's created_at is stamped by the DB
+			// (now(), real time). Using the ctx-bound simulated clock here
+			// conflated the two: a customer pinned to a test clock advanced
+			// >23h past real wall-clock (e.g. a mid-period proration after
+			// advancing the clock 15 days) made clock.Now(ctx) - createdAt
+			// exceed the window, so the guard falsely "expired" a calc that
+			// was created seconds ago in real time. The commit was skipped
+			// and the proration invoice kept tax_calculation_id but no
+			// tax_transaction_id — and the wall-clock reconciler excludes
+			// clock-pinned invoices, so nothing recovered it. Real elapsed
+			// time is the only correct measure of a Stripe-side TTL.
+			if age := time.Now().UTC().Sub(createdAt); age > taxCalculationMaxAge {
 				return errs.InvalidState(fmt.Sprintf(
 					"tax calculation expired (age %s, max %s) — retry tax to refresh, then finalize",
 					age.Truncate(time.Minute), taxCalculationMaxAge))

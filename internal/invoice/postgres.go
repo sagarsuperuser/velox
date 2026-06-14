@@ -1679,8 +1679,20 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 // Bounded to invoices touched within the last 24h: beyond that the Stripe Tax
 // calculation has expired, so the engine's expiry guard blocks the re-commit
 // anyway — chasing them every tick would only log churn. An aged-out orphan
-// needs a manual tax re-calc. Clock-pinned invoices are excluded for the same
-// reason ListPendingTaxRetry excludes them (the catchup path owns those).
+// needs a manual tax re-calc.
+//
+// Clock-pinned invoices are excluded — but, unlike ListPendingTaxRetry (which
+// has a real catchup counterpart, ListPendingTaxRetryForClock), there is NO
+// commit-reconciler ForClock half: nothing auto-recovers a clock-pinned commit
+// orphan. This is a deliberate scope cut, not a TODO, because clock-pinned
+// invoices are test-mode by construction (test clocks are livemode=false by DB
+// CHECK constraint, so CommitTax runs against the tenant's sk_test_ Stripe
+// account with no real tax authority). A stranded tax_transaction_id here only
+// breaks *simulated* reversal fidelity on a *simulated* void — never real
+// reporting — and the operator recovers it for free by replaying the clock.
+// Build RetryPendingTaxCommitForClock (mirroring the #267 wall-clock reconciler
+// + ADR-029's ForClock pattern) only when a design partner's test-clock
+// void/credit-note simulation reports a silently no-op'd tax reversal.
 func (s *PostgresStore) ListPendingTaxCommit(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error) {
 	if batch <= 0 {
 		batch = 50
