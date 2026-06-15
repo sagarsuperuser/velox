@@ -119,6 +119,67 @@ func TestUpdateItem_Downgrade_RoutesGrossTaxReversingCreditNote(t *testing.T) {
 	}
 }
 
+// TestUpdateItem_Downgrade_LIFOAcrossFundingInvoices is the Scenario-6
+// regression: after a mid-period UPGRADE split the period across two invoices,
+// a plan DOWNGRADE claws back the removed value LIFO — against the most-recent
+// (upgrade) invoice, reversing ITS tax — leaving the still-active base invoice
+// untouched, instead of issuing one credit note against the single
+// FindBaseInvoiceForPeriod result.
+func TestUpdateItem_Downgrade_LIFOAcrossFundingInvoices(t *testing.T) {
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_pro", proPeriodStart, proPeriodEnd)
+	svc := NewService(store, nil)
+
+	// Downgrade Pro ($60) → Basic ($20). 15/30 remain → net credit = $20 = 2000.
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 6000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 2000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	baseInv := domain.Invoice{
+		ID: "base_inv", PaymentStatus: domain.PaymentSucceeded,
+		SubtotalCents: 2000, TaxAmountCents: 200, TotalAmountCents: 2200,
+		CreatedAt: proPeriodStart,
+	}
+	upInv := domain.Invoice{
+		ID: "up_inv", PaymentStatus: domain.PaymentSucceeded,
+		SubtotalCents: 4000, TaxAmountCents: 400, TotalAmountCents: 4400,
+		CreatedAt: proPeriodStart.AddDate(0, 0, 5), // newer → LIFO targets this first
+	}
+	invoices := &invoicesMock{
+		sourceInvoice:   baseInv, // FindBaseInvoiceForPeriod (paid-check gate)
+		fundingInvoices: []domain.Invoice{baseInv, upInv},
+	}
+	credits := &creditsMock{}
+	cn := &fakeCNIssuer{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetCreditNoteIssuer(cn)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_basic", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	// net credit 2000 fits entirely in the upgrade invoice's headroom → ONE CN
+	// against up_inv, grossed by ITS 4400/4000 ratio = 2200. Base untouched.
+	if len(cn.calls) != 1 {
+		t.Fatalf("CreateAndIssueAdjustment calls: got %d, want 1: %+v", len(cn.calls), cn.calls)
+	}
+	if cn.calls[0].invoiceID != "up_inv" {
+		t.Errorf("LIFO must target the newest (upgrade) invoice, got %q (want up_inv — NOT the base)", cn.calls[0].invoiceID)
+	}
+	if cn.calls[0].gross != 2200 {
+		t.Errorf("CN gross: got %d, want 2200 (net 2000 × upgrade-invoice 4400/4000 ratio)", cn.calls[0].gross)
+	}
+}
+
 // TestUpdateItem_Downgrade_FallsBackToNetGrantWhenIssuerUnwired proves the
 // downgrade path still works (legacy net ledger grant, no tax reversal) when the
 // CN issuer isn't wired — narrow setups / tests. Production always wires it.

@@ -661,6 +661,14 @@ type ProrationDetail struct {
 	ClawbackGrossCents int64  `json:"-"`
 	ClawbackReason     string `json:"-"`
 	ClawbackMemo       string `json:"-"`
+	// ClawbackPieces fans a downgrade/qty-decrease/item-removal clawback across
+	// EVERY funding invoice of the period — LIFO (newest funding invoice first)
+	// for a plan downgrade, proportional for fungible qty/item changes — each a
+	// tax-reversing adjustment credit note against its own invoice. When
+	// non-empty it supersedes the scalar Clawback* fields (which remain the
+	// single-piece carrier for the unpaid-source amount_due relief path). Issued
+	// post-commit by issueClawbackCreditNote, one credit note per piece.
+	ClawbackPieces []ClawbackPiece `json:"-"`
 	// AutoChargeInvoiceID is the freshly-created proration CHARGE invoice to
 	// enroll into the auto-charge sweep AFTER the tx commits (the sweep then
 	// collects it — wall-clock cron for live subs, test-clock catchup on
@@ -668,6 +676,15 @@ type ProrationDetail struct {
 	// proration invoice, never on the dedup-replay path (that invoice may
 	// already be paid). Empty for credit/adjustment paths. Internal.
 	AutoChargeInvoiceID string `json:"-"`
+}
+
+// ClawbackPiece is one funding invoice's slice of a multi-invoice downgrade
+// clawback. Each is issued as its own tax-reversing adjustment credit note
+// against InvoiceID for GrossCents (tax-inclusive), reversing that invoice's
+// own proportional output tax. The pieces sum to the clawback's total gross.
+type ClawbackPiece struct {
+	InvoiceID  string
+	GrossCents int64
 }
 
 func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, input AddItemInput) (domain.SubscriptionItem, error) {

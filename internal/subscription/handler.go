@@ -22,6 +22,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -1714,17 +1715,126 @@ func (h *Handler) enrollAutoCharge(ctx context.Context, tenantID string, detail 
 // issue), so returning an error here would be misleading and unrecoverable by
 // retry anyway. The source invoice's over-credit cap bounds any aggregate
 // over-credit.
+// resolveClawbackPieces fans a downgrade/qty-decrease/item-removal clawback of
+// netCredit (net, the unconsumed removed value) across EVERY invoice that funded
+// the current period, each piece capped at that invoice's remaining headroom
+// (creditable for a paid invoice / amount_due for an unpaid one):
+//   - PLAN downgrade → LIFO: reverse the most-recent funding invoice (the
+//     upgrade) first, so the latest price level is undone against its own tax
+//     and the still-active base plan is left untouched; spill to older invoices
+//     only when the slice exceeds the newest invoice's headroom.
+//   - QUANTITY decrease / item REMOVAL → proportional: the removed units are
+//     fungible (no principled "newest seat"), so split across funding invoices
+//     in subtotal proportion.
+//
+// Read-only (it issues nothing) — called inside the atomic item-change tx, so a
+// returned error (headroom genuinely exhausted, or a lookup failure) rolls the
+// change back BEFORE it commits rather than leaving a post-commit "reconcile
+// manually" gap. The credit notes themselves are issued post-commit by
+// issueClawbackCreditNote.
+func (h *Handler) resolveClawbackPieces(ctx context.Context, tenantID string, sub domain.Subscription, changeType domain.ItemChangeType, netCredit int64) ([]ClawbackPiece, error) {
+	if netCredit <= 0 || sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return nil, nil
+	}
+	funding, err := h.invoices.FindFundingInvoicesForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart, *sub.CurrentBillingPeriodEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	type fundingCap struct {
+		inv      domain.Invoice
+		grossCap int64
+		netCap   int64
+	}
+	caps := make([]fundingCap, 0, len(funding))
+	for _, f := range funding {
+		var grossCap int64
+		if f.PaymentStatus == domain.PaymentSucceeded {
+			credited, cerr := h.creditNotes.CreditedCents(ctx, tenantID, f.ID)
+			if cerr != nil {
+				return nil, fmt.Errorf("read creditable headroom for %s: %w", f.ID, cerr)
+			}
+			grossCap = f.TotalAmountCents - credited
+		} else {
+			grossCap = f.AmountDueCents
+		}
+		if grossCap <= 0 {
+			continue // no room left on this invoice
+		}
+		netCap := grossCap
+		if f.SubtotalCents > 0 && f.TotalAmountCents > 0 {
+			netCap = money.RoundHalfToEven(grossCap*f.SubtotalCents, f.TotalAmountCents)
+		}
+		caps = append(caps, fundingCap{inv: f, grossCap: grossCap, netCap: netCap})
+	}
+	if len(caps) == 0 {
+		return nil, fmt.Errorf("no creditable funding invoice for period")
+	}
+
+	netCaps := make([]int64, len(caps))
+	var nets []int64
+	var remainder int64
+	if changeType == domain.ItemChangeTypePlan {
+		// LIFO — newest funding invoice first (undo the latest price level).
+		sort.SliceStable(caps, func(a, b int) bool { return caps[a].inv.CreatedAt.After(caps[b].inv.CreatedAt) })
+		for i := range caps {
+			netCaps[i] = caps[i].netCap
+		}
+		nets, remainder = money.AllocateLIFO(netCredit, netCaps)
+	} else {
+		// Fungible qty/item change → proportional by what each invoice charged.
+		weights := make([]int64, len(caps))
+		for i := range caps {
+			weights[i] = caps[i].inv.SubtotalCents
+			netCaps[i] = caps[i].netCap
+		}
+		nets, remainder = money.AllocateByWeightCapped(netCredit, weights, netCaps)
+	}
+	if remainder > 0 {
+		return nil, fmt.Errorf("clawback %d net exceeds funding headroom by %d across %d invoice(s)", netCredit, remainder, len(caps))
+	}
+
+	pieces := make([]ClawbackPiece, 0, len(caps))
+	for i := range caps {
+		net := nets[i]
+		if net <= 0 {
+			continue
+		}
+		gross := grossUpByInvoiceRatio(net, caps[i].inv.SubtotalCents, caps[i].inv.TotalAmountCents)
+		if gross > caps[i].grossCap {
+			gross = caps[i].grossCap // clamp net→gross rounding to headroom
+		}
+		if gross <= 0 {
+			continue
+		}
+		pieces = append(pieces, ClawbackPiece{InvoiceID: caps[i].inv.ID, GrossCents: gross})
+	}
+	return pieces, nil
+}
+
 func (h *Handler) issueClawbackCreditNote(ctx context.Context, tenantID string, detail *ProrationDetail) {
-	if h.creditNotes == nil || detail == nil || detail.ClawbackInvoiceID == "" || detail.ClawbackGrossCents <= 0 {
+	if h.creditNotes == nil || detail == nil {
 		return
 	}
-	if _, err := h.creditNotes.CreateAndIssueAdjustment(ctx, tenantID, detail.ClawbackInvoiceID, detail.ClawbackGrossCents, detail.ClawbackReason, detail.ClawbackMemo); err != nil {
-		slog.ErrorContext(ctx, "downgrade clawback credit note failed after item change committed; customer not yet credited, reconcile manually",
-			"error", err,
-			"tenant_id", tenantID,
-			"source_invoice_id", detail.ClawbackInvoiceID,
-			"gross_cents", detail.ClawbackGrossCents,
-			"reason", detail.ClawbackReason)
+	pieces := detail.ClawbackPieces
+	if len(pieces) == 0 && detail.ClawbackInvoiceID != "" && detail.ClawbackGrossCents > 0 {
+		// Single-piece carrier (the unpaid-source amount_due relief path).
+		pieces = []ClawbackPiece{{InvoiceID: detail.ClawbackInvoiceID, GrossCents: detail.ClawbackGrossCents}}
+	}
+	for i, p := range pieces {
+		if p.InvoiceID == "" || p.GrossCents <= 0 {
+			continue
+		}
+		if _, err := h.creditNotes.CreateAndIssueAdjustment(ctx, tenantID, p.InvoiceID, p.GrossCents, detail.ClawbackReason, detail.ClawbackMemo); err != nil {
+			slog.ErrorContext(ctx, "downgrade clawback credit note failed after item change committed; customer not yet credited, reconcile manually",
+				"error", err,
+				"tenant_id", tenantID,
+				"source_invoice_id", p.InvoiceID,
+				"gross_cents", p.GrossCents,
+				"piece_index", i,
+				"piece_count", len(pieces),
+				"reason", detail.ClawbackReason)
+		}
 	}
 }
 
@@ -1824,7 +1934,6 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	// below — the downgrade-credit branch grosses the clawback up against this
 	// invoice's tax ratio and anchors the tax-reversing credit note to it
 	// (ADR-048). In production h.invoices is always wired and this gate runs.
-	var src domain.Invoice
 	var haveSrc bool
 	if h.invoices != nil && sub.CurrentBillingPeriodStart != nil {
 		resolved, lookupErr := h.invoices.FindBaseInvoiceForPeriod(ctx, tenantID, sub.ID, *sub.CurrentBillingPeriodStart)
@@ -1849,7 +1958,6 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// money the customer hasn't paid (ADR-050).
 			return h.settleUnpaidSourceProration(ctx, tenantID, sub, spec, oldPlan, newPlan, resolved, proratedCents, tx)
 		}
-		src = resolved
 		haveSrc = true
 	}
 
@@ -2174,21 +2282,36 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		// loudly for reconciliation — same risk profile as the post-commit tax
 		// commit (#183).
 		if h.creditNotes != nil && haveSrc {
-			grossCredit := grossUpByInvoiceRatio(creditAmount, src.SubtotalCents, src.TotalAmountCents)
+			// Fan the clawback across EVERY funding invoice of the period (LIFO
+			// for a plan downgrade, proportional for fungible qty/item changes),
+			// each capped at its own remaining headroom — so a clawback that
+			// exceeds the single resolved invoice (e.g. after a prior upgrade
+			// split the period across two invoices) is placed in full instead of
+			// overrunning one invoice's credit-note cap.
+			pieces, perr := h.resolveClawbackPieces(ctx, tenantID, sub, spec.changeType, creditAmount)
+			if perr != nil {
+				// Resolve runs read-only inside the atomic item-change tx, so a
+				// returned error rolls the change back BEFORE it commits — nothing
+				// half-applies. Cleaner than the old post-commit reconcile gap.
+				return nil, fmt.Errorf("downgrade clawback: %w", perr)
+			}
+			var grossCredit int64
+			for _, p := range pieces {
+				grossCredit += p.GrossCents
+			}
 			detail.Type = "credit"
 			detail.AmountCents = grossCredit
-			detail.ClawbackInvoiceID = src.ID
-			detail.ClawbackGrossCents = grossCredit
+			detail.ClawbackPieces = pieces
 			detail.ClawbackReason = clawbackReason(spec.changeType)
 			detail.ClawbackMemo = memo
 			if tx == nil {
 				h.issueClawbackCreditNote(ctx, tenantID, detail)
 			}
-			slog.InfoContext(ctx, "downgrade clawback routed to tax-reversing credit note",
+			slog.InfoContext(ctx, "downgrade clawback routed to tax-reversing credit note(s)",
 				"subscription_id", sub.ID,
 				"item_id", spec.itemID,
 				"change_type", spec.changeType,
-				"source_invoice_id", src.ID,
+				"funding_invoices", len(pieces),
 				"net_cents", creditAmount,
 				"gross_cents", grossCredit,
 			)
