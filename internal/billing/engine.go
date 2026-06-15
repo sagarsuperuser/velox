@@ -4028,6 +4028,7 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 	weights := make([]int64, len(sources))
 	grossCaps := make([]int64, len(sources))
 	netCaps := make([]int64, len(sources))
+	hasUnpaid := false
 	for i, src := range sources {
 		windowDays := roundDays(periodEnd.Sub(src.BillingPeriodStart))
 		if windowDays > 0 && src.SubtotalCents > 0 {
@@ -4041,15 +4042,19 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 			}
 			weights[i] = money.RoundHalfToEven(src.SubtotalCents*int64(ud), int64(windowDays))
 		}
-		// Per-source headroom cap. Only a PAID invoice with a real total needs
-		// one: its credit note hard-caps at remaining creditable (total minus
-		// prior non-voided credit notes — via the optional reader; full total
-		// when unwired), so a prior credit note that shrank it must push the
-		// share elsewhere. UNPAID sources self-cap inside relieveUnpaidPrebill
-		// (min with amount_due) and never hit the credit-note hard cap, and a
-		// zero-total fixture / the creditGranter-fallback path has no meaningful
-		// cap — both are left NON-BINDING so the allocation and the loud-fail
-		// remainder reflect only genuine paid-invoice headroom exhaustion.
+		// Per-source headroom cap, so the allocator water-fills any overflow onto
+		// sources that still have room rather than over-assigning one:
+		//   - PAID + real total → remaining creditable (total minus prior
+		//     non-voided credit notes via the optional reader; full total
+		//     unwired). A prior credit note that shrank it pushes the share
+		//     elsewhere.
+		//   - UNPAID + real total → amount_due. relieveUnpaidPrebill can only
+		//     reduce a receivable down to zero, so capping here makes the
+		//     allocator route the un-relievable overflow to PAID sources (which
+		//     credit the customer) instead of silently dropping it inside the
+		//     relieve clamp (2026-06-15 mixed paid/unpaid fix).
+		//   - zero-total fixture / creditGranter-fallback → no meaningful cap;
+		//     left non-binding.
 		switch {
 		case src.PaymentStatus == domain.PaymentSucceeded && src.TotalAmountCents > 0:
 			grossCap := src.TotalAmountCents
@@ -4069,6 +4074,18 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 				netCap = money.RoundHalfToEven(grossCap*src.SubtotalCents, src.TotalAmountCents)
 			}
 			netCaps[i] = netCap
+		case src.TotalAmountCents > 0:
+			hasUnpaid = true
+			grossCap := src.AmountDueCents
+			if grossCap < 0 {
+				grossCap = 0
+			}
+			grossCaps[i] = grossCap
+			netCap := grossCap
+			if src.SubtotalCents > 0 {
+				netCap = money.RoundHalfToEven(grossCap*src.SubtotalCents, src.TotalAmountCents)
+			}
+			netCaps[i] = netCap
 		default:
 			grossCaps[i] = src.TotalAmountCents
 			netCaps[i] = totalUnused // non-binding
@@ -4077,10 +4094,21 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 
 	nets, remainder := money.AllocateByWeightCapped(totalUnused, weights, netCaps)
 	if remainder > 0 {
-		// The funding invoices' combined remaining headroom can't absorb the
-		// owed credit — a genuine fault (period already fully credited, or
-		// drift). Fail LOUD; never silently drop the customer's money.
-		return 0, fmt.Errorf("cannot place unused-prebill credit: %d of %d exceeds funding headroom across %d invoice(s)", remainder, totalUnused, len(sources))
+		if !hasUnpaid {
+			// All-paid funding set can't absorb the owed credit — a genuine fault
+			// (period already fully credited, or drift). Fail LOUD; never silently
+			// drop the customer's money.
+			return 0, fmt.Errorf("cannot place unused-prebill credit: %d of %d exceeds funding headroom across %d invoice(s)", remainder, totalUnused, len(sources))
+		}
+		// Mixed/unpaid set: paid sources already absorbed all they could (the
+		// allocator water-fills overflow onto them first); the residual is value
+		// an UNPAID invoice can't relieve beyond its amount_due — nothing was
+		// paid for it, so there's no cash to return. Not a fault, but log it.
+		slog.WarnContext(ctx, "unused-prebill credit: residual unplaceable on unpaid funding invoice(s)",
+			"subscription_id", sub.ID,
+			"residual_cents", remainder,
+			"total_unused", totalUnused,
+			"funding_invoices", len(sources))
 	}
 
 	var credited int64

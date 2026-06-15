@@ -97,6 +97,15 @@ jobs:
       - name: lint-clock (ADR-030)
         run: make lint-clock
 
+      # Funding-set invariant: a period can be funded by >1 invoice, so
+      # period-wide credit/clawback/void must reconcile against
+      # FindFundingInvoicesForPeriod, not a single-row lookup. Flags new
+      # unjustified single-invoice lookups (the class that caused the 2026-06-15
+      # multi-invoice proration bugs). Bypass a legitimate use with a same/
+      # preceding-line `// single-invoice-ok: <reason>`.
+      - name: lint-funding-set (ADR-048 amendment)
+        run: make lint-funding-set
+
       # Anti-rot guard: fail if MANUAL_TEST.md names a metric / column / table /
       # meter-key the code no longer has. CI catches generated-artifact drift but
       # not prose; this is the cheap prose guard ("a flow that lies is worse than

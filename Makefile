@@ -1,4 +1,4 @@
-.PHONY: build run test lint lint-clock lint-manual-test migrate dev clean cli gen gen-go gen-ts
+.PHONY: build run test lint lint-clock lint-funding-set lint-manual-test migrate dev clean cli gen gen-go gen-ts
 
 # Build the velox binary
 build:
@@ -58,6 +58,13 @@ lint:
 # audit-log recorded_at).
 lint-clock:
 	@./scripts/lint-clock.sh
+
+# Funding-set invariant guard: a period can be funded by >1 invoice, so a
+# period-wide credit/clawback/void must use FindFundingInvoicesForPeriod, not a
+# single-row lookup. Flags new unjustified single-invoice lookups in proration
+# decision code (ADR-048 amendment).
+lint-funding-set:
+	@./scripts/lint-funding-set.sh
 
 # Anti-rot guard for MANUAL_TEST.md: fails if a flow names a metric / column /
 # table / meter-key the code no longer has (ADR-038/041/043/044 cleanups, etc.).

@@ -46,6 +46,17 @@ type TaxReverser interface {
 	ReverseTax(ctx context.Context, tenantID string, req tax.ReversalRequest) (*tax.ReversalResult, error)
 }
 
+// CreditNoteTotaler reports the sum of non-voided credit-note totals already
+// issued against an invoice. OPTIONAL — when wired, reverseInvoiceTax reverses
+// exactly the un-credit-noted gross (total − credited) on void/uncollectible,
+// which is correct even when customer credit was applied to the invoice
+// (applied credit reduces amount_due without reversing tax). Unwired (narrow
+// tests) → falls back to the amount_paid+amount_due proxy. Satisfied by
+// *creditnote.Service.CreditedCents.
+type CreditNoteTotaler interface {
+	CreditedCents(ctx context.Context, tenantID, invoiceID string) (int64, error)
+}
+
 // TaxRetrier is the narrow view into tax recompute + persistence the
 // retry-tax endpoint depends on. Satisfied by billing.Engine in
 // production — the contract lives next to the handler that calls it.
@@ -111,6 +122,7 @@ type Service struct {
 	numberer       InvoiceNumberer
 	taxCommitter   TaxCommitter
 	taxReverser    TaxReverser
+	creditNotes    CreditNoteTotaler
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
@@ -162,6 +174,10 @@ func (s *Service) SetTaxCommitter(tc TaxCommitter) {
 // with the authority — over-reporting tax revenue.
 func (s *Service) SetTaxReverser(tr TaxReverser) {
 	s.taxReverser = tr
+}
+
+func (s *Service) SetCreditNoteTotaler(c CreditNoteTotaler) {
+	s.creditNotes = c
 }
 
 // SetResolver wires the unified clock.Resolver used to bind
@@ -607,9 +623,12 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 // cancel relief), each of which already fired its own ModePartial reversal for
 // its gross slice; an unconditional ModeFull here would double-reverse that
 // slice and under-remit the tenant's output tax. The remaining un-reversed gross
-// = amount_paid + amount_due (the credit-noted slice is exactly total − paid −
-// amount_due, and payments don't reverse tax). Equals total when no credit note
-// exists (→ ModeFull, unchanged behavior); zero when fully credit-noted (skip).
+// = total − Σ(non-voided credit-note totals), read via the optional creditNotes
+// reader. INVARIANT (guarded by this code, enforced by the reader): tax is
+// reversed ONLY by credit notes — payments and applied customer credit reduce
+// amount_due WITHOUT reversing tax — so the credited total, not amount_due, is
+// the basis. Equals total when no credit note exists (→ ModeFull, unchanged);
+// zero when fully credit-noted (skip).
 //
 // Preconditions: taxReverser wired (skipped for narrow tests + none/manual
 // providers) and a committed upstream transaction (TaxTransactionID non-empty).
@@ -623,15 +642,27 @@ func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv do
 		InvoiceID:             inv.ID,
 		Mode:                  tax.ReversalModeFull,
 	}
-	// Switch to partial only when prior credit notes have already reversed part
-	// of this invoice's tax — i.e. the remaining un-credit-noted gross
-	// (amount_paid + amount_due, since a credit note reduces amount_due but a
-	// payment doesn't reverse tax) is below the invoice total. With no credit
-	// note this equals total and we keep ModeFull (legacy behavior, incl.
-	// zero-total invoices); when credit notes exhausted the invoice it is zero
-	// and there is nothing left to reverse.
+	// Remaining un-reversed gross = total minus what prior CREDIT NOTES already
+	// reversed. ONLY credit notes reverse tax — both card payments AND applied
+	// customer credit reduce amount_due WITHOUT reversing tax — so prefer the
+	// credited total read directly. (amount_paid + amount_due is only a fallback
+	// proxy; it equals the credited remainder when no customer credit was
+	// applied, but UNDER-reverses when it was — the audit-confirmed bug.) With no
+	// credit note this is the full total → ModeFull (unchanged); fully
+	// credit-noted → zero, nothing to reverse.
 	if inv.TotalAmountCents > 0 {
 		remainingGross := inv.AmountPaidCents + inv.AmountDueCents
+		if s.creditNotes != nil {
+			if creditNoted, cerr := s.creditNotes.CreditedCents(ctx, tenantID, inv.ID); cerr == nil {
+				remainingGross = inv.TotalAmountCents - creditNoted
+			} else {
+				slog.WarnContext(ctx, "credit-note total lookup failed; using amount-due proxy for tax reversal",
+					"invoice_id", inv.ID, "error", cerr)
+			}
+		}
+		if remainingGross < 0 {
+			remainingGross = 0
+		}
 		if remainingGross <= 0 {
 			return
 		}
