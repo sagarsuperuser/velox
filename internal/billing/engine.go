@@ -4197,13 +4197,21 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 		return 0, nil
 	}
 
-	var src domain.Invoice
-	var haveSrc bool
+	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
+		sub.Code,
+		periodStart.UTC().Format("2006-01-02"),
+		periodEnd.UTC().Format("2006-01-02"),
+		at.UTC().Format("2006-01-02"))
+
+	// Fan the refund across EVERY invoice that funded the period (base +
+	// mid-period upgrade) — same multi-source settlement as cancel — so a swap
+	// after a prior upgrade doesn't overrun the single base invoice's
+	// credit-note cap and silently strand the customer's unused prepayment.
+	// Paid sources credit the balance (own tax reversal), unpaid sources relieve
+	// amount_due (ADR-050); a per-invoice cap failure surfaces loudly here.
 	if e.invoices != nil {
-		s, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
+		sources, lookupErr := e.invoices.FindFundingInvoicesForPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
 		if errors.Is(lookupErr, errs.ErrNotFound) {
-			// Legitimate "no in_advance base invoice for this period" —
-			// the customer was never billed for the period. Skip cleanly.
 			slog.InfoContext(ctx, "plan-swap refund: no in_advance invoice for period; no credit to grant",
 				"subscription_id", sub.ID,
 				"customer_id", sub.CustomerID,
@@ -4215,43 +4223,29 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 			// Real lookup error (DB blip, etc.) — fail loud rather than
 			// silently shortchange the customer (2026-05-30 design-debt
 			// audit Tier 1 #6).
-			return 0, fmt.Errorf("plan-swap refund: lookup source invoice: %w", lookupErr)
+			return 0, fmt.Errorf("plan-swap refund: lookup funding invoices: %w", lookupErr)
 		}
-		if s.PaymentStatus != domain.PaymentSucceeded {
-			// UNPAID source → settle in place rather than skip (ADR-050): no
-			// cash was funded, so reduce the open prebill's amount_due to the
-			// consumed portion (or void it if nothing was used) instead of
-			// minting a refundable credit. Same primitive the unpaid-cancel
-			// relief uses; keeps the swap path consistent with cancel and the
-			// item-mutation paths.
-			desc := fmt.Sprintf("Unused portion of %s — plan change %s",
-				sub.Code, at.UTC().Format("2006-01-02"))
-			return e.relieveUnpaidPrebill(ctx, sub, s, totalUnused, "subscription_plan_change", desc)
+		credited, err := e.settleUnusedAcrossFunding(ctx, sub, sources, periodEnd, at, totalUnused, "subscription_plan_change", desc)
+		if err != nil {
+			return 0, fmt.Errorf("plan-swap refund credit: %w", err)
 		}
-		src, haveSrc = s, true
+		slog.Info("plan-swap refund credit issued",
+			"subscription_id", sub.ID,
+			"customer_id", sub.CustomerID,
+			"amount_cents", credited,
+			"funding_invoices", len(sources),
+			"period_start", periodStart,
+			"period_end", periodEnd,
+			"swapped_at", at,
+		)
+		return credited, nil
 	}
 
-	// PAID source → gross credit-to-balance + proportional output-tax reversal
-	// via the credit-note primitive (ADR-048), instead of the pre-fix bare net
-	// grant that dropped the tax.
-	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
-		sub.Code,
-		periodStart.UTC().Format("2006-01-02"),
-		periodEnd.UTC().Format("2006-01-02"),
-		at.UTC().Format("2006-01-02"))
-	credited, err := e.creditUnusedPrebill(ctx, sub, src, haveSrc, totalUnused, "subscription_plan_change", desc, at)
+	// Narrow unit-test fallback: invoices unwired → grant net to ledger.
+	credited, err := e.creditUnusedPrebill(ctx, sub, domain.Invoice{}, false, totalUnused, "subscription_plan_change", desc, at)
 	if err != nil {
 		return 0, fmt.Errorf("plan-swap refund credit: %w", err)
 	}
-
-	slog.Info("plan-swap refund credit issued",
-		"subscription_id", sub.ID,
-		"customer_id", sub.CustomerID,
-		"amount_cents", credited,
-		"period_start", periodStart,
-		"period_end", periodEnd,
-		"swapped_at", at,
-	)
 	return credited, nil
 }
 
