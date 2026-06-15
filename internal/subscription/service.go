@@ -1054,13 +1054,15 @@ func (s *Service) applyCrossIntervalPlanSwap(
 	now time.Time,
 ) (ItemChangeResult, error) {
 	// Step 1: refund unused OLD in_advance portion BEFORE the swap so
-	// plan lookups still resolve the outgoing rate. Best-effort —
-	// failure here logs but doesn't block the swap. Operator can
-	// manually issue a credit grant from the dashboard if needed.
+	// plan lookups still resolve the outgoing rate. We don't block the
+	// terminal swap on a credit failure (a DB blip shouldn't strand the
+	// operator's intent), but the failure is logged at ERROR — it means the
+	// customer was NOT credited their unused prepayment and a manual credit is
+	// required, which must be alarmable, not a silent warning.
 	// No-op for in_arrears (nothing prebilled).
 	if s.biller != nil {
 		if _, err := s.biller.BillOnPlanSwapImmediate(ctx, sub, now); err != nil {
-			slog.WarnContext(ctx, "plan-swap refund credit failed; partial-period credit may be required",
+			slog.ErrorContext(ctx, "plan-swap refund credit FAILED — customer not credited for unused prepayment; manual credit required",
 				"subscription_id", subscriptionID,
 				"tenant_id", tenantID,
 				"error", err)
@@ -1208,17 +1210,19 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	}
 
 	// ADR-031: in_advance plans get a cancel-proration credit for the
-	// unused portion of an already-billed period. Best-effort — logs
-	// on failure; operator can manually issue a credit grant from
-	// the dashboard if needed. No-op for in_arrears plans. Returns
-	// the cents amount granted so the handler can stamp it onto the
-	// cancel audit-log entry (powers the timeline "Prorated credit
-	// $X.XX" detail line).
+	// unused portion of an already-billed period. No-op for in_arrears plans.
+	// Returns the cents amount granted so the handler can stamp it onto the
+	// cancel audit-log entry (powers the timeline "Prorated credit $X.XX"
+	// detail line). We don't block the terminal cancel on a credit failure,
+	// but the failure is logged at ERROR — it means the customer was NOT
+	// credited their unused prepayment and a manual credit is required. This
+	// must be alarmable: a silent warning here is exactly how the 2026-06-15
+	// upgrade→cancel overcharge went unnoticed.
 	var prorationCreditCents int64
 	if s.biller != nil {
 		amt, err := s.biller.BillOnCancel(ctx, canceled)
 		if err != nil {
-			slog.Warn("cancel proration failed; manual credit may be required",
+			slog.ErrorContext(ctx, "cancel proration credit FAILED — customer not credited for unused prepayment; manual credit required",
 				"subscription_id", canceled.ID,
 				"tenant_id", tenantID,
 				"error", err)

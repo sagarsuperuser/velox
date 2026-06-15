@@ -595,6 +595,61 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	return finalized, nil
 }
 
+// reverseInvoiceTax reverses the upstream tax transaction for an invoice being
+// voided or marked uncollectible. Industry standard (EU VAT Directive Art. 90,
+// Stripe Tax: "When an invoice is voided or marked uncollectible, you must
+// reverse the corresponding tax transaction"). Best-effort: a transient failure
+// logs but does NOT block the status transition — the invoice is the operator's
+// primary record and must stay flippable even if upstream is unreachable.
+//
+// Reverses only the portion NOT already reversed by prior credit notes. A
+// finalized-unpaid invoice can have adjustment credit notes (ADR-050 downgrade /
+// cancel relief), each of which already fired its own ModePartial reversal for
+// its gross slice; an unconditional ModeFull here would double-reverse that
+// slice and under-remit the tenant's output tax. The remaining un-reversed gross
+// = amount_paid + amount_due (the credit-noted slice is exactly total − paid −
+// amount_due, and payments don't reverse tax). Equals total when no credit note
+// exists (→ ModeFull, unchanged behavior); zero when fully credit-noted (skip).
+//
+// Preconditions: taxReverser wired (skipped for narrow tests + none/manual
+// providers) and a committed upstream transaction (TaxTransactionID non-empty).
+func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv domain.Invoice, reference string) {
+	if s.taxReverser == nil || inv.TaxTransactionID == "" {
+		return
+	}
+	req := tax.ReversalRequest{
+		OriginalTransactionID: inv.TaxTransactionID,
+		Reference:             reference,
+		InvoiceID:             inv.ID,
+		Mode:                  tax.ReversalModeFull,
+	}
+	// Switch to partial only when prior credit notes have already reversed part
+	// of this invoice's tax — i.e. the remaining un-credit-noted gross
+	// (amount_paid + amount_due, since a credit note reduces amount_due but a
+	// payment doesn't reverse tax) is below the invoice total. With no credit
+	// note this equals total and we keep ModeFull (legacy behavior, incl.
+	// zero-total invoices); when credit notes exhausted the invoice it is zero
+	// and there is nothing left to reverse.
+	if inv.TotalAmountCents > 0 {
+		remainingGross := inv.AmountPaidCents + inv.AmountDueCents
+		if remainingGross <= 0 {
+			return
+		}
+		if remainingGross < inv.TotalAmountCents {
+			req.Mode = tax.ReversalModePartial
+			req.GrossAmountCents = remainingGross
+		}
+	}
+	if _, err := s.taxReverser.ReverseTax(ctx, tenantID, req); err != nil {
+		slog.WarnContext(ctx, "tax reversal failed on invoice status change — invoice still updated locally",
+			"invoice_id", inv.ID,
+			"tax_transaction_id", inv.TaxTransactionID,
+			"reference", reference,
+			"reversal_mode", string(req.Mode),
+			"error", err)
+	}
+}
+
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
 	ctx = s.bindForInvoice(ctx, tenantID, id)
 	inv, err := s.store.Get(ctx, tenantID, id)
@@ -608,32 +663,7 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		return domain.Invoice{}, errs.InvalidState("invoice is already voided")
 	}
 
-	// Reverse the upstream tax transaction so the authority's records
-	// stop reporting the tax as collected. Industry standard: EU VAT
-	// Directive Art. 90, Stripe Tax docs ("When an invoice is voided or
-	// marked uncollectible, you must reverse the corresponding tax
-	// transaction"). Best-effort: a transient failure logs but does NOT
-	// block the void — the invoice is the operator's primary record and
-	// must stay flippable to voided even if upstream is unreachable.
-	// Operator reconciles stuck reversals manually in the provider
-	// dashboard. Preconditions:
-	//   - taxReverser wired (skipped for narrow tests + tenants with no
-	//     provider)
-	//   - invoice has a committed upstream transaction (TaxTransactionID
-	//     non-empty — none/manual providers and legacy invoices skip)
-	if s.taxReverser != nil && inv.TaxTransactionID != "" {
-		if _, err := s.taxReverser.ReverseTax(ctx, tenantID, tax.ReversalRequest{
-			OriginalTransactionID: inv.TaxTransactionID,
-			Reference:             "inv_void_" + inv.ID,
-			InvoiceID:             inv.ID,
-			Mode:                  tax.ReversalModeFull,
-		}); err != nil {
-			slog.WarnContext(ctx, "tax reversal failed on invoice void — invoice still voided locally",
-				"invoice_id", inv.ID,
-				"tax_transaction_id", inv.TaxTransactionID,
-				"error", err)
-		}
-	}
+	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_void_"+inv.ID)
 
 	voided, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 	if err != nil {
@@ -684,30 +714,13 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 		return domain.Invoice{}, errs.InvalidState("invoice is already uncollectible")
 	}
 
-	// Reverse the upstream tax transaction. Stripe Tax docs: "When an
-	// invoice is voided or marked uncollectible, you must reverse the
-	// corresponding tax transaction." Jurisdictional caveat — bad-debt
-	// VAT relief rules vary (EU permits reclaim under specific
-	// conditions; US sales tax varies by state). We follow Stripe's
-	// default behaviour and let tenants whose jurisdiction requires
-	// the tax to stay re-commit manually. Best-effort — failure logs
-	// but does not block the status transition. Reference is
-	// inv_uncoll_<id> so retries converge; distinct from the void
-	// Reference so an invoice that was marked uncollectible and then
-	// (somehow) voided wouldn't collide.
-	if s.taxReverser != nil && inv.TaxTransactionID != "" {
-		if _, err := s.taxReverser.ReverseTax(ctx, tenantID, tax.ReversalRequest{
-			OriginalTransactionID: inv.TaxTransactionID,
-			Reference:             "inv_uncoll_" + inv.ID,
-			InvoiceID:             inv.ID,
-			Mode:                  tax.ReversalModeFull,
-		}); err != nil {
-			slog.WarnContext(ctx, "tax reversal failed on mark-uncollectible — invoice still marked locally",
-				"invoice_id", inv.ID,
-				"tax_transaction_id", inv.TaxTransactionID,
-				"error", err)
-		}
-	}
+	// Reverse the upstream tax transaction (remaining un-reversed portion only;
+	// see reverseInvoiceTax). Jurisdictional caveat — bad-debt VAT relief rules
+	// vary (EU permits reclaim under specific conditions; US sales tax varies by
+	// state). We follow Stripe's default behaviour and let tenants whose
+	// jurisdiction requires the tax to stay re-commit manually. Reference is
+	// inv_uncoll_<id> so retries converge and don't collide with a void's.
+	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_uncoll_"+inv.ID)
 
 	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
 	if err != nil {
