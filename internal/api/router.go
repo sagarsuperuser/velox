@@ -768,6 +768,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Same engine instance handles credit-note tax reversals — single
 	// code path keeps the Reference uniqueness contract intact.
 	invoiceSvc.SetTaxReverser(engine)
+	// So void/uncollectible reverses exactly the un-credit-noted tax (total −
+	// credited), correct even when customer credit was applied to the invoice.
+	invoiceSvc.SetCreditNoteTotaler(creditNoteSvc)
 
 	// Operator-initiated retry-tax routes through the billing engine,
 	// which owns provider resolve → recompute → atomic persist. Backs

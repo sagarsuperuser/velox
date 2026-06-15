@@ -1056,6 +1056,55 @@ func TestVoid_PartialTaxReversalAfterPriorCreditNote(t *testing.T) {
 	}
 }
 
+type fakeCreditNoteTotaler struct{ credited int64 }
+
+func (f *fakeCreditNoteTotaler) CreditedCents(_ context.Context, _, _ string) (int64, error) {
+	return f.credited, nil
+}
+
+// TestVoid_CreditApplied_TaxNotUnderReversed is the audit's void-tax regression:
+// applied customer credit reduces amount_due WITHOUT reversing tax, so the old
+// amount_paid+amount_due proxy under-reversed tax on void. With the credit-note
+// totaler wired (reporting NO credit note), void must reverse the FULL tax even
+// though amount_due is below total because credit was applied.
+func TestVoid_CreditApplied_TaxNotUnderReversed(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil, newMemNumberer())
+	rev := &fakeTaxReverser{}
+	svc.SetTaxReverser(rev)
+	svc.SetCreditNoteTotaler(&fakeCreditNoteTotaler{credited: 0}) // no credit note exists
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	// $110 taxed invoice, $30 paid down by APPLIED CUSTOMER CREDIT (not a credit
+	// note): amount_due 8000, amount_paid 0, no credit note. The credit didn't
+	// reverse any tax, so the whole $110's tax must be reversed on void.
+	stale := store.invoices[inv.ID]
+	stale.TaxTransactionID = "tx_committed"
+	stale.TotalAmountCents = 11000
+	stale.AmountDueCents = 8000
+	stale.AmountPaidCents = 0
+	store.invoices[inv.ID] = stale
+
+	if _, err := svc.Void(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("Void: %v", err)
+	}
+	if len(rev.calls) != 1 {
+		t.Fatalf("ReverseTax calls: got %d want 1", len(rev.calls))
+	}
+	// remaining = total - credited(0) = 11000 = total → FULL reversal. The old
+	// proxy would have done ModePartial(8000), under-reversing $30 of tax.
+	if rev.calls[0].Mode != tax.ReversalModeFull {
+		t.Errorf("Mode: got %q want full (applied credit must NOT shrink the tax reversal)", rev.calls[0].Mode)
+	}
+}
+
 func TestMarkUncollectible_ReversesUpstreamTaxTransaction(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store, nil, newMemNumberer())
