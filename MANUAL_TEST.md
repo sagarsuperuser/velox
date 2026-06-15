@@ -737,6 +737,14 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] **Source invoice unpaid → invoice settled, not credited (#22, ADR-031 amendment):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled`, **NO credit ledger entry** (no cash was funded), and the unpaid invoice is settled down to the consumed portion: partially-consumed → an **adjustment credit note reduces `amount_due`** (log `cancel: reduced unpaid prebill to consumed portion`); cancel before any consumption → invoice **voided** (log `cancel: voided fully-unused unpaid prebill`). It does NOT ride dunning for the full amount. Full coverage in FLOW TC8b.
 - [ ] **Plans > ~$36 base** (regression check): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`.
 
+## FLOW B17b: upgrade then cancel — credit fans across both funding invoices (2026-06-15)
+
+- [ ] Setup: in_advance $100/mo sub, day-1 invoice paid → upgrade to $200/mo mid-period (immediate, with proration) → second proration invoice created and paid → cancel immediately (~23 of 30 days unused).
+- [ ] Customer Detail → Credit Balance increases by the FULL unused prepayment (≈ `$200 × 23/30 = $153.33`), NOT $0 and NOT clamped to the $100 day-1 invoice.
+- [ ] Credit Notes page shows **two** credit notes for the cancel — one against the $100 base invoice, one against the upgrade proration invoice — each within its own invoice's total; their sum equals the balance credit.
+- [ ] On a taxed sub, each credit note reverses its own invoice's proportional tax (`↳ Tax reversed`).
+- [ ] Server log shows `cancel proration credit issued … funding_invoices=2` and NO `slog.Error "customer not credited"`.
+
 ## FLOW B18: Meter Detail page
 
 - [ ] Default rule card renders the latest version of the linked rating rule (edit rule → version badge bumps).
