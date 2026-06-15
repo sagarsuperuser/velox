@@ -2098,7 +2098,7 @@ func (s *PostgresStore) FindFundingInvoicesForPeriod(ctx context.Context, tenant
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []domain.Invoice
 	for rows.Next() {
