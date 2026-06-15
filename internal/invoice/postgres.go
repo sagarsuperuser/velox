@@ -752,6 +752,17 @@ func (s *PostgresStore) MarkPaidReportingTransition(ctx context.Context, tenantI
 
 	now := clock.Now(ctx)
 	var inv domain.Invoice
+	// amount_paid_cents records the CURRENT amount_due (what the PaymentIntent was
+	// created for), NOT Stripe's actual captured amount. Holds because the PI is
+	// created for exactly amount_due and capture is synchronous + full on the
+	// card-on-file path. KNOWN EDGE — deferred, no synchronous-card exposure: on
+	// an ASYNC / SCA charge (payment_status='processing'), a credit note that
+	// reduces amount_due AFTER PI-create but BEFORE this settle would record
+	// amount_paid BELOW the captured amount, under-reporting the refund cap
+	// (creditnote refund is capped at amount_paid). Fix when a first
+	// async-payment-method / EU-SCA design partner lands: thread the PI's
+	// amount_received through to here instead of re-reading amount_due.
+	// (2026-06-15 proration audit, re-verify wf_29503f6d: 2/3 real, low, rare.)
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
 			status = 'paid',
