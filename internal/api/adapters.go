@@ -213,6 +213,10 @@ func (a *invoiceWriterAdapter) FindBaseInvoiceForPeriod(ctx context.Context, ten
 	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
 }
 
+func (a *invoiceWriterAdapter) FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error) {
+	return a.store.FindFundingInvoicesForPeriod(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
 func (a *invoiceWriterAdapter) LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error) {
 	return a.store.LatestThresholdPeriodEnd(ctx, tenantID, subscriptionID, periodStart, periodEnd)
 }

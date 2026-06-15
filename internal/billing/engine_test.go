@@ -893,6 +893,38 @@ func (m *mockInvoices) FindBaseInvoiceForPeriod(_ context.Context, tenantID, sub
 	return domain.Invoice{}, errs.ErrNotFound
 }
 
+func (m *mockInvoices) FindFundingInvoicesForPeriod(_ context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error) {
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.TenantID != tenantID || inv.SubscriptionID != subscriptionID {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+			continue
+		}
+		matched := false
+		for _, li := range m.lineItems {
+			if li.InvoiceID == inv.ID && li.LineType == domain.LineTypeBaseFee &&
+				li.BillingPeriodStart != nil && li.BillingPeriodStart.Equal(periodStart) {
+				matched = true
+				break
+			}
+		}
+		if !matched && inv.BillingReason == "subscription_update" && inv.SourcePlanChangedAt != nil &&
+			!inv.SourcePlanChangedAt.Before(periodStart) && inv.SourcePlanChangedAt.Before(periodEnd) &&
+			inv.BillingPeriodEnd.Equal(periodEnd) {
+			matched = true
+		}
+		if matched {
+			out = append(out, inv)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errs.ErrNotFound
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

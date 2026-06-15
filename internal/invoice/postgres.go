@@ -2040,6 +2040,83 @@ func (s *PostgresStore) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, 
 	return inv, err
 }
 
+// FindFundingInvoicesForPeriod returns EVERY non-voided/non-uncollectible
+// invoice that prepaid the cycle [periodStart, periodEnd) for a subscription —
+// the day-1 base invoice AND any mid-period proration invoice that a plan
+// upgrade / quantity increase issued against the same cycle. The single-result
+// FindBaseInvoiceForPeriod misses the latter, because a mid-period proration
+// invoice stamps its base-fee LINE's billing_period_start at the change instant
+// (changeAt), not the cycle's periodStart — so a period-wide credit sized off
+// the post-change base (cancel / cross-interval plan-swap / downgrade clawback)
+// overran that one invoice's credit-note cap and was silently dropped. The
+// owed credit must instead be fanned across the full funding set, each piece
+// capped at its own invoice. See ADR-031/ADR-048.
+//
+// Two predicates, UNION'd (deduped per invoice row):
+//   - base invoice: a base_fee line whose billing_period_start = periodStart
+//     (the existing FindBaseInvoiceForPeriod predicate).
+//   - mid-period upgrade/qty proration invoice: identified by its fully-stamped
+//     HEADER — billing_reason='subscription_update', source_plan_changed_at in
+//     [periodStart, periodEnd), billing_period_end = periodEnd. (Its base-fee
+//     line's billing_period_start is changeAt, so the line predicate can't see
+//     it — the header is the reliable key.)
+//
+// Ordered base-first (subscription_update sorts last) then created_at ASC, so a
+// caller allocating a fixed total across the set has a deterministic order for
+// residual-cent assignment. Returns ErrNotFound when nothing funded the period
+// (trial / pure in_arrears) so callers keep their existing no-op behavior.
+func (s *PostgresStore) FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error) {
+	if subscriptionID == "" {
+		return nil, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.subscription_id = $1
+		  AND i.status NOT IN ('voided', 'uncollectible')
+		  AND (
+		    EXISTS (
+		      SELECT 1 FROM invoice_line_items li
+		      WHERE li.invoice_id = i.id
+		        AND li.line_type = 'base_fee'
+		        AND li.billing_period_start = $2
+		    )
+		    OR (
+		      i.billing_reason = 'subscription_update'
+		      AND i.source_plan_changed_at >= $2
+		      AND i.source_plan_changed_at < $3
+		      AND i.billing_period_end = $3
+		    )
+		  )
+		ORDER BY (i.billing_reason = 'subscription_update'), i.created_at ASC
+	`, subscriptionID, periodStart, periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, errs.ErrNotFound
+	}
+	return out, nil
+}
+
 // LatestThresholdPeriodEnd returns the latest billing_period_end across
 // the subscription's threshold-fired invoices for the cycle starting at
 // periodStart. The billing engine's cycle close uses it as the
