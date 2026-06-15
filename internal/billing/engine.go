@@ -58,6 +58,7 @@ type Engine struct {
 	// #22: settle an UNPAID in_advance prebill at mid-period cancel.
 	invoiceVoider      InvoiceVoider
 	creditNoteAdjuster CreditNoteAdjuster
+	creditHeadroom     CreditHeadroomReader
 	settings           SettingsReader
 	paymentSetups      PaymentReadiness
 	charger            InvoiceCharger
@@ -163,6 +164,10 @@ func (e *Engine) SetCreditNoteAdjuster(a CreditNoteAdjuster) {
 	e.creditNoteAdjuster = a
 }
 
+func (e *Engine) SetCreditHeadroomReader(r CreditHeadroomReader) {
+	e.creditHeadroom = r
+}
+
 // CustomerReader is the narrow read interface the engine uses to
 // resolve a customer's test_clock_id pin (ADR-027). Implemented by
 // *customer.PostgresStore. Optional — when nil, EffectiveNowForCustomer
@@ -245,6 +250,19 @@ type InvoiceVoider interface {
 // amount is gross (tax-inclusive). Implemented by *creditnote.Service.
 type CreditNoteAdjuster interface {
 	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
+}
+
+// CreditHeadroomReader reports how much of an invoice has already been credited
+// (sum of non-voided credit-note totals). OPTIONAL — when wired, the
+// multi-invoice credit fan-out caps each funding invoice's share at its
+// REMAINING creditable headroom (TotalAmountCents - credited) and water-fills
+// the overflow onto invoices that still have room, so a prior credit note (e.g.
+// an earlier downgrade clawback) can't make a later cancel/swap overrun a single
+// invoice's credit-note cap. Unwired (narrow tests) → headroom defaults to the
+// full invoice total, i.e. the pre-headroom-aware behavior. Implemented by
+// *creditnote.Service.CreditedCents.
+type CreditHeadroomReader interface {
+	CreditedCents(ctx context.Context, tenantID, invoiceID string) (int64, error)
 }
 
 // BillingProfileReader reads customer billing profiles for tax exemption checks.
@@ -4008,22 +4026,62 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 		return 0, nil
 	}
 	weights := make([]int64, len(sources))
+	grossCaps := make([]int64, len(sources))
+	netCaps := make([]int64, len(sources))
 	for i, src := range sources {
 		windowDays := roundDays(periodEnd.Sub(src.BillingPeriodStart))
-		if windowDays <= 0 || src.SubtotalCents <= 0 {
-			continue
+		if windowDays > 0 && src.SubtotalCents > 0 {
+			// This invoice's own unused net contribution = what it prepaid times
+			// the unused fraction of the window it covers. Clamp the unused span
+			// to the window so a source whose window starts after the effective
+			// instant isn't over-weighted.
+			ud := unusedDays
+			if ud > windowDays {
+				ud = windowDays
+			}
+			weights[i] = money.RoundHalfToEven(src.SubtotalCents*int64(ud), int64(windowDays))
 		}
-		// This invoice's own unused net contribution = what it prepaid times the
-		// unused fraction of the window it covers. Clamp the unused span to the
-		// window so a source whose window starts after the effective instant
-		// isn't over-weighted.
-		ud := unusedDays
-		if ud > windowDays {
-			ud = windowDays
+		// Per-source headroom cap. Only a PAID invoice with a real total needs
+		// one: its credit note hard-caps at remaining creditable (total minus
+		// prior non-voided credit notes — via the optional reader; full total
+		// when unwired), so a prior credit note that shrank it must push the
+		// share elsewhere. UNPAID sources self-cap inside relieveUnpaidPrebill
+		// (min with amount_due) and never hit the credit-note hard cap, and a
+		// zero-total fixture / the creditGranter-fallback path has no meaningful
+		// cap — both are left NON-BINDING so the allocation and the loud-fail
+		// remainder reflect only genuine paid-invoice headroom exhaustion.
+		switch {
+		case src.PaymentStatus == domain.PaymentSucceeded && src.TotalAmountCents > 0:
+			grossCap := src.TotalAmountCents
+			if e.creditHeadroom != nil {
+				credited, err := e.creditHeadroom.CreditedCents(ctx, sub.TenantID, src.ID)
+				if err != nil {
+					return 0, fmt.Errorf("read creditable headroom for %s: %w", src.ID, err)
+				}
+				grossCap = src.TotalAmountCents - credited
+			}
+			if grossCap < 0 {
+				grossCap = 0
+			}
+			grossCaps[i] = grossCap
+			netCap := grossCap
+			if src.SubtotalCents > 0 {
+				netCap = money.RoundHalfToEven(grossCap*src.SubtotalCents, src.TotalAmountCents)
+			}
+			netCaps[i] = netCap
+		default:
+			grossCaps[i] = src.TotalAmountCents
+			netCaps[i] = totalUnused // non-binding
 		}
-		weights[i] = money.RoundHalfToEven(src.SubtotalCents*int64(ud), int64(windowDays))
 	}
-	nets := money.AllocateByWeight(totalUnused, weights)
+
+	nets, remainder := money.AllocateByWeightCapped(totalUnused, weights, netCaps)
+	if remainder > 0 {
+		// The funding invoices' combined remaining headroom can't absorb the
+		// owed credit — a genuine fault (period already fully credited, or
+		// drift). Fail LOUD; never silently drop the customer's money.
+		return 0, fmt.Errorf("cannot place unused-prebill credit: %d of %d exceeds funding headroom across %d invoice(s)", remainder, totalUnused, len(sources))
+	}
 
 	var credited int64
 	for i, src := range sources {
@@ -4051,6 +4109,12 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 			gross := net
 			if src.SubtotalCents > 0 {
 				gross = money.RoundHalfToEven(net*src.TotalAmountCents, src.SubtotalCents)
+			}
+			if gross > grossCaps[i] {
+				gross = grossCaps[i] // clamp net→gross rounding overshoot to headroom
+			}
+			if gross <= 0 {
+				continue
 			}
 			if _, err := e.creditNoteAdjuster.CreateAndIssueAdjustment(ctx, sub.TenantID, src.ID, gross, reason, desc); err != nil {
 				// Loud-fail: a source's credit-note cap rejecting its share means

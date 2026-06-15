@@ -92,7 +92,22 @@ func AllocateByWeightCapped(total int64, weights, caps []int64) ([]int64, int64)
 			}
 		}
 		if wsum <= 0 {
-			break // no weighted bucket with slack left
+			// No weighted bucket with slack — distribute any remaining into
+			// buckets that still have slack, in index order (no proportional
+			// preference left). Mirrors AllocateByWeight's all-zero-weight
+			// behavior, but respecting caps.
+			for i := 0; i < n && remaining > 0; i++ {
+				slack := caps[i] - out[i]
+				if slack <= 0 {
+					continue
+				}
+				if slack > remaining {
+					slack = remaining
+				}
+				out[i] += slack
+				remaining -= slack
+			}
+			break
 		}
 		type rem struct {
 			idx int
