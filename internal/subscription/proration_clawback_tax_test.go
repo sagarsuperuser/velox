@@ -18,6 +18,14 @@ import (
 type fakeCNIssuer struct {
 	calls []cnIssueCall
 	err   error
+	// credited[invoiceID] = cents already credited against that invoice (prior
+	// non-voided credit notes), so headroom-spill clawback tests can shrink one
+	// funding invoice's remaining room. Default 0 → full headroom.
+	credited map[string]int64
+}
+
+func (f *fakeCNIssuer) CreditedCents(_ context.Context, _, invoiceID string) (int64, error) {
+	return f.credited[invoiceID], nil
 }
 
 type cnIssueCall struct {

@@ -47,6 +47,13 @@ type ProrationInvoiceCreator interface {
 	// BillOnCancel paid-check; same industry rationale (Chargebee
 	// Refundable vs Adjustment / Stripe proration_behavior=none).
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+	// FindFundingInvoicesForPeriod returns EVERY invoice that funded the
+	// current period — the base invoice AND any mid-period upgrade/qty
+	// proration invoice — so a downgrade/qty-decrease/item-removal clawback can
+	// be fanned across them (LIFO for a plan downgrade, proportional for
+	// fungible qty/item changes) instead of overrunning a single invoice's
+	// credit-note cap. ErrNotFound when nothing funded the period.
+	FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error)
 	// Tx variants — write the proration invoice + allocate the
 	// invoice-number inside a caller-owned transaction. Used by the
 	// atomic AddItem-with-proration flow so a failed proration insert
@@ -140,6 +147,10 @@ type ProrationTaxApplier interface {
 // downgrade path falls back to the legacy net ledger grant.
 type CreditNoteIssuer interface {
 	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
+	// CreditedCents reports how much of an invoice has already been credited
+	// (sum of non-voided credit notes), so the clawback fan-out caps each
+	// funding invoice's piece at its remaining creditable headroom.
+	CreditedCents(ctx context.Context, tenantID, invoiceID string) (int64, error)
 }
 
 // TenantLocator resolves the tenant's billing timezone so the proration
