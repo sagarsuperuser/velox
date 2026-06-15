@@ -745,6 +745,14 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] On a taxed sub, each credit note reverses its own invoice's proportional tax (`↳ Tax reversed`).
 - [ ] Server log shows `cancel proration credit issued … funding_invoices=2` and NO `slog.Error "customer not credited"`.
 
+## FLOW B17c: downgrade after upgrade — clawback reverses the upgrade invoice (LIFO) (2026-06-15)
+
+- [ ] Setup: in_advance sub, day-1 invoice paid → upgrade mid-period (second proration invoice, paid) → then **downgrade** the plan.
+- [ ] The downgrade clawback issues its credit note against the **upgrade** (most-recent) invoice, not the day-1 base invoice — reversing that invoice's own tax; the base plan you're keeping is untouched.
+- [ ] If the clawback exceeds the upgrade invoice's remaining room, it spills onto the base invoice (a second credit note); it never silently drops or loud-fails on a single invoice's cap.
+- [ ] **Downgrade then cancel** (no double-credit): after the downgrade above, cancel. The cancel credit accounts for the headroom the downgrade already consumed (server log `funding_invoices=…`), and total credited across both events never exceeds what was paid.
+- [ ] **Quantity decrease** (3→1 seats) on a sub funded by two invoices → the clawback splits **proportionally** across funding invoices (not LIFO), each reversing its own tax.
+
 ## FLOW B18: Meter Detail page
 
 - [ ] Default rule card renders the latest version of the linked rating rule (edit rule → version badge bumps).

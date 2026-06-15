@@ -647,6 +647,10 @@ func (a *prorationInvoiceCreatorAdapter) FindBaseInvoiceForPeriod(ctx context.Co
 	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
 }
 
+func (a *prorationInvoiceCreatorAdapter) FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error) {
+	return a.store.FindFundingInvoicesForPeriod(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
 // CreateInvoiceWithLineItemsTx + NextInvoiceNumberTx are the
 // in-transaction variants used by the atomic AddItem-with-proration
 // flow. The caller (subscription.Handler) owns the tx; this adapter

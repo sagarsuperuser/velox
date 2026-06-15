@@ -50,6 +50,10 @@ type invoicesMock struct {
 	// gate will skip emission (matching production-safe default).
 	sourceInvoice    domain.Invoice
 	sourceInvoiceErr error
+	// fundingInvoices is what FindFundingInvoicesForPeriod returns (the
+	// downgrade clawback fan-out). When unset, it defaults to [sourceInvoice]
+	// so single-source clawback tests keep working.
+	fundingInvoices []domain.Invoice
 	// autoChargeEnrolled records invoice IDs passed to SetAutoChargePending(true)
 	// so tests can assert a proration CHARGE invoice was enrolled for collection.
 	autoChargeEnrolled []string
@@ -94,6 +98,19 @@ func (m *invoicesMock) FindBaseInvoiceForPeriod(_ context.Context, _, _ string, 
 		return domain.Invoice{}, m.sourceInvoiceErr
 	}
 	return m.sourceInvoice, nil
+}
+
+func (m *invoicesMock) FindFundingInvoicesForPeriod(_ context.Context, _, _ string, _, _ time.Time) ([]domain.Invoice, error) {
+	if m.sourceInvoiceErr != nil {
+		return nil, m.sourceInvoiceErr
+	}
+	if len(m.fundingInvoices) > 0 {
+		return m.fundingInvoices, nil
+	}
+	if m.sourceInvoice.ID != "" {
+		return []domain.Invoice{m.sourceInvoice}, nil
+	}
+	return nil, errs.ErrNotFound
 }
 
 // CreateInvoiceWithLineItemsTx + NextInvoiceNumberTx mirror their

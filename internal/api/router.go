@@ -680,6 +680,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// amount_due via an adjustment credit note (partially consumed).
 	engine.SetInvoiceVoider(invoiceSvc)
 	engine.SetCreditNoteAdjuster(creditNoteSvc)
+	engine.SetCreditHeadroomReader(creditNoteSvc)
 	// invoice.Service uses the resolver at Create so one-off
 	// composer invoices and manual sub-attached addenda for
 	// clock-pinned customers / subs stamp due_at in simulated time.
