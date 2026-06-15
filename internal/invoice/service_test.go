@@ -1013,6 +1013,49 @@ func (c *captureEvents) Dispatch(_ context.Context, _, eventType string, payload
 // uncollectible must reverse it so the authority's records stop
 // reporting the tax as collected. Stripe Tax docs explicitly mention
 // both void and uncollectible.
+func TestVoid_PartialTaxReversalAfterPriorCreditNote(t *testing.T) {
+	// Bug #5 regression: a finalized-unpaid invoice that already had a credit
+	// note issued (which reversed its own tax slice via ModePartial) must, on
+	// Void, reverse only the REMAINING un-credit-noted tax — not the whole
+	// transaction again. An unconditional ModeFull would double-reverse the
+	// already-reversed slice and under-remit the tenant's output tax.
+	store := newMemStore()
+	svc := NewService(store, nil, newMemNumberer())
+	rev := &fakeTaxReverser{}
+	svc.SetTaxReverser(rev)
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	// $110 taxed invoice with a $50 adjustment credit note already issued
+	// (amount_due 11000 -> 6000), committed upstream tax transaction.
+	stale := store.invoices[inv.ID]
+	stale.TaxTransactionID = "tx_committed"
+	stale.TotalAmountCents = 11000
+	stale.AmountDueCents = 6000
+	stale.AmountPaidCents = 0
+	store.invoices[inv.ID] = stale
+
+	if _, err := svc.Void(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("Void: %v", err)
+	}
+	if len(rev.calls) != 1 {
+		t.Fatalf("ReverseTax calls: got %d want 1", len(rev.calls))
+	}
+	call := rev.calls[0]
+	if call.Mode != tax.ReversalModePartial {
+		t.Errorf("Mode: got %q want partial (prior CN already reversed part of the tax)", call.Mode)
+	}
+	if call.GrossAmountCents != 6000 {
+		t.Errorf("GrossAmountCents: got %d want 6000 (remaining un-credit-noted gross, NOT the full 11000)", call.GrossAmountCents)
+	}
+}
+
 func TestMarkUncollectible_ReversesUpstreamTaxTransaction(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store, nil, newMemNumberer())

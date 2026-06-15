@@ -384,6 +384,16 @@ type InvoiceWriter interface {
 	// (paid source) vs Adjustment (unpaid source) credits; Stripe warns
 	// to disable proration when the source invoice is unpaid.
 	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
+	// FindFundingInvoicesForPeriod returns EVERY non-voided/non-uncollectible
+	// invoice that prepaid the period — the day-1 base invoice AND any
+	// mid-period upgrade / quantity-increase proration invoice issued against
+	// the same cycle. A period-wide unused credit (cancel / cross-interval
+	// plan-swap / downgrade clawback) is sized off the post-change base, which
+	// can exceed the single base invoice's total; fanning the credit across the
+	// full funding set lets each piece stay within its own invoice's
+	// credit-note cap. ErrNotFound when nothing funded the period (trial / pure
+	// in_arrears) so callers keep their existing no-op behavior.
+	FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error)
 	// LatestThresholdPeriodEnd returns the latest billing_period_end of
 	// the subscription's non-voided threshold-fired invoices whose
 	// billing_period_start falls inside [periodStart, periodEnd).
@@ -3808,10 +3818,21 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 	//               they never used. See relieveUnpaidPrebill.
 	//   - MISSING → never billed for this period (e.g. trial cancel); nothing
 	//               to relieve, skip cleanly.
-	var src domain.Invoice
-	var haveSrc bool
+	desc := fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
+		sub.Code,
+		periodStart.UTC().Format("2006-01-02"),
+		periodEnd.UTC().Format("2006-01-02"),
+		cancelAt.UTC().Format("2006-01-02"))
+
+	// Resolve EVERY invoice that funded this period — the day-1 base invoice
+	// AND any mid-period upgrade/qty proration invoice. The credit is sized off
+	// the post-change base (above), which can exceed the single base invoice;
+	// settleUnusedAcrossFunding fans it across the full set so each piece stays
+	// within its own invoice's credit-note cap, paid sources credited to
+	// balance / unpaid sources relieved on amount_due. A per-invoice cap failure
+	// is surfaced loudly here, never swallowed to a silent $0 (ADR-031/ADR-048).
 	if e.invoices != nil {
-		s, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
+		sources, lookupErr := e.invoices.FindFundingInvoicesForPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
 		if errors.Is(lookupErr, errs.ErrNotFound) {
 			slog.InfoContext(ctx, "cancel proration: no in_advance invoice for period; no relief to apply",
 				"subscription_id", sub.ID,
@@ -3824,39 +3845,30 @@ func (e *Engine) BillOnCancel(ctx context.Context, sub domain.Subscription) (int
 			// Real lookup error (DB blip, etc.) — fail loud rather than
 			// silently shortchange the customer (2026-05-30 design-debt
 			// audit Tier 1 #6).
-			return 0, fmt.Errorf("cancel proration: lookup source invoice: %w", lookupErr)
+			return 0, fmt.Errorf("cancel proration: lookup funding invoices: %w", lookupErr)
 		}
-		if s.PaymentStatus != domain.PaymentSucceeded {
-			desc := fmt.Sprintf("Unused portion of %s — canceled %s",
-				sub.Code, cancelAt.UTC().Format("2006-01-02"))
-			return e.relieveUnpaidPrebill(ctx, sub, s, totalUnused, "subscription_cancellation", desc)
+		credited, err := e.settleUnusedAcrossFunding(ctx, sub, sources, periodEnd, cancelAt, totalUnused, "subscription_cancellation", desc)
+		if err != nil {
+			return 0, fmt.Errorf("cancel proration credit: %w", err)
 		}
-		src, haveSrc = s, true
+		slog.Info("cancel proration credit issued",
+			"subscription_id", sub.ID,
+			"customer_id", sub.CustomerID,
+			"amount_cents", credited,
+			"funding_invoices", len(sources),
+			"period_start", periodStart,
+			"period_end", periodEnd,
+			"canceled_at", cancelAt,
+		)
+		return credited, nil
 	}
 
-	// PAID source → credit the gross unused to the customer's balance AND
-	// reverse the proportional output tax via the credit-note primitive
-	// (ADR-048). Pre-fix this granted only the net, under-crediting the
-	// customer by the tax slice and leaving the tenant's tax liability
-	// overstated.
-	desc := fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
-		sub.Code,
-		periodStart.UTC().Format("2006-01-02"),
-		periodEnd.UTC().Format("2006-01-02"),
-		cancelAt.UTC().Format("2006-01-02"))
-	credited, err := e.creditUnusedPrebill(ctx, sub, src, haveSrc, totalUnused, "subscription_cancellation", desc, cancelAt)
+	// Narrow unit-test fallback: invoices/adjuster unwired → grant the net to
+	// the ledger (no tax reversal). Production always wires both.
+	credited, err := e.creditUnusedPrebill(ctx, sub, domain.Invoice{}, false, totalUnused, "subscription_cancellation", desc, cancelAt)
 	if err != nil {
 		return 0, fmt.Errorf("cancel proration credit: %w", err)
 	}
-
-	slog.Info("cancel proration credit issued",
-		"subscription_id", sub.ID,
-		"customer_id", sub.CustomerID,
-		"amount_cents", credited,
-		"period_start", periodStart,
-		"period_end", periodEnd,
-		"canceled_at", cancelAt,
-	)
 	return credited, nil
 }
 
@@ -3972,6 +3984,141 @@ func (e *Engine) creditUnusedPrebill(ctx context.Context, sub domain.Subscriptio
 	return netUnused, nil
 }
 
+// allocateByWeight splits `total` across len(weights) buckets in proportion to
+// weights using the largest-remainder method, so the parts sum to `total`
+// EXACTLY (no rounding drift) and each part is >= 0. This is what keeps a
+// period-wide credit fanned across multiple funding invoices from over- or
+// under-crediting: the authoritative engine figure is PARTITIONED, never
+// recomputed independently per invoice (independent recompute double-counts
+// after a reversing change — e.g. upgrade→downgrade→cancel). Zero-weight
+// buckets get nothing; if every weight is zero the whole total lands in
+// bucket 0.
+func allocateByWeight(total int64, weights []int64) []int64 {
+	out := make([]int64, len(weights))
+	if len(weights) == 0 {
+		return out
+	}
+	var sum int64
+	for _, w := range weights {
+		if w > 0 {
+			sum += w
+		}
+	}
+	if sum <= 0 {
+		out[0] = total
+		return out
+	}
+	type rem struct {
+		idx int
+		r   int64
+	}
+	rems := make([]rem, 0, len(weights))
+	var allocated int64
+	for i, w := range weights {
+		if w <= 0 {
+			rems = append(rems, rem{i, -1}) // never receives a remainder cent
+			continue
+		}
+		num := total * w
+		out[i] = num / sum
+		allocated += out[i]
+		rems = append(rems, rem{i, num % sum})
+	}
+	// Largest-remainder: hand the leftover cents to the biggest remainders
+	// (ties: lower index, via stable sort). leftover < count of positive-weight
+	// buckets, so it never reaches a zero-weight (r==-1) bucket.
+	leftover := total - allocated
+	sort.SliceStable(rems, func(a, b int) bool { return rems[a].r > rems[b].r })
+	for k := int64(0); k < leftover && int(k) < len(rems); k++ {
+		out[rems[k].idx]++
+	}
+	return out
+}
+
+// settleUnusedAcrossFunding relieves the unused in_advance prepayment of a
+// canceled / swapped period across EVERY invoice that funded it. `totalUnused`
+// (net, sized off the post-change base across all items) is the authoritative
+// figure; it is PARTITIONED across the funding invoices in proportion to each
+// invoice's own unused contribution (its subtotal × the unused fraction of the
+// window it covers), then settled per invoice:
+//   - PAID source   → gross up by its own Total/Subtotal ratio and credit the
+//     customer balance via a per-invoice credit note (reversing that invoice's
+//     own proportional tax against its own tax_transaction_id). Adds its gross
+//     to the returned credited total.
+//   - UNPAID source → relieve its amount_due (void / reduce) for its share.
+//
+// Because the partition sums to totalUnused exactly, the customer is neither
+// over- nor under-credited even after a prior reversing change (downgrade /
+// qty-decrease) inflated the raw per-invoice shares. A per-invoice credit-note
+// cap failure (e.g. a prior credit note already consumed a source's headroom)
+// is returned as a HARD error — the caller must surface it loudly, never
+// swallow it to a silent $0 credit.
+func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subscription, sources []domain.Invoice, periodEnd, effectiveAt time.Time, totalUnused int64, reason, desc string) (int64, error) {
+	unusedDays := roundDays(periodEnd.Sub(effectiveAt))
+	if unusedDays <= 0 {
+		return 0, nil
+	}
+	weights := make([]int64, len(sources))
+	for i, src := range sources {
+		windowDays := roundDays(periodEnd.Sub(src.BillingPeriodStart))
+		if windowDays <= 0 || src.SubtotalCents <= 0 {
+			continue
+		}
+		// This invoice's own unused net contribution = what it prepaid times the
+		// unused fraction of the window it covers. Clamp the unused span to the
+		// window so a source whose window starts after the effective instant
+		// isn't over-weighted.
+		ud := unusedDays
+		if ud > windowDays {
+			ud = windowDays
+		}
+		weights[i] = money.RoundHalfToEven(src.SubtotalCents*int64(ud), int64(windowDays))
+	}
+	nets := allocateByWeight(totalUnused, weights)
+
+	var credited int64
+	for i, src := range sources {
+		net := nets[i]
+		if net <= 0 {
+			continue
+		}
+		if src.PaymentStatus == domain.PaymentSucceeded {
+			if e.creditNoteAdjuster == nil {
+				// Narrow unit-test fallback (adjuster unwired): grant the net to
+				// the ledger, no tax reversal — mirrors the legacy single-source
+				// creditUnusedPrebill fallback. Production always wires it.
+				if _, err := e.creditGranter.Grant(ctx, sub.TenantID, credit.GrantInput{
+					CustomerID:           sub.CustomerID,
+					AmountCents:          net,
+					SourceSubscriptionID: sub.ID,
+					Description:          desc,
+					At:                   effectiveAt,
+				}); err != nil {
+					return credited, err
+				}
+				credited += net
+				continue
+			}
+			gross := net
+			if src.SubtotalCents > 0 {
+				gross = money.RoundHalfToEven(net*src.TotalAmountCents, src.SubtotalCents)
+			}
+			if _, err := e.creditNoteAdjuster.CreateAndIssueAdjustment(ctx, sub.TenantID, src.ID, gross, reason, desc); err != nil {
+				// Loud-fail: a source's credit-note cap rejecting its share means
+				// money would be stranded. Surface it; do NOT drop to $0.
+				return credited, fmt.Errorf("credit unused prebill on %s (share %d of total %d): %w", src.ID, gross, totalUnused, err)
+			}
+			credited += gross
+			continue
+		}
+		// Unpaid funding invoice → relieve its receivable for its share.
+		if _, err := e.relieveUnpaidPrebill(ctx, sub, src, net, reason, desc); err != nil {
+			return credited, err
+		}
+	}
+	return credited, nil
+}
+
 // BillOnPlanSwapImmediate issues the refund credit for the unused
 // portion of an in_advance billed period when a sub's plan is swapped
 // to a different cadence/interval mid-period. Returns the cents amount
@@ -4050,13 +4197,21 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 		return 0, nil
 	}
 
-	var src domain.Invoice
-	var haveSrc bool
+	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
+		sub.Code,
+		periodStart.UTC().Format("2006-01-02"),
+		periodEnd.UTC().Format("2006-01-02"),
+		at.UTC().Format("2006-01-02"))
+
+	// Fan the refund across EVERY invoice that funded the period (base +
+	// mid-period upgrade) — same multi-source settlement as cancel — so a swap
+	// after a prior upgrade doesn't overrun the single base invoice's
+	// credit-note cap and silently strand the customer's unused prepayment.
+	// Paid sources credit the balance (own tax reversal), unpaid sources relieve
+	// amount_due (ADR-050); a per-invoice cap failure surfaces loudly here.
 	if e.invoices != nil {
-		s, lookupErr := e.invoices.FindBaseInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart)
+		sources, lookupErr := e.invoices.FindFundingInvoicesForPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
 		if errors.Is(lookupErr, errs.ErrNotFound) {
-			// Legitimate "no in_advance base invoice for this period" —
-			// the customer was never billed for the period. Skip cleanly.
 			slog.InfoContext(ctx, "plan-swap refund: no in_advance invoice for period; no credit to grant",
 				"subscription_id", sub.ID,
 				"customer_id", sub.CustomerID,
@@ -4068,43 +4223,29 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 			// Real lookup error (DB blip, etc.) — fail loud rather than
 			// silently shortchange the customer (2026-05-30 design-debt
 			// audit Tier 1 #6).
-			return 0, fmt.Errorf("plan-swap refund: lookup source invoice: %w", lookupErr)
+			return 0, fmt.Errorf("plan-swap refund: lookup funding invoices: %w", lookupErr)
 		}
-		if s.PaymentStatus != domain.PaymentSucceeded {
-			// UNPAID source → settle in place rather than skip (ADR-050): no
-			// cash was funded, so reduce the open prebill's amount_due to the
-			// consumed portion (or void it if nothing was used) instead of
-			// minting a refundable credit. Same primitive the unpaid-cancel
-			// relief uses; keeps the swap path consistent with cancel and the
-			// item-mutation paths.
-			desc := fmt.Sprintf("Unused portion of %s — plan change %s",
-				sub.Code, at.UTC().Format("2006-01-02"))
-			return e.relieveUnpaidPrebill(ctx, sub, s, totalUnused, "subscription_plan_change", desc)
+		credited, err := e.settleUnusedAcrossFunding(ctx, sub, sources, periodEnd, at, totalUnused, "subscription_plan_change", desc)
+		if err != nil {
+			return 0, fmt.Errorf("plan-swap refund credit: %w", err)
 		}
-		src, haveSrc = s, true
+		slog.Info("plan-swap refund credit issued",
+			"subscription_id", sub.ID,
+			"customer_id", sub.CustomerID,
+			"amount_cents", credited,
+			"funding_invoices", len(sources),
+			"period_start", periodStart,
+			"period_end", periodEnd,
+			"swapped_at", at,
+		)
+		return credited, nil
 	}
 
-	// PAID source → gross credit-to-balance + proportional output-tax reversal
-	// via the credit-note primitive (ADR-048), instead of the pre-fix bare net
-	// grant that dropped the tax.
-	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
-		sub.Code,
-		periodStart.UTC().Format("2006-01-02"),
-		periodEnd.UTC().Format("2006-01-02"),
-		at.UTC().Format("2006-01-02"))
-	credited, err := e.creditUnusedPrebill(ctx, sub, src, haveSrc, totalUnused, "subscription_plan_change", desc, at)
+	// Narrow unit-test fallback: invoices unwired → grant net to ledger.
+	credited, err := e.creditUnusedPrebill(ctx, sub, domain.Invoice{}, false, totalUnused, "subscription_plan_change", desc, at)
 	if err != nil {
 		return 0, fmt.Errorf("plan-swap refund credit: %w", err)
 	}
-
-	slog.Info("plan-swap refund credit issued",
-		"subscription_id", sub.ID,
-		"customer_id", sub.CustomerID,
-		"amount_cents", credited,
-		"period_start", periodStart,
-		"period_end", periodEnd,
-		"swapped_at", at,
-	)
 	return credited, nil
 }
 
