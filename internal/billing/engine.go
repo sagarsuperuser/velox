@@ -3984,57 +3984,6 @@ func (e *Engine) creditUnusedPrebill(ctx context.Context, sub domain.Subscriptio
 	return netUnused, nil
 }
 
-// allocateByWeight splits `total` across len(weights) buckets in proportion to
-// weights using the largest-remainder method, so the parts sum to `total`
-// EXACTLY (no rounding drift) and each part is >= 0. This is what keeps a
-// period-wide credit fanned across multiple funding invoices from over- or
-// under-crediting: the authoritative engine figure is PARTITIONED, never
-// recomputed independently per invoice (independent recompute double-counts
-// after a reversing change — e.g. upgrade→downgrade→cancel). Zero-weight
-// buckets get nothing; if every weight is zero the whole total lands in
-// bucket 0.
-func allocateByWeight(total int64, weights []int64) []int64 {
-	out := make([]int64, len(weights))
-	if len(weights) == 0 {
-		return out
-	}
-	var sum int64
-	for _, w := range weights {
-		if w > 0 {
-			sum += w
-		}
-	}
-	if sum <= 0 {
-		out[0] = total
-		return out
-	}
-	type rem struct {
-		idx int
-		r   int64
-	}
-	rems := make([]rem, 0, len(weights))
-	var allocated int64
-	for i, w := range weights {
-		if w <= 0 {
-			rems = append(rems, rem{i, -1}) // never receives a remainder cent
-			continue
-		}
-		num := total * w
-		out[i] = num / sum
-		allocated += out[i]
-		rems = append(rems, rem{i, num % sum})
-	}
-	// Largest-remainder: hand the leftover cents to the biggest remainders
-	// (ties: lower index, via stable sort). leftover < count of positive-weight
-	// buckets, so it never reaches a zero-weight (r==-1) bucket.
-	leftover := total - allocated
-	sort.SliceStable(rems, func(a, b int) bool { return rems[a].r > rems[b].r })
-	for k := int64(0); k < leftover && int(k) < len(rems); k++ {
-		out[rems[k].idx]++
-	}
-	return out
-}
-
 // settleUnusedAcrossFunding relieves the unused in_advance prepayment of a
 // canceled / swapped period across EVERY invoice that funded it. `totalUnused`
 // (net, sized off the post-change base across all items) is the authoritative
@@ -4074,7 +4023,7 @@ func (e *Engine) settleUnusedAcrossFunding(ctx context.Context, sub domain.Subsc
 		}
 		weights[i] = money.RoundHalfToEven(src.SubtotalCents*int64(ud), int64(windowDays))
 	}
-	nets := allocateByWeight(totalUnused, weights)
+	nets := money.AllocateByWeight(totalUnused, weights)
 
 	var credited int64
 	for i, src := range sources {
