@@ -121,3 +121,60 @@ func (f *dedupeFakeStripe) FetchPaymentMethodCard(_ context.Context, _ string) (
 func (f *dedupeFakeStripe) SetDefaultPaymentMethod(_ context.Context, _, _, _ string) error {
 	return nil
 }
+
+// TestDetachAndRebalance_AtomicPromote verifies the real-Postgres path:
+// detaching the default promotes the newest remaining active card and
+// exactly one default survives — all in one transaction (no committed
+// "active cards but no default" window). Exercises the FOR UPDATE +
+// promote-subquery + partial-unique-index interaction the in-memory store
+// can't model.
+func TestDetachAndRebalance_AtomicPromote(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 20*time.Second)
+	defer cancel()
+
+	tenantID := testutil.CreateTestTenant(t, db, "detach-rebalance-test")
+	custStore := customer.NewPostgresStore(db)
+	cust, err := custStore.Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_detach", DisplayName: "Detach Co", Email: "x@detach.test",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if err := custStore.SetStripeCustomerID(ctx, tenantID, cust.ID, "cus_stripe_detach"); err != nil {
+		t.Fatalf("seed stripe customer: %v", err)
+	}
+
+	pmStore := paymentmethods.NewPostgresStore(db)
+	stripe := &dedupeFakeStripe{}
+	svc := paymentmethods.NewService(pmStore, stripe, custStore)
+
+	// pm_old (fp_A) attaches first → becomes default. pm_new (fp_B, distinct
+	// fingerprint so it isn't deduped) attaches second → newer created_at.
+	stripe.next = paymentmethods.CardMetadata{Brand: "visa", Last4: "4242", ExpMonth: 12, ExpYear: 2030, Fingerprint: "fp_A"}
+	pmOld, err := svc.AttachFromSetupIntent(ctx, tenantID, cust.ID, "pm_old")
+	if err != nil {
+		t.Fatalf("attach old: %v", err)
+	}
+	stripe.next = paymentmethods.CardMetadata{Brand: "mastercard", Last4: "5555", ExpMonth: 6, ExpYear: 2031, Fingerprint: "fp_B"}
+	if _, err := svc.AttachFromSetupIntent(ctx, tenantID, cust.ID, "pm_new"); err != nil {
+		t.Fatalf("attach new: %v", err)
+	}
+
+	// Detach the default (pm_old) → the newest active card (pm_new) must be
+	// promoted in the same transaction.
+	if _, err := svc.Detach(ctx, tenantID, cust.ID, pmOld.ID); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+
+	list, err := pmStore.List(ctx, tenantID, cust.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected exactly 1 active PM after detach, got %d", len(list))
+	}
+	if !list[0].IsDefault || list[0].StripePaymentMethodID != "pm_new" {
+		t.Fatalf("expected pm_new promoted to default, got %+v", list[0])
+	}
+}

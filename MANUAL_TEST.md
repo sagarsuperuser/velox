@@ -1211,6 +1211,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Non-default card → "Set as default" promotes it; the badge moves; previous default loses its badge.
 - [ ] **Auto-charge hits the explicitly-set default, not the newest card (ADR-053)** — attach two cards (`4242…4242`, then `5555…4444`), "Set as default" the FIRST/older one, then auto-charge an invoice (finalize a cycle or manual invoice). The paid invoice's payment-card sub-line shows the **default** card's brand/last4 (visa 4242), NOT the most-recently-added card — Velox names the exact card; Stripe never picks.
 - [ ] "Remove" on a non-default card → confirm → card detaches in Stripe + disappears locally; default unchanged.
+- [ ] **Remove the DEFAULT card with others present (ADR-053)** — with ≥2 cards, "Remove" the one holding the Default badge → confirm → it disappears and the **newest remaining** card gains the Default badge (never a no-default state). The promoted card also becomes the default on the customer's Stripe dashboard.
 - [ ] "Remove" on the last card → confirm dialog still works → list becomes empty.
 - [ ] "Remove" disabled (with tooltip) when only one card remains AND it's default — operator must add another card first.
 - [ ] Archived customer → all PM action buttons hidden (parity with other archived-customer UI guards).
