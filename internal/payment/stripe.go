@@ -120,12 +120,17 @@ type StripeClient interface {
 }
 
 type PaymentIntentParams struct {
-	AmountCents    int64
-	Currency       string
-	CustomerID     string // Stripe customer ID
-	Description    string
-	IdempotencyKey string
-	Metadata       map[string]string
+	AmountCents int64
+	Currency    string
+	CustomerID  string // Stripe customer ID
+	// PaymentMethodID is the Stripe PaymentMethod to charge, resolved by
+	// the caller from Velox's payment_methods table (the single source of
+	// truth for the customer's default card). Required: the client charges
+	// this exact PM and never asks Stripe to pick one. Empty → loud failure.
+	PaymentMethodID string
+	Description     string
+	IdempotencyKey  string
+	Metadata        map[string]string
 }
 
 type PaymentIntentResult struct {
@@ -311,8 +316,8 @@ func (s *Stripe) fireEvent(ctx context.Context, tenantID, eventType string, payl
 
 // ChargeInvoice creates a Stripe PaymentIntent for a finalized invoice.
 // The invoice must have a customer with a Stripe customer ID already set up.
-func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error) {
-	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, "")
+func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, stripePaymentMethodID string) (domain.Invoice, error) {
+	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, stripePaymentMethodID, "")
 }
 
 // ChargeInvoiceForDunningRetry charges an invoice as part of a dunning
@@ -327,11 +332,11 @@ func (s *Stripe) ChargeInvoice(ctx context.Context, tenantID string, inv domain.
 // and the cross-domain import that a shared options type would force
 // (billing → payment) is avoided per the per-domain-isolation rule
 // in CLAUDE.md.
-func (s *Stripe) ChargeInvoiceForDunningRetry(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error) {
-	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, piPurposeDunningRetry)
+func (s *Stripe) ChargeInvoiceForDunningRetry(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, stripePaymentMethodID string) (domain.Invoice, error) {
+	return s.chargeInvoice(ctx, tenantID, inv, stripeCustomerID, stripePaymentMethodID, piPurposeDunningRetry)
 }
 
-func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, purpose string) (domain.Invoice, error) {
+func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, stripePaymentMethodID, purpose string) (domain.Invoice, error) {
 	if inv.Status != domain.InvoiceFinalized {
 		return domain.Invoice{}, fmt.Errorf("can only charge finalized invoices, current status: %s", inv.Status)
 	}
@@ -340,6 +345,14 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	}
 	if stripeCustomerID == "" {
 		return domain.Invoice{}, fmt.Errorf("stripe customer ID is required")
+	}
+	// The exact card to charge is resolved upstream from Velox's
+	// payment_methods table and passed in explicitly — the charge never
+	// defers PM selection to Stripe. A missing PM id is a caller bug
+	// (the charge gates require a default PM before reaching here); fail
+	// loud rather than letting Stripe pick a card.
+	if stripePaymentMethodID == "" {
+		return domain.Invoice{}, fmt.Errorf("stripe payment method ID is required")
 	}
 
 	// Seed tenantID on ctx so the per-tenant Stripe client resolver
@@ -393,12 +406,13 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 		idempotencyKey += "_" + purpose
 	}
 	params := PaymentIntentParams{
-		AmountCents:    inv.AmountDueCents,
-		Currency:       inv.Currency,
-		CustomerID:     stripeCustomerID,
-		Description:    fmt.Sprintf("Invoice %s", inv.InvoiceNumber),
-		IdempotencyKey: idempotencyKey,
-		Metadata:       metadata,
+		AmountCents:     inv.AmountDueCents,
+		Currency:        inv.Currency,
+		CustomerID:      stripeCustomerID,
+		PaymentMethodID: stripePaymentMethodID,
+		Description:     fmt.Sprintf("Invoice %s", inv.InvoiceNumber),
+		IdempotencyKey:  idempotencyKey,
+		Metadata:        metadata,
 	}
 
 	var result PaymentIntentResult

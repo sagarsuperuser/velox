@@ -37,7 +37,7 @@ func (f *fakeCreditApplier) ApplyToInvoiceAt(_ context.Context, _, _, invoiceID 
 // recordingCharger records each invoice it is asked to charge.
 type recordingCharger struct{ got []domain.Invoice }
 
-func (c *recordingCharger) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _ string) (domain.Invoice, error) {
+func (c *recordingCharger) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _, _ string) (domain.Invoice, error) {
 	c.got = append(c.got, inv)
 	return inv, nil
 }

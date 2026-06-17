@@ -514,13 +514,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	// Auto-charge: synchronous with timeout, same behaviour as the cycle scan.
 	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		if stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID); err == nil &&
-			hasDefaultPM && stripeCusID != "" {
+		if stripeCusID, stripePMID, err := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID); err == nil &&
+			stripePMID != "" && stripeCusID != "" {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
 				}
 			}

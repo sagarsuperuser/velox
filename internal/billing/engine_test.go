@@ -200,7 +200,7 @@ func TestRetryPendingCharges_CardDeclineDoesNotEscalate(t *testing.T) {
 // set — the canonical "card declined" Stripe outcome.
 type fakeChargerDecline struct{}
 
-func (c *fakeChargerDecline) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _ string) (domain.Invoice, error) {
+func (c *fakeChargerDecline) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _, _ string) (domain.Invoice, error) {
 	return inv, &payment.PaymentError{Message: "Card was declined.", DeclineCode: "card_declined"}
 }
 
@@ -211,8 +211,11 @@ type fakePaymentSetups struct {
 	stripeCustomerID string
 }
 
-func (f *fakePaymentSetups) ResolveForCharge(_ context.Context, _, _ string) (string, bool, error) {
-	return f.stripeCustomerID, f.ready, nil
+func (f *fakePaymentSetups) ResolveForCharge(_ context.Context, _, _ string) (string, string, error) {
+	if !f.ready {
+		return f.stripeCustomerID, "", nil
+	}
+	return f.stripeCustomerID, "pm_fake_default", nil
 }
 
 // TestBillSubscription_LoopsUntilCaughtUp asserts the per-sub

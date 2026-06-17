@@ -1209,6 +1209,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Copy link path: clicking "Copy link" mints the session, auto-copies the URL, and displays the URL in the dialog with a Copy button for re-copy → paste into incognito tab → flow completes the same as the email path.
 - [ ] Closing the dialog mid-flow discards any minted URL (operator can mint another fresh URL next time).
 - [ ] Non-default card → "Set as default" promotes it; the badge moves; previous default loses its badge.
+- [ ] **Auto-charge hits the explicitly-set default, not the newest card (ADR-053)** — attach two cards (`4242…4242`, then `5555…4444`), "Set as default" the FIRST/older one, then auto-charge an invoice (finalize a cycle or manual invoice). The paid invoice's payment-card sub-line shows the **default** card's brand/last4 (visa 4242), NOT the most-recently-added card — Velox names the exact card; Stripe never picks.
 - [ ] "Remove" on a non-default card → confirm → card detaches in Stripe + disappears locally; default unchanged.
 - [ ] "Remove" on the last card → confirm dialog still works → list becomes empty.
 - [ ] "Remove" disabled (with tooltip) when only one card remains AND it's default — operator must add another card first.

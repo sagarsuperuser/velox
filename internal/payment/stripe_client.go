@@ -155,32 +155,15 @@ func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params Payme
 		metadata[k] = v
 	}
 
-	// Use the customer's default payment method, fall back to most recent card
-	cus, err := sc.V1Customers.Retrieve(ctx, params.CustomerID, nil)
-	var defaultPM string
-	if err == nil && cus.InvoiceSettings != nil && cus.InvoiceSettings.DefaultPaymentMethod != nil {
-		defaultPM = cus.InvoiceSettings.DefaultPaymentMethod.ID
-	}
-	if defaultPM == "" {
-		// Fall back to most recently created card
-		var latest *stripe.PaymentMethod
-		for pm, err := range sc.V1PaymentMethods.List(ctx, &stripe.PaymentMethodListParams{
-			Customer: stripe.String(params.CustomerID),
-			Type:     stripe.String("card"),
-		}) {
-			if err != nil {
-				break
-			}
-			if latest == nil || pm.Created > latest.Created {
-				latest = pm
-			}
-		}
-		if latest != nil {
-			defaultPM = latest.ID
-		}
-	}
-	if defaultPM == "" {
-		// Definitive failure — no card on file, no charge could have occurred.
+	// Charge the exact PaymentMethod the caller resolved from Velox's
+	// payment_methods table (the single source of truth for the customer's
+	// default card). We deliberately do NOT consult Stripe's
+	// invoice_settings.default_payment_method or fall back to "most recent
+	// card" — those are independent selectors that can disagree with
+	// Velox's default and previously let an off-session charge hit a
+	// different card than the one Velox gated on. No PM id → loud failure,
+	// never a silent guess.
+	if params.PaymentMethodID == "" {
 		return PaymentIntentResult{}, &PaymentError{Message: "customer has no payment method on file"}
 	}
 
@@ -188,11 +171,11 @@ func (c *LiveStripeClient) CreatePaymentIntent(ctx context.Context, params Payme
 		Amount:        stripe.Int64(params.AmountCents),
 		Currency:      stripe.String(params.Currency),
 		Customer:      stripe.String(params.CustomerID),
-		PaymentMethod: stripe.String(defaultPM),
+		PaymentMethod: stripe.String(params.PaymentMethodID),
 		Confirm:       stripe.Bool(true),
 		OffSession:    stripe.Bool(true),
 		Params: stripe.Params{
-			IdempotencyKey: stripe.String(fmt.Sprintf("%s_%s", params.IdempotencyKey, defaultPM)),
+			IdempotencyKey: stripe.String(fmt.Sprintf("%s_%s", params.IdempotencyKey, params.PaymentMethodID)),
 			Metadata:       metadata,
 		},
 		Description: stripe.String(params.Description),

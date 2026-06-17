@@ -40,7 +40,7 @@ type CreditNoteLister interface {
 
 // PaymentCharger creates a Stripe PaymentIntent for a finalized invoice.
 type PaymentCharger interface {
-	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error)
+	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, stripePaymentMethodID string) (domain.Invoice, error)
 }
 
 // PaymentSetupGetter checks if a customer has a payment method ready.
@@ -489,7 +489,7 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	ps, psErr := h.paymentSetups.GetPaymentSetup(ctx, tenantID, inv.CustomerID)
 	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
 	if pmReady {
-		if charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID); err != nil {
+		if charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID); err != nil {
 			// A failed charge attempt starts dunning (the single retry
 			// owner), so we deliberately do NOT also set auto_charge_pending
 			// here — the scheduler clears that flag for declines anyway and
@@ -883,7 +883,7 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID)
+	charged, err := h.charger.ChargeInvoice(r.Context(), tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
 	if err != nil {
 		// ADR-026 boundary sanitization: ChargeInvoice wraps a
 		// *payment.PaymentError which respond.FromError detects and

@@ -238,7 +238,7 @@ func TestChargeInvoice_Success(t *testing.T) {
 	invoices.invoices["inv_1"] = inv
 
 	stripe := NewStripe(client, invoices, webhooks, nil)
-	result, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe_abc")
+	result, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe_abc", "pm_test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,6 +249,12 @@ func TestChargeInvoice_Success(t *testing.T) {
 	}
 	if client.lastParams.CustomerID != "cus_stripe_abc" {
 		t.Errorf("customer: got %q, want cus_stripe_abc", client.lastParams.CustomerID)
+	}
+	// The exact PM resolved upstream must be threaded into the PaymentIntent —
+	// Velox names the card, Stripe does not pick. (Single-source-of-truth PM
+	// selection: the card gated on is the card charged.)
+	if client.lastParams.PaymentMethodID != "pm_test" {
+		t.Errorf("payment method: got %q, want pm_test", client.lastParams.PaymentMethodID)
 	}
 	if client.lastParams.Currency != "USD" {
 		t.Errorf("currency: got %q, want USD", client.lastParams.Currency)
@@ -266,11 +272,39 @@ func TestChargeInvoice_Success(t *testing.T) {
 	}
 }
 
+// A charge with no resolved PaymentMethod must fail loud and never reach
+// Stripe — the engine's charge gates require a default PM before calling,
+// so an empty PM id here is a wiring bug, not a cue to let Stripe pick a
+// card. Guards against regressing back to implicit Stripe-side selection.
+func TestChargeInvoice_RequiresPaymentMethod(t *testing.T) {
+	client := &mockStripeClient{piID: "pi_should_not_be_used"}
+	invoices := newMockInvoiceUpdater()
+	webhooks := newMockWebhookStore()
+
+	inv := domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
+		InvoiceNumber: "VLX-202604-0001",
+		Status:        domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+		Currency: "USD", AmountDueCents: 19900,
+	}
+	invoices.invoices["inv_1"] = inv
+
+	stripe := NewStripe(client, invoices, webhooks, nil)
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe_abc", "")
+	if err == nil {
+		t.Fatal("expected error for empty payment method id, got nil")
+	}
+	// The Stripe call must not have been made.
+	if client.lastParams.CustomerID != "" {
+		t.Errorf("Stripe was called despite missing PM: lastParams=%+v", client.lastParams)
+	}
+}
+
 func TestChargeInvoice_NotFinalized(t *testing.T) {
 	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 
 	inv := domain.Invoice{Status: domain.InvoiceDraft, AmountDueCents: 100}
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe", "pm_test")
 	if err == nil {
 		t.Fatal("expected error for non-finalized invoice")
 	}
@@ -280,7 +314,7 @@ func TestChargeInvoice_ZeroAmount(t *testing.T) {
 	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
 
 	inv := domain.Invoice{Status: domain.InvoiceFinalized, AmountDueCents: 0}
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", inv, "cus_stripe", "pm_test")
 	if err == nil {
 		t.Fatal("expected error for zero amount")
 	}
@@ -295,7 +329,7 @@ func TestChargeInvoice_StripeFailure(t *testing.T) {
 	}
 
 	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe", "pm_test")
 	if err == nil {
 		t.Fatal("expected error when Stripe fails")
 	}
@@ -362,7 +396,7 @@ func TestChargeInvoice_DefiniteFailure_InlineStartsDunning(t *testing.T) {
 	dunning := &recordingDunningStarter{}
 	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil, dunning)
 
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc", "pm_test")
 	if err == nil {
 		t.Fatal("expected definitive failure error")
 	}
@@ -404,7 +438,7 @@ func TestChargeInvoice_UnknownOutcome_NoInlineDunning(t *testing.T) {
 	dunning := &recordingDunningStarter{}
 	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil, dunning)
 
-	_, _ = stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+	_, _ = stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc", "pm_test")
 
 	if len(dunning.calls) != 0 {
 		t.Errorf("StartDunning calls on ambiguous outcome: got %d, want 0 (reconciler resolves Unknown later)", len(dunning.calls))
@@ -430,7 +464,7 @@ func TestChargeInvoice_UnknownOutcome(t *testing.T) {
 	}
 
 	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe", "pm_test")
 	if err == nil {
 		t.Fatal("expected error on ambiguous Stripe outcome")
 	}
@@ -458,7 +492,7 @@ func TestChargeInvoice_PlainErrorTreatedAsUnknown(t *testing.T) {
 	}
 
 	stripe := NewStripe(client, invoices, newMockWebhookStore(), nil)
-	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe")
+	_, err := stripe.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe", "pm_test")
 	if err == nil {
 		t.Fatal("expected error")
 	}

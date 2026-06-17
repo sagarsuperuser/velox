@@ -273,13 +273,14 @@ type BillingProfileReader interface {
 // PaymentReadiness resolves the data the engine needs to decide
 // "can we auto-charge this customer's invoice right now?" Two values
 // in one call — the Stripe Customer ID (required as the PI customer
-// param) plus a flag for whether the customer has an active default
-// PM. Replaces the older PaymentReadiness / GetPaymentSetup shape
-// (customer_payment_setups table, retired in migration 0097): the
-// Stripe Customer ID lives on customers.stripe_customer_id, the PM-
-// presence check queries payment_methods canonically.
+// param) plus the Stripe PaymentMethod id of the customer's active
+// default card (empty when there's no chargeable default). The same
+// resolved PM id is threaded into the charge so the card we gate on is
+// the exact card charged — Velox is the single source of truth for PM
+// selection (we never let Stripe pick). Reads customers.stripe_customer_id
+// for the mapping and the default payment_methods row canonically.
 type PaymentReadiness interface {
-	ResolveForCharge(ctx context.Context, tenantID, customerID string) (stripeCustomerID string, hasDefaultPM bool, err error)
+	ResolveForCharge(ctx context.Context, tenantID, customerID string) (stripeCustomerID string, stripePaymentMethodID string, err error)
 }
 
 // InvoiceCharger creates a Stripe PaymentIntent for a finalized invoice.
@@ -290,7 +291,7 @@ type PaymentReadiness interface {
 // dedicated typed method (ChargeInvoiceForDunningRetry). Keeps engine
 // package free of payment-options surface.
 type InvoiceCharger interface {
-	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID string) (domain.Invoice, error)
+	ChargeInvoice(ctx context.Context, tenantID string, inv domain.Invoice, stripeCustomerID, stripePaymentMethodID string) (domain.Invoice, error)
 }
 
 // SubscriptionReader reads subscription and plan data for billing.
@@ -2794,8 +2795,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// because finalize hasn't happened. This is the Stripe-parity behavior:
 	// pause_collection neuters the financial side without touching the cycle.
 	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
-		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
+		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
 
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -2803,7 +2804,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					slog.Warn("auto-charge failed, marking for retry",
 						"invoice_id", inv.ID,
 						"error", err,
@@ -3103,15 +3104,15 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	// Auto-charge: PM ready → synchronous charge; no PM → queue +
 	// notify. Mirrors the post-finalize block in billOnePeriod.
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
+		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
 
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					slog.Warn("subscription_create auto-charge failed, marking for retry",
 						"invoice_id", inv.ID,
 						"error", err,
@@ -3683,14 +3684,14 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 	// BillOnCreate. PM ready → synchronous attempt; no PM → queue +
 	// notify (dunning takes over on a real failure).
 	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		stripeCusID, hasDefaultPM, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && hasDefaultPM && stripeCusID != ""
+		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
 		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID); err != nil {
+				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					slog.Warn("final-on-cancel auto-charge failed, marking for retry",
 						"invoice_id", inv.ID, "error", err)
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
@@ -4393,13 +4394,13 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 			}
 		}
 
-		stripeCusID, hasDefaultPM, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
-		if err != nil || !hasDefaultPM || stripeCusID == "" {
+		stripeCusID, stripePMID, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
+		if err != nil || stripePMID == "" || stripeCusID == "" {
 			continue
 		}
 
 		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, stripeCusID); err != nil {
+		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, stripeCusID, stripePMID); err != nil {
 			cancel()
 			// Card decline: expected outcome. ChargeInvoice already
 			// stamped invoice.payment_status='failed' and fired
