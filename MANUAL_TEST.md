@@ -568,7 +568,8 @@ whole cents — only the RATE gains precision.
 - [ ] Pricing → new flat rating rule, price `$0.000003` per unit → saves (input is not clamped to 2 decimals, not rounded to `$0.00`).
 - [ ] Rule detail renders the sub-cent rate (`$0.000003`), not `$0.00`.
 - [ ] `GET /v1/rating-rules/<id>` → `flat_amount_cents` is a JSON string (`"0.0003"`), not a number. It's a decimal per-unit rate **in cents** — `0.0003`¢/unit — which is what enables sub-cent linear pricing.
-- [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — i.e. `0.0003`¢/unit × 1,000,000 units = `300`¢ (not `0`, which is what rounding the rate to int cents would give; not `300000000`, which is billing `300`¢ *per unit*). (The per-unit column may show `$0.00` for a sub-cent rate; the line amount is authoritative — ADR-045.)
+- [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — i.e. `0.0003`¢/unit × 1,000,000 units = `300`¢ (not `0`, which is what rounding the rate to int cents would give; not `300000000`, which is billing `300`¢ *per unit*).
+- [ ] **Unit Price column shows the full-precision rate, not `$0.00` (ADR-054)**: that usage line's Unit Price reads the effective rate (`$0.000003`), not `$0.00`, on the invoice detail page, the PDF, and the public hosted page — `GET /v1/invoices/{id}` line carries `unit_amount_decimal` (e.g. `"0.0003"` cents) alongside the whole-cent `unit_amount_cents`. Quantity × Unit Price reconciles with Amount. (Try the screenshot case too: 1,000 units billed `$3.00` → Unit Price `$0.003`, not `$0.00`.)
 - [ ] Instantiate `anthropic_style` → `c35_sonnet_input` stored as `0.0003` cents/token; 1,000,000 input tokens bill `300`¢, not `$3,000,000`.
 
 ## FLOW B3: Idempotency

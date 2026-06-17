@@ -883,6 +883,10 @@ export interface LineItem {
   description: string
   quantity: number
   unit_amount_cents: number
+  // Full-precision per-unit price in decimal cents (e.g. "0.3" = $0.003).
+  // Derived server-side as amount_cents ÷ quantity; render with formatRate so
+  // sub-cent rates don't collapse to "$0.00" like unit_amount_cents would.
+  unit_amount_decimal?: string
   amount_cents: number
   total_amount_cents: number
   tax_amount_cents?: number
@@ -1718,7 +1722,12 @@ export function formatRate(cents: string | number, currency?: string): string {
   frac = frac.replace(/0+$/, '')
   if (frac.length < 2) frac = frac.padEnd(2, '0')
   const sign = neg && !(whole === '0' && /^0*$/.test(frac)) ? '-' : ''
-  return `${sign}${symbol}${whole}.${frac}`
+  // Group the integer part with thousands separators (string-based, so very
+  // large integer parts keep full precision) to match formatCents and the Go
+  // PDF formatRate — otherwise a high unit price renders "$12345.00" next to a
+  // comma-grouped Amount column.
+  const groupedWhole = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return `${sign}${symbol}${groupedWhole}.${frac}`
 }
 
 // _tenantTimezone is module-scoped state seeded once at app boot

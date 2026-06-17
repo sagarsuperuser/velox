@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shopspring/decimal"
 	"github.com/signintech/gopdf"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -464,7 +465,7 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		}
 		textAt(colX[0], y, desc)
 		rightAlignAt(colX[1], y, colX[2]-colX[1], formatQuantity(item))
-		rightAlignAt(colX[2], y, colX[3]-colX[2], formatCents(item.UnitAmountCents))
+		rightAlignAt(colX[2], y, colX[3]-colX[2], formatRate(item.EffectiveUnitAmountDecimal()))
 		rightAlignAt(colX[3], y, colEnd-colX[3], formatCents(item.AmountCents))
 		y += 18
 	}
@@ -794,6 +795,33 @@ func formatTaxRate(rate float64) string {
 	s := strconv.FormatFloat(rate, 'f', 4, 64)
 	s = strings.TrimRight(s, "0")
 	return strings.TrimRight(s, ".")
+}
+
+// formatRate renders a per-unit price carried as DECIMAL CENTS at full
+// precision (e.g. 0.3 cents → "$0.003"), the Stripe unit_amount_decimal model
+// — mirrors web-v2 formatRate. Unlike formatCents (whole cents) it never
+// collapses a sub-cent rate to "$0.00"; it keeps a minimum of 2 fractional
+// digits and trims trailing zeros beyond that. Only the per-unit column uses
+// this; line amounts/totals stay whole cents (formatCents). ADR-054.
+func formatRate(cents decimal.Decimal) string {
+	dollars := cents.Shift(-2) // ÷100 exactly, no rounding
+	neg := dollars.Sign() < 0
+	abs := dollars.Abs()
+	intPart := abs.Truncate(0)
+	fracStr := ""
+	if frac := abs.Sub(intPart); !frac.IsZero() {
+		if fs := frac.String(); strings.ContainsRune(fs, '.') {
+			fracStr = strings.TrimRight(strings.SplitN(fs, ".", 2)[1], "0")
+		}
+	}
+	if len(fracStr) < 2 {
+		fracStr += strings.Repeat("0", 2-len(fracStr))
+	}
+	sign := ""
+	if neg && !abs.IsZero() {
+		sign = "-"
+	}
+	return fmt.Sprintf("%s%s%s.%s", sign, pdfCurrencySymbol, formatNumber(intPart.IntPart()), fracStr)
 }
 
 func formatCents(cents int64) string {
