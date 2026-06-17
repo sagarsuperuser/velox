@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -360,4 +361,39 @@ type InvoiceLineItem struct {
 	BillingPeriodEnd    *time.Time     `json:"billing_period_end,omitempty"`
 	Metadata            map[string]any `json:"metadata,omitempty"`
 	CreatedAt           time.Time      `json:"created_at"`
+}
+
+// EffectiveUnitAmountDecimal is the per-unit price in DECIMAL CENTS, derived
+// from the line's amount and quantity (amount_cents / quantity). It is the
+// honest, full-precision unit price that reconciles with the rounded line
+// amount (quantity × unit ≈ amount) and, unlike the whole-cent UnitAmountCents,
+// does NOT collapse a sub-cent rate to 0 — e.g. 1000 units billed $3.00 →
+// 0.3¢/unit = $0.003, not $0.00. It is derived on read from authoritative
+// persisted values (never stored), so it can never drift from the amount;
+// this is deliberately the EFFECTIVE rate, which stays well-defined for
+// blended/tiered/multi-dimensional lines that have no single nominal rate.
+// Precision is capped at 12 decimal places (Stripe unit_amount_decimal
+// parity). Returns 0 when the quantity is 0 (no meaningful per-unit price).
+func (li InvoiceLineItem) EffectiveUnitAmountDecimal() decimal.Decimal {
+	qty := li.QuantityDecimal
+	if qty.IsZero() {
+		qty = decimal.NewFromInt(li.Quantity)
+	}
+	if qty.LessThanOrEqual(decimal.Zero) {
+		return decimal.Zero
+	}
+	return decimal.NewFromInt(li.AmountCents).DivRound(qty, 12)
+}
+
+// MarshalJSON augments the wire form with unit_amount_decimal — the
+// full-precision per-unit price (decimal cents) computed by
+// EffectiveUnitAmountDecimal — so dashboards and API clients can render
+// sub-cent rates without the whole-cent unit_amount_cents collapsing them to
+// "$0.00" (ADR-054). Computed on the fly, never persisted.
+func (li InvoiceLineItem) MarshalJSON() ([]byte, error) {
+	type alias InvoiceLineItem
+	return json.Marshal(struct {
+		alias
+		UnitAmountDecimal string `json:"unit_amount_decimal"`
+	}{alias(li), li.EffectiveUnitAmountDecimal().String()})
 }

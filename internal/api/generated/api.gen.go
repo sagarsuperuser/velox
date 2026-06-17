@@ -926,6 +926,9 @@ type InvoiceLineItem struct {
 	TenantId         string `json:"tenant_id,omitempty"`
 	TotalAmountCents int64  `json:"total_amount_cents"`
 	UnitAmountCents  int64  `json:"unit_amount_cents"`
+
+	// UnitAmountDecimal Full-precision per-unit price in DECIMAL CENTS (e.g. "0.3" = $0.003 per unit), the Stripe unit_amount_decimal model. Derived on read as amount_cents ÷ quantity, so it reconciles with the rounded line amount and, unlike the whole-cent `unit_amount_cents`, never collapses a sub-cent rate to 0. Render with the decimal-aware rate formatter; line amounts/totals stay whole cents.
+	UnitAmountDecimal string `json:"unit_amount_decimal,omitempty"`
 }
 
 // InvoiceLineType defines model for InvoiceLineType.

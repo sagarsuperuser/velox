@@ -180,12 +180,16 @@ type viewLineItem struct {
 	// showed the truncated integer against the full amount (1.5 GPU-hours →
 	// "Qty 1 × $6.67 = $10.00"), the qty × unit ≠ amount incoherence the
 	// invoice PDF already avoids via its QuantityDecimal-aware formatter.
-	QuantityDecimal  string `json:"quantity_decimal,omitempty"`
-	UnitAmountCents  int64  `json:"unit_amount_cents"`
-	AmountCents      int64  `json:"amount_cents"`
-	TaxAmountCents   int64  `json:"tax_amount_cents,omitempty"`
-	TotalAmountCents int64  `json:"total_amount_cents"`
-	Currency         string `json:"currency"`
+	QuantityDecimal string `json:"quantity_decimal,omitempty"`
+	UnitAmountCents int64  `json:"unit_amount_cents"`
+	// UnitAmountDecimal is the full-precision per-unit price (decimal cents),
+	// so the public page renders sub-cent rates (e.g. $0.003) instead of the
+	// whole-cent UnitAmountCents collapsing them to "$0.00" (ADR-054).
+	UnitAmountDecimal string `json:"unit_amount_decimal,omitempty"`
+	AmountCents       int64  `json:"amount_cents"`
+	TaxAmountCents    int64  `json:"tax_amount_cents,omitempty"`
+	TotalAmountCents  int64  `json:"total_amount_cents"`
+	Currency          string `json:"currency"`
 }
 
 type viewBillTo struct {
@@ -519,13 +523,14 @@ func toViewLineItems(items []domain.InvoiceLineItem) []viewLineItem {
 	out := make([]viewLineItem, 0, len(items))
 	for _, it := range items {
 		v := viewLineItem{
-			Description:      it.Description,
-			Quantity:         it.Quantity,
-			UnitAmountCents:  it.UnitAmountCents,
-			AmountCents:      it.AmountCents,
-			TaxAmountCents:   it.TaxAmountCents,
-			TotalAmountCents: it.TotalAmountCents,
-			Currency:         it.Currency,
+			Description:       it.Description,
+			Quantity:          it.Quantity,
+			UnitAmountCents:   it.UnitAmountCents,
+			UnitAmountDecimal: it.EffectiveUnitAmountDecimal().String(),
+			AmountCents:       it.AmountCents,
+			TaxAmountCents:    it.TaxAmountCents,
+			TotalAmountCents:  it.TotalAmountCents,
+			Currency:          it.Currency,
 		}
 		if !it.QuantityDecimal.IsZero() {
 			v.QuantityDecimal = it.QuantityDecimal.String()

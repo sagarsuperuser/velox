@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { formatCents, formatDate, formatTaxRate } from '@/lib/api'
+import { formatCents, formatRate, formatDate, formatTaxRate } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -50,6 +50,9 @@ interface HostedInvoicePayload {
     // the display quantity — the integer `quantity` is its truncation.
     quantity_decimal?: string
     unit_amount_cents: number
+    // Full-precision per-unit price in decimal cents (e.g. "0.3" = $0.003);
+    // render with formatRate so sub-cent rates don't collapse to "$0.00".
+    unit_amount_decimal?: string
     amount_cents: number
     tax_amount_cents?: number
     total_amount_cents: number
@@ -397,7 +400,7 @@ export default function HostedInvoicePage() {
                             : li.quantity}
                         </td>
                         <td className="px-4 py-3 text-right text-muted-foreground tabular-nums hidden sm:table-cell">
-                          {formatCents(li.unit_amount_cents, li.currency)}
+                          {formatRate(li.unit_amount_decimal ?? li.unit_amount_cents, li.currency)}
                         </td>
                         <td className="px-4 py-3 text-right text-foreground tabular-nums">
                           {formatCents(li.amount_cents, li.currency)}

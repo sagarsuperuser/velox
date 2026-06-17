@@ -2145,6 +2145,8 @@ export interface components {
             quantity_decimal?: string;
             /** Format: int64 */
             unit_amount_cents: number;
+            /** @description Full-precision per-unit price in DECIMAL CENTS (e.g. "0.3" = $0.003 per unit), the Stripe unit_amount_decimal model. Derived on read as amount_cents ÷ quantity, so it reconciles with the rounded line amount and, unlike the whole-cent `unit_amount_cents`, never collapses a sub-cent rate to 0. Render with the decimal-aware rate formatter; line amounts/totals stay whole cents. */
+            unit_amount_decimal?: string;
             /** Format: int64 */
             amount_cents: number;
             /**
