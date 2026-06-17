@@ -246,9 +246,11 @@ func (s *Service) SetDefault(ctx context.Context, tenantID, customerID, pmID str
 	return pm, nil
 }
 
-// Detach marks the PM detached both in Stripe and locally, then — if the
-// detached PM was the default — picks a replacement default (most recent
-// attached PM) or clears the summary if no PMs remain.
+// Detach marks the PM detached both in Stripe and locally and, if it was
+// the default, promotes the newest remaining active PM to default — the
+// detach + promote run in a single store transaction so there is never a
+// committed "active cards but no default" window. The promoted default is
+// then best-effort synced to Stripe for display parity.
 func (s *Service) Detach(ctx context.Context, tenantID, customerID, pmID string) (PaymentMethod, error) {
 	pm, err := s.store.Get(ctx, tenantID, pmID)
 	if err != nil {
@@ -267,7 +269,14 @@ func (s *Service) Detach(ctx context.Context, tenantID, customerID, pmID string)
 		}
 	}
 
-	detached, err := s.store.Detach(ctx, tenantID, customerID, pmID)
+	// Detach and promote a replacement default atomically. Previously these
+	// were two separate transactions, so a crash — or, more plausibly, a
+	// transient DB error on the promote — could leave the customer with
+	// active cards but no default, silently gating auto-charge off until
+	// the next card action. Now the detach rolls back too if the promote
+	// fails: the "≥1 active card ⇒ exactly one default" invariant always
+	// holds across the operation.
+	detached, newDefault, err := s.store.DetachAndRebalance(ctx, tenantID, customerID, pmID)
 	if err != nil {
 		return PaymentMethod{}, err
 	}
@@ -282,38 +291,37 @@ func (s *Service) Detach(ctx context.Context, tenantID, customerID, pmID string)
 		})
 	}
 
-	// If the detached card was the default, promote another PM if one
-	// exists; otherwise clear the summary.
-	if pm.IsDefault {
-		if err := s.rebalanceDefault(ctx, tenantID, customerID); err != nil {
-			return PaymentMethod{}, fmt.Errorf("rebalance default: %w", err)
+	// Sync the auto-promoted default to Stripe's
+	// invoice_settings.default_payment_method. Best-effort + cosmetic: the
+	// charge path reads Velox's default directly (ADR-053), so this no
+	// longer decides which card is charged — it keeps Stripe-hosted
+	// surfaces (dashboard, Checkout) showing the same default the operator
+	// sees. A failure logs + audits a stripe_sync_error; the detach +
+	// promotion still stand (local-wins, same posture as SetDefault).
+	if newDefault != nil && newDefault.StripePaymentMethodID != "" {
+		stripeSyncErr := ""
+		if err := s.stripe.SetDefaultPaymentMethod(ctx, tenantID, customerID, newDefault.StripePaymentMethodID); err != nil {
+			slog.WarnContext(ctx, "failed to sync auto-promoted default payment method to Stripe",
+				"tenant_id", tenantID, "customer_id", customerID,
+				"stripe_payment_method_id", newDefault.StripePaymentMethodID, "error", err)
+			stripeSyncErr = err.Error()
+		}
+		if s.auditLogger != nil {
+			meta := map[string]any{
+				"action":      "default_changed",
+				"customer_id": customerID,
+				"card_brand":  newDefault.CardBrand,
+				"card_last4":  newDefault.CardLast4,
+				"trigger":     "auto_promote_on_detach",
+			}
+			if stripeSyncErr != "" {
+				meta["stripe_sync_error"] = stripeSyncErr
+			}
+			_ = s.auditLogger.Log(ctx, tenantID, "update", "payment_method", newDefault.ID, pmLabel(*newDefault), meta)
 		}
 	}
 
 	return detached, nil
-}
-
-// rebalanceDefault is called after detaching the current default. It
-// promotes the newest active PM. With customer_payment_setups retired
-// (migration 0097), there's no denorm cache to clear when the last PM
-// is removed — billing.PaymentReadiness queries payment_methods
-// directly, so an empty result IS the "no PM ready" signal.
-func (s *Service) rebalanceDefault(ctx context.Context, tenantID, customerID string) error {
-	active, err := s.store.List(ctx, tenantID, customerID)
-	if err != nil {
-		return err
-	}
-	if len(active) == 0 {
-		// No active PMs left — nothing to promote. billing's
-		// PaymentReadiness.ResolveForCharge will return hasDefaultPM=false
-		// on its next read.
-		return nil
-	}
-	// List orders is_default DESC, created_at DESC — but all are now
-	// is_default=false (we just cleared the prior default). Pick [0] (most
-	// recent created_at) as the new default.
-	_, err = s.store.SetDefault(ctx, tenantID, customerID, active[0].ID)
-	return err
 }
 
 // AttachForWebhook is the error-only variant of AttachFromSetupIntent,

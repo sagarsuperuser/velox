@@ -31,6 +31,16 @@ type Store interface {
 	// Detach marks the PM as detached_at = now(). Idempotent — a second
 	// call on an already-detached row is a no-op and returns the row.
 	Detach(ctx context.Context, tenantID, customerID, pmID string) (PaymentMethod, error)
+
+	// DetachAndRebalance detaches pmID and, in the SAME transaction,
+	// promotes the newest remaining active PM to default when the detached
+	// card was the default — so there is never a committed "active cards
+	// but no default" window (a transient failure on the promote rolls the
+	// detach back too). Returns the detached row plus the promoted default
+	// (nil when the detached card wasn't the default, or no active PM
+	// remained to promote). Idempotent: re-detaching an already-detached
+	// row promotes nothing (a detached row is never the default).
+	DetachAndRebalance(ctx context.Context, tenantID, customerID, pmID string) (PaymentMethod, *PaymentMethod, error)
 }
 
 type PostgresStore struct {
@@ -263,6 +273,75 @@ func (s *PostgresStore) Detach(ctx context.Context, tenantID, customerID, pmID s
 	}
 
 	return out, tx.Commit()
+}
+
+// DetachAndRebalance does the detach and the replacement-default promotion
+// in one transaction so the invariant "≥1 active PM ⇒ exactly one default"
+// holds across the whole operation — no committed window with active cards
+// but no default. See the Store interface for the contract.
+func (s *PostgresStore) DetachAndRebalance(ctx context.Context, tenantID, customerID, pmID string) (PaymentMethod, *PaymentMethod, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return PaymentMethod{}, nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Lock + read the target to learn whether it was the default BEFORE we
+	// clear the flag (RETURNING gives the post-update value). FOR UPDATE
+	// serialises concurrent detaches of the same customer's cards.
+	var wasDefault bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT is_default FROM payment_methods
+		WHERE tenant_id = $1 AND customer_id = $2 AND id = $3
+		FOR UPDATE`, tenantID, customerID, pmID).Scan(&wasDefault); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PaymentMethod{}, nil, errs.ErrNotFound
+		}
+		return PaymentMethod{}, nil, fmt.Errorf("lock payment method: %w", err)
+	}
+
+	var detached PaymentMethod
+	if err := scanPM(tx.QueryRowContext(ctx, `
+		UPDATE payment_methods
+		SET detached_at = COALESCE(detached_at, now()),
+		    is_default  = false,
+		    updated_at  = now()
+		WHERE tenant_id = $1 AND customer_id = $2 AND id = $3
+		RETURNING `+pmSelectCols,
+		tenantID, customerID, pmID), &detached); err != nil {
+		return PaymentMethod{}, nil, fmt.Errorf("detach: %w", err)
+	}
+
+	var newDefault *PaymentMethod
+	if wasDefault {
+		// Promote the newest remaining active card. The just-detached row is
+		// excluded (detached_at IS NOT NULL). The prior default is already
+		// cleared, so no other is_default row conflicts with the partial
+		// unique index — a single targeted set is safe. ErrNoRows = no
+		// active card left, leave the customer with no default.
+		var nd PaymentMethod
+		err := scanPM(tx.QueryRowContext(ctx, `
+			UPDATE payment_methods SET is_default = true, updated_at = now()
+			WHERE tenant_id = $1 AND customer_id = $2 AND id = (
+			    SELECT id FROM payment_methods
+			    WHERE tenant_id = $1 AND customer_id = $2 AND detached_at IS NULL
+			    ORDER BY created_at DESC, id DESC
+			    LIMIT 1
+			)
+			RETURNING `+pmSelectCols,
+			tenantID, customerID), &nd)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return PaymentMethod{}, nil, fmt.Errorf("promote replacement default: %w", err)
+		}
+		if err == nil {
+			newDefault = &nd
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return PaymentMethod{}, nil, err
+	}
+	return detached, newDefault, nil
 }
 
 func defaultString(s, d string) string {

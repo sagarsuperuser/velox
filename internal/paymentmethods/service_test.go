@@ -142,6 +142,47 @@ func (m *memStore) Detach(_ context.Context, tenantID, customerID, pmID string) 
 	return row, nil
 }
 
+func (m *memStore) DetachAndRebalance(_ context.Context, tenantID, customerID, pmID string) (PaymentMethod, *PaymentMethod, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.rows[pmID]
+	if !ok || row.TenantID != tenantID || row.CustomerID != customerID {
+		return PaymentMethod{}, nil, errs.ErrNotFound
+	}
+	wasDefault := row.IsDefault && row.DetachedAt == nil
+	if row.DetachedAt == nil {
+		now := time.Now().UTC()
+		row.DetachedAt = &now
+	}
+	row.IsDefault = false
+	row.UpdatedAt = time.Now().UTC()
+	m.rows[pmID] = row
+
+	var newDefault *PaymentMethod
+	if wasDefault {
+		// Promote the newest remaining active card (created_at DESC, id DESC).
+		var best *PaymentMethod
+		for id, r := range m.rows {
+			if r.TenantID != tenantID || r.CustomerID != customerID || r.DetachedAt != nil {
+				continue
+			}
+			cand := r
+			if best == nil || cand.CreatedAt.After(best.CreatedAt) ||
+				(cand.CreatedAt.Equal(best.CreatedAt) && id > best.ID) {
+				best = &cand
+			}
+		}
+		if best != nil {
+			best.IsDefault = true
+			best.UpdatedAt = time.Now().UTC()
+			m.rows[best.ID] = *best
+			promoted := m.rows[best.ID]
+			newDefault = &promoted
+		}
+	}
+	return row, newDefault, nil
+}
+
 func orDefault(s, d string) string {
 	if s == "" {
 		return d
@@ -421,5 +462,65 @@ func TestDetach_CrossCustomer(t *testing.T) {
 	pm, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_a", "pm_1")
 	if _, err := svc.Detach(context.Background(), "tnt_x", "cus_b", pm.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// TestDetach_PromotesNewestAndSyncsStripe — detaching the default promotes
+// the NEWEST remaining active card (not just "a" card), leaves exactly one
+// default, and best-effort syncs that promotion to Stripe's
+// invoice_settings.default_payment_method (the cosmetic mirror).
+func TestDetach_PromotesNewestAndSyncsStripe(t *testing.T) {
+	store := newMemStore()
+	stripe := &fakeStripe{}
+	svc := NewService(store, stripe, &fakeSummary{})
+
+	// pm_1 is default (first attached); pm_2 then pm_3 are newer.
+	pm1, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_1")
+	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_2")
+	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_3")
+
+	if _, err := svc.Detach(context.Background(), "tnt_x", "cus_y", pm1.ID); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+
+	list, _ := svc.List(context.Background(), "tnt_x", "cus_y")
+	defaults := 0
+	var def PaymentMethod
+	for _, p := range list {
+		if p.IsDefault {
+			defaults++
+			def = p
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("expected exactly one default, got %d: %+v", defaults, list)
+	}
+	if def.StripePaymentMethodID != "pm_3" {
+		t.Fatalf("expected newest card pm_3 promoted, got %q", def.StripePaymentMethodID)
+	}
+	// #1: the promotion synced to Stripe, with the promoted card's PM id.
+	if stripe.setDefaultCalls != 1 || stripe.setDefaultPMID != "pm_3" {
+		t.Fatalf("expected Stripe default synced to pm_3 once, got calls=%d pmid=%q",
+			stripe.setDefaultCalls, stripe.setDefaultPMID)
+	}
+}
+
+// TestDetach_PromotionStripeSyncFailureStillSucceeds — the Stripe sync of
+// the auto-promoted default is best-effort (cosmetic per ADR-053). A Stripe
+// failure must NOT fail the detach, and the local promotion stands.
+func TestDetach_PromotionStripeSyncFailureStillSucceeds(t *testing.T) {
+	store := newMemStore()
+	stripe := &fakeStripe{setDefaultErr: errors.New("stripe 503")}
+	svc := NewService(store, stripe, &fakeSummary{})
+
+	pm1, _ := svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_1")
+	_, _ = svc.AttachFromSetupIntent(context.Background(), "tnt_x", "cus_y", "pm_2")
+
+	if _, err := svc.Detach(context.Background(), "tnt_x", "cus_y", pm1.ID); err != nil {
+		t.Fatalf("detach must succeed despite Stripe sync failure: %v", err)
+	}
+	list, _ := svc.List(context.Background(), "tnt_x", "cus_y")
+	if len(list) != 1 || !list[0].IsDefault || list[0].StripePaymentMethodID != "pm_2" {
+		t.Fatalf("expected pm_2 promoted locally despite Stripe failure, got %+v", list)
 	}
 }

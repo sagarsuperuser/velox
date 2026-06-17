@@ -40,8 +40,7 @@ The divergence existed because the *system of record* for PM selection was ambig
 - Failing loud on a missing PM removes the last implicit-selection path (`feedback_no_silent_fallbacks`).
 
 ### Risks / open items
-- **Cosmetic Stripe sync on auto-promotion** (`rebalanceDefault`) is still DB-only. Now that it's cosmetic, it's a low-priority follow-up to route it through the Stripe-syncing path so the Stripe dashboard's "default" label stays correct after a card deletion.
-- **Detach + promote atomicity:** detaching the default and promoting a replacement are still two transactions. With explicit-PM charging the transient "no default" window only gates charges off (fails safe — `auto_charge_pending` stays, no mischarge), so single-transaction detach+promote is a deferred robustness nicety, not a correctness fix.
+- ~~**Cosmetic Stripe sync on auto-promotion**~~ and ~~**detach + promote atomicity**~~ — **both resolved (2026-06-17, follow-up).** Detaching the default and promoting the newest replacement now run in **one store transaction** (`Store.DetachAndRebalance`), so the transient "active cards but no default" window — reachable by a crash *or* a transient DB error on the promote — can no longer be committed; the detach rolls back too if the promote fails. The promoted default is then **best-effort synced to Stripe** (`invoice_settings.default_payment_method`) for dashboard/Checkout display parity — cosmetic only, since the charge path reads Velox's default directly, so a Stripe sync failure logs + audits a `stripe_sync_error` and never blocks the detach. Guarded by `TestDetach_PromotesNewestAndSyncsStripe`, `TestDetach_PromotionStripeSyncFailureStillSucceeds`, and the real-Postgres `TestDetachAndRebalance_AtomicPromote`.
 
 ## References
 - ADR-041 (no silent tax fallbacks), and the 2026-05-29 `SetDefault` → Stripe sync fix it parallels.
