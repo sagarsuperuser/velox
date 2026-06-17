@@ -41,7 +41,7 @@ Wire shape:
 "attention": {
   "severity": "critical",
   "reason": "tax_location_required",
-  "message": "The customer's billing profile is missing or malformed data the tax provider requires.",
+  "message": "The customer's billing profile has missing or invalid data the tax provider requires.",
   "actions": [
     { "code": "edit_billing_profile", "label": "Edit billing profile" },
     { "code": "retry_tax", "label": "Retry tax" }

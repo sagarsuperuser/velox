@@ -418,7 +418,7 @@ func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionS
 	switch errorCode {
 	case "customer_data_invalid":
 		att.Reason = AttentionReasonTaxLocationRequired
-		att.Message = "The customer's billing profile is missing or malformed data the tax provider requires (postal code, country, or tax ID)."
+		att.Message = "The customer's billing profile has missing or invalid data the tax provider requires (postal code, country, or tax ID)."
 		att.Param = "customer.address.postal_code"
 		att.DocURL = docBaseURL + "tax-location-required"
 		att.Actions = []AttentionActionItem{
