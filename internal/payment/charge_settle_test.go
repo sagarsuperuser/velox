@@ -36,7 +36,7 @@ func TestChargeInvoice_SyncSuccessSettlesInline(t *testing.T) {
 	dunning := &recordingDunningStarter{}
 	s := NewStripe(client, invoices, newMockWebhookStore(), nil, dunning)
 
-	got, err := s.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+	got, err := s.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc", "pm_test")
 	if err != nil {
 		t.Fatalf("ChargeInvoice: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestChargeInvoice_ProcessingStaysProcessing(t *testing.T) {
 	invoices.invoices["inv_1"] = finalizedPendingInvoice()
 	s := NewStripe(client, invoices, newMockWebhookStore(), nil)
 
-	got, err := s.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc")
+	got, err := s.ChargeInvoice(context.Background(), "t1", invoices.invoices["inv_1"], "cus_stripe_abc", "pm_test")
 	if err != nil {
 		t.Fatalf("ChargeInvoice: %v", err)
 	}

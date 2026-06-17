@@ -133,28 +133,32 @@ type paymentReadinessAdapter struct {
 	pms       *paymentmethods.Service
 }
 
-func (a *paymentReadinessAdapter) ResolveForCharge(ctx context.Context, tenantID, customerID string) (string, bool, error) {
+func (a *paymentReadinessAdapter) ResolveForCharge(ctx context.Context, tenantID, customerID string) (string, string, error) {
 	cust, err := a.customers.Get(ctx, tenantID, customerID)
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	if cust.StripeCustomerID == "" {
 		// No Stripe Customer object yet — can't auto-charge.
-		return "", false, nil
+		return "", "", nil
 	}
 	pms, err := a.pms.List(ctx, tenantID, customerID)
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	for _, pm := range pms {
 		if pm.IsDefault {
-			return cust.StripeCustomerID, true, nil
+			// Return the default card's Stripe PaymentMethod id so the
+			// engine charges this exact card (not whatever Stripe's own
+			// default happens to be). List filters detached rows, so this
+			// is always a chargeable, non-detached PM.
+			return cust.StripeCustomerID, pm.StripePaymentMethodID, nil
 		}
 	}
 	// Stripe Customer exists but no default PM attached (e.g. customer
-	// created via Stripe but card removed). Engine treats this as
-	// "no PM ready" → queues for retry-on-attach.
-	return cust.StripeCustomerID, false, nil
+	// created via Stripe but card removed). Empty PM id → engine treats
+	// this as "no PM ready" → queues for retry-on-attach.
+	return cust.StripeCustomerID, "", nil
 }
 
 type invoiceWriterAdapter struct {
@@ -322,7 +326,7 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	}
 
 	ps, err := a.paymentSetups.GetPaymentSetup(ctx, tenantID, customerID)
-	if err != nil || ps.StripeCustomerID == "" {
+	if err != nil || ps.StripeCustomerID == "" || ps.StripePaymentMethodID == "" {
 		return fmt.Errorf("no payment method for customer")
 	}
 
@@ -340,7 +344,7 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	// tag the customer receives two emails per failed retry: the
 	// webhook's "Payment failed for invoice X" plus dunning's
 	// "Action required — payment retry for invoice X (Attempt N of M)".
-	_, err = a.charger.ChargeInvoiceForDunningRetry(chargeCtx, tenantID, inv, ps.StripeCustomerID)
+	_, err = a.charger.ChargeInvoiceForDunningRetry(chargeCtx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
 	// Map payment's internal "call never happened" sentinel to dunning's
 	// equivalent. Keeps peer domains from importing each other and gives
 	// dunning a stable signal to skip attempt_count bookkeeping.
