@@ -27,7 +27,7 @@ type Store interface {
 	// partial update to one field doesn't accidentally overwrite an entire
 	// item list.
 	Update(ctx context.Context, tenantID string, s domain.Subscription) (domain.Subscription, error)
-	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error
+	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
 
 	// CancelAtomic executes a conditional UPDATE that only transitions
 	// when the row is in an allowed source state. Closes the
@@ -157,7 +157,7 @@ type Store interface {
 	//
 	// Returns errs.InvalidState if the row's status is not 'trialing'
 	// at UPDATE time.
-	EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error)
+	EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error)
 
 	// ExtendTrial atomically updates trial_end_at AND recomputes the
 	// period anchor on a 'trialing' row. Mirrors EndTrialEarly's shape
@@ -173,7 +173,7 @@ type Store interface {
 	// trial_end_at — those callers should use EndTrialEarly instead).
 	// Returns errs.InvalidState if the row's status is not 'trialing'
 	// at UPDATE time.
-	ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error)
+	ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error)
 
 	// ---- Subscription items ----
 

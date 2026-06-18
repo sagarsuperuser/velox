@@ -23,8 +23,8 @@ import (
 // period boundaries the engine writes (which also advance in loc). Without it
 // the same instant yields 30 or 31 days depending on the host time.Local —
 // mischarging every mid-cycle plan change for an offset-TZ tenant.
-func fullBillingCycleDays(periodStart time.Time, interval domain.BillingInterval, loc *time.Location) int64 {
-	end := domain.AddBillingInterval(periodStart, interval, loc)
+func fullBillingCycleDays(periodStart time.Time, interval domain.BillingInterval, loc *time.Location, anchorDay int) int64 {
+	end := domain.AddBillingInterval(periodStart, interval, loc, anchorDay)
 	return int64(math.Round(end.Sub(periodStart).Hours() / 24))
 }
 

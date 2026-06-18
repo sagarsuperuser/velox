@@ -240,17 +240,18 @@ func beginningOfDayIn(t time.Time, loc *time.Location) time.Time {
 //
 // Subsequent cycles roll forward via billOnePeriod's per-cycle
 // advanceBillingPeriod call (which is already interval-aware).
-func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time) {
+func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time, int) {
 	ps := beginningOfDayIn(trialEnd, loc)
-	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc)
+	anchorDay := domain.AnchorDayFor(ps, billingTime, interval, loc)
+	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc, anchorDay)
 	// Edge: trial_end fell exactly on a calendar boundary — the stub
 	// computation could collapse (ps == pe). Promote to a clean full
 	// cycle from that boundary so the engine doesn't see a zero-length
 	// period.
 	if !ps.Before(pe) {
-		pe = domain.NextBillingPeriodEnd(pe, billingTime, interval, loc)
+		pe = domain.NextBillingPeriodEnd(pe, billingTime, interval, loc, anchorDay)
 	}
-	return ps, pe
+	return ps, pe, anchorDay
 }
 
 // firstPeriodForActivate computes the first billing period when a sub is
@@ -265,10 +266,11 @@ func firstPeriodAfterTrial(trialEnd time.Time, billingTime domain.SubscriptionBi
 // boundary (proration handled by billOnePeriod).
 //
 // Monthly + anniversary: full month from `at`.
-func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time) {
+func firstPeriodForActivate(at time.Time, billingTime domain.SubscriptionBillingTime, interval domain.BillingInterval, loc *time.Location) (time.Time, time.Time, int) {
 	ps := beginningOfDayIn(at, loc)
-	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc)
-	return ps, pe
+	anchorDay := domain.AnchorDayFor(ps, billingTime, interval, loc)
+	pe := domain.NextBillingPeriodEnd(ps, billingTime, interval, loc, anchorDay)
+	return ps, pe, anchorDay
 }
 
 // rejectMixedItemIntervals validates that every item's plan shares
@@ -468,6 +470,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	var startedAt *time.Time
 
 	var periodStart, periodEnd, nextBilling *time.Time
+	billingAnchorDay := 0
 
 	// Resolve tenant TZ once for all period-boundary snaps below. Day-
 	// grade billing (Chargebee / Lago default) snaps both endpoints to
@@ -490,18 +493,20 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		// monthly + anniversary produces a full month from trial_end.
 		// See helper doc for edge cases.
 		interval := s.firstPlanInterval(ctx, tenantID, items)
-		ps, pe := firstPeriodAfterTrial(te, billingTime, interval, loc)
+		ps, pe, anchorDay := firstPeriodAfterTrial(te, billingTime, interval, loc)
 		periodStart = &ps
 		periodEnd = &pe
 		nextBilling = &pe
+		billingAnchorDay = anchorDay
 	} else if input.StartNow {
 		status = domain.SubscriptionActive
 		startedAt = &now
 		interval := s.firstPlanInterval(ctx, tenantID, items)
-		ps, pe := firstPeriodForActivate(now, billingTime, interval, loc)
+		ps, pe, anchorDay := firstPeriodForActivate(now, billingTime, interval, loc)
 		periodStart = &ps
 		periodEnd = &pe
 		nextBilling = &pe
+		billingAnchorDay = anchorDay
 	}
 
 	overageAction := input.OverageAction
@@ -521,6 +526,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		CurrentBillingPeriodStart: periodStart,
 		CurrentBillingPeriodEnd:   periodEnd,
 		NextBillingAt:             nextBilling,
+		BillingAnchorDay:          billingAnchorDay,
 		UsageCapUnits:             input.UsageCapUnits,
 		OverageAction:             overageAction,
 		TestClockID:               inheritedClockID,
@@ -587,10 +593,11 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 		// anchored periods.
 		loc := s.tenantLocation(ctx, tenantID)
 		interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
-		ps, pe := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
+		ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
 		sub.CurrentBillingPeriodStart = &ps
 		sub.CurrentBillingPeriodEnd = &pe
 		sub.NextBillingAt = &pe
+		sub.BillingAnchorDay = anchorDay
 	}
 
 	return s.store.Update(ctx, tenantID, sub)
@@ -1098,9 +1105,13 @@ func (s *Service) applyCrossIntervalPlanSwap(
 	// Step 3b (in_arrears): truncate to (oldPS, now); scheduler closes
 	// the partial period under the OLD plan via segment-aware billing.
 	loc := s.tenantLocation(ctx, tenantID)
+	// The swap re-anchors the cycle to `now`, so the billing anchor day is
+	// recomputed for the new cadence (ADR-055) — it must NOT keep the old
+	// interval's anchor day.
+	swapAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, newInterval, loc)
 	if newTiming == domain.BillInAdvance {
-		newPE := domain.NextBillingPeriodEnd(now, sub.BillingTime, newInterval, loc)
-		if err := s.store.UpdateBillingCycle(ctx, tenantID, subscriptionID, now, newPE, newPE); err != nil {
+		newPE := domain.NextBillingPeriodEnd(now, sub.BillingTime, newInterval, loc, swapAnchorDay)
+		if err := s.store.UpdateBillingCycle(ctx, tenantID, subscriptionID, now, newPE, newPE, swapAnchorDay); err != nil {
 			return ItemChangeResult{}, err
 		}
 		if s.biller != nil {
@@ -1119,7 +1130,7 @@ func (s *Service) applyCrossIntervalPlanSwap(
 		// in_arrears: truncate. Period start preserved; period end +
 		// next_billing pulled in to `now`.
 		if sub.CurrentBillingPeriodStart != nil {
-			if err := s.store.UpdateBillingCycle(ctx, tenantID, subscriptionID, *sub.CurrentBillingPeriodStart, now, now); err != nil {
+			if err := s.store.UpdateBillingCycle(ctx, tenantID, subscriptionID, *sub.CurrentBillingPeriodStart, now, now, swapAnchorDay); err != nil {
 				return ItemChangeResult{}, err
 			}
 		}
@@ -1444,8 +1455,8 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 
 	loc := s.tenantLocation(ctx, tenantID)
 	interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
-	ps, pe := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
-	activated, err := s.store.EndTrialEarly(ctx, tenantID, id, now, ps, pe, pe)
+	ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
+	activated, err := s.store.EndTrialEarly(ctx, tenantID, id, now, ps, pe, pe, anchorDay)
 	if err != nil {
 		return domain.Subscription{}, err
 	}
@@ -1764,8 +1775,8 @@ func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrial
 	loc := s.tenantLocation(ctx, tenantID)
 	newEnd := newTrialEnd.UTC()
 	interval := s.firstPlanInterval(ctx, tenantID, current.Items)
-	ps, pe := firstPeriodAfterTrial(newEnd, current.BillingTime, interval, loc)
-	return s.store.ExtendTrial(ctx, tenantID, id, newEnd, ps, pe, pe)
+	ps, pe, anchorDay := firstPeriodAfterTrial(newEnd, current.BillingTime, interval, loc)
+	return s.store.ExtendTrial(ctx, tenantID, id, newEnd, ps, pe, pe, anchorDay)
 }
 
 // ItemThresholdInput is one configured per-item usage cap on a subscription.

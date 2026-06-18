@@ -41,8 +41,8 @@ func (a *subStoreAdapter) Get(ctx context.Context, tenantID, id string) (domain.
 	return a.store.Get(ctx, tenantID, id)
 }
 
-func (a *subStoreAdapter) UpdateBillingCycle(ctx context.Context, tenantID, id string, start, end, next time.Time) error {
-	return a.store.UpdateBillingCycle(ctx, tenantID, id, start, end, next)
+func (a *subStoreAdapter) UpdateBillingCycle(ctx context.Context, tenantID, id string, start, end, next time.Time, anchorDay int) error {
+	return a.store.UpdateBillingCycle(ctx, tenantID, id, start, end, next, anchorDay)
 }
 
 func (a *subStoreAdapter) ApplyDuePendingItemPlansAtomic(ctx context.Context, tenantID, id string, now time.Time) ([]domain.SubscriptionItem, error) {
@@ -287,7 +287,7 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 	}
 
 	// Set billing period
-	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, nextBilling); err != nil {
+	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, nextBilling, 0); err != nil {
 		t.Fatalf("set billing cycle: %v", err)
 	}
 
@@ -479,7 +479,7 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create subscription: %v", err)
 	}
-	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd); err != nil {
+	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd, 0); err != nil {
 		t.Fatalf("set billing cycle: %v", err)
 	}
 	sub.CurrentBillingPeriodStart = &periodStart
@@ -719,7 +719,7 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create sub: %v", err)
 		}
-		if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd); err != nil {
+		if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd, 0); err != nil {
 			t.Fatalf("set billing cycle: %v", err)
 		}
 		sub.CurrentBillingPeriodStart = &periodStart

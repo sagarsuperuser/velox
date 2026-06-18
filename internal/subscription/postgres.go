@@ -33,6 +33,7 @@ const subCols = `id, tenant_id, code, display_name, customer_id, status, billing
 	pause_collection_behavior, pause_collection_resumes_at,
 	billing_threshold_amount_gte, COALESCE(billing_threshold_reset_cycle, true),
 	current_billing_period_start, current_billing_period_end, next_billing_at,
+	COALESCE(billing_anchor_day, 0),
 	usage_cap_units, COALESCE(overage_action,'charge'),
 	COALESCE(test_clock_id,''),
 	created_at, updated_at`
@@ -63,9 +64,10 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, status,
 			billing_time, trial_start_at, trial_end_at, started_at,
 			current_billing_period_start, current_billing_period_end, next_billing_at,
+			billing_anchor_day,
 			usage_cap_units, overage_action, test_clock_id,
 			created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE(NULLIF($15,''),'charge'),NULLIF($16,''),$17,$17)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE(NULLIF($16,''),'charge'),NULLIF($17,''),$18,$18)
 		RETURNING `+subCols,
 		id, tenantID, sub.Code, sub.DisplayName, sub.CustomerID,
 		sub.Status, sub.BillingTime, postgres.NullableTime(sub.TrialStartAt),
@@ -73,6 +75,7 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		postgres.NullableTime(sub.CurrentBillingPeriodStart),
 		postgres.NullableTime(sub.CurrentBillingPeriodEnd),
 		postgres.NullableTime(sub.NextBillingAt),
+		sub.BillingAnchorDay,
 		sub.UsageCapUnits, sub.OverageAction, sub.TestClockID, now,
 	), &sub)
 
@@ -206,15 +209,27 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	defer postgres.Rollback(tx)
 
 	now := clock.Now(ctx)
+	// Update is Service.Activate's writer (its only caller). It must persist
+	// the full activation transition: status, activated_at, started_at, the
+	// computed period bounds, next_billing_at, AND billing_anchor_day
+	// (ADR-055). The period + anchor columns were historically omitted here —
+	// masked by the in-memory test fake that replaces the whole struct — so
+	// draft→active never persisted its cycle on Postgres and an anniversary
+	// month-end anchor was dropped (ratcheting). All in one tx.
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
-			trial_start_at = $4, trial_end_at = $5,
-			usage_cap_units = $6, overage_action = COALESCE(NULLIF($7,''),'charge'),
-			updated_at = $8
-		WHERE id = $9
+			trial_start_at = $4, trial_end_at = $5, started_at = $6,
+			current_billing_period_start = $7, current_billing_period_end = $8,
+			next_billing_at = $9, billing_anchor_day = $10,
+			usage_cap_units = $11, overage_action = COALESCE(NULLIF($12,''),'charge'),
+			updated_at = $13
+		WHERE id = $14
 		RETURNING `+subCols,
 		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
 		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
+		postgres.NullableTime(sub.StartedAt),
+		postgres.NullableTime(sub.CurrentBillingPeriodStart), postgres.NullableTime(sub.CurrentBillingPeriodEnd),
+		postgres.NullableTime(sub.NextBillingAt), sub.BillingAnchorDay,
 		sub.UsageCapUnits, sub.OverageAction,
 		now, sub.ID,
 	), &sub)
@@ -545,7 +560,7 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 // computes periodStart/periodEnd via firstPeriodForActivate so the
 // reset honors billing_time. Returns errs.InvalidState if status is
 // not 'trialing' at UPDATE time.
-func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
@@ -561,10 +576,11 @@ func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, 
 		    current_billing_period_start = $2,
 		    current_billing_period_end = $3,
 		    next_billing_at = $4,
+		    billing_anchor_day = $5,
 		    updated_at = $1
-		WHERE id = $5 AND status = 'trialing'
+		WHERE id = $6 AND status = 'trialing'
 		RETURNING `+subCols,
-		at, periodStart, periodEnd, nextBilling, id,
+		at, periodStart, periodEnd, nextBilling, anchorDay, id,
 	), &sub)
 	if err == sql.ErrNoRows {
 		var currentStatus string
@@ -598,7 +614,7 @@ func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, 
 // Returns errs.InvalidState if the row's status is not 'trialing' at
 // UPDATE time — distinguishes operator-already-ended / hard-paused /
 // canceled from missing-row by re-querying status when no row matches.
-func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
@@ -613,10 +629,11 @@ func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, ne
 		    current_billing_period_start = $2,
 		    current_billing_period_end = $3,
 		    next_billing_at = $4,
-		    updated_at = $5
-		WHERE id = $6 AND status = 'trialing'
+		    billing_anchor_day = $5,
+		    updated_at = $6
+		WHERE id = $7 AND status = 'trialing'
 		RETURNING `+subCols,
-		newTrialEnd, periodStart, periodEnd, nextBilling, now, id,
+		newTrialEnd, periodStart, periodEnd, nextBilling, anchorDay, now, id,
 	), &sub)
 	if err == sql.ErrNoRows {
 		var currentStatus string
@@ -936,7 +953,12 @@ func (s *PostgresStore) ListExpiredPauseCollectionsForClock(ctx context.Context,
 	return subs, nil
 }
 
-func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error {
+// UpdateBillingCycle re-stamps the period boundaries, next_billing_at, and the
+// billing anchor day. Normal cycle close passes the sub's existing
+// BillingAnchorDay unchanged; the re-anchor paths (cross-interval plan swap,
+// threshold reset) pass the recomputed anchor day for the new "now" cadence
+// (ADR-055).
+func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -945,9 +967,9 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE subscriptions SET current_billing_period_start = $1, current_billing_period_end = $2,
-			next_billing_at = $3, updated_at = $4
-		WHERE id = $5
-	`, periodStart, periodEnd, nextBillingAt, clock.Now(ctx), id)
+			next_billing_at = $3, billing_anchor_day = $4, updated_at = $5
+		WHERE id = $6
+	`, periodStart, periodEnd, nextBillingAt, anchorDay, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -1796,6 +1818,7 @@ func scanSubRow(row rowScanner, sub *domain.Subscription) error {
 		&thresholdAmountGTE, &thresholdResetCycle,
 		&sub.CurrentBillingPeriodStart,
 		&sub.CurrentBillingPeriodEnd, &sub.NextBillingAt,
+		&sub.BillingAnchorDay,
 		&sub.UsageCapUnits, &sub.OverageAction,
 		&sub.TestClockID,
 		&sub.CreatedAt, &sub.UpdatedAt,

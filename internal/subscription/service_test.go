@@ -117,7 +117,7 @@ func (m *memStore) GetDueBilling(ctx context.Context, _ time.Time, _ int) ([]dom
 	return nil, nil
 }
 
-func (m *memStore) UpdateBillingCycle(_ context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time) error {
+func (m *memStore) UpdateBillingCycle(_ context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
 		return errs.ErrNotFound
@@ -125,6 +125,7 @@ func (m *memStore) UpdateBillingCycle(_ context.Context, tenantID, id string, pe
 	s.CurrentBillingPeriodStart = &periodStart
 	s.CurrentBillingPeriodEnd = &periodEnd
 	s.NextBillingAt = &nextBillingAt
+	s.BillingAnchorDay = anchorDay
 	m.subs[id] = s
 	return nil
 }
@@ -243,7 +244,7 @@ func (m *memStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, 
 	return s, nil
 }
 
-func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
@@ -264,6 +265,7 @@ func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, p
 	s.CurrentBillingPeriodStart = &ps
 	s.CurrentBillingPeriodEnd = &pe
 	s.NextBillingAt = &nb
+	s.BillingAnchorDay = anchorDay
 	s.UpdatedAt = clock.Now(ctx)
 	m.subs[id] = s
 	s.Items = m.hydrateItems(id)
@@ -373,7 +375,7 @@ func (m *memStore) ListExpiredPauseCollectionsForClock(_ context.Context, tenant
 	return out, nil
 }
 
-func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time) (domain.Subscription, error) {
+func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTrialEnd, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
@@ -389,6 +391,7 @@ func (m *memStore) ExtendTrial(ctx context.Context, tenantID, id string, newTria
 	s.CurrentBillingPeriodStart = &ps
 	s.CurrentBillingPeriodEnd = &pe
 	s.NextBillingAt = &nb
+	s.BillingAnchorDay = anchorDay
 	s.UpdatedAt = clock.Now(ctx)
 	m.subs[id] = s
 	s.Items = m.hydrateItems(id)

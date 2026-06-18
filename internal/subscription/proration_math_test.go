@@ -29,7 +29,7 @@ func TestFullBillingCycleDays(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fullBillingCycleDays(tc.start, tc.interval, time.UTC); got != tc.want {
+			if got := fullBillingCycleDays(tc.start, tc.interval, time.UTC, 0); got != tc.want {
 				t.Errorf("fullBillingCycleDays(%v, %s) = %d, want %d", tc.start, tc.interval, got, tc.want)
 			}
 		})
@@ -43,7 +43,7 @@ func TestFullBillingCycleDays(t *testing.T) {
 // days remaining): correct $13.00, NOT the buggy $27.86.
 func TestProration_StubPeriod_DividesByFullCycle(t *testing.T) {
 	periodStart := time.Date(2027, 4, 16, 18, 30, 0, 0, time.UTC) // 14-day stub to Apr 30
-	fullCycle := fullBillingCycleDays(periodStart, domain.BillingMonthly, time.UTC)
+	fullCycle := fullBillingCycleDays(periodStart, domain.BillingMonthly, time.UTC, 0)
 	if fullCycle != 30 {
 		t.Fatalf("fullCycle = %d, want 30", fullCycle)
 	}
@@ -339,14 +339,14 @@ func TestFullBillingCycleDays_TenantTZAnchored(t *testing.T) {
 		{"period_start IST-located (DB scan on IST host)", inst.In(ist)},
 	} {
 		t.Run(in.name, func(t *testing.T) {
-			if got := fullBillingCycleDays(in.t, domain.BillingMonthly, ist); got != 30 {
+			if got := fullBillingCycleDays(in.t, domain.BillingMonthly, ist, 0); got != 30 {
 				t.Errorf("fullBillingCycleDays = %d, want 30 (June IST anniversary; loc-anchored, provenance-independent)", got)
 			}
 		})
 	}
 	// Same instant under a UTC tenant legitimately differs (May-31 UTC overflow
 	// = 31) — proving the result is driven by the tenant loc, as intended.
-	if got := fullBillingCycleDays(inst, domain.BillingMonthly, time.UTC); got != 31 {
+	if got := fullBillingCycleDays(inst, domain.BillingMonthly, time.UTC, 0); got != 31 {
 		t.Errorf("UTC-tenant denom = %d, want 31 (May 31 UTC + 1mo overflow)", got)
 	}
 }

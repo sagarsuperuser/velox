@@ -1918,7 +1918,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
 	denomDays := spec.totalDays
 	if sub.CurrentBillingPeriodStart != nil {
-		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval, h.tenantLoc(ctx, tenantID)); fc > 0 {
+		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval, h.tenantLoc(ctx, tenantID), sub.BillingAnchorDay); fc > 0 {
 			denomDays = fc
 		}
 	}

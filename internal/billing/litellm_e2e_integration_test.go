@@ -110,7 +110,7 @@ func TestLiteLLM_WedgeE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create sub: %v", err)
 	}
-	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd); err != nil {
+	if err := subStore.UpdateBillingCycle(ctx, tenantID, sub.ID, periodStart, periodEnd, periodEnd, 0); err != nil {
 		t.Fatalf("set billing cycle: %v", err)
 	}
 
