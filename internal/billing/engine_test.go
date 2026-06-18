@@ -348,7 +348,7 @@ func (m *mockSubs) Get(_ context.Context, _, id string) (domain.Subscription, er
 	return s, nil
 }
 
-func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, end, next time.Time) error {
+func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, end, next time.Time, anchorDay int) error {
 	s, ok := m.subs[id]
 	if !ok {
 		return fmt.Errorf("not found")
@@ -356,6 +356,7 @@ func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, en
 	s.CurrentBillingPeriodStart = &start
 	s.CurrentBillingPeriodEnd = &end
 	s.NextBillingAt = &next
+	s.BillingAnchorDay = anchorDay
 	m.subs[id] = s
 	m.cycleUpdated[id] = true
 	return nil
@@ -1438,12 +1439,12 @@ func TestRunCycle_WithPriceOverride(t *testing.T) {
 func TestAdvanceBillingPeriod(t *testing.T) {
 	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 
-	monthly := advanceBillingPeriod(from, domain.BillingMonthly, time.UTC)
+	monthly := advanceBillingPeriod(from, domain.BillingMonthly, time.UTC, 0)
 	if monthly.Month() != time.April || monthly.Day() != 1 {
 		t.Errorf("monthly: got %v, want 2026-04-01", monthly)
 	}
 
-	yearly := advanceBillingPeriod(from, domain.BillingYearly, time.UTC)
+	yearly := advanceBillingPeriod(from, domain.BillingYearly, time.UTC, 0)
 	if yearly.Year() != 2027 || yearly.Month() != time.March {
 		t.Errorf("yearly: got %v, want 2027-03-01", yearly)
 	}

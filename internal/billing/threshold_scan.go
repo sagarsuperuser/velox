@@ -567,9 +567,16 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// is false, the original cycle continues — a second invoice will fire
 	// at the natural cycle end with whatever residual usage accumulated.
 	if sub.BillingThresholds.ResetBillingCycle {
+		// Reset re-anchors the cycle to `now`, so recompute the billing anchor
+		// day for the new cadence and route through NextBillingPeriodEnd (NOT
+		// the interval-only advanceBillingPeriod) so a calendar sub re-snaps to
+		// the 1st rather than carrying the reset day-of-month (ADR-055).
+		loc := e.tenantLocation(ctx, sub.TenantID)
+		interval := plans[sub.Items[0].PlanID].BillingInterval
+		resetAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, interval, loc)
 		nextPeriodStart := now
-		nextPeriodEnd := advanceBillingPeriod(now, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID))
-		if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd); err != nil {
+		nextPeriodEnd := domain.NextBillingPeriodEnd(now, sub.BillingTime, interval, loc, resetAnchorDay)
+		if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd, resetAnchorDay); err != nil {
 			// Cycle advance failure is non-fatal at the count level: the
 			// invoice already exists, so we return fired=true and let the
 			// next tick reconcile. The partial unique index ensures the

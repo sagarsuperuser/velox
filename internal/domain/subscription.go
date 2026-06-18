@@ -114,12 +114,16 @@ func FormatInclusivePeriod(start, end time.Time, loc *time.Location) string {
 //
 //   - Yearly: always anniversary (periodEnd + 1 year). No industry analog
 //     for "calendar yearly stub to Jan 1"; Velox doesn't ship it either.
-//   - Calendar monthly: snap to first-of-next-month in tenant TZ. This
-//     auto-re-anchors subs whose day-of-month drifted from a prior
-//     plan-interval change (e.g. yearly→monthly preserves the yearly
-//     anniversary day at the swap; the next cycle close pulls the
-//     anchor back to the calendar boundary the operator configured).
-//   - Anniversary monthly: preserve day-of-month (periodEnd + 1 month).
+//   - Calendar monthly: snap to first-of-next-month in tenant TZ, so the
+//     boundary is always the 1st regardless of the input day-of-month
+//     (anchorDay is unused on this path). A high day-of-month only reaches
+//     here transiently — the first-period stub when a sub is activated on
+//     the 29th/30th/31st (cross-interval plan swaps re-anchor to `now`, they
+//     do NOT carry an anniversary day onto a calendar sub).
+//   - Anniversary monthly: advance to the anchor day-of-month, clamped to the
+//     target month's last day (ADR-055), from the stored anchorDay — so a
+//     Jan-31 anchor yields Jan 31, Feb 28, Mar 31, … and never ratchets off
+//     month-end.
 //
 // Returns the new periodEnd. The new periodStart = the old periodEnd
 // at every cycle close (continuous coverage). Caller passes
@@ -130,14 +134,14 @@ func FormatInclusivePeriod(start, end time.Time, loc *time.Location) string {
 // used in cycle close, which silently preserved a drifted anchor across
 // plan-interval changes (industry-standard per Stripe-flexible / Lago /
 // Chargebee but conflicts with the operator's calendar-billing intent).
-func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location) time.Time {
+func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location, anchorDay int) time.Time {
 	if interval == BillingYearly {
-		// Anniversary yearly: advance in tenant TZ so the anchor day is
-		// preserved in the operator's calendar, not the value's ambient
-		// Location (ADR-050). Pre-fix this did a bare UTC AddDate, which
-		// drifted the boundary by a day for any offset-TZ tenant whose
-		// anchor instant maps to a different UTC calendar date.
-		return addIntervalIn(periodEnd, interval, loc)
+		// Anniversary yearly: advance in tenant TZ (ADR-050) AND clamp the
+		// anchor day to the target month's length (ADR-055) so a Feb-29
+		// (leap) anchor bills Feb 28 in non-leap years and restores to Feb 29
+		// the next leap year — instead of Go's AddDate overflowing Feb 29 +
+		// 1yr to Mar 1 and ratcheting the anniversary off February forever.
+		return advanceAnchored(periodEnd, interval, loc, anchorDay)
 	}
 	if billingTime == BillingTimeCalendar {
 		// Snap to the 1st of periodEnd's month in tenant TZ, THEN add a
@@ -146,10 +150,74 @@ func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTi
 		// overflow), then snapped to the 1st of the *result's* month →
 		// Mar 1, silently skipping February (ADR-050 Root C). Adding the
 		// month in `loc` also keeps the boundary in the tenant's zone.
+		// anchorDay is irrelevant here — calendar always lands on the 1st.
 		return addIntervalIn(BeginningOfMonthIn(periodEnd, loc), BillingMonthly, loc)
 	}
-	// Anniversary monthly: preserve day-of-month, advanced in tenant TZ.
-	return addIntervalIn(periodEnd, interval, loc)
+	// Anniversary monthly: advance to the same day-of-month, clamped to the
+	// target month's last day (ADR-055). Computed from the stored anchorDay,
+	// not periodEnd's (possibly already month-end-clamped) day, so a Jan-31
+	// anchor restores to the 31st in long months: Jan 31, Feb 28, Mar 31, …
+	return advanceAnchored(periodEnd, interval, loc, anchorDay)
+}
+
+// advanceAnchored advances `t` by one interval (+1 month / +1 year) in tenant
+// TZ, placing the operator's original anchor day-of-month CLAMPED to the
+// target month's last day. This is the ADR-055 fix for the anniversary
+// month-end ratchet: because the historical advance added onto the previously
+// computed (already-drifted) boundary, a day-29/30/31 anchor permanently lost
+// its billing day after the first short month (Jan 31 → Mar 3 → Apr 3 …).
+// Clamping from the stored anchorDay both prevents the overflow AND restores
+// the higher day in long months (min(anchorDay, lastDay)), matching Stripe /
+// Chargebee / Lago end-of-month behavior.
+//
+// anchorDay <= 0 means "unknown" (legacy rows pre-migration-0120): we fall
+// back to the historical addIntervalIn path so the column is additive and the
+// behavior is unchanged when it is unset.
+func advanceAnchored(t time.Time, interval BillingInterval, loc *time.Location, anchorDay int) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if anchorDay <= 0 {
+		return addIntervalIn(t, interval, loc)
+	}
+	local := t.In(loc)
+	var year int
+	var month time.Month
+	if interval == BillingYearly {
+		year, month = local.Year()+1, local.Month()
+	} else {
+		// First-of-next-month normalizes December → January of next year.
+		fn := time.Date(local.Year(), local.Month()+1, 1, 0, 0, 0, 0, loc)
+		year, month = fn.Year(), fn.Month()
+	}
+	day := anchorDay
+	if last := lastDayOfMonthIn(year, month, loc); day > last {
+		day = last
+	}
+	return time.Date(year, month, day, local.Hour(), local.Minute(), local.Second(), local.Nanosecond(), loc).UTC()
+}
+
+// lastDayOfMonthIn returns the last calendar day (28/29/30/31) of the given
+// year+month in loc. Uses the day-0-of-next-month trick, which Go normalizes
+// (month+1 wraps December → January of the next year correctly).
+func lastDayOfMonthIn(year int, month time.Month, loc *time.Location) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, loc).Day()
+}
+
+// AnchorDayFor returns the billing anchor day-of-month (1..31) to persist for a
+// subscription, read from the first period's start in the tenant TZ. It is the
+// stable reference advanceAnchored clamps against. Calendar-monthly subs return
+// 0 (their boundary is always the 1st, so the anchor is meaningless and the
+// clamp must not fire on the proration denominator); yearly and
+// anniversary-monthly subs return the real day-of-month.
+func AnchorDayFor(periodStart time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location) int {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if interval != BillingYearly && billingTime == BillingTimeCalendar {
+		return 0
+	}
+	return periodStart.In(loc).Day()
 }
 
 // addIntervalIn advances `t` by one billing interval (+1 month, or +1 year for
@@ -196,8 +264,8 @@ func addIntervalIn(t time.Time, interval BillingInterval, loc *time.Location) ti
 // in UTC or DB-scanned as time.Local. loc=nil falls back to UTC. Pre-fix this
 // took no loc and did a bare AddDate on `t`'s ambient Location, making the
 // proration denominator host-TZ-dependent (30 vs 31 for an offset-TZ tenant).
-func AddBillingInterval(t time.Time, interval BillingInterval, loc *time.Location) time.Time {
-	return addIntervalIn(t, interval, loc)
+func AddBillingInterval(t time.Time, interval BillingInterval, loc *time.Location, anchorDay int) time.Time {
+	return advanceAnchored(t, interval, loc, anchorDay)
 }
 
 // PauseCollectionBehavior controls what the engine does with the invoice it
@@ -332,11 +400,19 @@ type Subscription struct {
 	CurrentBillingPeriodStart *time.Time         `json:"current_billing_period_start,omitempty"`
 	CurrentBillingPeriodEnd   *time.Time         `json:"current_billing_period_end,omitempty"`
 	NextBillingAt             *time.Time         `json:"next_billing_at,omitempty"`
-	UsageCapUnits             *int64             `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
-	OverageAction             string             `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
-	TestClockID               string             `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
-	CreatedAt                 time.Time          `json:"created_at"`
-	UpdatedAt                 time.Time          `json:"updated_at"`
+	// BillingAnchorDay is the operator's intended billing day-of-month (1..31)
+	// for yearly and anniversary-monthly subs — the stable reference the
+	// month-end clamp advances from so a Jan-31 anchor bills Jan 31, Feb 28,
+	// Mar 31, … instead of ratcheting off month-end (ADR-055). 0 for
+	// calendar-monthly subs (always the 1st) and legacy/unset rows (the
+	// advance then falls back to the historical path). Recomputed whenever the
+	// cycle re-anchors to "now" (cross-interval swap, threshold reset).
+	BillingAnchorDay int       `json:"billing_anchor_day,omitempty"`
+	UsageCapUnits    *int64    `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
+	OverageAction    string    `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
+	TestClockID      string    `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 
 	// Items is populated by store reads that hydrate the subscription with
 	// its current priced lines. Writes through Store.Create require a

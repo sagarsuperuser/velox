@@ -38,7 +38,7 @@ func TestAddBillingInterval_ProvenanceIndependent(t *testing.T) {
 		{"IST-located (DB-scanned on IST host)", inst.In(ist)},
 	} {
 		t.Run(in.name, func(t *testing.T) {
-			got := AddBillingInterval(in.t, BillingMonthly, ist)
+			got := AddBillingInterval(in.t, BillingMonthly, ist, 0)
 			if !got.Equal(want) {
 				t.Errorf("AddBillingInterval = %s, want %s (must depend only on loc, not input Location)",
 					got.UTC(), want.UTC())
@@ -49,7 +49,7 @@ func TestAddBillingInterval_ProvenanceIndependent(t *testing.T) {
 	// Guard the pre-fix behavior is what we moved away from: with loc=UTC the
 	// same instant overflows May-31 -> Jul-1 (31 days). This documents WHY the
 	// loc matters — not the desired result for an IST tenant.
-	utcResult := AddBillingInterval(inst, BillingMonthly, time.UTC)
+	utcResult := AddBillingInterval(inst, BillingMonthly, time.UTC, 0)
 	if utcResult.Equal(want) {
 		t.Error("UTC-loc advance unexpectedly matched the IST anniversary — the test instant no longer isolates the bug")
 	}
@@ -92,7 +92,7 @@ func TestNextBillingPeriodEnd_TenantTZAnchored(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := NextBillingPeriodEnd(c.periodEnd, c.billing, c.interval, ist)
+			got := NextBillingPeriodEnd(c.periodEnd, c.billing, c.interval, ist, 0)
 			if !got.Equal(c.want) {
 				t.Errorf("got %s, want %s", got.UTC(), c.want.UTC())
 			}
