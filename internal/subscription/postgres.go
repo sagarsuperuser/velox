@@ -209,15 +209,27 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	defer postgres.Rollback(tx)
 
 	now := clock.Now(ctx)
+	// Update is Service.Activate's writer (its only caller). It must persist
+	// the full activation transition: status, activated_at, started_at, the
+	// computed period bounds, next_billing_at, AND billing_anchor_day
+	// (ADR-055). The period + anchor columns were historically omitted here —
+	// masked by the in-memory test fake that replaces the whole struct — so
+	// draft→active never persisted its cycle on Postgres and an anniversary
+	// month-end anchor was dropped (ratcheting). All in one tx.
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
-			trial_start_at = $4, trial_end_at = $5,
-			usage_cap_units = $6, overage_action = COALESCE(NULLIF($7,''),'charge'),
-			updated_at = $8
-		WHERE id = $9
+			trial_start_at = $4, trial_end_at = $5, started_at = $6,
+			current_billing_period_start = $7, current_billing_period_end = $8,
+			next_billing_at = $9, billing_anchor_day = $10,
+			usage_cap_units = $11, overage_action = COALESCE(NULLIF($12,''),'charge'),
+			updated_at = $13
+		WHERE id = $14
 		RETURNING `+subCols,
 		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
 		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
+		postgres.NullableTime(sub.StartedAt),
+		postgres.NullableTime(sub.CurrentBillingPeriodStart), postgres.NullableTime(sub.CurrentBillingPeriodEnd),
+		postgres.NullableTime(sub.NextBillingAt), sub.BillingAnchorDay,
 		sub.UsageCapUnits, sub.OverageAction,
 		now, sub.ID,
 	), &sub)
