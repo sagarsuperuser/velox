@@ -189,6 +189,10 @@ func (a *invoiceWriterAdapter) CreateInvoiceWithLineItems(ctx context.Context, t
 	return a.store.CreateWithLineItems(ctx, tenantID, inv, items)
 }
 
+func (a *invoiceWriterAdapter) CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.CreateWithLineItemsTx(ctx, tx, tenantID, inv, items)
+}
+
 func (a *invoiceWriterAdapter) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }

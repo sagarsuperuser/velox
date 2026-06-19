@@ -56,6 +56,16 @@ type Biller interface {
 	// Caller invokes BEFORE applying the swap so plan lookups still
 	// resolve the outgoing plan rate.
 	BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscription, at time.Time) (int64, error)
+	// BillOnCreateTx is the in-tx variant of BillOnCreate: it inserts the day-1
+	// in_advance invoice on the caller's tx (no finalize). ok=false means there
+	// was nothing to bill (no in_advance items / zero subtotal) or an idempotent
+	// skip. Used by the atomic cross-interval swap so the new-period invoice
+	// commits atomically with the plan write + watermark advance.
+	BillOnCreateTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, bool, error)
+	// FinalizeOnCreateInvoice runs the post-commit external steps (audit, tax
+	// commit, auto-charge) for an invoice inserted via BillOnCreateTx. Called
+	// AFTER the tx commits — never inside it.
+	FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscription, inv domain.Invoice)
 }
 
 // PlanReader (defined in handler.go) is also used at sub-lifecycle
@@ -641,6 +651,12 @@ type ItemChangeResult struct {
 	// firing handleItemProration on top would emit a second credit
 	// against the same OLD period and over-credit the customer.
 	OrchestratedCrossAxis bool `json:"-"`
+	// crossAxisNewInvoice carries the new-period in_advance invoice created
+	// in-tx by the atomic cross-interval swap (applyCrossIntervalPlanSwapTx),
+	// so the handler can run FinalizeOnCreateInvoice (tax commit + auto-charge)
+	// POST-commit. nil when the swap was in_arrears (no day-1 invoice) or when
+	// the swap ran via the non-atomic fallback. Internal — not serialized.
+	crossAxisNewInvoice *domain.Invoice
 }
 
 type ProrationDetail struct {
@@ -830,10 +846,12 @@ func (s *Service) UpdateItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 		return ItemChangeResult{Item: updated, EffectiveAt: now}, nil
 	}
 
-	// Plan-change branch — only same-interval, same-timing, immediate is
-	// atomic-safe. Cross-interval / cross-cadence / scheduled all return
-	// an explicit not-supported sentinel so the handler falls back to
-	// the legacy non-atomic flow.
+	// Plan-change branch. Same-interval + same-cadence immediate is the simple
+	// atomic plan write below. Cross-interval (same-cadence) immediate now
+	// restructures the cycle atomically on THIS tx via applyCrossIntervalPlanSwapTx
+	// (plan write + watermark + new in_advance invoice committed together).
+	// Scheduled changes still return the not-applicable sentinel (handler falls
+	// back to the legacy non-atomic flow); cross-cadence swaps are rejected.
 	if input.NewPlanID == item.PlanID {
 		return ItemChangeResult{}, errs.Invalid("new_plan_id", "new plan is the same as current plan")
 	}
@@ -846,6 +864,43 @@ func (s *Service) UpdateItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 		if perr != nil {
 			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf("plan %q not found", input.NewPlanID))
 		}
+		if !input.Immediate {
+			return ItemChangeResult{}, errAtomicNotApplicable
+		}
+		// Mixed-interval guard — mirrors the non-atomic UpdateItem (the engine's
+		// hybrid-invoice + per-sub period anchor assume a UNIFORM interval across
+		// items). Without this, a multi-item swap would re-anchor the whole sub
+		// to the swapped item's new interval and bill the UNCHANGED items over
+		// the wrong period (e.g. a monthly item billed a full base over a yearly
+		// period — an overcharge). Reject the swap if the post-change set mixes
+		// intervals, exactly as the non-atomic path does.
+		hypothetical := make([]domain.SubscriptionItem, 0, len(sub.Items))
+		for _, existing := range sub.Items {
+			if existing.ID == itemID {
+				hypothetical = append(hypothetical, domain.SubscriptionItem{PlanID: input.NewPlanID})
+			} else {
+				hypothetical = append(hypothetical, existing)
+			}
+		}
+		if err := s.rejectMixedItemIntervals(ctx, tenantID, hypothetical); err != nil {
+			return ItemChangeResult{}, err
+		}
+		currentTiming := currentPlan.BaseBillTiming
+		if currentTiming == "" {
+			currentTiming = domain.BillInArrears
+		}
+		newTiming := newPlan.BaseBillTiming
+		if newTiming == "" {
+			newTiming = domain.BillInArrears
+		}
+		// Cross-cadence (in_advance ↔ in_arrears) plan-swap is unsupported —
+		// no industry peer documents it as an in-place change (2026-05-21
+		// verification). Same rejection + message as the non-atomic UpdateItem.
+		if currentTiming != newTiming {
+			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf(
+				"bill_timing change is not supported on plan-swap (current %s, new %s); cancel the subscription and start a new one with the target plan",
+				currentTiming, newTiming))
+		}
 		currentInterval := currentPlan.BillingInterval
 		if currentInterval == "" {
 			currentInterval = domain.BillingMonthly
@@ -854,11 +909,12 @@ func (s *Service) UpdateItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 		if newInterval == "" {
 			newInterval = domain.BillingMonthly
 		}
-		if !input.Immediate {
-			return ItemChangeResult{}, errAtomicNotApplicable
-		}
 		if currentInterval != newInterval {
-			return ItemChangeResult{}, errAtomicNotApplicable
+			// Cross-interval, immediate, same-cadence → atomic restructure on
+			// THIS tx. The OLD-period refund + the new invoice's tax-commit and
+			// auto-charge run POST-commit in the handler (external Stripe steps
+			// must never ride the DB tx).
+			return s.applyCrossIntervalPlanSwapTx(ctx, tx, tenantID, subscriptionID, itemID, input.NewPlanID, sub, newInterval, newTiming, now)
 		}
 	}
 	if !input.Immediate {
@@ -1120,10 +1176,14 @@ func (s *Service) applyCrossIntervalPlanSwap(
 				return ItemChangeResult{}, err
 			}
 			if _, err := s.biller.BillOnCreate(ctx, refreshed); err != nil {
-				slog.WarnContext(ctx, "plan-swap NEW in_advance bill failed; scheduler catchup will retry",
-					"subscription_id", subscriptionID,
-					"tenant_id", tenantID,
-					"error", err)
+				// Non-atomic fallback (h.db unwired — tests only). The watermark
+				// already advanced above, so this failure CANNOT be "retried by
+				// the scheduler" — the just-opened period is past next_billing_at
+				// and cycle close skips in_advance base segments, so the new
+				// period's base would be silently dropped. Fail LOUD instead.
+				// Production uses applyCrossIntervalPlanSwapTx, which commits the
+				// new-period invoice atomically with the watermark advance.
+				return ItemChangeResult{}, fmt.Errorf("plan-swap new in_advance bill failed: %w", err)
 			}
 		}
 	} else {
@@ -1136,6 +1196,116 @@ func (s *Service) applyCrossIntervalPlanSwap(
 		}
 	}
 	return ItemChangeResult{Item: updated, EffectiveAt: now, OrchestratedCrossAxis: true}, nil
+}
+
+// applyCrossIntervalPlanSwapTx is the atomic, in-tx variant of
+// applyCrossIntervalPlanSwap used by the handler's tx-owning path. It runs the
+// cycle-restructuring DB writes — the plan swap, the watermark advance, and (for
+// in_advance) the new-period invoice insert via BillOnCreateTx — on the caller's
+// single tx, so any failure rolls ALL of them back. This is the fix for the
+// silent revenue drop: the watermark can no longer advance past a new in_advance
+// period whose day-1 invoice failed to commit. The OLD-period refund and the new
+// invoice's external steps (tax commit, auto-charge) are deliberately NOT done
+// here — the handler runs them POST-commit, because Stripe calls must never ride
+// a DB tx. A created new invoice is carried back on the result for that
+// post-commit FinalizeOnCreateInvoice. Caller has validated the swap exactly as
+// applyCrossIntervalPlanSwap documents (active sub, plan exists + differs,
+// same-cadence, different interval).
+func (s *Service) applyCrossIntervalPlanSwapTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	tenantID, subscriptionID, itemID, newPlanID string,
+	sub domain.Subscription,
+	newInterval domain.BillingInterval,
+	newTiming domain.BillTiming,
+	now time.Time,
+) (ItemChangeResult, error) {
+	// Apply the plan swap on the tx (stamps item.plan_id + plan_changed_at=now).
+	updated, err := s.store.ApplyItemPlanImmediatelyTx(ctx, tx, tenantID, itemID, newPlanID, now)
+	if err != nil {
+		return ItemChangeResult{}, err
+	}
+
+	loc := s.tenantLocation(ctx, tenantID)
+	// Re-anchor the cycle to `now` for the new cadence (ADR-055) — must NOT keep
+	// the old interval's anchor day.
+	swapAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, newInterval, loc)
+	res := ItemChangeResult{Item: updated, EffectiveAt: now, OrchestratedCrossAxis: true}
+
+	if newTiming == domain.BillInAdvance {
+		newPE := domain.NextBillingPeriodEnd(now, sub.BillingTime, newInterval, loc, swapAnchorDay)
+		// Advance the watermark on the SAME tx as the new-period invoice below,
+		// so the watermark can never move without the day-1 invoice existing.
+		if err := s.store.UpdateBillingCycleTx(ctx, tx, tenantID, subscriptionID, now, newPE, newPE, swapAnchorDay); err != nil {
+			return ItemChangeResult{}, err
+		}
+		if s.biller != nil {
+			// Build a prospective sub reflecting the swapped plan + new period:
+			// s.store.Get would NOT observe the uncommitted tx writes, so derive
+			// it in-memory from the pre-swap sub + the swap result.
+			prospective := sub
+			prospective.CurrentBillingPeriodStart = &now
+			prospective.CurrentBillingPeriodEnd = &newPE
+			prospective.NextBillingAt = &newPE
+			prospective.BillingAnchorDay = swapAnchorDay
+			items := make([]domain.SubscriptionItem, len(sub.Items))
+			for i, it := range sub.Items {
+				if it.ID == itemID {
+					items[i] = updated
+				} else {
+					items[i] = it
+				}
+			}
+			prospective.Items = items
+
+			inv, ok, err := s.biller.BillOnCreateTx(ctx, tx, prospective)
+			if err != nil {
+				return ItemChangeResult{}, fmt.Errorf("plan-swap new in_advance bill: %w", err)
+			}
+			if ok {
+				invCopy := inv
+				res.crossAxisNewInvoice = &invCopy
+			}
+		}
+	} else {
+		// in_arrears: truncate the current period to (oldPS, now); the scheduler
+		// closes the partial period under the OLD plan via segment-aware billing.
+		if sub.CurrentBillingPeriodStart != nil {
+			if err := s.store.UpdateBillingCycleTx(ctx, tx, tenantID, subscriptionID, *sub.CurrentBillingPeriodStart, now, now, swapAnchorDay); err != nil {
+				return ItemChangeResult{}, err
+			}
+		}
+	}
+	return res, nil
+}
+
+// FinalizeCrossIntervalSwap runs the POST-commit external steps for an atomic
+// cross-interval swap, called by the handler AFTER the swap tx is durable
+// (Stripe calls must never ride a DB tx):
+//
+//   - OLD-period refund credit for the unused in_advance prepayment. Computed
+//     from the PRE-swap snapshot so plan lookups resolve the OUTGOING rate and
+//     the funding invoices are the old period's. No-op for in_arrears. Best
+//     effort: a failure means the customer wasn't credited and needs a manual
+//     credit — surfaced at ERROR, never silent. (Deferred Bug B: because this
+//     runs post-commit and is not itself idempotent, a full retry of the swap
+//     could re-credit; tracked separately — the atomic tx already closed the
+//     silent-revenue-drop, which was the reachable bug.)
+//   - FinalizeOnCreateInvoice (tax commit + auto-charge) for the new in_advance
+//     day-1 invoice committed inside the swap tx, if one was created.
+func (s *Service) FinalizeCrossIntervalSwap(ctx context.Context, tenantID string, subBefore domain.Subscription, result ItemChangeResult) {
+	if s.biller == nil {
+		return
+	}
+	if _, err := s.biller.BillOnPlanSwapImmediate(ctx, subBefore, result.EffectiveAt); err != nil {
+		slog.ErrorContext(ctx, "plan-swap refund credit FAILED — customer not credited for unused prepayment; manual credit required",
+			"subscription_id", subBefore.ID,
+			"tenant_id", tenantID,
+			"error", err)
+	}
+	if result.crossAxisNewInvoice != nil {
+		s.biller.FinalizeOnCreateInvoice(ctx, subBefore, *result.crossAxisNewInvoice)
+	}
 }
 
 // CancelPendingItemChange clears a scheduled plan change on a single item.
