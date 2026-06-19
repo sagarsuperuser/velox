@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -392,6 +393,10 @@ type PricingReader interface {
 type InvoiceWriter interface {
 	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
+	// CreateInvoiceWithLineItemsTx is the in-tx variant — used by BillOnCreateTx
+	// so the cross-interval plan-swap can insert the new-period invoice on the
+	// coordinator's tx, atomically with the plan write + watermark advance.
+	CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
 	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
@@ -2687,10 +2692,20 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"period_start", periodStart,
 				"period_end", periodEnd,
 			)
-			// Still advance the billing cycle in case it was missed
+			// The invoice already exists, so the only state that can still be
+			// missing is the cycle advance (e.g. a prior tick crashed between
+			// the invoice commit and the watermark update — create-then-advance
+			// is two separate store writes). Heal it, and surface a failure
+			// LOUDLY, matching the happy-path advance below. A swallowed error
+			// here strands the watermark: the sub stays due, every subsequent
+			// tick re-hits this skip, and nothing ever alerts. The benign
+			// concurrent-cancel race (ErrInvalidState) is already absorbed to
+			// nil inside advanceCycleOrCancel, so this won't false-positive.
 			nextPeriodStart := periodEnd
 			nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
-			_ = e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now)
+			if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
+				return false, fmt.Errorf("advance billing cycle (heal path): %w", err)
+			}
 			return false, nil
 		}
 		return false, fmt.Errorf("create invoice: %w", err)
@@ -2903,11 +2918,108 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	)
 	defer span.End()
 
-	if sub.Status != domain.SubscriptionActive {
+	inv, lineItems, ok, err := e.buildOnCreateInvoice(ctx, sub)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if !ok {
 		return domain.Invoice{}, nil
 	}
+
+	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
+	if err != nil {
+		return domain.Invoice{}, fmt.Errorf("mint invoice number: %w", err)
+	}
+	inv.InvoiceNumber = invoiceNumber
+
+	created, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, inv, lineItems)
+	if err != nil {
+		if errors.Is(err, errs.ErrAlreadyExists) {
+			slog.Info("subscription_create invoice already exists (idempotent skip)",
+				"subscription_id", sub.ID,
+				"period_start", inv.BillingPeriodStart,
+				"period_end", inv.BillingPeriodEnd,
+			)
+			return domain.Invoice{}, nil
+		}
+		return domain.Invoice{}, fmt.Errorf("create invoice: %w", err)
+	}
+
+	// Post-persist external/best-effort steps (audit, tax commit, auto-charge).
+	e.FinalizeOnCreateInvoice(ctx, sub, created)
+
+	slog.Info("subscription_create invoice generated",
+		"invoice_id", created.ID,
+		"subscription_id", sub.ID,
+		"total_cents", created.TotalAmountCents,
+		"line_items", len(lineItems),
+	)
+	return created, nil
+}
+
+// BillOnCreateTx is the in-transaction variant of BillOnCreate: it builds and
+// inserts the day-1 in_advance invoice on the caller's tx but does NOT finalize
+// (audit / tax-commit / auto-charge are external and must run after the tx
+// commits). The caller commits, then calls FinalizeOnCreateInvoice post-commit.
+// Used by the atomic cross-interval plan-swap so the new-period invoice commits
+// atomically with the plan write + watermark advance — a failed bill rolls the
+// whole swap back rather than silently dropping the new in_advance period.
+// Returns ok=false (nil error) for the no-op cases (no in_advance items / zero
+// subtotal) and for an idempotent-skip on the period-uniqueness constraint.
+func (e *Engine) BillOnCreateTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, bool, error) {
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillOnCreateTx",
+		trace.WithAttributes(
+			attribute.String("subscription_id", sub.ID),
+			attribute.String("tenant_id", sub.TenantID),
+		),
+	)
+	defer span.End()
+
+	inv, lineItems, ok, err := e.buildOnCreateInvoice(ctx, sub)
+	if err != nil {
+		return domain.Invoice{}, false, err
+	}
+	if !ok {
+		return domain.Invoice{}, false, nil
+	}
+
+	// NextInvoiceNumber is monotonic; minting outside the tx means a rolled-back
+	// swap leaves a harmless invoice-number gap (acceptable, like the cycle
+	// path's idempotent-skip note) — never a wrong or duplicate number.
+	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
+	if err != nil {
+		return domain.Invoice{}, false, fmt.Errorf("mint invoice number: %w", err)
+	}
+	inv.InvoiceNumber = invoiceNumber
+
+	created, err := e.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, sub.TenantID, inv, lineItems)
+	if err != nil {
+		// Unlike the non-tx BillOnCreate, there is NO clean "idempotent skip"
+		// here: a unique-violation (duplicate period) fires on a statement inside
+		// the CALLER's tx, which poisons it — every later statement and the final
+		// commit then fail. So surface the error (ErrAlreadyExists included) and
+		// let the swap roll back with a clear message rather than an opaque
+		// commit failure. The swap re-anchors to a fresh per-request `now`, so a
+		// natural period collision is effectively unreachable; this is the
+		// duplicate-retry case, which SHOULD fail loud.
+		return domain.Invoice{}, false, fmt.Errorf("create new-period invoice (tx): %w", err)
+	}
+	return created, true, nil
+}
+
+// buildOnCreateInvoice computes the day-1 in_advance invoice for sub: resolves
+// plans, filters to in_advance items, builds prorated base-fee lines, and
+// applies tax. It performs NO DB writes and mints NO invoice number — the
+// caller persists (BillOnCreate via the store's own tx, BillOnCreateTx on a
+// coordinator tx) and finalizes. Returns ok=false (nil error) for the no-op
+// cases: inactive sub, no in_advance items, or zero subtotal. The returned
+// invoice has no InvoiceNumber and carries CreatedAt == effective-now.
+func (e *Engine) buildOnCreateInvoice(ctx context.Context, sub domain.Subscription) (domain.Invoice, []domain.InvoiceLineItem, bool, error) {
+	if sub.Status != domain.SubscriptionActive {
+		return domain.Invoice{}, nil, false, nil
+	}
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
-		return domain.Invoice{}, fmt.Errorf("subscription has no billing period set")
+		return domain.Invoice{}, nil, false, fmt.Errorf("subscription has no billing period set")
 	}
 
 	now := e.effectiveNow(ctx, sub)
@@ -2923,7 +3035,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		}
 		pl, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
 		if err != nil {
-			return domain.Invoice{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+			return domain.Invoice{}, nil, false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
 		}
 		plans[it.PlanID] = pl
 	}
@@ -2937,7 +3049,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		}
 	}
 	if len(advanceItems) == 0 {
-		return domain.Invoice{}, nil
+		return domain.Invoice{}, nil, false, nil
 	}
 
 	// Invoice currency: customer billing profile > tenant settings >
@@ -3003,13 +3115,13 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		// All in_advance items had zero base fees. Nothing to bill;
 		// don't emit a $0 invoice (matches cycle-path behavior for
 		// zero-amount cycles).
-		return domain.Invoice{}, nil
+		return domain.Invoice{}, nil, false, nil
 	}
 
 	// Apply tax.
 	taxApp, err := e.ApplyTaxToLineItems(ctx, sub.TenantID, sub.CustomerID, invoiceCurrency, subtotal, 0, lineItems)
 	if err != nil {
-		return domain.Invoice{}, fmt.Errorf("apply tax: %w", err)
+		return domain.Invoice{}, nil, false, fmt.Errorf("apply tax: %w", err)
 	}
 
 	// Fallback 30 — the schema default — matching billOnePeriod, the
@@ -3027,20 +3139,10 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 
-	// Mint an invoice number — same path the cycle invoice takes
-	// (NextInvoiceNumber via tenant settings). Without this, the
-	// day-1 invoice persists with an empty invoice_number and the
-	// dashboard H1 renders blank.
-	invoiceNumber, err := e.settings.NextInvoiceNumber(ctx, sub.TenantID)
-	if err != nil {
-		return domain.Invoice{}, fmt.Errorf("mint invoice number: %w", err)
-	}
-
-	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+	inv := domain.Invoice{
 		TenantID:       sub.TenantID,
 		CustomerID:     sub.CustomerID,
 		SubscriptionID: sub.ID,
-		InvoiceNumber:  invoiceNumber,
 		// Tax-deferred + pause-collection gate (matches billOnePeriod).
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
@@ -3073,18 +3175,17 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCreate,
 		IsSimulated:        sub.TestClockID != "",
-	}, lineItems)
-	if err != nil {
-		if errors.Is(err, errs.ErrAlreadyExists) {
-			slog.Info("subscription_create invoice already exists (idempotent skip)",
-				"subscription_id", sub.ID,
-				"period_start", periodStart,
-				"period_end", periodEnd,
-			)
-			return domain.Invoice{}, nil
-		}
-		return domain.Invoice{}, fmt.Errorf("create invoice: %w", err)
 	}
+	return inv, lineItems, true, nil
+}
+
+// FinalizeOnCreateInvoice runs the post-persist steps for a day-1 in_advance
+// invoice: the engine audit row, the Stripe Tax commit, and auto-charge (or
+// enroll-for-retry + no-PM notify). These are external / best-effort and MUST
+// run AFTER the invoice is durably committed — never inside a DB tx. BillOnCreate
+// calls it inline; the atomic cross-interval swap calls it post-commit.
+func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscription, inv domain.Invoice) {
+	now := inv.CreatedAt
 
 	// Audit the engine-finalized invoice (no-op for drafts).
 	e.auditInvoiceFinalized(ctx, sub, inv, now)
@@ -3134,14 +3235,6 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 			}
 		}
 	}
-
-	slog.Info("subscription_create invoice generated",
-		"invoice_id", inv.ID,
-		"subscription_id", sub.ID,
-		"total_cents", totalWithTax,
-		"line_items", len(lineItems),
-	)
-	return inv, nil
 }
 
 // BillFinalOnImmediateCancel emits the final partial-period invoice

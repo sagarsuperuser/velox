@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -157,6 +158,10 @@ func (a *invoiceStoreAdapter) MarkPaid(ctx context.Context, tenantID, id string,
 
 func (a *invoiceStoreAdapter) CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	return a.store.CreateWithLineItems(ctx, tenantID, inv, items)
+}
+
+func (a *invoiceStoreAdapter) CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return a.store.CreateWithLineItemsTx(ctx, tx, tenantID, inv, items)
 }
 
 func (a *invoiceStoreAdapter) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {

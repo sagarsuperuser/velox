@@ -1073,7 +1073,32 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 	// same-interval immediate plan changes are now fully atomic with
 	// their proration writes.
 	wantProration := prorationEligible && prorationRemainingDays > 0 && h.invoices != nil
-	atomic := h.db != nil && wantProration
+
+	// A cross-interval immediate plan swap MUST take the atomic path even at the
+	// period boundary (remainingDays==0, where wantProration is false): the swap
+	// restructures the cycle (plan write + watermark advance + new-period
+	// invoice) and that must be one tx regardless of how much of the OLD period
+	// remained. applyCrossIntervalPlanSwapTx derives the new period from `now`,
+	// not from remainingDays, so the boundary case is sound — otherwise it would
+	// fall to the non-atomic fallback and re-open the silent-revenue-drop window
+	// at the boundary. (ADR-056.)
+	crossIntervalSwap := false
+	if isImmediatePlanChange && h.plans != nil && oldPlanID != "" {
+		oldP, e1 := h.plans.GetPlan(ctx, tenantID, oldPlanID)
+		newP, e2 := h.plans.GetPlan(ctx, tenantID, input.NewPlanID)
+		if e1 == nil && e2 == nil {
+			oi := oldP.BillingInterval
+			if oi == "" {
+				oi = domain.BillingMonthly
+			}
+			ni := newP.BillingInterval
+			if ni == "" {
+				ni = domain.BillingMonthly
+			}
+			crossIntervalSwap = oi != ni
+		}
+	}
+	atomic := h.db != nil && h.invoices != nil && (wantProration || crossIntervalSwap)
 	var (
 		result    ItemChangeResult
 		atomicErr error
@@ -1540,6 +1565,20 @@ func (h *Handler) atomicUpdateItemWithProration(
 	result, err := h.svc.UpdateItemTx(ctx, tx, tenantID, subID, itemID, input)
 	if err != nil {
 		return ItemChangeResult{}, err
+	}
+
+	// Cross-interval swap: UpdateItemTx restructured the cycle atomically on
+	// this tx (plan write + watermark + new in_advance invoice). It did its OWN
+	// proration, so handleItemProration MUST NOT run — that would emit a second
+	// credit against the OLD period. Commit the swap, then run the OLD-period
+	// refund + the new invoice's external steps POST-commit (Stripe must not
+	// ride the tx). A failed in-tx bill already rolled the whole swap back above.
+	if result.OrchestratedCrossAxis {
+		if err := tx.Commit(); err != nil {
+			return ItemChangeResult{}, fmt.Errorf("commit atomic cross-interval swap tx: %w", err)
+		}
+		h.svc.FinalizeCrossIntervalSwap(ctx, tenantID, subBefore, result)
+		return result, nil
 	}
 
 	// Build the proration spec mirroring the legacy handler logic.

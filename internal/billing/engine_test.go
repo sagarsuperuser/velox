@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -297,6 +298,10 @@ type mockSubs struct {
 	// segment-aware billing seed this with the change rows the DB
 	// trigger would have produced (migration 0029).
 	itemChanges []domain.SubscriptionItemChange
+	// updateBillingCycleErr, when set, makes UpdateBillingCycle fail — used to
+	// drive the idempotent-skip heal path's loud-fail (a failed watermark
+	// advance must surface, not be swallowed).
+	updateBillingCycleErr error
 }
 
 func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int) ([]domain.Subscription, error) {
@@ -349,6 +354,9 @@ func (m *mockSubs) Get(_ context.Context, _, id string) (domain.Subscription, er
 }
 
 func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, end, next time.Time, anchorDay int) error {
+	if m.updateBillingCycleErr != nil {
+		return m.updateBillingCycleErr
+	}
 	s, ok := m.subs[id]
 	if !ok {
 		return fmt.Errorf("not found")
@@ -614,6 +622,10 @@ func (m *mockPricing) ListMeterPricingRulesByMeter(_ context.Context, _, meterID
 type mockInvoices struct {
 	invoices  []domain.Invoice
 	lineItems []domain.InvoiceLineItem
+	// createErr, when set, is returned by CreateInvoiceWithLineItems[Tx] instead
+	// of inserting — used to drive the idempotent-skip heal path (set to
+	// errs.ErrAlreadyExists) and failure tests.
+	createErr error
 }
 
 func (m *mockInvoices) CreateInvoice(_ context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -678,6 +690,9 @@ func (m *mockInvoices) MarkPaid(_ context.Context, _, id string, stripePI string
 }
 
 func (m *mockInvoices) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	if m.createErr != nil {
+		return domain.Invoice{}, m.createErr
+	}
 	inv.ID = fmt.Sprintf("vlx_inv_%d", len(m.invoices)+1)
 	inv.TenantID = tenantID
 	m.invoices = append(m.invoices, inv)
@@ -688,6 +703,10 @@ func (m *mockInvoices) CreateInvoiceWithLineItems(_ context.Context, tenantID st
 		m.lineItems = append(m.lineItems, item)
 	}
 	return inv, nil
+}
+
+func (m *mockInvoices) CreateInvoiceWithLineItemsTx(ctx context.Context, _ *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return m.CreateInvoiceWithLineItems(ctx, tenantID, inv, items)
 }
 
 func (m *mockInvoices) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
@@ -995,6 +1014,68 @@ func setupEngine() (*Engine, *mockSubs, *mockUsage, *mockPricing, *mockInvoices)
 	fakeClk := clock.NewFake(periodEnd.Add(time.Nanosecond))
 	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, fakeClk))
 	return engine, subs, usage, pricing, invoices
+}
+
+// TestBillOnePeriod_HealPathPropagatesAdvanceError pins ADR-056 P0.2: when the
+// cycle invoice already exists (a prior tick committed it but crashed before the
+// watermark advanced) billOnePeriod takes the idempotent-skip heal path and
+// re-attempts the advance. A failure there MUST surface — a swallowed heal
+// advance strands the watermark, so the sub re-hits the skip on every tick with
+// no alert. Mirrors the happy-path advance, which already fails loud.
+func TestBillOnePeriod_HealPathPropagatesAdvanceError(t *testing.T) {
+	engine, subs, _, _, invoices := setupEngine()
+	ctx := context.Background()
+
+	invoices.createErr = errs.ErrAlreadyExists // invoice already exists → heal path
+	subs.updateBillingCycleErr = fmt.Errorf("watermark write failed")
+
+	if _, runErrs := engine.RunCycle(ctx, 50); len(runErrs) == 0 {
+		t.Fatal("heal-path advance error must surface in RunCycle errors, not be swallowed")
+	}
+}
+
+// TestBillOnCreateTx_PricesNewPlanOverNewPeriod exercises the prospective-sub →
+// buildOnCreateInvoice contract the atomic cross-interval swap (ADR-056) relies
+// on: BillOnCreateTx must price the NEW plan over the NEW period it is handed
+// (the swap builds an in-memory sub because its tx writes aren't yet committed,
+// so store.Get can't see them). Mock invoices ignore the nil tx → runs in-process.
+func TestBillOnCreateTx_PricesNewPlanOverNewPeriod(t *testing.T) {
+	now := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)
+	newPE := now.AddDate(0, 1, 0)
+	pricing := &mockPricing{plans: map[string]domain.Plan{
+		"p_m_adv": {ID: "p_m_adv", Name: "Monthly Adv", Currency: "USD", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 12000},
+	}}
+	invoices := &mockInvoices{}
+	engine := wireBaseTax(NewEngine(&mockSubs{subs: map[string]domain.Subscription{}}, &mockUsage{}, pricing, invoices, nil, &mockSettings{}, nil, nil, clock.NewFake(now)))
+
+	prospective := domain.Subscription{
+		ID: "sub_x", TenantID: "t1", CustomerID: "c1",
+		Status:                    domain.SubscriptionActive,
+		BillingTime:               domain.BillingTimeAnniversary,
+		CurrentBillingPeriodStart: &now,
+		CurrentBillingPeriodEnd:   &newPE,
+		Items:                     []domain.SubscriptionItem{{ID: "si_1", PlanID: "p_m_adv", Quantity: 1}},
+	}
+
+	inv, ok, err := engine.BillOnCreateTx(context.Background(), nil, prospective)
+	if err != nil {
+		t.Fatalf("BillOnCreateTx: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true (in_advance base to bill)")
+	}
+	if inv.TotalAmountCents != 12000 {
+		t.Errorf("new-period invoice total: got %d want 12000 (full monthly base over a full month)", inv.TotalAmountCents)
+	}
+	if !inv.BillingPeriodStart.Equal(now) || !inv.BillingPeriodEnd.Equal(newPE) {
+		t.Errorf("invoice period: got (%v,%v) want (%v,%v)", inv.BillingPeriodStart, inv.BillingPeriodEnd, now, newPE)
+	}
+	if inv.BillingReason != domain.BillingReasonSubscriptionCreate {
+		t.Errorf("billing_reason: got %q want subscription_create", inv.BillingReason)
+	}
+	if len(invoices.lineItems) == 0 || invoices.lineItems[0].Description == "" {
+		t.Error("expected a base-fee line item for the new plan")
+	}
 }
 
 func TestRunCycle_GeneratesInvoice(t *testing.T) {

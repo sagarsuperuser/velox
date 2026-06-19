@@ -28,6 +28,10 @@ type Store interface {
 	// item list.
 	Update(ctx context.Context, tenantID string, s domain.Subscription) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
+	// UpdateBillingCycleTx is the in-tx variant — advances the watermark on the
+	// caller's tx so a coordinator (e.g. the atomic cross-interval swap) can move
+	// the billing period only when the same tx also commits the new-period invoice.
+	UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
 
 	// CancelAtomic executes a conditional UPDATE that only transitions
 	// when the row is in an allowed source state. Closes the

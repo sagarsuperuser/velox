@@ -130,6 +130,10 @@ func (m *memStore) UpdateBillingCycle(_ context.Context, tenantID, id string, pe
 	return nil
 }
 
+func (m *memStore) UpdateBillingCycleTx(ctx context.Context, _ *sql.Tx, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error {
+	return m.UpdateBillingCycle(ctx, tenantID, id, periodStart, periodEnd, nextBillingAt, anchorDay)
+}
+
 func (m *memStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -955,6 +959,11 @@ type fakeBiller struct {
 	planSwapErr         error
 	cancelCreditCents   int64
 	planSwapCreditCents int64
+	createTxCalls       int
+	createTxOK          bool
+	createTxInv         domain.Invoice
+	createTxErr         error
+	finalizeCalls       int
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -976,6 +985,15 @@ func (f *fakeBiller) BillOnPlanSwapImmediate(_ context.Context, _ domain.Subscri
 	f.planSwapCalls++
 	f.planSwapAt = at
 	return f.planSwapCreditCents, f.planSwapErr
+}
+
+func (f *fakeBiller) BillOnCreateTx(_ context.Context, _ *sql.Tx, _ domain.Subscription) (domain.Invoice, bool, error) {
+	f.createTxCalls++
+	return f.createTxInv, f.createTxOK, f.createTxErr
+}
+
+func (f *fakeBiller) FinalizeOnCreateInvoice(_ context.Context, _ domain.Subscription, _ domain.Invoice) {
+	f.finalizeCalls++
 }
 
 // fakeDispatcher captures outbound-webhook Dispatch calls so tests
@@ -2688,6 +2706,165 @@ func TestPeriodAnchoring(t *testing.T) {
 		}
 		if !out.CurrentBillingPeriodEnd.Equal(wantPeriodEnd) {
 			t.Errorf("period_end: got %v, want %v (anniversary, NOT month-end snap)", out.CurrentBillingPeriodEnd, wantPeriodEnd)
+		}
+	})
+}
+
+// TestUpdateItemTx_CrossIntervalAtomic covers the atomic cross-interval swap
+// (ADR-056): UpdateItemTx restructures the cycle on the caller's tx (plan write
+// + watermark advance + new in_advance invoice via BillOnCreateTx), defers the
+// OLD-period refund + the new invoice's finalize to post-commit, and fails loud
+// (so the tx rolls back) when the in-tx bill fails — closing the silent
+// revenue-drop. Control flow is verified here with the in-memory store + fake
+// biller (which ignore the nil tx); true rollback against real tx semantics is
+// exercised by TestUpdateItemTx_CrossIntervalSwap_RealTxRollsBackOnBillFailure
+// (real-Postgres, -short=false).
+func TestUpdateItemTx_CrossIntervalAtomic(t *testing.T) {
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	newSvc := func(fb *fakeBiller) (*Service, domain.Subscription) {
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_yearly_adv":  {ID: "p_yearly_adv", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 120000},
+			"p_monthly_adv": {ID: "p_monthly_adv", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 12000},
+			"p_monthly_arr": {ID: "p_monthly_arr", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears, BaseAmountCents: 2900},
+		}})
+		svc.SetBiller(fb)
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:       []CreateItemInput{{PlanID: "p_yearly_adv"}},
+			BillingTime: domain.BillingTimeAnniversary,
+			StartNow:    true,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		fb.calls, fb.createTxCalls, fb.finalizeCalls, fb.planSwapCalls = 0, 0, 0, 0
+		return svc, sub
+	}
+
+	t.Run("in_advance swap bills new period in-tx, defers refund + finalize", func(t *testing.T) {
+		fb := &fakeBiller{createTxOK: true, createTxInv: domain.Invoice{ID: "vlx_inv_swap"}}
+		svc, sub := newSvc(fb)
+
+		res, err := svc.UpdateItemTx(ctx, nil, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_monthly_adv", Immediate: true,
+		})
+		if err != nil {
+			t.Fatalf("UpdateItemTx cross-interval in_advance: %v", err)
+		}
+		if !res.OrchestratedCrossAxis {
+			t.Error("expected OrchestratedCrossAxis=true")
+		}
+		if res.Item.PlanID != "p_monthly_adv" {
+			t.Errorf("item plan: got %q want p_monthly_adv", res.Item.PlanID)
+		}
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx (new period in-tx) calls: got %d want 1", fb.createTxCalls)
+		}
+		if res.crossAxisNewInvoice == nil || res.crossAxisNewInvoice.ID != "vlx_inv_swap" {
+			t.Errorf("crossAxisNewInvoice should carry the new invoice for post-commit finalize; got %+v", res.crossAxisNewInvoice)
+		}
+		// Refund + finalize are POST-commit — they must NOT run inside the tx.
+		if fb.planSwapCalls != 0 {
+			t.Errorf("refund must be deferred to post-commit; BillOnPlanSwapImmediate ran %d times in-tx", fb.planSwapCalls)
+		}
+		if fb.finalizeCalls != 0 {
+			t.Errorf("finalize must be deferred to post-commit; FinalizeOnCreateInvoice ran %d times in-tx", fb.finalizeCalls)
+		}
+		updated, _ := svc.store.Get(ctx, "t1", sub.ID)
+		if updated.CurrentBillingPeriodStart == nil || !updated.CurrentBillingPeriodStart.Equal(now) {
+			t.Errorf("period_start should jump to now: got %v", updated.CurrentBillingPeriodStart)
+		}
+		if expEnd := now.AddDate(0, 1, 0); updated.CurrentBillingPeriodEnd == nil || !updated.CurrentBillingPeriodEnd.Equal(expEnd) {
+			t.Errorf("period_end: got %v want %v", updated.CurrentBillingPeriodEnd, expEnd)
+		}
+	})
+
+	t.Run("in-tx bill failure returns error (drives the handler tx rollback)", func(t *testing.T) {
+		fb := &fakeBiller{createTxErr: fmt.Errorf("tax provider down")}
+		svc, sub := newSvc(fb)
+
+		if _, err := svc.UpdateItemTx(ctx, nil, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_monthly_adv", Immediate: true,
+		}); err == nil {
+			t.Fatal("expected error when the in-tx new-period bill fails (so the tx rolls back the whole swap)")
+		}
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx calls: got %d want 1", fb.createTxCalls)
+		}
+		if fb.planSwapCalls != 0 || fb.finalizeCalls != 0 {
+			t.Errorf("post-commit steps must not run on in-tx failure; planSwap=%d finalize=%d", fb.planSwapCalls, fb.finalizeCalls)
+		}
+	})
+
+	t.Run("cross-cadence swap rejected", func(t *testing.T) {
+		fb := &fakeBiller{}
+		svc, sub := newSvc(fb) // current item is in_advance
+		if _, err := svc.UpdateItemTx(ctx, nil, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_monthly_arr", Immediate: true, // in_arrears — cross-cadence
+		}); err == nil {
+			t.Fatal("expected cross-cadence (in_advance↔in_arrears) swap to be rejected")
+		}
+	})
+
+	t.Run("multi-item swap that would mix intervals is rejected before any restructure", func(t *testing.T) {
+		// Regression for the review's M1: the atomic path must keep the
+		// mixed-interval guard the non-atomic path enforces. A uniform 2-item
+		// monthly sub, swap one item monthly→yearly: the OTHER item stays
+		// monthly, so the post-swap set mixes intervals and must be rejected —
+		// otherwise the cross-interval re-anchor would bill the unchanged item a
+		// full base over a yearly period (overcharge).
+		fb := &fakeBiller{}
+		svc := NewService(newMemStore(), clock.NewFake(now))
+		svc.SetPlanReader(&fakePlanReader{plans: map[string]domain.Plan{
+			"p_m1": {ID: "p_m1", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 1000},
+			"p_m2": {ID: "p_m2", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 2000},
+			"p_y":  {ID: "p_y", BillingInterval: domain.BillingYearly, BaseBillTiming: domain.BillInAdvance, BaseAmountCents: 100000},
+		}})
+		svc.SetBiller(fb)
+		sub, err := svc.Create(ctx, "t1", CreateInput{
+			Code: "s", DisplayName: "n", CustomerID: "c",
+			Items:       []CreateItemInput{{PlanID: "p_m1"}, {PlanID: "p_m2"}},
+			BillingTime: domain.BillingTimeAnniversary,
+			StartNow:    true,
+		})
+		if err != nil {
+			t.Fatalf("Create multi-item: %v", err)
+		}
+		if len(sub.Items) != 2 {
+			t.Fatalf("expected 2 items, got %d", len(sub.Items))
+		}
+		if _, err := svc.UpdateItemTx(ctx, nil, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
+			NewPlanID: "p_y", Immediate: true,
+		}); err == nil {
+			t.Fatal("expected mixed-interval swap to be rejected")
+		}
+		if fb.createTxCalls != 0 {
+			t.Errorf("rejected swap must not bill a new period; BillOnCreateTx called %d", fb.createTxCalls)
+		}
+		if it, _ := svc.store.GetItem(ctx, "t1", sub.Items[0].ID); it.PlanID != "p_m1" {
+			t.Errorf("item must be unchanged after rejection; got %q", it.PlanID)
+		}
+	})
+
+	t.Run("FinalizeCrossIntervalSwap runs refund + finalize post-commit", func(t *testing.T) {
+		fb := &fakeBiller{}
+		svc, sub := newSvc(fb)
+		subBefore, _ := svc.store.Get(ctx, "t1", sub.ID)
+		svc.FinalizeCrossIntervalSwap(ctx, "t1", subBefore, ItemChangeResult{
+			EffectiveAt:         now,
+			crossAxisNewInvoice: &domain.Invoice{ID: "vlx_inv_swap"},
+		})
+		if fb.planSwapCalls != 1 {
+			t.Errorf("refund: BillOnPlanSwapImmediate calls got %d want 1", fb.planSwapCalls)
+		}
+		if !fb.planSwapAt.Equal(now) {
+			t.Errorf("refund at: got %v want %v", fb.planSwapAt, now)
+		}
+		if fb.finalizeCalls != 1 {
+			t.Errorf("FinalizeOnCreateInvoice calls got %d want 1", fb.finalizeCalls)
 		}
 	})
 }

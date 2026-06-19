@@ -965,6 +965,21 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 	}
 	defer postgres.Rollback(tx)
 
+	if err := s.UpdateBillingCycleTx(ctx, tx, tenantID, id, periodStart, periodEnd, nextBillingAt, anchorDay); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateBillingCycleTx is the in-transaction variant of UpdateBillingCycle: it
+// runs the watermark UPDATE on the caller's tx so a coordinator can advance the
+// billing period atomically alongside other writes. The cross-interval plan
+// swap relies on this — the watermark must never move unless the new-period
+// invoice is committed in the same tx, otherwise a failed day-1 bill silently
+// drops the new period (the scheduler advances past it and never re-bills).
+// tenantID is accepted for symmetry with the store's other *Tx methods; RLS
+// scoping rides the tx's tenant binding.
+func (s *PostgresStore) UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error {
 	result, err := tx.ExecContext(ctx, `
 		UPDATE subscriptions SET current_billing_period_start = $1, current_billing_period_end = $2,
 			next_billing_at = $3, billing_anchor_day = $4, updated_at = $5
@@ -978,7 +993,7 @@ func (s *PostgresStore) UpdateBillingCycle(ctx context.Context, tenantID, id str
 	if n == 0 {
 		return errs.ErrNotFound
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
