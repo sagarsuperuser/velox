@@ -887,9 +887,9 @@ func TestVoid_ReversesUpstreamTaxTransaction(t *testing.T) {
 		if call.Mode != tax.ReversalModeFull {
 			t.Errorf("Mode: got %q want full", call.Mode)
 		}
-		expectedRef := "inv_void_" + inv.ID
+		expectedRef := "inv_taxrev_" + inv.ID
 		if call.Reference != expectedRef {
-			t.Errorf("Reference: got %q want %q (stripe idempotency)", call.Reference, expectedRef)
+			t.Errorf("Reference: got %q want %q (invoice-stable reversal ref, idempotent per invoice)", call.Reference, expectedRef)
 		}
 	})
 
@@ -1136,9 +1136,59 @@ func TestMarkUncollectible_ReversesUpstreamTaxTransaction(t *testing.T) {
 	if call.Mode != tax.ReversalModeFull {
 		t.Errorf("Mode: got %q want full", call.Mode)
 	}
-	expectedRef := "inv_uncoll_" + inv.ID
+	expectedRef := "inv_taxrev_" + inv.ID
 	if call.Reference != expectedRef {
-		t.Errorf("Reference: got %q want %q (distinct from void Reference to avoid collisions)", call.Reference, expectedRef)
+		t.Errorf("Reference: got %q want %q (invoice-stable reversal ref — shared with Void so a later void dedups instead of double-reversing)", call.Reference, expectedRef)
+	}
+}
+
+// TestUncollectibleThenVoid_ReversesTaxWithOneStableReference is the product-audit
+// G1 regression: Void permits an `uncollectible` source (annulling a bad debt is
+// a legitimate operator action), and pre-fix MarkUncollectible + Void reversed the
+// tax under DIFFERENT references (inv_uncoll_<id> vs inv_void_<id>) that don't
+// dedup at Stripe → the same tax transaction was reversed twice → the tenant
+// UNDER-remitted output tax. The fix uses one invoice-stable reference so both
+// transitions share it (same Reference + idempotency key velox_tax_rev_<ref>),
+// collapsing to exactly one reversal.
+func TestUncollectibleThenVoid_ReversesTaxWithOneStableReference(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, nil, newMemNumberer())
+	rev := &fakeTaxReverser{}
+	svc.SetTaxReverser(rev)
+	ctx := context.Background()
+
+	inv, _ := svc.Create(ctx, "t1", CreateInput{
+		CustomerID: "c", SubscriptionID: "s",
+		BillingPeriodStart: time.Now(), BillingPeriodEnd: time.Now().AddDate(0, 1, 0),
+	})
+	if _, err := svc.Finalize(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	stale := store.invoices[inv.ID]
+	stale.TaxTransactionID = "tx_committed"
+	stale.TotalAmountCents = 11000
+	stale.AmountDueCents = 11000
+	stale.AmountPaidCents = 0
+	store.invoices[inv.ID] = stale
+
+	if _, err := svc.MarkUncollectible(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("MarkUncollectible: %v", err)
+	}
+	if _, err := svc.Void(ctx, "t1", inv.ID); err != nil {
+		t.Fatalf("Void of an uncollectible invoice should be allowed: %v", err)
+	}
+
+	if len(rev.calls) != 2 {
+		t.Fatalf("expected 2 ReverseTax calls (uncollectible + void), got %d", len(rev.calls))
+	}
+	wantRef := "inv_taxrev_" + inv.ID
+	if rev.calls[0].Reference != wantRef || rev.calls[1].Reference != wantRef {
+		t.Fatalf("both reversals must share the invoice-stable reference %q so Stripe dedups to ONE reversal; got %q and %q",
+			wantRef, rev.calls[0].Reference, rev.calls[1].Reference)
+	}
+	if rev.calls[0].OriginalTransactionID != rev.calls[1].OriginalTransactionID {
+		t.Errorf("both reversals must target the same tax transaction; got %q and %q",
+			rev.calls[0].OriginalTransactionID, rev.calls[1].OriginalTransactionID)
 	}
 }
 

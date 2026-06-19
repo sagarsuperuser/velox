@@ -656,7 +656,14 @@ func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv do
 			if creditNoted, cerr := s.creditNotes.CreditedCents(ctx, tenantID, inv.ID); cerr == nil {
 				remainingGross = inv.TotalAmountCents - creditNoted
 			} else {
-				slog.WarnContext(ctx, "credit-note total lookup failed; using amount-due proxy for tax reversal",
+				// ERROR (not WARN): the amount-due proxy UNDER-reverses when
+				// customer-balance credit was applied (credit cuts amount_due
+				// without reversing tax), so the reversal may be short — the tenant
+				// over-remits (the conservative direction, but still wrong). Loud +
+				// alarmable so it's reconciled; we keep the proxy rather than skip
+				// because skipping reverses nothing (a larger over-remit) and the
+				// no-credit common case is exact (product-audit G6).
+				slog.ErrorContext(ctx, "credit-note total lookup failed; tax reversal uses the amount-due proxy and may under-reverse — reconcile",
 					"invoice_id", inv.ID, "error", cerr)
 			}
 		}
@@ -694,7 +701,14 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		return domain.Invoice{}, errs.InvalidState("invoice is already voided")
 	}
 
-	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_void_"+inv.ID)
+	// Invoice-stable reversal reference (inv_taxrev_<id>). Void permits an
+	// `uncollectible` source (annulling a bad debt is a legitimate operator
+	// action), and MarkUncollectible already reversed the tax under THIS same
+	// reference — so reusing it dedups at Stripe (same reference + idempotency
+	// key) and the tax is reversed exactly once. Pre-fix this used inv_void_<id>,
+	// a distinct reference that did NOT dedup → uncollectible-then-void reversed
+	// the tax twice → tenant under-remitted (ADR-056 follow-up / product audit G1).
+	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
 
 	voided, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
 	if err != nil {
@@ -749,9 +763,12 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	// see reverseInvoiceTax). Jurisdictional caveat — bad-debt VAT relief rules
 	// vary (EU permits reclaim under specific conditions; US sales tax varies by
 	// state). We follow Stripe's default behaviour and let tenants whose
-	// jurisdiction requires the tax to stay re-commit manually. Reference is
-	// inv_uncoll_<id> so retries converge and don't collide with a void's.
-	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_uncoll_"+inv.ID)
+	// jurisdiction requires the tax to stay re-commit manually. The reversal
+	// reference is invoice-stable (inv_taxrev_<id>) so it is idempotent PER
+	// INVOICE: a retry converges, AND a later Void of this now-uncollectible
+	// invoice reuses the same reference and dedups at Stripe instead of
+	// reversing the same tax transaction twice (which would under-remit tax).
+	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
 
 	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
 	if err != nil {

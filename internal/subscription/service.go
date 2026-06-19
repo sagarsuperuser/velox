@@ -1400,7 +1400,11 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	// independent of the final-on-cancel invoice line items.
 	if s.biller != nil {
 		if _, err := s.biller.BillFinalOnImmediateCancel(ctx, canceled); err != nil {
-			slog.Warn("final-on-cancel invoice failed; partial-period usage may be uninvoiced — operator can issue manually",
+			// ERROR (not WARN) to match the sibling credit leg below: a dropped
+			// final-on-cancel invoice silently leaks partial-period revenue and
+			// must be alarmable, not buried. Best-effort by design (post-cancel,
+			// not in the cancel tx — see product-audit G3 deferred reconciler).
+			slog.ErrorContext(ctx, "final-on-cancel invoice FAILED; partial-period usage uninvoiced — manual invoice required",
 				"subscription_id", canceled.ID,
 				"tenant_id", tenantID,
 				"error", err)
