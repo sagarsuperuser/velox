@@ -87,6 +87,33 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		"source", source,
 	)
 
+	// KNOWN GAP — post-commit side-effects are NOT crash-safe (deferred).
+	// Everything below (card stamp, payment.succeeded event, receipt email)
+	// runs AFTER MarkPaidReportingTransition's tx has committed, each in its
+	// own transaction. Unlike invoice.paid — which is enqueued INSIDE MarkPaid's
+	// tx (invoice/postgres.go:793) and is therefore crash-safe — a process crash
+	// in this window leaves the invoice correctly `paid` but silently drops the
+	// receipt email + the payment.succeeded outbound event: on Stripe's
+	// redelivery, handlePaymentSucceeded re-resolves the now-`paid` invoice and
+	// the line-47 status guard returns nil, so the once-skipped effects are never
+	// re-fired. Low-probability (sub-ms window). Money is correct and invoice.paid
+	// still fires (it's in-tx), so an integrator subscribed to invoice.paid still
+	// learns the invoice is paid. But payment.succeeded is NOT redundant with it:
+	// it fires ONLY on a card settlement and carries the Stripe payment_intent_id
+	// (invoice.paid carries none), so an integrator keyed on payment.succeeded or
+	// on PI-based reconciliation loses that signal; and the customer receipt email
+	// is the most user-visible loss.
+	// FIX (deferred): enqueue payment.succeeded + the receipt inside MarkPaid's
+	// tx via a coordinator-owned *sql.Tx (ADR-056 pattern). The outbox stores
+	// already accept a *sql.Tx (webhook/outbox.go:83, email/outbox.go:85); this
+	// settler is interface-decoupled (no db handle), so closing it needs a
+	// tx-beginner + a MarkPaidReportingTransitionTx variant + tx-accepting
+	// event/email enqueue paths. Card stamp + email resolution must stay OUTSIDE
+	// the lock (a Stripe API call / DB read — never hold the row lock across them).
+	// TRIGGER: fold this in when the async/SCA work (the other deferred edge in
+	// this path, invoice/postgres.go:758) next touches SettleSucceeded, or when a
+	// design partner requires guaranteed receipt delivery.
+
 	// Stamp the card actually charged onto the invoice so the activity
 	// timeline can show "Invoice paid · via Visa •••• 4242" (ADR-020).
 	// Best-effort — a missing CardFetcher, a non-card PM, or a transient
