@@ -148,6 +148,14 @@ type ProrationTaxApplier interface {
 // downgrade path falls back to the legacy net ledger grant.
 type CreditNoteIssuer interface {
 	CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
+	// CreateAdjustmentDraftTx creates the clawback adjustment credit note as a
+	// DRAFT inside the caller's tx (coordinator-owned, ADR-056) so it commits
+	// atomically with the item change; the caller issues it post-commit via
+	// Issue, and RetryPendingClawbackIssue re-issues it if that fails.
+	CreateAdjustmentDraftTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error)
+	// Issue finalizes a draft credit note (files the Stripe Tax reversal +
+	// applies the customer-balance credit). Idempotent — safe to retry.
+	Issue(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	// CreditedCents reports how much of an invoice has already been credited
 	// (sum of non-voided credit notes), so the clawback fan-out caps each
 	// funding invoice's piece at its remaining creditable headroom.
@@ -1523,6 +1531,13 @@ func (h *Handler) atomicAddItemWithProration(
 		return domain.SubscriptionItem{}, nil, fmt.Errorf("proration in atomic addItem tx: %w", err)
 	}
 
+	// Create the clawback credit-note DRAFT(s) IN this tx so they commit
+	// atomically with the item change (ADR-056) — a create failure rolls the
+	// change back rather than leaving the customer un-credited. No-op for the
+	// add path (upgrades charge, never claw back). Issued post-commit below.
+	if err := h.createClawbackDraftsTx(ctx, tx, tenantID, detail); err != nil {
+		return domain.SubscriptionItem{}, nil, fmt.Errorf("create clawback draft in atomic addItem tx: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.SubscriptionItem{}, nil, fmt.Errorf("commit atomic addItem tx: %w", err)
 	}
@@ -1530,10 +1545,10 @@ func (h *Handler) atomicAddItemWithProration(
 	// Stripe call and must not ride the DB tx (a rollback would orphan the
 	// committed tax transaction). No-op unless a stripe_tax calculation exists.
 	h.commitProrationTax(ctx, tenantID, detail)
-	// Issue the downgrade clawback credit note AFTER the tx is durable (same
-	// rationale: the CN service isn't tx-aware + tax reversal is external).
-	// No-op for the add path (upgrades charge, never claw back), kept uniform.
-	h.issueClawbackCreditNote(ctx, tenantID, detail)
+	// Issue the clawback DRAFTS created above, AFTER the tx is durable (Stripe
+	// reversal is external). On failure the draft persists + RetryPendingClawback
+	// Issue re-issues it. No-op for the add path (no clawback).
+	h.issueClawbackDrafts(ctx, tenantID, detail)
 	// Enroll the charge invoice for the auto-charge sweep AFTER the tx is durable
 	// (a flag UPDATE on a not-yet-committed row would be lost). No-op for credit/
 	// adjustment paths.
@@ -1630,16 +1645,23 @@ func (h *Handler) atomicUpdateItemWithProration(
 		return ItemChangeResult{}, fmt.Errorf("proration in atomic updateItem tx: %w", err)
 	}
 
+	// Create the clawback credit-note DRAFT(s) IN this tx so a plan-downgrade /
+	// qty-decrease's credit commits atomically with the item change (ADR-056) —
+	// a create failure rolls the change back. No-op on upgrades / qty-increases.
+	// Issued post-commit below.
+	if err := h.createClawbackDraftsTx(ctx, tx, tenantID, detail); err != nil {
+		return ItemChangeResult{}, fmt.Errorf("create clawback draft in atomic updateItem tx: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return ItemChangeResult{}, fmt.Errorf("commit atomic updateItem tx: %w", err)
 	}
 	// Commit proration tax AFTER the tx is durable (external Stripe call;
 	// must not ride the DB tx). No-op unless a stripe_tax calculation exists.
 	h.commitProrationTax(ctx, tenantID, detail)
-	// Issue the downgrade clawback credit note AFTER the tx is durable (ADR-048):
-	// a plan-downgrade or quantity-decrease credits the GROSS via a tax-reversing
-	// CN. No-op on upgrades / quantity increases (those bill via the invoice path).
-	h.issueClawbackCreditNote(ctx, tenantID, detail)
+	// Issue the clawback DRAFTS created above, AFTER the tx is durable. On
+	// failure the draft persists + RetryPendingClawbackIssue re-issues it. No-op
+	// on upgrades / qty-increases (those bill via the invoice path).
+	h.issueClawbackDrafts(ctx, tenantID, detail)
 	// Enroll an upgrade / qty-increase charge invoice for the auto-charge sweep
 	// (post-commit; no-op for the downgrade credit path).
 	h.enrollAutoCharge(ctx, tenantID, detail)
@@ -1689,16 +1711,25 @@ func (h *Handler) atomicRemoveItemWithProration(
 		return nil, fmt.Errorf("proration in atomic removeItem tx: %w", err)
 	}
 
+	// Create the item-removal clawback credit-note DRAFT(s) IN this tx so the
+	// clawback obligation commits atomically with the item delete (ADR-056) — a
+	// create failure rolls the delete back (this is what makes the function's
+	// "a credit failure rolls back the delete" contract actually hold). Issued
+	// post-commit below.
+	if err := h.createClawbackDraftsTx(ctx, tx, tenantID, detail); err != nil {
+		return nil, fmt.Errorf("create clawback draft in atomic removeItem tx: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit atomic removeItem tx: %w", err)
 	}
 	// Remove proration is a credit (no invoice/tax) so commitProrationTax
 	// no-ops, but keep the post-tx commit uniform across the atomic wrappers.
 	h.commitProrationTax(ctx, tenantID, detail)
-	// Issue the item-removal clawback credit note AFTER the tx is durable
-	// (ADR-048): removing an item mid-cycle claws back the unused prebill as a
-	// tax-reversing CN against the paid source invoice.
-	h.issueClawbackCreditNote(ctx, tenantID, detail)
+	// Issue the clawback DRAFTS created above, AFTER the tx is durable (ADR-048):
+	// removing an item mid-cycle claws back the unused prebill as a tax-reversing
+	// CN per paid funding invoice. On failure the draft persists +
+	// RetryPendingClawbackIssue re-issues it.
+	h.issueClawbackDrafts(ctx, tenantID, detail)
 	// Return the credit detail so removeItem's audit row can show the
 	// clawback amount (see atomicUpdateItemWithProration).
 	return detail, nil
@@ -1872,6 +1903,73 @@ func (h *Handler) issueClawbackCreditNote(ctx context.Context, tenantID string, 
 				"gross_cents", p.GrossCents,
 				"piece_index", i,
 				"piece_count", len(pieces),
+				"reason", detail.ClawbackReason)
+		}
+	}
+}
+
+// clawbackPieces resolves the clawback fan-out pieces for a detail, including
+// the single-piece carrier (the unpaid-source amount_due relief path), and
+// drops empty/zero pieces. Shared by the in-tx create and the inline path.
+func clawbackPieces(detail *ProrationDetail) []ClawbackPiece {
+	pieces := detail.ClawbackPieces
+	if len(pieces) == 0 && detail.ClawbackInvoiceID != "" && detail.ClawbackGrossCents > 0 {
+		pieces = []ClawbackPiece{{InvoiceID: detail.ClawbackInvoiceID, GrossCents: detail.ClawbackGrossCents}}
+	}
+	out := make([]ClawbackPiece, 0, len(pieces))
+	for _, p := range pieces {
+		if p.InvoiceID != "" && p.GrossCents > 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// createClawbackDraftsTx creates the downgrade/removal clawback credit note(s)
+// as DRAFTS inside the caller's tx (coordinator-owned *sql.Tx, ADR-056),
+// recording their ids on detail.ClawbackDraftIDs for the post-commit
+// issueClawbackDrafts. Because the drafts commit WITH the caller's item change,
+// a create failure returns an error and rolls the change back — closing the
+// post-commit fire-and-forget gap where a removed/downgraded item could leave
+// the customer un-credited. No-op when the detail carries no clawback
+// (upgrades / qty-increases bill via the invoice path).
+func (h *Handler) createClawbackDraftsTx(ctx context.Context, tx *sql.Tx, tenantID string, detail *ProrationDetail) error {
+	if h.creditNotes == nil || detail == nil {
+		return nil
+	}
+	for _, p := range clawbackPieces(detail) {
+		cn, err := h.creditNotes.CreateAdjustmentDraftTx(ctx, tx, tenantID, p.InvoiceID, p.GrossCents, detail.ClawbackReason, detail.ClawbackMemo)
+		if err != nil {
+			return fmt.Errorf("create clawback credit note draft (source %s, %d cents): %w", p.InvoiceID, p.GrossCents, err)
+		}
+		detail.ClawbackDraftIDs = append(detail.ClawbackDraftIDs, cn.ID)
+	}
+	return nil
+}
+
+// issueClawbackDrafts issues the drafts createClawbackDraftsTx recorded, AFTER
+// the caller's tx committed (the Stripe Tax reversal is an external call that
+// can't ride the DB tx). The draft itself is durable (committed with the item
+// change), so an Issue() failure here is never a silent loss of the obligation.
+//
+// Recovery depends on WHERE Issue() failed. Issue() flips status draft→issued in
+// its own committed tx BEFORE the side-effects (tax reversal, balance credit).
+// A failure BEFORE that flip leaves status='draft' AND issue_pending=true, which
+// RetryPendingClawbackIssue re-issues on the next scheduler tick. A failure
+// AFTER the flip (status already 'issued', a side-effect un-applied) is NOT
+// picked up by the reconciler — it scans status='draft' — and needs manual
+// reconciliation; the ERROR below is the signal. Auto-recovering that post-flip
+// window is a tracked follow-up (ADR-057).
+func (h *Handler) issueClawbackDrafts(ctx context.Context, tenantID string, detail *ProrationDetail) {
+	if h.creditNotes == nil || detail == nil {
+		return
+	}
+	for _, id := range detail.ClawbackDraftIDs {
+		if _, err := h.creditNotes.Issue(ctx, tenantID, id); err != nil {
+			slog.ErrorContext(ctx, "clawback credit note issue failed post-commit; draft persisted (reconciler retries it only while status='draft'; a partial issue needs manual reconciliation)",
+				"error", err,
+				"tenant_id", tenantID,
+				"credit_note_id", id,
 				"reason", detail.ClawbackReason)
 		}
 	}
@@ -2313,19 +2411,16 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 		// slice (net + the proportional tax) via the tax-reversing credit-note
 		// primitive — which also reverses the proportional output tax against
 		// the original invoice's committed tax transaction — rather than the
-		// bare net ledger grant that dropped the tax. The CN service is not
-		// tx-aware and its tax reversal is an external Stripe call, so it can't
-		// ride this tx; stash the work on the detail and issue it AFTER the tx
-		// commits (atomic path, via the atomic wrapper's issueClawbackCreditNote)
-		// or inline (non-atomic path).
-		//
-		// Retry safety without a schema migration: a client retry of the same
-		// downgrade is rejected at Service.UpdateItem's no-op gate (the item is
-		// already on the new plan / new qty), so the CN is never issued twice;
-		// the source invoice's over-credit cap is the hard backstop. The
-		// residual crash window (item committed, CN not yet issued) is logged
-		// loudly for reconciliation — same risk profile as the post-commit tax
-		// commit (#183).
+		// bare net ledger grant that dropped the tax. The CN service's tax
+		// reversal is an external Stripe call, so it can't ride this tx; this
+		// stashes the clawback pieces on the detail and the caller routes them:
+		//   - atomic path (tx != nil): the atomic wrapper calls
+		//     createClawbackDraftsTx (drafts committed WITH the item change, so a
+		//     create failure rolls the change back) then issueClawbackDrafts
+		//     post-commit; ADR-057.
+		//   - non-atomic fallback (tx == nil): issueClawbackCreditNote inline
+		//     below (create+issue, fire-and-forget — used only when h.db is
+		//     unwired, e.g. narrow unit tests).
 		if h.creditNotes != nil && haveSrc {
 			// Fan the clawback across EVERY funding invoice of the period (LIFO
 			// for a plan downgrade, proportional for fungible qty/item changes),

@@ -2,6 +2,7 @@ package creditnote
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -16,6 +17,15 @@ type Store interface {
 	// TOCTOU on concurrent Create, and guaranteeing a header can never commit
 	// without its lines (no orphan credit notes on partial failure).
 	CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// CreateUnderInvoiceLockTx is CreateUnderInvoiceLock on the CALLER's tx
+	// (coordinator-owned, ADR-056) so the credit note commits atomically with
+	// the caller's other writes (e.g. a subscription item delete) — the caller
+	// owns Begin/Commit/Rollback.
+	CreateUnderInvoiceLockTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// ListPendingClawbackDrafts returns auto-issue clawback drafts whose
+	// post-commit Issue() hasn't succeeded yet (issue_pending, status='draft'),
+	// cross-tenant + scoped by livemode, for RetryPendingClawbackIssue.
+	ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error)
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)

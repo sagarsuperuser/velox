@@ -53,10 +53,22 @@ type CreditNote struct {
 	// false for operator HTTP issuance (always wall-clock). Drives the
 	// invoice activity-timeline lane so a simulated CN isn't shown with a
 	// simulated timestamp in the wall-clock "Real-time activity" lane.
-	IsSimulated bool           `json:"is_simulated"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	IsSimulated bool `json:"is_simulated"`
+	// IssuePending marks an AUTO-ISSUE clawback draft: created IN-TRANSACTION
+	// with a subscription downgrade / item-removal / qty-decrease (so the item
+	// change and the clawback obligation commit atomically), then issued
+	// post-commit. Set true ONLY at create; NEVER cleared. RetryPendingClawback
+	// Issue recovers a draft whose post-commit Issue() never ran (e.g. a crash
+	// before issuance) — it scans status='draft' AND issue_pending, so an
+	// issued CN drops out via its status, not via this flag. NOTE: a post-CAS
+	// Issue() failure (status already flipped to 'issued', side-effect
+	// un-applied) is NOT auto-recovered — it surfaces via a loud ERROR log for
+	// manual reconciliation; auto-recovering that window is a tracked follow-up
+	// (ADR-057). Always false for operator-created drafts (migration 0121).
+	IssuePending bool           `json:"issue_pending"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
 }
 
 type CreditNoteLineItem struct {

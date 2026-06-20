@@ -2,6 +2,7 @@ package creditnote
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -60,6 +61,26 @@ func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoice
 		m.lineItems[created.ID] = append(m.lineItems[created.ID], line)
 	}
 	return created, nil
+}
+
+// CreateUnderInvoiceLockTx delegates to CreateUnderInvoiceLock — the in-memory
+// double has no real transaction, so it can't model rollback. The atomicity
+// (a clawback-create failure rolling back the caller's item delete) is
+// exercised by the real-Postgres integration test, not this double.
+func (m *memStore) CreateUnderInvoiceLockTx(ctx context.Context, _ *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	return m.CreateUnderInvoiceLock(ctx, tenantID, invoiceID, lines, build)
+}
+
+// ListPendingClawbackDrafts returns the in-memory auto-issue clawback drafts
+// (issue_pending, still draft). livemode/batch are ignored in the double.
+func (m *memStore) ListPendingClawbackDrafts(_ context.Context, _ int, _ bool) ([]domain.CreditNote, error) {
+	var out []domain.CreditNote
+	for _, cn := range m.notes {
+		if cn.IssuePending && cn.Status == domain.CreditNoteDraft {
+			out = append(out, cn)
+		}
+	}
+	return out, nil
 }
 
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.CreditNote, error) {

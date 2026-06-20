@@ -28,7 +28,7 @@ const cnReadCols = `id, tenant_id, invoice_id, customer_id, credit_note_number,
 	status, reason, subtotal_cents, tax_amount_cents, total_cents,
 	refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
 	currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
-	COALESCE(tax_transaction_id,''), is_simulated,
+	COALESCE(tax_transaction_id,''), is_simulated, issue_pending,
 	metadata, created_at, updated_at`
 
 // cnScanDest returns Scan destinations in cnReadCols order. metaJSON is the
@@ -39,7 +39,7 @@ func cnScanDest(cn *domain.CreditNote, metaJSON *[]byte) []any {
 		&cn.Status, &cn.Reason, &cn.SubtotalCents, &cn.TaxAmountCents, &cn.TotalCents,
 		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
 		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
-		&cn.TaxTransactionID, &cn.IsSimulated,
+		&cn.TaxTransactionID, &cn.IsSimulated, &cn.IssuePending,
 		metaJSON, &cn.CreatedAt, &cn.UpdatedAt,
 	}
 }
@@ -82,6 +82,29 @@ func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, in
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createUnderInvoiceLockInTx(ctx, tx, tenantID, invoiceID, lines, build)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.CreditNote{}, err
+	}
+	return created, nil
+}
+
+// CreateUnderInvoiceLockTx is CreateUnderInvoiceLock on the CALLER's transaction
+// (coordinator-owned *sql.Tx, ADR-056) — so the credit note + its lines commit
+// ATOMICALLY with the caller's other writes (e.g. a subscription item delete in
+// atomicRemoveItemWithProration). A failure on either side rolls back both: the
+// item change AND the clawback obligation, closing the post-commit
+// fire-and-forget gap where a removed item could leave the customer
+// un-credited. The per-invoice advisory lock is taken on the caller's tx and
+// releases when it commits. The caller owns Begin/Commit/Rollback.
+func (s *PostgresStore) CreateUnderInvoiceLockTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	return s.createUnderInvoiceLockInTx(ctx, tx, tenantID, invoiceID, lines, build)
+}
+
+func (s *PostgresStore) createUnderInvoiceLockInTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
 	if _, err := tx.ExecContext(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, tenantID+":"+invoiceID,
 	); err != nil {
@@ -106,10 +129,50 @@ func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, in
 			return domain.CreditNote{}, fmt.Errorf("create line item %d: %w", i+1, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.CreditNote{}, err
-	}
 	return created, nil
+}
+
+// ListPendingClawbackDrafts returns auto-issue clawback drafts (issue_pending,
+// still status='draft') whose post-commit Issue() hasn't yet succeeded, for the
+// RetryPendingClawbackIssue reconciler. Cross-tenant (TxBypass) + scoped by
+// livemode, mirroring ListPendingTaxCommit; each row carries its TenantID so
+// the service re-issues under the right tenant. The 24h window bounds the scan
+// to recent failures (a draft that never issues is surfaced by the loud ERROR
+// log, not retried forever).
+func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+cnReadCols+`
+		FROM credit_notes
+		WHERE livemode = $1
+		  AND issue_pending
+		  AND status = 'draft'
+		  AND updated_at > now() - interval '24 hours'
+		ORDER BY updated_at ASC
+		LIMIT $2`, livemode, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var notes []domain.CreditNote
+	for rows.Next() {
+		var cn domain.CreditNote
+		var metaJSON []byte
+		if err := rows.Scan(cnScanDest(&cn, &metaJSON)...); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaJSON, &cn.Metadata)
+		notes = append(notes, cn)
+	}
+	return notes, rows.Err()
 }
 
 func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID string, cn domain.CreditNote) (domain.CreditNote, error) {
@@ -127,13 +190,13 @@ func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tena
 		INSERT INTO credit_notes (id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, refund_status, is_simulated, metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
+			currency, refund_status, is_simulated, issue_pending, metadata, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)
 		RETURNING `+cnReadCols,
 		id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
 		cn.Status, cn.Reason, cn.SubtotalCents, cn.TaxAmountCents, cn.TotalCents,
 		cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents,
-		cn.Currency, cn.RefundStatus, cn.IsSimulated, metaJSON, now,
+		cn.Currency, cn.RefundStatus, cn.IsSimulated, cn.IssuePending, metaJSON, now,
 	).Scan(cnScanDest(&cn, &metaJSON)...)
 	if err != nil {
 		return domain.CreditNote{}, err

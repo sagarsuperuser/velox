@@ -40,6 +40,17 @@ type TaxRetrier interface {
 	RetryPendingTaxCommit(ctx context.Context, batch int) (int, []error)
 }
 
+// ClawbackRetrier re-issues subscription downgrade/removal/qty-decrease clawback
+// credit notes whose post-commit Issue() failed (created as drafts IN the
+// atomic item-change tx, marked issue_pending). Implemented by
+// *creditnote.Service. Idempotent — the Stripe Tax reversal + the ledger credit
+// are deduped, so a re-issue converges rather than double-credits. Without this
+// hook a transient Issue() failure leaves the customer un-credited for a
+// removed/downgraded item until manual reconciliation (ADR-056 follow-up).
+type ClawbackRetrier interface {
+	RetryPendingClawbackIssue(ctx context.Context, batch int) (int, []error)
+}
+
 // TrialExpirer is the narrow hook the scheduler uses to flip
 // non-clock-pinned trialing subs to active at trial_end_at on the
 // wall-clock cron tick. Implemented by *subscription.Service via
@@ -103,6 +114,7 @@ type Scheduler struct {
 	tokenCleaner      TokenCleaner
 	idempotencyClean  IdempotencyCleaner
 	taxRetrier        TaxRetrier
+	clawbackRetrier   ClawbackRetrier
 	trialExpirer      TrialExpirer
 	pauseResumer      PauseResumer
 	paymentReconciler PaymentReconciler
@@ -156,6 +168,14 @@ func (s *Scheduler) SetIdempotencyCleaner(cleaner IdempotencyCleaner) {
 // invoices wait on an operator click forever. ADR-017.
 func (s *Scheduler) SetTaxRetrier(r TaxRetrier) {
 	s.taxRetrier = r
+}
+
+// SetClawbackRetrier wires the background reconciler that re-issues clawback
+// credit-note drafts whose post-commit Issue() failed. Without this hook a
+// transient Issue() failure leaves the draft un-issued (customer un-credited)
+// until an operator reconciles manually (ADR-056 follow-up).
+func (s *Scheduler) SetClawbackRetrier(r ClawbackRetrier) {
+	s.clawbackRetrier = r
 }
 
 // SetTrialExpirer wires the wall-clock trial-expiry phase (Bug #8).
@@ -321,6 +341,23 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, e := range commitErrs {
 			slog.Error("tax commit recovery error", "mode", mode, "error", e)
+		}
+	}
+
+	// Clawback reconciler: re-issue downgrade/removal/qty-decrease clawback
+	// credit-note drafts whose post-commit Issue() NEVER RAN (created in the
+	// atomic item-change tx, still status='draft' AND issue_pending — the
+	// post-commit crash window). Else that transient gap leaves the customer
+	// un-credited for a removed/downgraded item. Safe by construction: a still-
+	// draft note has applied nothing yet. (A post-flip partial issue is NOT
+	// covered here — see RetryPendingClawbackIssue; ADR-057.) Runs every tick.
+	if s.clawbackRetrier != nil {
+		reissued, cbErrs := s.clawbackRetrier.RetryPendingClawbackIssue(ctx, s.batch)
+		if reissued > 0 || len(cbErrs) > 0 {
+			slog.Info("clawback credit-note recoveries", "mode", mode, "reissued", reissued, "errors", len(cbErrs))
+		}
+		for _, e := range cbErrs {
+			slog.Error("clawback recovery error", "mode", mode, "error", e)
 		}
 	}
 
