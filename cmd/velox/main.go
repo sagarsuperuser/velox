@@ -143,6 +143,12 @@ func serve() {
 	if server.InvoiceSvc != nil {
 		scheduler.SetTaxRetrier(server.InvoiceSvc)
 	}
+	if server.CreditNoteSvc != nil {
+		// Re-issue clawback credit-note drafts whose post-commit Issue() failed
+		// (created atomically with a subscription downgrade/removal). ADR-056
+		// follow-up — closes the post-commit fire-and-forget clawback gap.
+		scheduler.SetClawbackRetrier(server.CreditNoteSvc)
+	}
 	if server.SubscriptionSvc != nil {
 		// Wall-clock trial expiry (Bug #8 — non-clock-pinned subs):
 		// each tick, flip trialing subs to active at trial_end_at so

@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,23 @@ func (f *fakeCNIssuer) CreateAndIssueAdjustment(_ context.Context, _, invoiceID 
 		return domain.CreditNote{}, f.err
 	}
 	return domain.CreditNote{ID: "vlx_cn_test", InvoiceID: invoiceID}, nil
+}
+
+// CreateAdjustmentDraftTx records like CreateAndIssueAdjustment so f.calls
+// assertions hold on both the atomic (draft-in-tx) and non-atomic paths.
+func (f *fakeCNIssuer) CreateAdjustmentDraftTx(_ context.Context, _ *sql.Tx, _, invoiceID string, gross int64, reason, desc string) (domain.CreditNote, error) {
+	f.calls = append(f.calls, cnIssueCall{invoiceID: invoiceID, gross: gross, reason: reason, desc: desc})
+	if f.err != nil {
+		return domain.CreditNote{}, f.err
+	}
+	return domain.CreditNote{ID: "vlx_cn_draft_test", InvoiceID: invoiceID, Status: domain.CreditNoteDraft, IssuePending: true}, nil
+}
+
+func (f *fakeCNIssuer) Issue(_ context.Context, _, id string) (domain.CreditNote, error) {
+	if f.err != nil {
+		return domain.CreditNote{}, f.err
+	}
+	return domain.CreditNote{ID: id, Status: domain.CreditNoteIssued}, nil
 }
 
 // TestUpdateItem_Downgrade_RoutesGrossTaxReversingCreditNote locks ADR-048

@@ -87,6 +87,7 @@ type Server struct {
 	EmailSender       *email.Sender
 	CreditSvc         *credit.Service
 	InvoiceSvc        *invoice.Service
+	CreditNoteSvc     *creditnote.Service
 	SubscriptionSvc   *subscription.Service
 	TokenSvc          *payment.TokenService
 	PaymentReconciler *payment.Reconciler
@@ -936,6 +937,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		EmailSender:       emailSender,
 		CreditSvc:         creditSvc,
 		InvoiceSvc:        invoiceSvc,
+		CreditNoteSvc:     creditNoteSvc,
 		SubscriptionSvc:   subSvc,
 		TokenSvc:          tokenSvc,
 		PaymentReconciler: paymentReconciler,

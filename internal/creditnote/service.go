@@ -2,12 +2,14 @@ package creditnote
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -129,6 +131,14 @@ type CreateInput struct {
 	// own is_simulated, so an engine CN on a non-simulated invoice still
 	// resolves to false. NOT a JSON/API field — callers set it in Go.
 	IsSimulated bool `json:"-"`
+	// IssuePending marks an AUTO-ISSUE clawback draft (migration 0121): created
+	// in-tx with a subscription downgrade/removal/qty-decrease via a tx-accepting
+	// create, then issued post-commit. If Issue() never runs (crash in the
+	// post-commit window, status still 'draft') RetryPendingClawbackIssue
+	// re-issues it; a post-flip partial failure is not auto-recovered (see that
+	// method). Set only by CreateAdjustmentDraftTx; operator HTTP creates leave
+	// it false. NOT a JSON/API field — callers set it in Go.
+	IssuePending bool `json:"-"`
 }
 
 type CreditLineInput struct {
@@ -139,6 +149,16 @@ type CreditLineInput struct {
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.CreditNote, error) {
+	return s.create(ctx, tenantID, input, nil)
+}
+
+// create is Create's tx-aware core. tx==nil uses the store's own transaction
+// (the operator HTTP path). A non-nil tx threads the credit-note insert into
+// the CALLER's transaction (coordinator-owned *sql.Tx, ADR-056) so the note
+// commits ATOMICALLY with the caller's other writes — used by
+// CreateAdjustmentDraftTx so a subscription item delete and its clawback
+// obligation roll back together.
+func (s *Service) create(ctx context.Context, tenantID string, input CreateInput, tx *sql.Tx) (domain.CreditNote, error) {
 	if input.InvoiceID == "" {
 		return domain.CreditNote{}, errs.Required("invoice_id")
 	}
@@ -201,7 +221,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// invoice serialize on the lock: the second sees the first's note in
 	// `existingCNs` and is capped correctly, closing the TOCTOU where both
 	// read the same pre-state and both inserted past the invoice total.
-	cn, err := s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, lineRows, func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
+	buildFn := func(existingCNs []domain.CreditNote) (domain.CreditNote, error) {
 		// Validate: total credit notes cannot exceed invoice total.
 		// For unpaid invoices, also cap at current amount_due.
 		var existingTotal, existingTaxReversed int64
@@ -224,7 +244,16 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		}
 
 		return s.buildCreditNote(ctx, tenantID, input, inv, subtotal, existingTotal, existingTaxReversed, existingCNs)
-	})
+	}
+
+	var cn domain.CreditNote
+	if tx != nil {
+		// Coordinator-owned tx: the credit note commits atomically with the
+		// caller's other writes (e.g. a subscription item delete).
+		cn, err = s.store.CreateUnderInvoiceLockTx(ctx, tx, tenantID, input.InvoiceID, lineRows, buildFn)
+	} else {
+		cn, err = s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, lineRows, buildFn)
+	}
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
@@ -262,6 +291,65 @@ func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoic
 		return domain.CreditNote{}, err
 	}
 	return s.Issue(ctx, tenantID, cn.ID)
+}
+
+// CreateAdjustmentDraftTx creates the clawback adjustment credit note as a
+// DRAFT inside the CALLER's transaction (coordinator-owned *sql.Tx, ADR-056),
+// marked issue_pending. It commits atomically with the caller's other writes
+// (e.g. a subscription item delete), so a credit-note failure rolls back the
+// item change — closing the post-commit fire-and-forget gap where a removed
+// item could leave the customer un-credited. The caller issues it post-commit
+// via Issue(); if that fails the note stays draft+issue_pending and
+// RetryPendingClawbackIssue re-issues it. Returns the DRAFT (not yet issued),
+// so the caller can collect its id for the post-commit Issue.
+func (s *Service) CreateAdjustmentDraftTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error) {
+	return s.create(ctx, tenantID, CreateInput{
+		InvoiceID: invoiceID,
+		Reason:    reason,
+		Lines: []CreditLineInput{{
+			Description:     description,
+			Quantity:        1,
+			UnitAmountCents: grossCents,
+		}},
+		// Engine-issued under the clock-pinned sub's bound effective-now.
+		IsSimulated:  true,
+		IssuePending: true,
+	}, tx)
+}
+
+// RetryPendingClawbackIssue re-issues auto-clawback drafts whose post-commit
+// Issue() NEVER RAN — the note is still status='draft' AND issue_pending (the
+// common case: a crash or transient error in the post-commit window before
+// Issue() flipped the status). Cross-tenant + scoped to the ctx's livemode,
+// mirroring RetryPendingTaxCommit. Because the scan requires status='draft',
+// re-issue is safe by construction: nothing has applied yet, so Issue() runs
+// fresh — no double-reverse, no double-credit. Once Issue() succeeds the note
+// leaves status='draft' and drops out of the scan.
+//
+// LIMITATION: this does NOT recover a PARTIAL issue — one where Issue() already
+// flipped the status to 'issued' (its own committed tx) but a later side-effect
+// (tax reversal / balance credit) then failed. That row is status='issued', so
+// the scan never sees it; it surfaces only via the loud ERROR log in Issue()
+// and needs manual reconciliation. Closing that window — making Issue() fully
+// re-entrant (the unpaid-source ApplyCreditNote is not yet idempotent) and
+// scanning issue_pending regardless of status — is a tracked follow-up
+// (ADR-057). Per-row errors are collected, not aborted-on.
+func (s *Service) RetryPendingClawbackIssue(ctx context.Context, batch int) (int, []error) {
+	livemode := postgres.Livemode(ctx)
+	drafts, err := s.store.ListPendingClawbackDrafts(ctx, batch, livemode)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending clawback drafts: %w", err)}
+	}
+	var errsOut []error
+	issued := 0
+	for _, cn := range drafts {
+		if _, err := s.Issue(ctx, cn.TenantID, cn.ID); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("re-issue clawback credit note %s: %w", cn.ID, err))
+			continue
+		}
+		issued++
+	}
+	return issued, errsOut
 }
 
 // buildCreditNote runs the tax-breakout, three-channel allocation, refund cap,
@@ -407,6 +495,10 @@ func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input Cr
 		// input.IsSimulated) AND the invoice itself is simulated. Operator
 		// HTTP issuance (input.IsSimulated=false) is always wall-clock.
 		IsSimulated: input.IsSimulated && inv.IsSimulated,
+		// IssuePending: an auto-issue clawback draft to be issued post-commit and
+		// retried by the reconciler if Issue() fails (migration 0121). Only the
+		// in-tx clawback create (CreateAdjustmentDraftTx) sets this.
+		IssuePending: input.IssuePending,
 	}, nil
 }
 

@@ -689,9 +689,17 @@ type ProrationDetail struct {
 	// for a plan downgrade, proportional for fungible qty/item changes — each a
 	// tax-reversing adjustment credit note against its own invoice. When
 	// non-empty it supersedes the scalar Clawback* fields (which remain the
-	// single-piece carrier for the unpaid-source amount_due relief path). Issued
-	// post-commit by issueClawbackCreditNote, one credit note per piece.
+	// single-piece carrier for the unpaid-source amount_due relief path). On the
+	// ATOMIC path each piece is CREATED as a draft IN the caller's tx
+	// (createClawbackDraftsTx → ClawbackDraftIDs) so it commits with the item
+	// change, then ISSUED post-commit (issueClawbackDrafts); the non-atomic
+	// fallback still create+issues inline via issueClawbackCreditNote.
 	ClawbackPieces []ClawbackPiece `json:"-"`
+	// ClawbackDraftIDs are the draft credit notes createClawbackDraftsTx wrote
+	// IN the atomic tx (atomic with the item change). issueClawbackDrafts issues
+	// them post-commit; RetryPendingClawbackIssue re-issues any whose Issue()
+	// failed. Empty on the non-atomic path (it issues inline). Internal.
+	ClawbackDraftIDs []string `json:"-"`
 	// AutoChargeInvoiceID is the freshly-created proration CHARGE invoice to
 	// enroll into the auto-charge sweep AFTER the tx commits (the sweep then
 	// collects it — wall-clock cron for live subs, test-clock catchup on
