@@ -4721,7 +4721,7 @@ func nextTaxRetry(ctx context.Context, status domain.InvoiceTaxStatus, errCode s
 // advanceBillingPeriod is the anniversary interval advance used for stub
 // proration denominators (fullCycleDays). Delegates to domain.AddBillingInterval
 // so the engine and the subscription handler share one definition and can't
-// drift. The advance is computed in the tenant timezone `loc` (ADR-050) so the
+// drift. The advance is computed in the tenant timezone `loc` (ADR-058) so the
 // full-cycle day count is host-TZ-independent. NOT the calendar cycle-close
 // advance — that's domain.NextBillingPeriodEnd.
 func advanceBillingPeriod(from time.Time, interval domain.BillingInterval, loc *time.Location, anchorDay int) time.Time {
@@ -4730,7 +4730,7 @@ func advanceBillingPeriod(from time.Time, interval domain.BillingInterval, loc *
 
 // TenantLocation exposes the tenant's billing timezone so the subscription
 // handler's proration day-math can anchor its denominator in the same zone the
-// engine's period boundaries are computed in (ADR-050). Wired via
+// engine's period boundaries are computed in (ADR-058). Wired via
 // subH.SetTenantLocator(engine).
 func (e *Engine) TenantLocation(ctx context.Context, tenantID string) *time.Location {
 	return e.tenantLocation(ctx, tenantID)
@@ -4752,7 +4752,7 @@ func (e *Engine) NetPaymentTermDays(ctx context.Context, tenantID string) int {
 
 // tenantLocation resolves the tenant's billing timezone. It anchors every
 // month/year calendar advance (period boundaries AND proration denominators,
-// ADR-050) so billing date-math is independent of the host time.Local and the
+// ADR-058) so billing date-math is independent of the host time.Local and the
 // value's ambient Location. Failures collapse to UTC.
 func (e *Engine) tenantLocation(ctx context.Context, tenantID string) *time.Location {
 	if e.settings == nil {

@@ -19,7 +19,7 @@ import (
 // proration (segDays/fullCycleDays) and BillOnPlanSwapImmediate exactly.
 //
 // loc is the tenant's billing timezone: the cycle advance is computed in loc
-// (ADR-050) so the denominator is host-TZ-independent and agrees with the
+// (ADR-058) so the denominator is host-TZ-independent and agrees with the
 // period boundaries the engine writes (which also advance in loc). Without it
 // the same instant yields 30 or 31 days depending on the host time.Local —
 // mischarging every mid-cycle plan change for an offset-TZ tenant.

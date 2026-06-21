@@ -5,7 +5,7 @@
 -- Chargebee / Lago parity) — NOT Jan 31, Mar 3, Apr 3, … locked on the 3rd
 -- forever. The pre-fix advance was self-referential (periodEnd + 1 month off
 -- the already-drifted end), so the original anchor day cannot be recovered and
--- must be stored. ADR-055 (supersedes the ADR-050 §"not a bug" note).
+-- must be stored. ADR-055 (supersedes the ADR-058 §"not a bug" note).
 --
 -- 0 = unset/legacy → the engine preserves the historical addIntervalIn path
 -- (no behavior change) so this column is additive and safe.

@@ -79,7 +79,7 @@ export interface Invoice {
   credits_applied_cents: number;
   billing_period_start: string;
   billing_period_end: string;
-  /** Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-050). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period. */
+  /** Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-058). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period. */
   billing_period_display?: string;
   /**
      * Set when the invoice transitions out of draft.

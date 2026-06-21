@@ -650,7 +650,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// + handleItemProration would use wall-clock now even when the
 	// underlying sub is in simulated time.
 	subH.SetResolver(engine)
-	// ADR-050: anchor the proration denominator (fullBillingCycleDays) in the
+	// ADR-058: anchor the proration denominator (fullBillingCycleDays) in the
 	// tenant billing timezone, the same zone the engine advances period
 	// boundaries in — so the cycle length can't disagree with the period and
 	// is independent of the host time.Local.

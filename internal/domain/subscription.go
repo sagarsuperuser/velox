@@ -50,7 +50,7 @@ func BeginningOfMonthIn(t time.Time, loc *time.Location) time.Time {
 // LoadLocationOrUTC resolves an IANA timezone name to a *time.Location,
 // falling back to UTC on empty/invalid input — the shared tenant-TZ resolution
 // used at render boundaries (PDF) and anywhere a tenant_settings.Timezone needs
-// turning into a Location for ADR-050 calendar math.
+// turning into a Location for ADR-058 calendar math.
 func LoadLocationOrUTC(name string) *time.Location {
 	if name == "" {
 		return time.UTC
@@ -71,7 +71,7 @@ func LoadLocationOrUTC(name string) *time.Location {
 // It snaps the exclusive end to civil midnight in `loc`, then steps back ONE
 // CALENDAR day. The calendar step (not a 24h instant subtraction) is essential:
 // 24h-before an instant at a DST boundary, or a non-midnight end, lands on the
-// wrong civil date — the same off-by-one class as ADR-050. loc=nil → UTC.
+// wrong civil date — the same off-by-one class as ADR-058. loc=nil → UTC.
 // Returns a loc-located civil-midnight time; format it with loc-reading layouts
 // (e.g. "Jan 2, 2006") — never via UTC fields.
 func InclusiveDisplayEnd(periodEnd time.Time, loc *time.Location) time.Time {
@@ -87,7 +87,7 @@ func InclusiveDisplayEnd(periodEnd time.Time, loc *time.Location) time.Time {
 // "<start> – <inclusiveEnd>" using inclusive display dates in loc — the single
 // backend-authored value every render surface (PDF, hosted, dashboard, list)
 // shows verbatim, so the period cannot drift across the Go and TS runtimes (and
-// the subtle ADR-050 civil-day math lives in exactly one place). Both ends are
+// the subtle ADR-058 civil-day math lives in exactly one place). Both ends are
 // rendered date-only in the tenant timezone. Returns "" when start == end (a
 // one-off / no-period invoice — Stripe/Chargebee/Lago all omit the period
 // there) so callers show no period row. Clamps the inclusive end to >= the
@@ -136,7 +136,7 @@ func FormatInclusivePeriod(start, end time.Time, loc *time.Location) string {
 // Chargebee but conflicts with the operator's calendar-billing intent).
 func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTime, interval BillingInterval, loc *time.Location, anchorDay int) time.Time {
 	if interval == BillingYearly {
-		// Anniversary yearly: advance in tenant TZ (ADR-050) AND clamp the
+		// Anniversary yearly: advance in tenant TZ (ADR-058) AND clamp the
 		// anchor day to the target month's length (ADR-055) so a Feb-29
 		// (leap) anchor bills Feb 28 in non-leap years and restores to Feb 29
 		// the next leap year — instead of Go's AddDate overflowing Feb 29 +
@@ -148,7 +148,7 @@ func NextBillingPeriodEnd(periodEnd time.Time, billingTime SubscriptionBillingTi
 		// month — so a day-29/30/31 anchor never overflows a short month.
 		// Pre-fix this added the month first (Jan 31 + 1mo = Mar 3 in Go's
 		// overflow), then snapped to the 1st of the *result's* month →
-		// Mar 1, silently skipping February (ADR-050 Root C). Adding the
+		// Mar 1, silently skipping February (ADR-058 Root C). Adding the
 		// month in `loc` also keeps the boundary in the tenant's zone.
 		// anchorDay is irrelevant here — calendar always lands on the 1st.
 		return addIntervalIn(BeginningOfMonthIn(periodEnd, loc), BillingMonthly, loc)
@@ -223,7 +223,7 @@ func AnchorDayFor(periodStart time.Time, billingTime SubscriptionBillingTime, in
 // addIntervalIn advances `t` by one billing interval (+1 month, or +1 year for
 // yearly), performing the calendar add in `loc` so the result is anchored to
 // the tenant's timezone rather than `t`'s ambient Location or the host
-// time.Local (ADR-050). Returns a UTC instant. loc=nil falls back to UTC.
+// time.Local (ADR-058). Returns a UTC instant. loc=nil falls back to UTC.
 //
 // This is the single fix for the timezone date-math defect class: every
 // month/year advance MUST go through here (or NextBillingPeriodEnd, which
@@ -260,7 +260,7 @@ func addIntervalIn(t time.Time, interval BillingInterval, loc *time.Location) ti
 // NextBillingPeriodEnd instead.
 //
 // `loc` is the tenant's billing timezone: the advance is computed in `loc`
-// (ADR-050) so the full-cycle length is independent of whether `t` was built
+// (ADR-058) so the full-cycle length is independent of whether `t` was built
 // in UTC or DB-scanned as time.Local. loc=nil falls back to UTC. Pre-fix this
 // took no loc and did a bare AddDate on `t`'s ambient Location, making the
 // proration denominator host-TZ-dependent (30 vs 31 for an offset-TZ tenant).

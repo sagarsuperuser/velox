@@ -164,7 +164,7 @@ type CreditNoteIssuer interface {
 
 // TenantLocator resolves the tenant's billing timezone so the proration
 // denominator (fullBillingCycleDays) advances the cycle in the same zone the
-// engine computes period boundaries in (ADR-050). *billing.Engine satisfies it
+// engine computes period boundaries in (ADR-058). *billing.Engine satisfies it
 // (TenantLocation). Optional: when unwired (narrow tests) the day-math falls
 // back to UTC — correct for UTC tenants; the only deployments that diverge are
 // offset-TZ tenants, which production always wires.
@@ -320,7 +320,7 @@ func (h *Handler) SetProrationTaxApplier(a ProrationTaxApplier) {
 
 // SetTenantLocator wires the tenant-billing-timezone resolver (the billing
 // engine) so proration day-math anchors its denominator in the tenant zone
-// (ADR-050). When unset, fullBillingCycleDays falls back to UTC.
+// (ADR-058). When unset, fullBillingCycleDays falls back to UTC.
 func (h *Handler) SetTenantLocator(l TenantLocator) { h.tzLocator = l }
 
 // SetNetTermsReader wires the tenant Net-terms resolver (the billing engine)

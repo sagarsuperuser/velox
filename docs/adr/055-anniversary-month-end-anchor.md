@@ -1,7 +1,7 @@
 # ADR-055: Anniversary billing clamps to month-end from a persisted anchor day
 
 **Date:** 2026-06-18
-**Status:** Accepted (supersedes the ADR-050 §"Explicitly NOT a bug" note on anniversary month-end overflow)
+**Status:** Accepted (supersedes the ADR-058 §"Explicitly NOT a bug" note on anniversary month-end overflow)
 
 ## Context
 
@@ -20,7 +20,7 @@ The same hit day-30 (→ the 2nd) and day-29 (→ the 1st) after the first Febru
 - **Stripe** — *"A monthly subscription with a billing cycle anchor date of January 31 bills the last day of the month closest to the anchor date, so February 28 (or February 29 in a leap year), then March 31, April 30, and so on."* ([docs.stripe.com/billing/subscriptions/billing-cycle](https://docs.stripe.com/billing/subscriptions/billing-cycle))
 - **Chargebee / Lago** — clamp a high day-of-month to the month's last day and snap back when the month allows.
 
-ADR-050 had explicitly declared the `Jan 31 → Mar 3` overflow "not a bug, do not fix it." That was wrong: it conflated the (correctly-fixed) timezone-offset issue with the month-end clamp, a separate, real gap. This ADR overturns that note.
+ADR-058 had explicitly declared the `Jan 31 → Mar 3` overflow "not a bug, do not fix it." That was wrong: it conflated the (correctly-fixed) timezone-offset issue with the month-end clamp, a separate, real gap. This ADR overturns that note.
 
 ## Decision
 
@@ -55,7 +55,7 @@ Self-referential advance is the root cause, so the fix **must** persist the anch
 - `exempt`/multi-item subs share one anchor (first item's interval), consistent with the existing single-cadence constraint.
 
 ## References
-- ADR-050 (tenant-TZ date-math; this supersedes its anniversary-month-end "not a bug" note), ADR-042 (full-cycle proration denominator).
+- ADR-058 (tenant-TZ date-math; this supersedes its anniversary-month-end "not a bug" note), ADR-042 (full-cycle proration denominator).
 - Memory: `feedback_verify_examples_before_stating`, `feedback_billing_accuracy`, `feedback_verify_stripe_parity_claims`.
 - Guarded by `TestAnniversaryMonthEnd_ClampsAndRestores`, `TestYearlyLeapAnchor_ClampsAndRestores`, `TestAnniversaryAnchorDayZero_LegacyFallback`, `TestAnchorDayFor`.
 - [Stripe billing cycle](https://docs.stripe.com/billing/subscriptions/billing-cycle), [Chargebee](https://www.chargebee.com/docs/2.0/billing-cycle.html).

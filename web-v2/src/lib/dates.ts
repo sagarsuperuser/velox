@@ -74,7 +74,7 @@ export function formatYMDInTZ(iso: string, timezone?: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Inclusive billing-period display (ADR-050).
+// Inclusive billing-period display (ADR-058).
 //
 // Billing periods are stored HALF-OPEN [start, end): `end` is the EXCLUSIVE
 // boundary where the next period begins (Jun 1 → Jul 1 = "covers June"). Every
@@ -95,7 +95,7 @@ export function formatYMDInTZ(iso: string, timezone?: string): string {
 // The conversion is a CALENDAR step, never a 24h instant subtraction: snap the
 // exclusive boundary to its civil date in tenant TZ, then step back one calendar
 // day. A 24h subtraction lands on the wrong civil date across a DST boundary or
-// a non-midnight end — the same off-by-one class ADR-050 fixed in the engine.
+// a non-midnight end — the same off-by-one class ADR-058 fixed in the engine.
 
 // inclusiveEndYMD returns [year, month, day] of the last calendar day fully
 // covered by a half-open period whose exclusive end is `endISO`, in tenant TZ.
