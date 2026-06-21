@@ -679,6 +679,11 @@ func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv do
 		}
 	}
 	if _, err := s.taxReverser.ReverseTax(ctx, tenantID, req); err != nil {
+		// DEFERRED: no reconciler re-drives a failed reversal yet, so a transient
+		// failure here leaves the tenant over-remitting until manual reconcile.
+		// Recovery (a durable reversal-pending marker + sweep, the
+		// RetryPendingTaxCommit shape) is a tracked follow-up — ADR-057
+		// §Deferred(b); see docs/adr/README.md "Open follow-ups".
 		slog.WarnContext(ctx, "tax reversal failed on invoice status change — invoice still updated locally",
 			"invoice_id", inv.ID,
 			"tax_transaction_id", inv.TaxTransactionID,

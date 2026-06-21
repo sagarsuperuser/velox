@@ -27,6 +27,11 @@ messages + CHANGELOG.md, not here.
   platforms (per `feedback_verify_stripe_parity_claims` in
   `~/.claude/.../memory/`). Single-platform spot-checks aren't research.
 - New ADRs start from [TEMPLATE.md](TEMPLATE.md).
+- **Deferred work** an ADR deliberately scopes out — with a written revisit
+  trigger in its *Consequences* — gets a thin pointer row in
+  [Open follow-ups](#open-follow-ups-deferred) below. The rationale stays in the
+  ADR (no duplication → nothing to drift); the table only makes open deferrals
+  discoverable in one place. Remove the row when the follow-up ships.
 
 ## Index
 
@@ -69,6 +74,53 @@ messages + CHANGELOG.md, not here.
 | [035](035-per-fact-simulated-time-anchoring.md) | 2026-05-16 | Accepted | Per-fact simulated-time anchoring under test-clock catchup |
 | [036](036-dunning-campaigns-model.md) | 2026-05-16 | Accepted (amended 2026-05-16) | Dunning campaigns model (multi-policy-per-tenant) |
 | [037](037-trial-end-and-activation-period-anchoring.md) | 2026-05-18 | Accepted (amended 2026-05-18) | Trial-end and activation period anchoring (centralized helpers + Phase 0.5/0.9 trial-expiry) |
+| [038](038-credit-note-three-channel-allocation.md) | 2026-05-24 | Accepted | Credit notes use three explicit allocation channels (Stripe + Lago shape) |
+| [039](039-cut-coupons-pre-launch.md) | 2026-05-30 | Accepted | Cut coupons pre-launch |
+| [040](040-outbox-always-on.md) | 2026-05-30 | Accepted | Outbox is the only path (webhook + email) |
+| [041](041-tax-fallback-manual-removed.md) | 2026-05-30 | Accepted | Remove `tax_on_failure=fallback_manual` (block-only) |
+| [042](042-tax-rate-decimal-precision.md) | 2026-05-31 | Accepted | Tax-rate decimal precision + proration integer day-ratio |
+| [043](043-drop-tax-rate-bp.md) | 2026-05-31 | Accepted | Drop `tax_rate_bp` immediately (no transition window) |
+| [044](044-canonical-ai-token-metering-model.md) | 2026-06-01 | Accepted | Canonical AI token-metering model (one `tokens` meter + `token_type` dimension) |
+| [045](045-decimal-per-unit-pricing-rates.md) | 2026-06-01 | Accepted | Decimal per-unit pricing rates + multi-dim cycle billing |
+| [046](046-manual-tax-largest-remainder-apportionment.md) | 2026-06-03 | Accepted | Manual tax — document-level total + largest-remainder line apportionment |
+| [047](047-invoice-tax-rate-displays-statutory-not-effective.md) | 2026-06-05 | Accepted | Invoice-level `tax_rate` displays the statutory rate, not the effective rate |
+| [048](048-credit-clawback-tax-reversal.md) | 2026-06-06 | Accepted | Credit clawbacks reverse proportional tax via the credit-note primitive |
+| [049](049-payment-settlement-primitive.md) | 2026-06-07 | Accepted | A single payment-settlement primitive (discover-then-settle) |
+| [050](050-unpaid-source-proration-policy.md) | 2026-06-08 | Accepted | Unpaid-source proration — block charges, adjust credits |
+| [050](050-billing-date-math-tenant-timezone.md) ⚠️ | 2026-06-09 | Accepted | Billing calendar date-math is anchored in the tenant timezone |
+| [051](051-remove-customer-self-serve-portal.md) | 2026-06-09 | Accepted | Remove the customer self-serve portal |
+| [052](052-customer-tax-status-engine-determined-vs-override.md) | 2026-06-15 | Accepted | Customer tax status — engine-determined by default, manual flag is the override |
+| [053](053-explicit-payment-method-at-charge.md) | 2026-06-17 | Accepted | Charge the explicit payment method — Velox owns PM selection |
+| [054](054-effective-unit-price-decimal-display.md) | 2026-06-17 | Accepted | Display the per-unit price at full precision — derive on read, don't store |
+| [055](055-anniversary-month-end-anchor.md) | 2026-06-18 | Accepted (amends ADR-050 date-math) | Anniversary billing clamps to month-end from a persisted anchor day |
+| [056](056-atomic-cross-interval-plan-swap.md) | 2026-06-19 | Accepted | Cross-interval plan swap restructures the cycle atomically |
+| [057](057-atomic-recoverable-downgrade-clawback.md) | 2026-06-20 | Accepted | Downgrade/removal clawback credit note — created atomically, issued recoverably |
+
+> ⚠️ **Numbering collision (tracked):** two ADRs share **050** —
+> [050-unpaid-source-proration-policy](050-unpaid-source-proration-policy.md)
+> (2026-06-08) and
+> [050-billing-date-math-tenant-timezone](050-billing-date-math-tenant-timezone.md)
+> (2026-06-09) — from concurrent sessions both picking the next free number.
+> The convention says numbers are never reused; both are Accepted and already
+> referenced in code/memory as "ADR-050" (e.g. ADR-055 amends the date-math one).
+> Renumbering the later (date-math → next free) + updating its references is a
+> clean follow-up, deferred here to keep this index change doc-only.
+
+## Open follow-ups (deferred)
+
+Work an ADR deliberately scoped out, as **thin pointers** — the authoritative
+rationale and revisit trigger live in each ADR's *Consequences/Deferred* section;
+this table only makes the open items discoverable in one place. Remove a row when
+its follow-up ships. (All three below share one shape: a post-commit external
+call that is not yet idempotent/recoverable. None is a regression; each is
+guarded by loud-fail today and gated on a named trigger — see
+`feedback_pre_launch_scoping`.)
+
+| Follow-up | ADR | Code site | Revisit trigger |
+|---|---|---|---|
+| `reverseInvoiceTax` failure recovery — a failed void/uncollectible tax reversal is warn-and-drop (no reconciler), so a transient failure leaves the tenant over-remitting until manual reconcile | [057](057-atomic-recoverable-downgrade-clawback.md) §Deferred (b) | `internal/invoice/service.go` · `reverseInvoiceTax` | first real tax-filing customer |
+| Clawback **post-flip partial-issue** window — `Issue()` flips status to `issued` then a side-effect fails, leaving the row invisible to the `status='draft'` reconciler (loud ERROR, manual reconcile) | [057](057-atomic-recoverable-downgrade-clawback.md) §"Known gap" | `internal/creditnote/service.go` · `Issue` / `RetryPendingClawbackIssue` | needs an idempotent unpaid-source `ApplyCreditNote` |
+| **Bug B** — cross-interval swap refund double-credit on a full crash-retry (the post-commit refund is not idempotent; bounded by the per-invoice credit-note cap) | [056](056-atomic-cross-interval-plan-swap.md) §Consequences | `internal/subscription/service.go` · `FinalizeCrossIntervalSwap` | a real `in_advance` design partner, or idempotency-key middleware lands |
 
 ## Writing a new ADR
 
