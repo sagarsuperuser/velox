@@ -463,7 +463,7 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 	inv.Attention = domain.ClassifyInvoiceAttention(inv, atc)
 
 	// Compute the inclusive display end ("Jun 1 – Jun 30") in the tenant TZ on
-	// the read path (ADR-050 follow-up). Storage stays half-open; this is the
+	// the read path (ADR-058 follow-up). Storage stays half-open; this is the
 	// single backend-authored value every render surface (PDF, hosted,
 	// dashboard, list) shows, so the inclusive end can't drift across runtimes.
 	inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(
@@ -473,7 +473,7 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 
 // invoiceLocation resolves the tenant billing timezone for display math, UTC
 // when no settings reader is wired or the tenant has no timezone configured —
-// matching ADR-050 / engine.tenantLocation.
+// matching ADR-058 / engine.tenantLocation.
 func (s *Service) invoiceLocation(ctx context.Context, tenantID string) *time.Location {
 	if s.settings == nil {
 		return time.UTC

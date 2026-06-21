@@ -34,7 +34,7 @@ go test -p 1 ./... -short=false  # includes integration tests (needs postgres)
 Two or more Claude Code sessions may work this repo at the same time. Rules:
 
 - **Every session works in its own git worktree** (`.claude/worktrees/<task-name>`). The main working tree stays parked on `main` — no session edits it, switches its branch, or stages files there.
-- **Claim a migration number** by checking origin/main **and** every local branch (`git worktree list`, `git branch -a`) — another session's unmerged migration may already hold the next number. Duplicates only fail at integration-test time.
+- **Claim a migration _or ADR_ number** by checking origin/main **and** every local branch (`git worktree list`, `git branch -a`) — another session's unmerged migration/ADR may already hold the next number. Migration duplicates fail loudly at integration-test time; **ADR duplicates fail silently** (two `050`s shipped via #196/#197, only caught + renumbered much later in #292), so `grep docs/adr/` across branches before picking an ADR number too.
 - **Stay on disjoint domains/packages** where possible. CHANGELOG/MANUAL_TEST conflicts are expected and cheap: whoever merges second rebases and keeps both sides' entries.
 - **Merge small PRs promptly; rebase onto origin/main before push.** A conflicting PR gets no CI (GitHub can't build the merge ref) — rebase first, then watch checks.
 - **Shared singletons**: one local Postgres (concurrent `-short=false` runs from two sessions can interfere — run unit tests freely, treat CI as the integration gate) and one `make dev` / vite (ports 8080/5173).

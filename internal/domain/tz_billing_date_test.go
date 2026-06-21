@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// These pin the ADR-050 fix: every month/year billing advance is anchored in
+// These pin the ADR-058 fix: every month/year billing advance is anchored in
 // the tenant timezone, so the result depends ONLY on the tenant loc — never on
 // the input time.Time's ambient Location (which, for a pgx-scanned timestamptz,
 // is the host time.Local). The pre-fix bug gave 30 vs 31 days for the SAME
@@ -100,7 +100,7 @@ func TestNextBillingPeriodEnd_TenantTZAnchored(t *testing.T) {
 	}
 }
 
-// TestFormatInclusivePeriod pins the inclusive last-day display (ADR-050
+// TestFormatInclusivePeriod pins the inclusive last-day display (ADR-058
 // follow-up): the exclusive period_end is shown as the previous CALENDAR day in
 // the tenant TZ — NOT a 24h instant subtraction (which mis-lands across DST /
 // non-midnight ends), and tenant-TZ-anchored so an offset tenant and a UTC

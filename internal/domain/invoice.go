@@ -190,7 +190,7 @@ type Invoice struct {
 	BillingPeriodEnd    time.Time  `json:"billing_period_end"`
 	// BillingPeriodDisplay is the human period string with the INCLUSIVE last
 	// covered day ("Jun 1, 2028 – Jun 30, 2028"), rendered date-only in the
-	// tenant TZ — the industry-standard period display (ADR-050 follow-up).
+	// tenant TZ — the industry-standard period display (ADR-058 follow-up).
 	// Computed on read (never persisted); the raw half-open
 	// BillingPeriodStart/End above are unchanged (SDK contract). Empty for
 	// one-off / no-period invoices so callers omit the period row. Every

@@ -87,24 +87,21 @@ messages + CHANGELOG.md, not here.
 | [048](048-credit-clawback-tax-reversal.md) | 2026-06-06 | Accepted | Credit clawbacks reverse proportional tax via the credit-note primitive |
 | [049](049-payment-settlement-primitive.md) | 2026-06-07 | Accepted | A single payment-settlement primitive (discover-then-settle) |
 | [050](050-unpaid-source-proration-policy.md) | 2026-06-08 | Accepted | Unpaid-source proration — block charges, adjust credits |
-| [050](050-billing-date-math-tenant-timezone.md) ⚠️ | 2026-06-09 | Accepted | Billing calendar date-math is anchored in the tenant timezone |
 | [051](051-remove-customer-self-serve-portal.md) | 2026-06-09 | Accepted | Remove the customer self-serve portal |
 | [052](052-customer-tax-status-engine-determined-vs-override.md) | 2026-06-15 | Accepted | Customer tax status — engine-determined by default, manual flag is the override |
 | [053](053-explicit-payment-method-at-charge.md) | 2026-06-17 | Accepted | Charge the explicit payment method — Velox owns PM selection |
 | [054](054-effective-unit-price-decimal-display.md) | 2026-06-17 | Accepted | Display the per-unit price at full precision — derive on read, don't store |
-| [055](055-anniversary-month-end-anchor.md) | 2026-06-18 | Accepted (amends ADR-050 date-math) | Anniversary billing clamps to month-end from a persisted anchor day |
+| [055](055-anniversary-month-end-anchor.md) | 2026-06-18 | Accepted (amends ADR-058 date-math) | Anniversary billing clamps to month-end from a persisted anchor day |
 | [056](056-atomic-cross-interval-plan-swap.md) | 2026-06-19 | Accepted | Cross-interval plan swap restructures the cycle atomically |
 | [057](057-atomic-recoverable-downgrade-clawback.md) | 2026-06-20 | Accepted | Downgrade/removal clawback credit note — created atomically, issued recoverably |
+| [058](058-billing-date-math-tenant-timezone.md) | 2026-06-09 | Accepted | Billing calendar date-math is anchored in the tenant timezone (renumbered from a duplicate 050) |
 
-> ⚠️ **Numbering collision (tracked):** two ADRs share **050** —
-> [050-unpaid-source-proration-policy](050-unpaid-source-proration-policy.md)
-> (2026-06-08) and
-> [050-billing-date-math-tenant-timezone](050-billing-date-math-tenant-timezone.md)
-> (2026-06-09) — from concurrent sessions both picking the next free number.
-> The convention says numbers are never reused; both are Accepted and already
-> referenced in code/memory as "ADR-050" (e.g. ADR-055 amends the date-math one).
-> Renumbering the later (date-math → next free) + updating its references is a
-> clean follow-up, deferred here to keep this index change doc-only.
+> ℹ️ **ADR-058 was renumbered from a duplicate ADR-050** (2026-06-21). Two
+> concurrent sessions had each taken `050` — the same hazard the migration-numbering
+> rule guards against (pick the next number from origin/main, not a local branch).
+> The earlier-dated 050 (`unpaid-source-proration`, 2026-06-08) kept the number;
+> the later (`date-math`, 2026-06-09) became **058** and all its references were
+> updated. The out-of-date-order number is expected for a renumber.
 
 ## Open follow-ups (deferred)
 

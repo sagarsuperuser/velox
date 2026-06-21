@@ -320,7 +320,7 @@ func TestSplitUpgradeProration_PartitionInvariant(t *testing.T) {
 }
 
 // TestFullBillingCycleDays_TenantTZAnchored is the proration-denominator side of
-// ADR-050: for an offset-TZ tenant the cycle length must be computed in the
+// ADR-058: for an offset-TZ tenant the cycle length must be computed in the
 // tenant zone and be independent of the period_start's ambient Location (which,
 // DB-scanned on a non-UTC host, is time.Local). Pre-fix this returned 30 or 31
 // for the SAME instant depending on the host, mischarging every mid-cycle change.

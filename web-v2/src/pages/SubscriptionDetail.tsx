@@ -477,7 +477,7 @@ export default function SubscriptionDetailPage() {
               label: 'Period End',
               // Last day the period covers (inclusive), not the exclusive
               // boundary instant — distinct from the "Next Billing" dot and
-              // consistent with the "Current period" range below (ADR-050).
+              // consistent with the "Current period" range below (ADR-058).
               date: formatCivilDate(sub.current_billing_period_end),
               isPast: periodEnd <= now,
             })

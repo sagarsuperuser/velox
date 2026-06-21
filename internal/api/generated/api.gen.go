@@ -764,7 +764,7 @@ type Invoice struct {
 	Attention         Attention `json:"attention,omitempty"`
 	AutoChargePending bool      `json:"auto_charge_pending,omitempty"`
 
-	// BillingPeriodDisplay Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-050). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period.
+	// BillingPeriodDisplay Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-058). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period.
 	BillingPeriodDisplay string    `json:"billing_period_display,omitempty"`
 	BillingPeriodEnd     time.Time `json:"billing_period_end"`
 	BillingPeriodStart   time.Time `json:"billing_period_start"`
