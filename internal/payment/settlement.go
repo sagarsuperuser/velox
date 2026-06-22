@@ -61,17 +61,16 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
 	now := clock.Now(ctx)
 
-	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at.
+	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at,
+	// AND enqueue invoice.paid + payment.succeeded in the SAME tx (the card path).
 	// transitioned reports whether THIS call did the finalized→paid move.
 	// The line-47 guard is a fast path that catches the SERIAL redelivery
 	// (re-read sees paid); a truly CONCURRENT redelivery of the same charge
-	// slips past it because both readers saw `processing`. MarkPaid's
+	// slips past it because both readers saw `processing`. The
 	// SELECT … FOR UPDATE serializes those two, and exactly one gets
-	// transitioned=true — the authoritative once-only gate for the
-	// non-transactional side-effects below (the receipt email + the
-	// payment.succeeded event). invoice.paid is already once-only (enqueued
-	// inside MarkPaid's tx).
-	_, transitioned, err := s.invoices.MarkPaidReportingTransition(ctx, tenantID, inv.ID, paymentIntentID, now)
+	// transitioned=true — the once-only gate for both the in-tx events and the
+	// post-commit best-effort side-effects below (receipt email, card stamp).
+	_, transitioned, err := s.invoices.MarkPaidCardSettlementTransition(ctx, tenantID, inv.ID, paymentIntentID, now)
 	if err != nil {
 		return fmt.Errorf("mark invoice paid: %w", err)
 	}
@@ -87,32 +86,30 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		"source", source,
 	)
 
-	// KNOWN GAP — post-commit side-effects are NOT crash-safe (deferred).
-	// Everything below (card stamp, payment.succeeded event, receipt email)
-	// runs AFTER MarkPaidReportingTransition's tx has committed, each in its
-	// own transaction. Unlike invoice.paid — which is enqueued INSIDE MarkPaid's
-	// tx (invoice/postgres.go:793) and is therefore crash-safe — a process crash
-	// in this window leaves the invoice correctly `paid` but silently drops the
-	// receipt email + the payment.succeeded outbound event: on Stripe's
-	// redelivery, handlePaymentSucceeded re-resolves the now-`paid` invoice and
-	// the line-47 status guard returns nil, so the once-skipped effects are never
-	// re-fired. Low-probability (sub-ms window). Money is correct and invoice.paid
-	// still fires (it's in-tx), so an integrator subscribed to invoice.paid still
-	// learns the invoice is paid. But payment.succeeded is NOT redundant with it:
-	// it fires ONLY on a card settlement and carries the Stripe payment_intent_id
-	// (invoice.paid carries none), so an integrator keyed on payment.succeeded or
-	// on PI-based reconciliation loses that signal; and the customer receipt email
-	// is the most user-visible loss.
-	// FIX (deferred): enqueue payment.succeeded + the receipt inside MarkPaid's
-	// tx via a coordinator-owned *sql.Tx (ADR-056 pattern). The outbox stores
-	// already accept a *sql.Tx (webhook/outbox.go:83, email/outbox.go:85); this
-	// settler is interface-decoupled (no db handle), so closing it needs a
-	// tx-beginner + a MarkPaidReportingTransitionTx variant + tx-accepting
-	// event/email enqueue paths. Card stamp + email resolution must stay OUTSIDE
-	// the lock (a Stripe API call / DB read — never hold the row lock across them).
-	// TRIGGER: fold this in when the async/SCA work (the other deferred edge in
-	// this path, invoice/postgres.go:758) next touches SettleSucceeded, or when a
-	// design partner requires guaranteed receipt delivery.
+	// DURABILITY TIERING (2026-06-22 fix). The consistency-critical events —
+	// invoice.paid AND payment.succeeded — are now BOTH enqueued INSIDE
+	// MarkPaidCardSettlementTransition's tx (invoice/postgres.go), so they are
+	// crash-safe and exactly-once with the paid-flip. A crash here can no longer
+	// lose payment.succeeded — the only event carrying the Stripe
+	// payment_intent_id — which was the gap this fix closed (transactional outbox,
+	// ADR-040; the standard pattern: persist the event in the same tx as the state
+	// change, the dispatcher delivers it at-least-once afterward).
+	//
+	// What remains below is post-commit + best-effort BY DESIGN, not oversight —
+	// each is the correct contract for its kind, not a consistency-critical event:
+	//   - receipt email: an at-least-once human notification with its own
+	//     dispatcher retry + 72h/15-attempt DLQ once enqueued. Strict atomicity is
+	//     the wrong contract for email, and making it in-tx would drag customer-
+	//     email resolution + the suppression-list read under the invoice row lock.
+	//     A crash in this sub-ms window can drop the receipt ENQUEUE; that is the
+	//     accepted residual. DEFERRED UPGRADE (if a design partner needs guaranteed
+	//     receipts): a receipt-pending marker + reconciler re-fire — tracked in
+	//     docs/adr/README.md "Open follow-ups".
+	//   - card stamp: cosmetic (a timeline sub-line) and a Stripe NETWORK call that
+	//     must never be held under the row lock.
+	// SettleFailed's symmetric move (payment.failed + failed-email in-tx) is a
+	// separate follow-up; its dunning-start stays post-commit (already idempotent
+	// via its own UNIQUE-per-invoice constraint, migration 0085).
 
 	// Stamp the card actually charged onto the invoice so the activity
 	// timeline can show "Invoice paid · via Visa •••• 4242" (ADR-020).
@@ -133,13 +130,9 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		}
 	}
 
-	s.fireEvent(ctx, tenantID, domain.EventPaymentSucceeded, map[string]any{
-		"invoice_id":        inv.ID,
-		"customer_id":       inv.CustomerID,
-		"payment_intent_id": paymentIntentID,
-		"amount_cents":      inv.TotalAmountCents,
-		"currency":          inv.Currency,
-	})
+	// payment.succeeded is now enqueued IN-TX by MarkPaidCardSettlementTransition
+	// (above), so it commits atomically with the paid-flip. Do NOT also fire it
+	// here — that would double-fire it (one in-tx, one post-commit).
 
 	// Enqueue payment receipt email. s.emailReceipt is *OutboxSender
 	// (ADR-040), so SendPaymentReceipt is a fast DB INSERT and the

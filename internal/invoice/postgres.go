@@ -666,6 +666,28 @@ func (s *PostgresStore) MarkPaid(ctx context.Context, tenantID, id string, strip
 // catch — fires them once, not twice. invoice.paid itself is already
 // once-only (enqueued inside this tx, after the no-op branch returns).
 func (s *PostgresStore) MarkPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error) {
+	return s.markPaidReportingTransition(ctx, tenantID, id, stripePaymentIntentID, paidAt, false)
+}
+
+// MarkPaidCardSettlementTransition is MarkPaidReportingTransition for the CARD
+// settlement path (SettleSucceeded): in addition to invoice.paid it enqueues
+// payment.succeeded in the SAME tx, so that event — the only one carrying the
+// Stripe payment_intent_id — is crash-safe with the paid-flip instead of the
+// old fire-and-forget post-commit dispatch. Non-card settlement paths
+// (credits-cover, offline record-payment, dunning-recovery bare-MarkPaid) keep
+// calling MarkPaidReportingTransition and emit only invoice.paid (they never
+// fired payment.succeeded). ADR-040 transactional outbox; see the durability-
+// tiering note in payment/settlement.go.
+func (s *PostgresStore) MarkPaidCardSettlementTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error) {
+	return s.markPaidReportingTransition(ctx, tenantID, id, stripePaymentIntentID, paidAt, true)
+}
+
+// markPaidReportingTransition is the shared core. cardSettlement=true also
+// enqueues payment.succeeded on the SAME tx as the paid-flip (gated on the
+// transition, so exactly-once). Both event enqueues live inside this one tx, so
+// they are atomic with finalized/uncollectible→paid: tx rolls back → no events;
+// commits → the dispatcher delivers.
+func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time, cardSettlement bool) (domain.Invoice, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Invoice{}, false, err
@@ -801,6 +823,23 @@ func (s *PostgresStore) MarkPaidReportingTransition(ctx context.Context, tenantI
 			"paid_at":           paidAt.UTC(),
 		}); err != nil {
 			return domain.Invoice{}, false, fmt.Errorf("enqueue invoice.paid: %w", err)
+		}
+	}
+	// payment.succeeded — CARD settlement path only. Enqueued in the SAME tx as
+	// the paid-flip so the only event carrying the Stripe payment_intent_id is
+	// crash-safe rather than fire-and-forget post-commit (the gap that lost it in
+	// a sub-ms crash window — see payment/settlement.go). Reaches here only on the
+	// finalized/uncollectible→paid transition (the already-paid branch returned
+	// above), so it fires exactly once, same as invoice.paid.
+	if cardSettlement && s.outbox != nil {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventPaymentSucceeded, map[string]any{
+			"invoice_id":        inv.ID,
+			"customer_id":       inv.CustomerID,
+			"payment_intent_id": stripePaymentIntentID,
+			"amount_cents":      inv.TotalAmountCents,
+			"currency":          inv.Currency,
+		}); err != nil {
+			return domain.Invoice{}, false, fmt.Errorf("enqueue payment.succeeded: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

@@ -53,10 +53,11 @@ func (staticCustomerEmail) GetCustomerEmail(_ context.Context, _, _ string) (str
 // fix: two at-least-once deliveries of the SAME payment_intent.succeeded that
 // race — both fetch the invoice while it's still `processing`, so both carry a
 // stale snapshot that slips past the fast-path already-paid guard — must settle
-// the invoice once and fire the non-transactional side-effects (payment.succeeded
-// event + receipt email) EXACTLY once. MarkPaid's SELECT … FOR UPDATE serializes
-// the two; only the transition-winner fires the side-effects. Pre-fix both fired,
-// double-emailing the customer and double-firing the outbound webhook.
+// the invoice once and fire the side-effects EXACTLY once: payment.succeeded is
+// now enqueued IN-TX by the card-settlement transition, the receipt email
+// post-commit — both gated on the transition winner. MarkPaid's SELECT … FOR
+// UPDATE serializes the two; only the transition-winner fires them. Pre-fix both
+// fired, double-emailing the customer and double-firing the outbound webhook.
 func TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) {
 	invoices := newMockInvoiceUpdater()
 	invoices.invoices["inv_1"] = domain.Invoice{
@@ -85,8 +86,14 @@ func TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) 
 	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentSucceeded {
 		t.Fatalf("invoice not settled: payment_status=%q", got)
 	}
-	if got := events.byType[domain.EventPaymentSucceeded]; got != 1 {
-		t.Errorf("payment.succeeded fired %d times, want exactly 1 (concurrent redelivery must not double-fire the webhook)", got)
+	// payment.succeeded is now enqueued IN-TX by the card-settlement transition
+	// (gated on transitioned), not via the post-commit dispatcher — so the in-tx
+	// path fires it exactly once and the dispatcher sees it zero times.
+	if got := invoices.cardEventEnqueues; got != 1 {
+		t.Errorf("payment.succeeded enqueued in-tx %d times, want exactly 1 (concurrent redelivery must not double-fire)", got)
+	}
+	if got := events.byType[domain.EventPaymentSucceeded]; got != 0 {
+		t.Errorf("payment.succeeded fired via the post-commit dispatcher %d times, want 0 (it moved in-tx)", got)
 	}
 	if email.sends != 1 {
 		t.Errorf("receipt email enqueued %d times, want exactly 1 (no double-notify)", email.sends)
