@@ -149,6 +149,30 @@ type CreditLineInput struct {
 }
 
 func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput) (domain.CreditNote, error) {
+	// In-flight payment gate. An OPERATOR credit note must not reduce an
+	// invoice's amount_due while its payment is in flight (processing/unknown):
+	// at settle, MarkPaid records amount_paid off the now-lower amount_due
+	// (invoice/postgres.go KNOWN EDGE), under-sizing the refund cap. So block it
+	// — the operator settles or cancels the payment first. Consistent with
+	// Stripe's open-payment lifecycle posture (it blocks void/edit/uncollectible
+	// while a payment is open) and with our own RecordPayment guard
+	// (invoice/service.go: "a charge is already in flight … wait or cancel").
+	//
+	// payment_status is the sufficient signal: a PAID invoice reads 'succeeded'
+	// and takes the refund/credit-balance branch (never reduces amount_due), so
+	// it is never gated. The AUTOMATED clawback paths (ADR-050 unpaid-source:
+	// CreateAndIssueAdjustment / CreateAdjustmentDraftTx) call create() DIRECTLY,
+	// bypassing this gate structurally — their in-flight handling (defer the
+	// reduction until settle) is a tracked follow-up (docs/adr/README.md "Open
+	// follow-ups"), deliberately not this change. A Get error here falls through
+	// to create(), which raises the canonical not-found/validation error.
+	if input.InvoiceID != "" {
+		if inv, err := s.invoices.Get(ctx, tenantID, input.InvoiceID); err == nil &&
+			(inv.PaymentStatus == domain.PaymentProcessing || inv.PaymentStatus == domain.PaymentUnknown) {
+			return domain.CreditNote{}, errs.InvalidState(
+				"cannot credit-note an invoice whose payment is in flight — settle or cancel the payment first, or wait for charge reconciliation")
+		}
+	}
 	return s.create(ctx, tenantID, input, nil)
 }
 
@@ -274,7 +298,11 @@ func (s *Service) create(ctx context.Context, tenantID string, input CreateInput
 // runs once per cancel — see its contract); a second call would create a second
 // adjustment and is rejected by Create's amount_due cap once the first lands.
 func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error) {
-	cn, err := s.Create(ctx, tenantID, CreateInput{
+	// Calls the create() CORE directly (not the public Create) so the automated
+	// ADR-050 unpaid-source clawback BYPASSES the operator in-flight gate in
+	// Create — it must proceed on a 'processing' source (the gate's defer-until-
+	// settle handling for automated reductions is the tracked Part-B follow-up).
+	cn, err := s.create(ctx, tenantID, CreateInput{
 		InvoiceID: invoiceID,
 		Reason:    reason,
 		Lines: []CreditLineInput{{
@@ -286,7 +314,7 @@ func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoic
 		// so issued_at is in the invoice's (possibly simulated) time domain.
 		// ANDed with inv.IsSimulated in buildCreditNote.
 		IsSimulated: true,
-	})
+	}, nil)
 	if err != nil {
 		return domain.CreditNote{}, err
 	}

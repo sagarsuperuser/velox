@@ -1046,6 +1046,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW C2: Credit notes
 
+- [ ] **In-flight payment blocks an amount-reducing credit note (2026-06-22)**: `psql -c "UPDATE invoices SET payment_status='processing' WHERE id='<a finalized, unpaid invoice>'"` → POST a credit note for it → **409** "cannot credit-note an invoice whose payment is in flight — settle or cancel the payment first". Reset to `pending` → the same credit note succeeds. (Operator gate only; the automated mid-period cancel/downgrade clawback is unaffected.)
 - [ ] Unpaid invoice → Issue credit "Billing error" $20 → no allocation inputs shown → Issue → amount_due reduced.
 - [ ] Paid invoice ($100, fully card-paid) → enter $40 → defaults to Credit balance $40, Refund 0, Out-of-band 0 → Issue → customer balance +$40.
 - [ ] Same invoice → enter $30 + type $30 in Refund to card → Credit auto-fills to $0; Allocated $30 / $30 ✓ → Issue → Stripe refund processed; CN row label "refund"; refund_status=succeeded.
