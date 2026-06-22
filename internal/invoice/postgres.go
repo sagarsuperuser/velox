@@ -777,13 +777,21 @@ func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantI
 	// amount_paid_cents records the CURRENT amount_due (what the PaymentIntent was
 	// created for), NOT Stripe's actual captured amount. Holds because the PI is
 	// created for exactly amount_due and capture is synchronous + full on the
-	// card-on-file path. KNOWN EDGE — deferred, no synchronous-card exposure: on
-	// an ASYNC / SCA charge (payment_status='processing'), a credit note that
-	// reduces amount_due AFTER PI-create but BEFORE this settle would record
-	// amount_paid BELOW the captured amount, under-reporting the refund cap
-	// (creditnote refund is capped at amount_paid). Fix when a first
-	// async-payment-method / EU-SCA design partner lands: thread the PI's
-	// amount_received through to here instead of re-reading amount_due.
+	// card-on-file path. KNOWN EDGE class: on an ASYNC / SCA charge
+	// (payment_status='processing'), a credit note that reduces amount_due AFTER
+	// PI-create but BEFORE this settle would record amount_paid BELOW the captured
+	// amount, under-reporting the refund cap (creditnote refund is capped at
+	// amount_paid).
+	// PART A (shipped 2026-06-22): the OPERATOR credit-note vector is now CLOSED —
+	// creditnote.Service.Create rejects an amount_due-reducing CN while the
+	// payment is in flight (processing/unknown). Two vectors remain DEFERRED
+	// (docs/adr/README.md "Open follow-ups", both gated on a first async/SCA or
+	// partial-capture design partner): PART B — the AUTOMATED clawback
+	// (CreateAndIssueAdjustment, ADR-050 unpaid-source) still reduces amount_due
+	// on a processing source; fix = defer that reduction until settle. PART C —
+	// record amount_paid from the PI's amount_received (the captured amount) here
+	// instead of re-reading amount_due; only load-bearing under PARTIAL capture
+	// (under full capture + Part A's gate, amount_due-at-settle == captured).
 	// (2026-06-15 proration audit, re-verify wf_29503f6d: 2/3 real, low, rare.)
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
