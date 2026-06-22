@@ -782,17 +782,19 @@ func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantI
 	// PI-create but BEFORE this settle would record amount_paid BELOW the captured
 	// amount, under-reporting the refund cap (creditnote refund is capped at
 	// amount_paid).
-	// PART A (shipped 2026-06-22): the OPERATOR credit-note vector is now CLOSED —
-	// creditnote.Service.Create rejects an amount_due-reducing CN while the
-	// payment is in flight (processing/unknown). Two vectors remain DEFERRED
-	// (docs/adr/README.md "Open follow-ups", both gated on a first async/SCA or
-	// partial-capture design partner): PART B — the AUTOMATED clawback
-	// (CreateAndIssueAdjustment, ADR-050 unpaid-source) still reduces amount_due
-	// on a processing source; fix = defer that reduction until settle. PART C —
-	// record amount_paid from the PI's amount_received (the captured amount) here
-	// instead of re-reading amount_due; only load-bearing under PARTIAL capture
-	// (under full capture + Part A's gate, amount_due-at-settle == captured).
-	// (2026-06-15 proration audit, re-verify wf_29503f6d: 2/3 real, low, rare.)
+	// PART A + PART B are now CLOSED (ADR-059, 2026-06-22), so amount_due-at-settle
+	// == the captured amount for both the operator and the automated path:
+	//   PART A — creditnote.Service.Create rejects an amount_due-reducing CN while
+	//     the payment is in flight (operator 409).
+	//   PART B — the AUTOMATED clawback (CreateAndIssueAdjustment, ADR-050
+	//     unpaid-source) no longer reduces amount_due on an in-flight source: it
+	//     creates the clawback as a draft and Issue() DEFERS until the source
+	//     settles, so amount_due stays full through this settle.
+	// PART C remains, but is NOT reachable today: recording amount_paid from the
+	// PI's amount_received (vs re-reading amount_due) is only load-bearing under
+	// PARTIAL capture, and Velox is PaymentIntent-only full-capture (no
+	// partial/manual-capture flow). Revisit if partial capture is added.
+	// (2026-06-15 proration audit; Parts A/B shipped #295 + ADR-059.)
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
 			status = 'paid',

@@ -36,9 +36,20 @@ type PaymentCanceler interface {
 	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
 }
 
+// InvoiceVoider routes a dunning manually-resolved void through the invoice
+// SERVICE (not the raw store), so it inherits the service's status guards,
+// the in-flight payment guard, the tax reversal, and the single-writer
+// invoice.voided webhook event. Before this, resolveRun called the raw
+// store's UpdateStatus(Voided) directly — a second, less-guarded void writer
+// that reversed no tax and emitted no event (an overlapping-flow hole).
+type InvoiceVoider interface {
+	Void(ctx context.Context, tenantID, id string) (domain.Invoice, error)
+}
+
 type Handler struct {
 	svc            *Service
 	invoices       InvoiceUpdater
+	invoiceVoider  InvoiceVoider
 	creditReverser CreditReverser
 	paymentCancel  PaymentCanceler
 	auditLogger    AuditWriter
@@ -67,6 +78,13 @@ func (h *Handler) SetAuditLogger(a AuditWriter) {
 // and breaks ADR-030's "no wall-clock leakage on pinned entities"
 // guarantee at the dunning-resolution seam.
 func (h *Handler) SetResolver(r clock.Resolver) { h.resolver = r }
+
+// SetInvoiceVoider wires the invoice service so a manually-resolved dunning
+// run voids through invoice.Service.Void (status guards + in-flight guard +
+// tax reversal + single-writer invoice.voided event) instead of the raw
+// store's UpdateStatus. Wired post-construction (the invoice service is built
+// after the dunning handler), mirroring SetInvoiceUncollectibleMarker.
+func (h *Handler) SetInvoiceVoider(v InvoiceVoider) { h.invoiceVoider = v }
 
 type HandlerDeps struct {
 	Invoices       InvoiceUpdater
@@ -351,12 +369,23 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 				slog.WarnContext(r.Context(), "failed to mark invoice as paid after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
 			}
 		case domain.ResolutionManuallyResolved:
-			// Full void: status change + credit reversal + PI cancellation
+			// Void through the invoice SERVICE (single void writer): status flip
+			// + tax reversal + in-flight guard + single-writer invoice.voided
+			// event. The inline credit-reversal + PI-cancel below are gated on
+			// the void SUCCEEDING — otherwise an in-flight invoice (which the
+			// service's guard refuses to void) would still get its live PI
+			// canceled and credits reversed, defeating the guard. They run only
+			// after a confirmed void.
 			inv, _ := h.invoices.Get(r.Context(), tenantID, run.InvoiceID)
-			if _, err := h.invoices.UpdateStatus(r.Context(), tenantID, run.InvoiceID, domain.InvoiceVoided); err != nil {
-				slog.WarnContext(r.Context(), "failed to void invoice after dunning resolution", "invoice_id", run.InvoiceID, "error", err)
+			if h.invoiceVoider == nil {
+				slog.WarnContext(r.Context(), "invoice voider unwired; skipping dunning manual-resolve void", "invoice_id", run.InvoiceID)
+				break
 			}
-			// Reverse credits
+			if _, err := h.invoiceVoider.Void(r.Context(), tenantID, run.InvoiceID); err != nil {
+				slog.WarnContext(r.Context(), "failed to void invoice after dunning resolution; skipping credit reversal + PI cancel", "invoice_id", run.InvoiceID, "error", err)
+				break
+			}
+			// Reverse credits (only after a confirmed void)
 			if h.creditReverser != nil && inv.CustomerID != "" {
 				if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, inv.CustomerID, run.InvoiceID, inv.InvoiceNumber); err != nil {
 					slog.WarnContext(r.Context(), "failed to reverse credits on dunning void", "invoice_id", run.InvoiceID, "error", err)
@@ -364,7 +393,7 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 					slog.InfoContext(r.Context(), "credits reversed on dunning void", "invoice_id", run.InvoiceID, "reversed_cents", reversed)
 				}
 			}
-			// Cancel Stripe PI
+			// Cancel Stripe PI (only after a confirmed void)
 			if h.paymentCancel != nil && inv.StripePaymentIntentID != "" {
 				if err := h.paymentCancel.CancelPaymentIntent(r.Context(), inv.StripePaymentIntentID); err != nil {
 					slog.WarnContext(r.Context(), "failed to cancel PI on dunning void", "invoice_id", run.InvoiceID, "error", err)

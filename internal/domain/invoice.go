@@ -66,6 +66,22 @@ const (
 	PaymentUnknown InvoicePaymentStatus = "unknown"
 )
 
+// IsInFlight reports whether a charge attempt is still settling — the
+// outcome is not yet terminal, so the captured amount is unknown. This is
+// the single canonical definition of "in flight": processing (the charge
+// is open at the provider, e.g. off-session SCA requires_action maps here)
+// or unknown (an ambiguous provider error that may or may not have charged;
+// a reconciler resolves it). Any path that MUTATES an invoice (void,
+// mark-uncollectible, record-offline-payment, credit-note / clawback
+// amount_due reduction) must refuse or defer while this is true — mutating
+// an invoice with an open payment strands captured money, reverses tax on a
+// sale that may complete, or under-records amount_paid against a lowered
+// amount_due. Stripe enforces the same rule ("you can't void, edit, or mark
+// uncollectible an invoice with open payments").
+func (s InvoicePaymentStatus) IsInFlight() bool {
+	return s == PaymentProcessing || s == PaymentUnknown
+}
+
 // InvoiceTaxStatus tracks whether tax has been successfully calculated for
 // an invoice. The happy path is ok: calculation succeeded (including
 // zero-tax outcomes from none/manual/exempt/reverse-charge). Pending means

@@ -162,13 +162,14 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// and takes the refund/credit-balance branch (never reduces amount_due), so
 	// it is never gated. The AUTOMATED clawback paths (ADR-050 unpaid-source:
 	// CreateAndIssueAdjustment / CreateAdjustmentDraftTx) call create() DIRECTLY,
-	// bypassing this gate structurally — their in-flight handling (defer the
-	// reduction until settle) is a tracked follow-up (docs/adr/README.md "Open
-	// follow-ups"), deliberately not this change. A Get error here falls through
-	// to create(), which raises the canonical not-found/validation error.
+	// bypassing this 409 gate — they cannot bounce a cancel/downgrade back to a
+	// human. Instead they DEFER: Issue() leaves the draft unissued while the
+	// source is in-flight and the reconciler issues it once the source settles
+	// (ADR-059). A Get error here falls through to create(), which raises the
+	// canonical not-found/validation error.
 	if input.InvoiceID != "" {
 		if inv, err := s.invoices.Get(ctx, tenantID, input.InvoiceID); err == nil &&
-			(inv.PaymentStatus == domain.PaymentProcessing || inv.PaymentStatus == domain.PaymentUnknown) {
+			inv.PaymentStatus.IsInFlight() {
 			return domain.CreditNote{}, errs.InvalidState(
 				"cannot credit-note an invoice whose payment is in flight — settle or cancel the payment first, or wait for charge reconciliation")
 		}
@@ -299,9 +300,13 @@ func (s *Service) create(ctx context.Context, tenantID string, input CreateInput
 // adjustment and is rejected by Create's amount_due cap once the first lands.
 func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoiceID string, grossCents int64, reason, description string) (domain.CreditNote, error) {
 	// Calls the create() CORE directly (not the public Create) so the automated
-	// ADR-050 unpaid-source clawback BYPASSES the operator in-flight gate in
-	// Create — it must proceed on a 'processing' source (the gate's defer-until-
-	// settle handling for automated reductions is the tracked Part-B follow-up).
+	// ADR-050 unpaid-source clawback BYPASSES the operator in-flight 409 gate in
+	// Create. Unlike the operator (who is told to settle/cancel the charge and
+	// retry), the automated cancel/downgrade has no human to bounce to, so it
+	// must proceed — but it DEFERS rather than reduces: Issue() leaves the draft
+	// unissued while the source is in-flight (ADR-059), and the reconciler issues
+	// it once the source settles. issue_pending=true makes that deferred draft
+	// (and any post-commit Issue() failure) recoverable by RetryPendingClawbackIssue.
 	cn, err := s.create(ctx, tenantID, CreateInput{
 		InvoiceID: invoiceID,
 		Reason:    reason,
@@ -313,7 +318,8 @@ func (s *Service) CreateAndIssueAdjustment(ctx context.Context, tenantID, invoic
 		// Engine-issued under the clock-pinned sub's bound effective-now —
 		// so issued_at is in the invoice's (possibly simulated) time domain.
 		// ANDed with inv.IsSimulated in buildCreditNote.
-		IsSimulated: true,
+		IsSimulated:  true,
+		IssuePending: true,
 	}, nil)
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -676,6 +682,45 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return domain.CreditNote{}, errs.InvalidState("can only issue draft credit notes")
 	}
 
+	// Read the source invoice BEFORE the CAS so the two source-state gates below
+	// can decide whether to issue at all without claiming the transition.
+	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
+	}
+
+	// Orphan guard. The source was annulled (voided) or written off
+	// (uncollectible) after this draft was created — Void already reversed the
+	// invoice's tax and zeroed its receivable, so there is nothing left to
+	// relieve. Issuing now would (unpaid branch) re-reverse the same tax
+	// transaction (double under-remit) against a terminal invoice. Void the
+	// draft so it leaves the reconciler scan and never applies. Pure status
+	// flip on a never-applied draft — no money movement, no tax call.
+	if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+		if _, terr := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided); terr != nil {
+			return domain.CreditNote{}, fmt.Errorf("void orphaned clawback draft (source %s %s): %w", cn.InvoiceID, inv.Status, terr)
+		}
+		slog.InfoContext(ctx, "voided orphaned clawback draft (source annulled before issue)",
+			"credit_note_id", cn.ID, "invoice_id", cn.InvoiceID, "source_status", string(inv.Status))
+		return s.store.Get(ctx, tenantID, id)
+	}
+
+	// Defer-until-settle gate (ADR-059). The source's charge is still in flight
+	// (processing/unknown) — its captured amount is unknown. Issuing now would
+	// either reduce amount_due before MarkPaid records the captured amount
+	// (under-record / undersized refund cap) or relieve a charge that may yet
+	// succeed. Leave the draft status='draft' + issue_pending so the reconciler
+	// re-drives it once the source reaches a terminal payment state, at which
+	// point the paid/unpaid branch below selects the correct channel. This is
+	// the single chokepoint for ALL issue triggers (engine CreateAndIssueAdjustment,
+	// the post-commit issueClawbackDrafts, and the reconciler), so the automated
+	// clawback paths defer here rather than each gating their own create site.
+	if inv.PaymentStatus.IsInFlight() {
+		slog.InfoContext(ctx, "deferring clawback issue until source payment settles",
+			"credit_note_id", cn.ID, "invoice_id", cn.InvoiceID, "payment_status", string(inv.PaymentStatus))
+		return cn, nil
+	}
+
 	// Compare-and-swap the draft→issued transition BEFORE any side effect.
 	// Issue() reduces the invoice amount_due (unpaid path) and grants/refunds
 	// (paid path); the amount_due reduction is not idempotent, so two
@@ -691,11 +736,6 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		// A concurrent/retried Issue() already claimed the transition. Return
 		// the current credit note rather than re-applying side effects.
 		return s.store.Get(ctx, tenantID, id)
-	}
-
-	inv, err := s.invoices.Get(ctx, tenantID, cn.InvoiceID)
-	if err != nil {
-		return domain.CreditNote{}, fmt.Errorf("get invoice: %w", err)
 	}
 
 	if inv.PaymentStatus == domain.PaymentSucceeded {

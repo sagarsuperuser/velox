@@ -705,6 +705,15 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	if inv.Status == domain.InvoiceVoided {
 		return domain.Invoice{}, errs.InvalidState("invoice is already voided")
 	}
+	// A charge in flight (processing/unknown) may still succeed: voiding now
+	// would strand captured money on a voided invoice and reverse tax on a
+	// sale that completes. Block until the charge reaches a terminal state —
+	// the reconciler resolves it, then the void can proceed. Stripe enforces
+	// the same rule ("you can't void an invoice with open payments"). Guard
+	// sits BEFORE reverseInvoiceTax so the reversal never fires in-flight.
+	if inv.PaymentStatus.IsInFlight() {
+		return domain.Invoice{}, errs.InvalidState("a charge is in flight on this invoice — wait for it to settle or cancel it before voiding")
+	}
 
 	// Invoice-stable reversal reference (inv_taxrev_<id>). Void permits an
 	// `uncollectible` source (annulling a bad debt is a legitimate operator
@@ -763,6 +772,15 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	case domain.InvoiceUncollectible:
 		return domain.Invoice{}, errs.InvalidState("invoice is already uncollectible")
 	}
+	// A charge in flight may still succeed. MarkPaid IS allowed from
+	// uncollectible (the "wrote it off but paid after all" recovery), so if we
+	// reverse tax + flip to uncollectible now and the charge then settles, the
+	// tax for a real collected sale has been reversed → the tenant under-remits.
+	// Block until terminal. Stripe enforces the same ("can't mark uncollectible
+	// with open payments"). Guard sits BEFORE reverseInvoiceTax.
+	if inv.PaymentStatus.IsInFlight() {
+		return domain.Invoice{}, errs.InvalidState("a charge is in flight on this invoice — wait for it to settle or cancel it before marking uncollectible")
+	}
 
 	// Reverse the upstream tax transaction (remaining un-reversed portion only;
 	// see reverseInvoiceTax). Jurisdictional caveat — bad-debt VAT relief rules
@@ -806,10 +824,13 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 // Stripe" / paid_out_of_band=true affordance.
 //
 // Allowed source states: finalized (any payment_status that isn't
-// already succeeded or processing) AND uncollectible (the Stripe-
-// parity recovery transition — "we wrote it off but the customer
-// paid after all"). Rejects paid (idempotent — nothing to do) and
-// voided (terminal).
+// already succeeded or in flight — i.e. not processing/unknown) AND
+// uncollectible (the Stripe-parity recovery transition — "we wrote it
+// off but the customer paid after all"). Rejects paid (idempotent —
+// nothing to do), voided (terminal), and in-flight charges (an
+// ambiguous "unknown" charge may have actually succeeded at Stripe, so
+// recording an offline payment on top risks double-collection once the
+// reconciler resolves it).
 //
 // note is a short operator memo persisted in the audit metadata
 // (e.g. "Cheque #1234", "Wire 2026-05-20"). Not surfaced in
@@ -828,7 +849,7 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 	case domain.InvoiceDraft:
 		return domain.Invoice{}, errs.InvalidState("finalize the invoice before recording a payment")
 	}
-	if inv.PaymentStatus == domain.PaymentProcessing {
+	if inv.PaymentStatus.IsInFlight() {
 		return domain.Invoice{}, errs.InvalidState("a charge is already in flight on this invoice — wait for it to settle or cancel it before recording an offline payment")
 	}
 	now := s.clock.Now(ctx)

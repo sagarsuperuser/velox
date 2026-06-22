@@ -133,12 +133,26 @@ func (s *PostgresStore) createUnderInvoiceLockInTx(ctx context.Context, tx *sql.
 }
 
 // ListPendingClawbackDrafts returns auto-issue clawback drafts (issue_pending,
-// still status='draft') whose post-commit Issue() hasn't yet succeeded, for the
-// RetryPendingClawbackIssue reconciler. Cross-tenant (TxBypass) + scoped by
-// livemode, mirroring ListPendingTaxCommit; each row carries its TenantID so
-// the service re-issues under the right tenant. The 24h window bounds the scan
-// to recent failures (a draft that never issues is surfaced by the loud ERROR
-// log, not retried forever).
+// still status='draft') that are READY to issue, for the RetryPendingClawbackIssue
+// reconciler. Cross-tenant (TxBypass) + scoped by livemode, mirroring
+// ListPendingTaxCommit; each row carries its TenantID so the service re-issues
+// under the right tenant.
+//
+// "Ready" = the source invoice's payment is NOT in flight (processing/unknown).
+// This is the defer-until-settle gate (ADR-059): an automated clawback against a
+// source whose charge is still settling is created as a draft but NOT issued —
+// issuing it now would reduce amount_due before MarkPaid records the captured
+// amount (under-record) or relieve a charge that may yet succeed. The draft waits
+// here until the source reaches a terminal payment state, at which point Issue()'s
+// payment_status branch picks the right channel (paid→credit, failed→reduce).
+//
+// There is deliberately NO time window: an off-session SCA source can sit
+// 'processing' for days, so a fixed horizon (the prior 24h bound) would age a
+// legitimately-deferred draft out of the scan and silently drop the customer's
+// relief. The NOT-EXISTS source-terminal gate is the only eligibility predicate;
+// once a draft's source settles it becomes eligible regardless of draft age.
+// RetryPendingClawbackIssue logs per-row re-issue failures, so a genuinely-stuck
+// draft is surfaced by repeated ERROR logs rather than silently aged out.
 func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error) {
 	if batch <= 0 {
 		batch = 50
@@ -154,7 +168,12 @@ func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int
 		WHERE livemode = $1
 		  AND issue_pending
 		  AND status = 'draft'
-		  AND updated_at > now() - interval '24 hours'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM invoices i
+		    WHERE i.id = credit_notes.invoice_id
+		      AND i.tenant_id = credit_notes.tenant_id
+		      AND i.payment_status IN ('processing', 'unknown')
+		  )
 		ORDER BY updated_at ASC
 		LIMIT $2`, livemode, batch)
 	if err != nil {
