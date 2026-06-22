@@ -243,6 +243,16 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 	// this charge "should" have happened — so dunning's next_action_at lands
 	// inside the operator's Advance window for clock-pinned invoices. See
 	// simulatedFailureAt.
+	//
+	// KNOWN GAP (deferred — docs/adr/README.md "Open follow-ups"): this runs
+	// POST-COMMIT, behind the firstForThisPI gate that MarkPaymentFailedReporting
+	// Transition already committed above. So a crash here (or a transient
+	// StartDunning error) is NOT recovered: a same-PI redelivery returns
+	// firstForThisPI=false and skips this, and the reconciler only sweeps
+	// unknown/processing, never 'failed'. The 0085 UNIQUE guards against DOUBLE-
+	// start, NOT never-start — so dunning genuinely won't auto-start in that
+	// window (operator can still start it from the attention banner). The fix is
+	// a reconciler sweep for 'failed' invoices with no dunning run.
 	if s.dunning != nil {
 		failureAt := simulatedFailureAt(inv)
 		if err := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
