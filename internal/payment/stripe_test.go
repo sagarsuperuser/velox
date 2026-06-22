@@ -60,6 +60,10 @@ type mockInvoiceUpdater struct {
 	invoices    map[string]domain.Invoice
 	byPI        map[string]string // PI ID -> invoice ID
 	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
+	// cardEventEnqueues counts payment.succeeded enqueues — mirrors the real
+	// store enqueuing payment.succeeded IN-TX, gated on the transition (so a
+	// concurrent redelivery increments it once, not twice).
+	cardEventEnqueues int
 }
 
 func newMockInvoiceUpdater() *mockInvoiceUpdater {
@@ -134,6 +138,17 @@ func (m *mockInvoiceUpdater) MarkPaidReportingTransition(_ context.Context, _, i
 	inv.AmountDueCents = 0
 	m.invoices[id] = inv
 	return inv, true, nil
+}
+
+// MarkPaidCardSettlementTransition mirrors the store's card path: same paid-flip
+// as MarkPaidReportingTransition PLUS an in-tx payment.succeeded enqueue, gated on
+// the transition. We record the enqueue count so tests can assert exactly-once.
+func (m *mockInvoiceUpdater) MarkPaidCardSettlementTransition(ctx context.Context, tenantID, id string, stripePI string, paidAt time.Time) (domain.Invoice, bool, error) {
+	inv, transitioned, err := m.MarkPaidReportingTransition(ctx, tenantID, id, stripePI, paidAt)
+	if err == nil && transitioned {
+		m.cardEventEnqueues++
+	}
+	return inv, transitioned, err
 }
 
 func (m *mockInvoiceUpdater) MarkPaymentFailedReportingTransition(_ context.Context, _, id, piID, errMsg string) (domain.Invoice, bool, error) {
@@ -737,6 +752,13 @@ type transientMarkPaidInvoices struct {
 }
 
 func (t *transientMarkPaidInvoices) MarkPaidReportingTransition(_ context.Context, _, _ string, _ string, _ time.Time) (domain.Invoice, bool, error) {
+	return domain.Invoice{}, false, fmt.Errorf("connection reset by peer")
+}
+
+// MarkPaidCardSettlementTransition must ALSO fail transiently — SettleSucceeded
+// now calls this variant, so the override has to be here too (else the embedded
+// mock's success path would run).
+func (t *transientMarkPaidInvoices) MarkPaidCardSettlementTransition(_ context.Context, _, _ string, _ string, _ time.Time) (domain.Invoice, bool, error) {
 	return domain.Invoice{}, false, fmt.Errorf("connection reset by peer")
 }
 

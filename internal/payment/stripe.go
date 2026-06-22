@@ -155,6 +155,12 @@ type InvoiceUpdater interface {
 	// on it so a concurrent redelivery of the same charge doesn't double-
 	// fire the receipt email / payment.succeeded event.
 	MarkPaidReportingTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error)
+	// MarkPaidCardSettlementTransition is MarkPaidReportingTransition for the
+	// card path: it also enqueues payment.succeeded in the SAME tx as the
+	// paid-flip, so that event (the only one bearing the Stripe payment_intent_id)
+	// is crash-safe instead of fire-and-forget post-commit. SettleSucceeded uses
+	// this; non-card settlement paths keep MarkPaidReportingTransition.
+	MarkPaidCardSettlementTransition(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, bool, error)
 	// MarkPaymentFailedReportingTransition records a failure and reports
 	// whether THIS call is the first to fire the failure-notification set
 	// (payment.failed event + customer email + dunning) for this

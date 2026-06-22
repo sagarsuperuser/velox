@@ -3,6 +3,8 @@ package invoice_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -224,6 +226,131 @@ type recordingOutbox struct{ events []string }
 func (r *recordingOutbox) Enqueue(_ context.Context, _ *sql.Tx, _, eventType string, _ map[string]any) (string, error) {
 	r.events = append(r.events, eventType)
 	return "vlx_whob_test", nil
+}
+
+// failingOutbox records enqueues but errors on one target event type — used to
+// prove a failed IN-TX enqueue rolls the paid-flip back (atomicity).
+type failingOutbox struct {
+	events []string
+	failOn string
+}
+
+func (f *failingOutbox) Enqueue(_ context.Context, _ *sql.Tx, _, eventType string, _ map[string]any) (string, error) {
+	if eventType == f.failOn {
+		return "", fmt.Errorf("simulated outbox enqueue failure for %s", eventType)
+	}
+	f.events = append(f.events, eventType)
+	return "vlx_whob_test", nil
+}
+
+// seedFinalizedInvoice seeds a finalized, tax-ok invoice with non-zero amounts.
+func seedFinalizedInvoice(t *testing.T, db *postgres.DB, store *invoice.PostgresStore, ctx context.Context, tenantID string) string {
+	t.Helper()
+	invID := seedDraftInvoice(t, db, tenantID)
+	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET subtotal_cents=1000, total_amount_cents=1000, amount_due_cents=1000, tax_status='ok' WHERE id=$1`, invID); err != nil {
+		t.Fatalf("seed amounts: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+	if _, err := store.UpdateStatus(ctx, tenantID, invID, domain.InvoiceFinalized); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	return invID
+}
+
+// TestMarkPaidCardSettlement_EnqueuesPaymentSucceededInTx is the regression for
+// the 2026-06-22 hybrid fix: on the CARD path, payment.succeeded is enqueued
+// IN-TX alongside invoice.paid (so it's crash-safe with the paid-flip), exactly
+// once (gated on the transition); the non-card path emits ONLY invoice.paid.
+func TestMarkPaidCardSettlement_EnqueuesPaymentSucceededInTx(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("card path enqueues invoice.paid + payment.succeeded, once", func(t *testing.T) {
+		// Own tenant per sub-test: seedDraftInvoice creates a fixed-external_id
+		// customer, so two seeds in one tenant would collide.
+		tenantID := testutil.CreateTestTenant(t, db, "MarkPaid Card Settlement (card)")
+		store := invoice.NewPostgresStore(db)
+		rec := &recordingOutbox{}
+		store.SetOutboxEnqueuer(rec)
+		invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
+
+		_, transitioned, err := store.MarkPaidCardSettlementTransition(ctx, tenantID, invID, "pi_card", now)
+		if err != nil {
+			t.Fatalf("MarkPaidCardSettlementTransition: %v", err)
+		}
+		if !transitioned {
+			t.Fatal("first call must report transitioned=true")
+		}
+		want := []string{domain.EventInvoicePaid, domain.EventPaymentSucceeded}
+		if !reflect.DeepEqual(rec.events, want) {
+			t.Fatalf("card path events: got %v, want %v (both enqueued in the same tx)", rec.events, want)
+		}
+
+		// Duplicate (already paid) → no new enqueues.
+		_, transitioned2, err := store.MarkPaidCardSettlementTransition(ctx, tenantID, invID, "pi_card2", now.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("duplicate MarkPaidCardSettlementTransition: %v", err)
+		}
+		if transitioned2 {
+			t.Error("duplicate must report transitioned=false")
+		}
+		if !reflect.DeepEqual(rec.events, want) {
+			t.Errorf("duplicate re-enqueued events: got %v, want unchanged %v", rec.events, want)
+		}
+	})
+
+	t.Run("non-card path enqueues ONLY invoice.paid", func(t *testing.T) {
+		tenantID := testutil.CreateTestTenant(t, db, "MarkPaid Card Settlement (non-card)")
+		store := invoice.NewPostgresStore(db)
+		rec := &recordingOutbox{}
+		store.SetOutboxEnqueuer(rec)
+		invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
+
+		if _, _, err := store.MarkPaidReportingTransition(ctx, tenantID, invID, "pi_noncard", now); err != nil {
+			t.Fatalf("MarkPaidReportingTransition: %v", err)
+		}
+		want := []string{domain.EventInvoicePaid}
+		if !reflect.DeepEqual(rec.events, want) {
+			t.Fatalf("non-card path events: got %v, want %v (payment.succeeded must NOT fire here)", rec.events, want)
+		}
+	})
+}
+
+// TestMarkPaidCardSettlement_RollsBackPaidFlipIfEventEnqueueFails proves the
+// atomicity the fix buys: because payment.succeeded is enqueued INSIDE the
+// paid-flip tx, a failure of that enqueue rolls the whole tx back — the invoice
+// stays finalized, never stranded as paid-without-its-event.
+func TestMarkPaidCardSettlement_RollsBackPaidFlipIfEventEnqueueFails(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "MarkPaid Card Rollback")
+	store := invoice.NewPostgresStore(db)
+	store.SetOutboxEnqueuer(&failingOutbox{failOn: domain.EventPaymentSucceeded})
+	invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if _, _, err := store.MarkPaidCardSettlementTransition(ctx, tenantID, invID, "pi_card", now); err == nil {
+		t.Fatal("expected an error when the in-tx payment.succeeded enqueue fails")
+	}
+
+	got, err := store.Get(ctx, tenantID, invID)
+	if err != nil {
+		t.Fatalf("get after failed settle: %v", err)
+	}
+	if got.Status != domain.InvoiceFinalized {
+		t.Errorf("REGRESSION: status=%q after a failed in-tx payment.succeeded enqueue, want still 'finalized' (paid-flip must roll back atomically)", got.Status)
+	}
+	if got.PaymentStatus == domain.PaymentSucceeded {
+		t.Error("REGRESSION: payment_status=succeeded after rollback — the paid-flip did not roll back with the failed enqueue")
+	}
 }
 
 // TestMarkPaid_FiresInvoicePaidOnceOnTransition asserts invoice.paid is emitted

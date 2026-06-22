@@ -475,6 +475,10 @@ func (m *mockInvoiceUpdaterHandler) MarkPaidReportingTransition(_ context.Contex
 	return domain.Invoice{ID: id, TenantID: inv.tenantID, Status: domain.InvoicePaid}, !alreadyPaid, nil
 }
 
+func (m *mockInvoiceUpdaterHandler) MarkPaidCardSettlementTransition(ctx context.Context, tenantID, id, piID string, paidAt time.Time) (domain.Invoice, bool, error) {
+	return m.MarkPaidReportingTransition(ctx, tenantID, id, piID, paidAt)
+}
+
 func (m *mockInvoiceUpdaterHandler) MarkPaymentFailedReportingTransition(_ context.Context, _, id, piID, errMsg string) (domain.Invoice, bool, error) {
 	inv, ok := m.invoices[id]
 	if !ok {

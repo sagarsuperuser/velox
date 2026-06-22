@@ -108,16 +108,17 @@ messages + CHANGELOG.md, not here.
 Work an ADR deliberately scoped out, as **thin pointers** — the authoritative
 rationale and revisit trigger live in each ADR's *Consequences/Deferred* section;
 this table only makes the open items discoverable in one place. Remove a row when
-its follow-up ships. (All three below share one shape: a post-commit external
-call that is not yet idempotent/recoverable. None is a regression; each is
-guarded by loud-fail today and gated on a named trigger — see
-`feedback_pre_launch_scoping`.)
+its follow-up ships. (These share one shape: a post-commit side-effect / external
+call not yet in-tx or idempotent. None is a regression; each is guarded today and
+gated on a named trigger — see `feedback_pre_launch_scoping`.)
 
 | Follow-up | ADR | Code site | Revisit trigger |
 |---|---|---|---|
 | `reverseInvoiceTax` failure recovery — a failed void/uncollectible tax reversal is warn-and-drop (no reconciler), so a transient failure leaves the tenant over-remitting until manual reconcile | [057](057-atomic-recoverable-downgrade-clawback.md) §Deferred (b) | `internal/invoice/service.go` · `reverseInvoiceTax` | first real tax-filing customer |
 | Clawback **post-flip partial-issue** window — `Issue()` flips status to `issued` then a side-effect fails, leaving the row invisible to the `status='draft'` reconciler (loud ERROR, manual reconcile) | [057](057-atomic-recoverable-downgrade-clawback.md) §"Known gap" | `internal/creditnote/service.go` · `Issue` / `RetryPendingClawbackIssue` | needs an idempotent unpaid-source `ApplyCreditNote` |
 | **Bug B** — cross-interval swap refund double-credit on a full crash-retry (the post-commit refund is not idempotent; bounded by the per-invoice credit-note cap) | [056](056-atomic-cross-interval-plan-swap.md) §Consequences | `internal/subscription/service.go` · `FinalizeCrossIntervalSwap` | a real `in_advance` design partner, or idempotency-key middleware lands |
+| **Receipt email in-tx** — the payment receipt is enqueued post-commit best-effort; a crash in the sub-ms window before the enqueue drops it (at-least-once-with-retry once enqueued, so this is the *correct* contract for email — upgrade only if a DP needs guaranteed receipts) | settlement.go durability-tiering note (no ADR) | `internal/payment/settlement.go` · `SettleSucceeded` (receipt) | a design partner requiring guaranteed receipt delivery |
+| **`SettleFailed` event/email in-tx** — `payment.failed` + the failed-payment email still fire post-commit (same crash window the success path just closed); the symmetric fix moves them in-tx. The dunning-run stays post-commit (already idempotent via its `UNIQUE`-per-invoice constraint, migration 0085) | settlement.go (no ADR) | `internal/payment/settlement.go` · `SettleFailed` | next time this path is touched, or guaranteed failure-notification delivery |
 
 ## Writing a new ADR
 
