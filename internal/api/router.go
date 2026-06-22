@@ -344,6 +344,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoice service which is defined just above; other dunning
 	// adapters (pauser, canceler) wire earlier next to dunningSvc.
 	dunningSvc.SetInvoiceUncollectibleMarker(&invoiceUncollectibleAdapter{svc: invoiceSvc})
+	// Route the dunning manual-resolve void through the invoice service (single
+	// void writer: guards + in-flight block + tax reversal + invoice.voided
+	// event) instead of the raw store. Same lazy wire as the marker above.
+	dunningH.SetInvoiceVoider(invoiceSvc)
 	// Wire the post-connect tax-retry hook (ADR-019). When an
 	// operator (re)connects Stripe in Settings → Payments, the
 	// tenantstripe service fans out a goroutine that flushes any

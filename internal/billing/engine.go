@@ -4025,7 +4025,15 @@ func (e *Engine) relieveUnpaidPrebill(ctx context.Context, sub domain.Subscripti
 	// Whole remaining receivable is unused and nothing has been paid → void it.
 	// A partial payment (amount_paid > 0) would make a void annul collected
 	// money, so fall through to the reduce path in that case.
-	if reduceBy >= src.AmountDueCents && src.AmountPaidCents == 0 {
+	//
+	// EXCEPT when the charge is in flight (processing/unknown): voiding an
+	// invoice whose payment may still succeed strands captured money on a voided
+	// invoice (and invoice.Service.Void now refuses it, ADR-059). Fall through to
+	// the reduce path, which creates a FULL-amount clawback draft that Issue()
+	// defers until the source settles — paid → full credit to balance, failed →
+	// amount_due reduced to 0 (the same end-state the void would have produced),
+	// chosen by the source's settled payment_status at issue time.
+	if reduceBy >= src.AmountDueCents && src.AmountPaidCents == 0 && !src.PaymentStatus.IsInFlight() {
 		if e.invoiceVoider == nil {
 			slog.InfoContext(ctx, "unpaid prebill relief: fully unused but invoice voider unwired; leaving for dunning",
 				"subscription_id", sub.ID, "source_invoice_id", src.ID, "reason", reason)
@@ -4049,6 +4057,17 @@ func (e *Engine) relieveUnpaidPrebill(ctx context.Context, sub domain.Subscripti
 	if _, err := e.creditNoteAdjuster.CreateAndIssueAdjustment(
 		ctx, sub.TenantID, src.ID, reduceBy, reason, desc); err != nil {
 		return 0, fmt.Errorf("relieve unpaid prebill: reduce %s to consumed portion: %w", src.ID, err)
+	}
+	// For an in-flight source the CreateAndIssueAdjustment above created the
+	// clawback as a DRAFT and Issue() DEFERRED it (ADR-059) — amount_due is NOT
+	// reduced yet; the reconciler issues it once the charge settles. Log the
+	// honest state so this doesn't read as a completed reduction.
+	if src.PaymentStatus.IsInFlight() {
+		slog.InfoContext(ctx, "unpaid prebill relief: source charge in flight — clawback drafted, deferred until settle",
+			"subscription_id", sub.ID, "customer_id", sub.CustomerID,
+			"source_invoice_id", src.ID, "drafted_cents", reduceBy,
+			"payment_status", string(src.PaymentStatus), "reason", reason)
+		return 0, nil
 	}
 	slog.InfoContext(ctx, "unpaid prebill relief: reduced amount_due to consumed portion",
 		"subscription_id", sub.ID, "customer_id", sub.CustomerID,
