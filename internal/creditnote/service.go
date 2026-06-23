@@ -835,7 +835,8 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			// consistent. The grant is an INTERNAL DB write (the credit ledger),
 			// so the draft→issued CAS and the grant belong in ONE transaction —
 			// thread a coordinator *sql.Tx through the creditnote + credit stores
-			// (the ADR-056 pattern), so a grant failure rolls the issue back and
+			// (the ADR-056 pattern; full blueprint in ADR-061), so a grant
+			// failure rolls the issue back and
 			// the orphan simply cannot exist. Reconcilers are the right tool only
 			// for the GENUINELY-EXTERNAL effects in this same flow (the Stripe
 			// refund + tax reversal, which can't share a DB tx) — those move
