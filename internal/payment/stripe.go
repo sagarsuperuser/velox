@@ -468,7 +468,24 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 				"error", pe.Message,
 			)
 		}
-		_, _ = s.invoices.UpdatePayment(ctx, tenantID, inv.ID, status, pe.PaymentIntentID, pe.Message, nil)
+		if perr := persistChargeOutcomeWithRetry(ctx, s.invoices, tenantID, inv.ID, status, pe.PaymentIntentID, pe.Message); perr != nil {
+			// LOAD-BEARING, especially on the Unknown path: this is the SOLE
+			// write that sets payment_status='unknown' — enrolling the invoice
+			// into the reconciler's unknown-payment sweep (ListUnknownPayments)
+			// — and persists the PaymentIntent id. Losing it strands a
+			// possibly-SUCCEEDED PI: the reconciler never resolves it → silent
+			// under-collection. Pre-fix the call swallowed both the return AND
+			// the error (`_, _ =`). Fail LOUD with the PI id so an operator can
+			// reconcile manually. The charge-error return below is unchanged —
+			// the caller still classifies the outcome and defers unknowns.
+			slog.Error("CRITICAL: could not persist post-charge payment state — invoice may be orphaned from the reconciler sweep",
+				"invoice_id", inv.ID,
+				"payment_status", string(status),
+				"unknown_outcome", pe.Unknown,
+				"stripe_payment_intent_id", pe.PaymentIntentID,
+				"error", perr,
+			)
+		}
 		// Count unknown outcomes as failed for the success-rate alert — a
 		// Stripe outage genuinely impairs customer charging and should page,
 		// even though the reconciler will later resolve the per-invoice state.
@@ -606,6 +623,34 @@ func startDunningWithRetry(ctx context.Context, dunning DunningStarter, tenantID
 		return nil
 	}
 	return fmt.Errorf("StartDunning failed after %d attempts: %w", len(delays), lastErr)
+}
+
+// persistChargeOutcomeWithRetry records the post-charge payment state (the
+// PaymentUnknown/PaymentFailed status + PaymentIntent id) with a bounded
+// retry, mirroring startDunningWithRetry. This write is LOAD-BEARING on the
+// Unknown path: it is the sole thing that sets payment_status='unknown'
+// (enrolling the invoice into the reconciler's ListUnknownPayments sweep) and
+// persists the PaymentIntent id, so a transient loss must be retried before
+// it strands a possibly-succeeded PI. The caller fails loud if every attempt
+// fails. Pre-fix the call site swallowed both the return and the error.
+func persistChargeOutcomeWithRetry(ctx context.Context, invoices InvoiceUpdater, tenantID, invoiceID string, status domain.InvoicePaymentStatus, piID, message string) error {
+	delays := []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond}
+	var lastErr error
+	for i, d := range delays {
+		if d > 0 {
+			select {
+			case <-time.After(d):
+			case <-ctx.Done():
+				return fmt.Errorf("ctx canceled persisting charge outcome (attempt %d): %w", i+1, ctx.Err())
+			}
+		}
+		if _, err := invoices.UpdatePayment(ctx, tenantID, invoiceID, status, piID, message, nil); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("persist charge outcome failed after %d attempts: %w", len(delays), lastErr)
 }
 
 func simulatedFailureAt(inv domain.Invoice) time.Time {
