@@ -1,0 +1,63 @@
+package webhook
+
+import (
+	"context"
+	"testing"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+)
+
+// livemodeCapturingStore embeds the package memStore and records the ctx
+// livemode observed at the first store call Dispatch makes (CreateEvent) — the
+// point that stamps webhook_event.livemode and drives the same-mode endpoint
+// filter.
+type livemodeCapturingStore struct {
+	*memStore
+	captured     bool
+	createCalled bool
+}
+
+func (s *livemodeCapturingStore) CreateEvent(ctx context.Context, tenantID string, e domain.WebhookEvent) (domain.WebhookEvent, error) {
+	s.captured = postgres.Livemode(ctx)
+	s.createCalled = true
+	return s.memStore.CreateEvent(ctx, tenantID, e)
+}
+
+// TestDispatcher_Handle_PropagatesRowLivemodeIntoCtx pins the cross-mode-leak
+// guard. The background outbox dispatcher has no intrinsic mode, so handle()
+// must stamp each outbox row's Livemode into ctx BEFORE Service.Dispatch — else
+// a test-mode producer's event would match/deliver to LIVE endpoints (or vice
+// versa) and writes would land in the wrong RLS partition. The ctx handed in
+// deliberately carries NO livemode (the dispatcher's default), so a pass proves
+// the value came from row.Livemode, not the caller. Asserts both modes; without
+// the `WithLivemode(ctx, row.Livemode)` line in handle (dispatcher.go:119) ctx
+// would carry the default (false) regardless of the row.
+func TestDispatcher_Handle_PropagatesRowLivemodeIntoCtx(t *testing.T) {
+	for _, mode := range []bool{true, false} {
+		name := "testmode"
+		if mode {
+			name = "livemode"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := &livemodeCapturingStore{memStore: newMemStore()}
+			d := &Dispatcher{svc: NewService(store, nil)}
+
+			err := d.handle(context.Background(), OutboxRow{
+				TenantID:  "t1",
+				Livemode:  mode,
+				EventType: "invoice.paid",
+				Payload:   map[string]any{"invoice_id": "inv_1"},
+			})
+			if err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			if !store.createCalled {
+				t.Fatal("Dispatch never reached CreateEvent — test is vacuous")
+			}
+			if store.captured != mode {
+				t.Errorf("ctx livemode inside Dispatch = %v, want %v (row.Livemode must propagate)", store.captured, mode)
+			}
+		})
+	}
+}
