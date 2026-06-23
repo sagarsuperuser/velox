@@ -524,7 +524,18 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		overageAction = "charge"
 	}
 
-	sub, err := s.store.Create(ctx, tenantID, domain.Subscription{
+	// ADR-031: in_advance plans get a day-1 invoice covering the upcoming
+	// period's base fee. Build it IN THE SAME tx as the subscription insert
+	// (ADR-056 coordinator) so a billing failure rolls the whole create back
+	// rather than leaving an active sub with no first-period invoice. The old
+	// "deferred to next cycle close" backstop was false: the cycle scheduler
+	// bills the UPCOMING period and SKIPS the just-elapsed in_advance segment,
+	// so a dropped day-1 invoice is a permanent revenue leak. Trialing subs
+	// skip this (their first invoice fires at trial-end). External steps (tax
+	// commit + auto-charge) run post-commit via FinalizeOnCreateInvoice.
+	var createdInv domain.Invoice
+	var haveInv bool
+	sub, err := s.store.CreateWithBill(ctx, tenantID, domain.Subscription{
 		Code:                      code,
 		DisplayName:               displayName,
 		CustomerID:                input.CustomerID,
@@ -541,23 +552,27 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		OverageAction:             overageAction,
 		TestClockID:               inheritedClockID,
 		Items:                     items,
+	}, func(tx *sql.Tx, created domain.Subscription) error {
+		if s.biller == nil || created.Status != domain.SubscriptionActive {
+			return nil
+		}
+		inv, ok, billErr := s.biller.BillOnCreateTx(ctx, tx, created)
+		if billErr != nil {
+			return fmt.Errorf("first-invoice-on-create: %w", billErr)
+		}
+		createdInv, haveInv = inv, ok
+		return nil
 	})
 	if err != nil {
 		return domain.Subscription{}, err
 	}
 
-	// ADR-031: in_advance plans get a day-1 invoice covering the
-	// upcoming period's base fee. Best-effort — a failure here logs
-	// but doesn't roll back the sub. Trialing subs skip this path
-	// (their first invoice fires when the trial ends, via the
-	// cycle scheduler picking up the now-active sub at trial_end_at).
-	if s.biller != nil && sub.Status == domain.SubscriptionActive {
-		if _, err := s.biller.BillOnCreate(ctx, sub); err != nil {
-			slog.Warn("first-invoice-on-create failed; in_advance base fee will be deferred to next cycle close",
-				"subscription_id", sub.ID,
-				"tenant_id", sub.TenantID,
-				"error", err)
-		}
+	// Post-commit external steps (tax commit + auto-charge) — Stripe calls must
+	// never ride a DB tx, and the invoice is now durable + atomic with the sub.
+	// A failure here is recovered by the existing tax-commit reconciler /
+	// auto-charge retry sweep, unlike the lost-invoice case the tx closes.
+	if haveInv {
+		s.biller.FinalizeOnCreateInvoice(ctx, sub, createdInv)
 	}
 
 	return sub, nil

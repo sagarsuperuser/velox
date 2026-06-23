@@ -58,6 +58,25 @@ func (m *memStore) Create(ctx context.Context, tenantID string, s domain.Subscri
 	return s, nil
 }
 
+func (m *memStore) CreateWithBill(ctx context.Context, tenantID string, s domain.Subscription, billFn func(tx *sql.Tx, created domain.Subscription) error) (domain.Subscription, error) {
+	created, err := m.Create(ctx, tenantID, s)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(nil, created); err != nil {
+			// Simulate the tx rollback: the real store does not persist the
+			// subscription (or its items) when billFn fails.
+			delete(m.subs, created.ID)
+			for _, it := range created.Items {
+				delete(m.items, it.ID)
+			}
+			return domain.Subscription{}, err
+		}
+	}
+	return created, nil
+}
+
 // recordChange mirrors the DB trigger that fills
 // subscription_item_changes (migration 0029). Each mutation through
 // the mem store appends a change row so tests that exercise
@@ -742,8 +761,9 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected: %v", err)
 		}
-		if fb.calls != 1 {
-			t.Errorf("biller called %d times, want 1", fb.calls)
+		// ADR-056: the day-1 invoice is now built in-tx via BillOnCreateTx.
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx called %d times, want 1", fb.createTxCalls)
 		}
 	})
 
@@ -923,24 +943,34 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("ADR-031 biller error does NOT fail create", func(t *testing.T) {
-		svcWithBiller := NewService(newMemStore(), nil)
-		fb := &fakeBiller{err: fmt.Errorf("tax provider down")}
+	t.Run("ADR-056 a hard day-1 billing failure rolls back the create (atomic)", func(t *testing.T) {
+		// Pre-ADR-056 a BillOnCreate failure was swallowed: the sub stayed
+		// active with NO first-period invoice — a permanent revenue leak (the
+		// cycle scheduler bills the UPCOMING period and skips the just-elapsed
+		// in_advance segment, so it is NOT "deferred to next cycle close"). Now
+		// the day-1 invoice is built IN the create tx, so a hard failure rolls
+		// the whole create back rather than orphaning a sub.
+		store := newMemStore()
+		svcWithBiller := NewService(store, nil)
+		fb := &fakeBiller{createTxErr: fmt.Errorf("invoice insert failed")}
 		svcWithBiller.SetBiller(fb)
-		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
+		_, err := svcWithBiller.Create(ctx, "t1", CreateInput{
 			Code: "sub-bill-err", DisplayName: "Error path",
 			CustomerID: "cus_1",
 			Items:      []CreateItemInput{{PlanID: "pln_1"}},
 			StartNow:   true,
 		})
-		if err != nil {
-			t.Fatalf("biller error should not fail Create: %v", err)
+		if err == nil {
+			t.Fatal("a day-1 billing failure must fail Create (atomic), not orphan a sub with no first-period invoice")
 		}
-		if sub.ID == "" {
-			t.Fatal("sub should be created even when biller fails")
+		if len(store.subs) != 0 {
+			t.Fatalf("subscription must be rolled back on a billing failure; got %d persisted", len(store.subs))
 		}
-		if fb.calls != 1 {
-			t.Errorf("biller called %d times, want 1", fb.calls)
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx called %d times, want 1", fb.createTxCalls)
+		}
+		if fb.finalizeCalls != 0 {
+			t.Errorf("FinalizeOnCreateInvoice must NOT run when the create rolled back; got %d", fb.finalizeCalls)
 		}
 	})
 }
@@ -2731,6 +2761,11 @@ func TestUpdateItemTx_CrossIntervalAtomic(t *testing.T) {
 			"p_monthly_arr": {ID: "p_monthly_arr", BillingInterval: domain.BillingMonthly, BaseBillTiming: domain.BillInArrears, BaseAmountCents: 2900},
 		}})
 		svc.SetBiller(fb)
+		// The seed Create now bills the day-1 invoice IN-tx via BillOnCreateTx
+		// (ADR-056). Temporarily neutralize any failure the subtest configured
+		// for the SWAP so the seed create itself succeeds, then restore it.
+		savedErr, savedOK := fb.createTxErr, fb.createTxOK
+		fb.createTxErr, fb.createTxOK = nil, true
 		sub, err := svc.Create(ctx, "t1", CreateInput{
 			Code: "s", DisplayName: "n", CustomerID: "c",
 			Items:       []CreateItemInput{{PlanID: "p_yearly_adv"}},
@@ -2740,6 +2775,7 @@ func TestUpdateItemTx_CrossIntervalAtomic(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
+		fb.createTxErr, fb.createTxOK = savedErr, savedOK
 		fb.calls, fb.createTxCalls, fb.finalizeCalls, fb.planSwapCalls = 0, 0, 0, 0
 		return svc, sub
 	}
@@ -2836,6 +2872,7 @@ func TestUpdateItemTx_CrossIntervalAtomic(t *testing.T) {
 		if len(sub.Items) != 2 {
 			t.Fatalf("expected 2 items, got %d", len(sub.Items))
 		}
+		fb.createTxCalls = 0 // ignore the seed create's in-tx day-1 bill; assert only the swap
 		if _, err := svc.UpdateItemTx(ctx, nil, "t1", sub.ID, sub.Items[0].ID, UpdateItemInput{
 			NewPlanID: "p_y", Immediate: true,
 		}); err == nil {

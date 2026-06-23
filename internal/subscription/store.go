@@ -14,6 +14,13 @@ type Store interface {
 	// is hydrated with the inserted items (including their assigned IDs).
 	Create(ctx context.Context, tenantID string, s domain.Subscription) (domain.Subscription, error)
 
+	// CreateWithBill writes the subscription + items AND runs billFn (the day-1
+	// in_advance invoice insert) in the SAME transaction, so a billing failure
+	// rolls the create back rather than silently dropping the first-period base
+	// fee (the cycle scheduler skips the just-elapsed in_advance segment, so a
+	// lost day-1 invoice is a permanent revenue leak). billFn may be nil.
+	CreateWithBill(ctx context.Context, tenantID string, s domain.Subscription, billFn func(tx *sql.Tx, created domain.Subscription) error) (domain.Subscription, error)
+
 	// Get, List, and GetDueBilling hydrate the returned subscriptions with
 	// their current items via a second query. Callers that need the items
 	// should rely on sub.Items directly — a subscription without items is
