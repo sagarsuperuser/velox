@@ -498,10 +498,13 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	// If credits covered 100%, mark as paid immediately — BUT only on
 	// invoices that landed as finalized at create time. Draft invoices
-	// (tax pending / pause-collection) stay draft with credits applied;
-	// tax-retry / pause-resume's auto-finalize chains land the
-	// transition later. Mirrors the same gate added to billOnePeriod's
-	// equivalent block (2026-05-22 fix — invoice DEMO-000906).
+	// (tax pending / pause-collection) stay draft with credits applied.
+	// A tax-pending draft auto-finalizes later via the tax-retry chain; a
+	// pause-collection draft stays draft until the operator finalizes it
+	// (resume clears the pause and the next cycle generates finalized
+	// invoices, but the accrued drafts are NOT auto-finalized — there is no
+	// pause-resume auto-finalize chain). Mirrors the same gate added to
+	// billOnePeriod's equivalent block (2026-05-22 fix — invoice DEMO-000906).
 	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {

@@ -627,10 +627,14 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 	if now.IsZero() {
 		now = s.clock.Now(ctx)
 	}
-	run.State = domain.DunningEscalated
-	run.Resolution = domain.ResolutionRetriesExhausted
-	run.ResolvedAt = &now
-	run.NextActionAt = nil
+
+	// actionFailed records whether the terminal final_action mover errored.
+	// The run's terminal state is assigned AFTER the switch so a swallowed
+	// mover failure leaves the run requeryable (state=active) instead of a
+	// clean "escalated" beside an invoice/sub that never got closed —
+	// escalated runs are permanently excluded from both due-run pickers, so
+	// they'd never be re-attempted.
+	actionFailed := false
 
 	switch policy.FinalAction {
 	case domain.DunningActionManualReview:
@@ -648,6 +652,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		if s.subPauser != nil && s.invoiceGet != nil {
 			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
 				if err := s.subPauser.PauseCollection(ctx, tenantID, inv.SubscriptionID); err != nil {
+					actionFailed = true
 					slog.Warn("failed to pause collection after dunning exhausted",
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID, "error", err)
 				} else {
@@ -664,6 +669,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		if s.subCanceler != nil && s.invoiceGet != nil {
 			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
 				if err := s.subCanceler.Cancel(ctx, tenantID, inv.SubscriptionID); err != nil {
+					actionFailed = true
 					slog.Warn("failed to cancel subscription after dunning exhausted",
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID, "error", err)
 				} else {
@@ -680,6 +686,7 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		// independently cancel via the dashboard.
 		if s.invoiceUncollect != nil {
 			if err := s.invoiceUncollect.MarkUncollectible(ctx, tenantID, run.InvoiceID); err != nil {
+				actionFailed = true
 				slog.Warn("failed to mark invoice uncollectible after dunning exhausted",
 					"invoice_id", run.InvoiceID, "error", err)
 			} else {
@@ -692,6 +699,30 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		slog.Warn("unknown dunning final_action — leaving run escalated without state-change action",
 			"final_action", policy.FinalAction, "run_id", run.ID)
 	}
+
+	if actionFailed {
+		// The terminal action errored — keep the run requeryable so the
+		// due-run picker re-attempts it (escalated runs are excluded from
+		// both pickers and would never retry). AttemptCount is unchanged, so
+		// the clock-catchup no-progress guard still exits — no infinite loop
+		// within an advance; the re-attempt lands on a later due tick.
+		run.State = domain.DunningActive
+		run.Resolution = domain.ResolutionActionFailed
+		run.ResolvedAt = nil
+		retryAt := now.Add(24 * time.Hour)
+		run.NextActionAt = &retryAt
+		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
+			return err
+		}
+		slog.Warn("dunning final_action failed; run kept active for re-attempt",
+			"run_id", run.ID, "invoice_id", run.InvoiceID, "final_action", policy.FinalAction)
+		return nil
+	}
+
+	run.State = domain.DunningEscalated
+	run.Resolution = domain.ResolutionRetriesExhausted
+	run.ResolvedAt = &now
+	run.NextActionAt = nil
 
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:        run.ID,

@@ -82,10 +82,12 @@ type Store interface {
 	// the cross-mode RLS-bypassed scan would return rows for the
 	// other mode that fail per-row RLS lookup with "not found".
 	ListPendingTaxRetry(ctx context.Context, batch int, retryableCodes []string, maxAttempts int, livemode bool) ([]domain.Invoice, error)
-	// ListPendingTaxCommit finds finalized stripe_tax invoices with a
-	// successful calculation (tax_status=ok, tax_calculation_id set) but no
-	// persisted tax_transaction_id — the orphan state from a commit that
-	// succeeded at Stripe but failed to persist locally. Powers the commit
+	// ListPendingTaxCommit finds finalized/paid/voided/uncollectible
+	// stripe_tax invoices with a successful calculation (tax_status=ok,
+	// tax_calculation_id set) but no persisted tax_transaction_id — the orphan
+	// state from a commit that succeeded at Stripe but failed to persist
+	// locally (incl. the case where finalize+auto-charge flipped the invoice
+	// to 'paid' before the reconciler's first scan). Powers the commit
 	// reconciler.
 	ListPendingTaxCommit(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error)
 

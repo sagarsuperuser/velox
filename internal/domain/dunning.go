@@ -70,6 +70,13 @@ const (
 	// downstream side-effects as the automated path — Stripe-parity
 	// "Mark uncollectible" surfaced on the dunning resolve flow.
 	ResolutionInvoiceNotCollectible DunningResolution = "invoice_not_collectible"
+	// ResolutionActionFailed marks a run whose terminal final_action
+	// (pause / cancel / mark-uncollectible) FAILED at exhaustion — a
+	// Stripe blip, a conflicting state, a DB error. The run is left
+	// state=active (NOT escalated) with next_action_at set so the due-run
+	// pickers re-attempt the action, rather than recording a clean
+	// "escalated" beside an invoice/sub that never actually got closed.
+	ResolutionActionFailed DunningResolution = "action_failed"
 )
 
 // DunningPolicy is a named template that drives the retry state

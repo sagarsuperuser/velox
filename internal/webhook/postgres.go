@@ -535,8 +535,12 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 		SET next_retry_at = NOW() + make_interval(secs => $1)
 		WHERE id IN (
 			SELECT id FROM webhook_deliveries
-			WHERE status = 'pending' AND next_retry_at <= NOW()
-			ORDER BY next_retry_at ASC
+			-- next_retry_at IS NULL covers a freshly-created 'pending' row whose
+			-- first-attempt goroutine died before writing an outcome (NULL <= NOW()
+			-- is never true, so it would otherwise strand forever). Sibling pattern:
+			-- invoice tax-retry claim.
+			WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+			ORDER BY next_retry_at ASC NULLS FIRST
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		)
