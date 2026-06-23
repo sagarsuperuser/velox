@@ -47,6 +47,19 @@ const itemCols = `id, tenant_id, subscription_id, plan_id, quantity, metadata,
 // ---------------------------------------------------------------------------
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.Subscription) (domain.Subscription, error) {
+	return s.CreateWithBill(ctx, tenantID, sub, nil)
+}
+
+// CreateWithBill inserts the subscription (+ items) AND runs billFn — the
+// day-1 in_advance invoice insert — in the SAME transaction, so a billing
+// failure rolls the whole create back instead of silently leaving an active
+// subscription with no first-period invoice. That matters because the cycle
+// scheduler bills the UPCOMING period and SKIPS the just-elapsed in_advance
+// segment, so a dropped day-1 invoice is a permanent revenue leak, not a
+// "deferred to next cycle close" one. ADR-056 coordinator pattern; the
+// external steps (tax commit + auto-charge) run post-commit via the caller's
+// FinalizeOnCreateInvoice. billFn may be nil (a plain create).
+func (s *PostgresStore) CreateWithBill(ctx context.Context, tenantID string, sub domain.Subscription, billFn func(tx *sql.Tx, created domain.Subscription) error) (domain.Subscription, error) {
 	if len(sub.Items) == 0 {
 		return domain.Subscription{}, errs.Invalid("items", "a subscription must have at least one item")
 	}
@@ -57,10 +70,31 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 	}
 	defer postgres.Rollback(tx)
 
+	created, err := s.createInTx(ctx, tx, tenantID, sub)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if billFn != nil {
+		if err := billFn(tx, created); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return created, nil
+}
+
+// createInTx inserts the subscription row and its items on the given tx (no
+// commit). Shared by Create / CreateWithBill so the day-1 invoice can join the
+// same transaction.
+func (s *PostgresStore) createInTx(ctx context.Context, tx *sql.Tx, tenantID string, sub domain.Subscription) (domain.Subscription, error) {
 	id := postgres.NewID("vlx_sub")
 	now := clock.Now(ctx)
 
-	err = scanSubRow(tx.QueryRowContext(ctx, `
+	err := scanSubRow(tx.QueryRowContext(ctx, `
 		INSERT INTO subscriptions (id, tenant_id, code, display_name, customer_id, status,
 			billing_time, trial_start_at, trial_end_at, started_at,
 			current_billing_period_start, current_billing_period_end, next_billing_at,
@@ -112,10 +146,6 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, sub domain.
 		inserted = append(inserted, stored)
 	}
 	sub.Items = inserted
-
-	if err := tx.Commit(); err != nil {
-		return domain.Subscription{}, err
-	}
 	return sub, nil
 }
 
