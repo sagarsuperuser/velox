@@ -754,6 +754,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// operator-composed one-off invoice notifies the customer + queues for
 	// auto-charge retry on no-PM identically to a cycle invoice.
 	invoiceH.SetNoPaymentMethodNotifier(noPMNotifier)
+	// No-payment dunning enrollment: the scheduler (and test-clock catchup)
+	// route card-less auto_charge_pending invoices into dunning so they
+	// reach a terminal instead of looping in RetryPendingCharges forever.
+	engine.SetDunningStarter(&dunningStarterAdapter{dunning: dunningSvc})
 
 	// Tax: per-tenant provider resolution (none|manual|stripe_tax) + durable
 	// audit trail in tax_calculations. Resolver reads tenant_settings and

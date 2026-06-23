@@ -18,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/paymentmethods"
@@ -356,6 +357,37 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 		return dunning.ErrTransientSkip
 	}
 	return err
+}
+
+// dunningStarterAdapter bridges billing.DunningStarter → dunning.Service so
+// the engine's no-payment enrollment sweep can route a card-less,
+// auto_charge_pending invoice into a dunning campaign (closing the limbo
+// where it would otherwise be retried forever with nothing to charge and
+// never reach a terminal).
+//
+// A "dunning disabled" result is the only InvalidState StartDunning
+// returns; it's swallowed here as a deliberate no-op — a tenant that
+// disabled dunning gets no automated retries on the no-card case, exactly
+// as it gets none on the declined-card case — so the per-tick sweep
+// doesn't emit a spurious error for every stalled invoice.
+// dunningRunStarter is the minimal slice of dunning.Service the adapter
+// needs — an interface so the disabled-skip branch is unit-testable.
+type dunningRunStarter interface {
+	StartDunning(ctx context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) (domain.InvoiceDunningRun, error)
+}
+
+type dunningStarterAdapter struct {
+	dunning dunningRunStarter
+}
+
+func (a *dunningStarterAdapter) StartDunning(ctx context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) error {
+	if _, err := a.dunning.StartDunning(ctx, tenantID, invoiceID, customerID, failureAt); err != nil {
+		if errors.Is(err, errs.ErrInvalidState) {
+			return nil // dunning disabled — deliberate skip, not a sweep error
+		}
+		return err
+	}
+	return nil
 }
 
 // subscriptionPauserAdapter bridges subscription.Service →
