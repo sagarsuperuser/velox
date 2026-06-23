@@ -289,8 +289,8 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 // terminated). Note: the `paused` source state was removed in PR-8
 // when the hard-pause API was deleted — no path now produces
 // status='paused', so it's not in allowedFrom.
-func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
-	return s.transitionAtomic(ctx, tenantID, id, transitionSpec{
+func cancelSpec() transitionSpec {
+	return transitionSpec{
 		targetStatus: string(domain.SubscriptionCanceled),
 		allowedFrom: []string{
 			string(domain.SubscriptionDraft),
@@ -299,7 +299,40 @@ func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (
 		},
 		setCanceledAt: true,
 		wrongStateMsg: "cannot cancel %s subscription (already terminated)",
-	})
+	}
+}
+
+func (s *PostgresStore) CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
+	return s.transitionAtomic(ctx, tenantID, id, cancelSpec())
+}
+
+// CancelAtomicWithBill cancels the subscription AND runs billFn — the
+// final-on-cancel partial-period invoice insert — in the SAME transaction, so a
+// billing failure rolls the cancel back rather than leaving a canceled sub with
+// an uninvoiced partial period (a revenue leak: there is no final-on-cancel
+// reconciler). ADR-056 coordinator pattern. The external finalize (tax commit +
+// auto-charge) and the in_advance proration credit run post-commit via the
+// caller (FinalizeOnCreateInvoice / BillOnCancel). billFn may be nil.
+func (s *PostgresStore) CancelAtomicWithBill(ctx context.Context, tenantID, id string, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	canceled, err := s.transitionInTx(ctx, tx, id, cancelSpec(), clock.Now(ctx))
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(tx, canceled); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return canceled, nil
 }
 
 // ScheduleCancellation persists the soft-cancel intent. Either field (or
@@ -704,8 +737,21 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	}
 	defer postgres.Rollback(tx)
 
-	now := clock.Now(ctx)
+	sub, err := s.transitionInTx(ctx, tx, id, spec, clock.Now(ctx))
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
 
+// transitionInTx runs the status-transition UPDATE (+ child hydration) on the
+// given tx WITHOUT committing. Shared by transitionAtomic and the
+// CancelAtomicWithBill coordinator so the final-on-cancel invoice can join the
+// same transaction (ADR-056).
+func (s *PostgresStore) transitionInTx(ctx context.Context, tx *sql.Tx, id string, spec transitionSpec, now time.Time) (domain.Subscription, error) {
 	// Build the WHERE status IN (...) clause with positional args starting at $3
 	// ($1 = updated_at, $2 = id). canceled_at slots in at $3 when needed.
 	canceledAtArg := "canceled_at"
@@ -735,7 +781,7 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	)
 
 	var sub domain.Subscription
-	err = scanSubRow(tx.QueryRowContext(ctx, query, args...), &sub)
+	err := scanSubRow(tx.QueryRowContext(ctx, query, args...), &sub)
 	if err == sql.ErrNoRows {
 		// Row either doesn't exist or is in a disallowed status. Re-query to
 		// distinguish and build a precise error.
@@ -754,10 +800,6 @@ func (s *PostgresStore) transitionAtomic(ctx context.Context, tenantID, id strin
 	}
 
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
-		return domain.Subscription{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil

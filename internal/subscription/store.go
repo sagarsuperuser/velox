@@ -49,6 +49,13 @@ type Store interface {
 	// surfaces the current status in the error message.
 	CancelAtomic(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 
+	// CancelAtomicWithBill cancels the subscription AND runs billFn (the
+	// final-on-cancel partial-period invoice insert) in the SAME transaction, so
+	// a billing failure rolls the cancel back rather than leaving a canceled sub
+	// with an uninvoiced partial period (a revenue leak — no final-on-cancel
+	// reconciler exists). billFn may be nil.
+	CancelAtomicWithBill(ctx context.Context, tenantID, id string, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error)
+
 	// ScheduleCancellation persists a future cancel intent. cancelAt is a
 	// nullable timestamp; cancelAtPeriodEnd is the soft-cancel flag. Both
 	// may be set in the same call (the boundary that fires first wins);

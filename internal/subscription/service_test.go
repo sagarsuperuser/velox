@@ -169,6 +169,24 @@ func (m *memStore) CancelAtomic(ctx context.Context, tenantID, id string) (domai
 	return s, nil
 }
 
+func (m *memStore) CancelAtomicWithBill(ctx context.Context, tenantID, id string, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error) {
+	prev, existed := m.subs[id]
+	canceled, err := m.CancelAtomic(ctx, tenantID, id)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(nil, canceled); err != nil {
+			// Simulate the tx rollback: restore the pre-cancel row.
+			if existed {
+				m.subs[id] = prev
+			}
+			return domain.Subscription{}, err
+		}
+	}
+	return canceled, nil
+}
+
 func (m *memStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -871,13 +889,16 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("PR-10: BillFinalOnImmediateCancel error does NOT fail cancel", func(t *testing.T) {
-		// Best-effort, matching the BillOnCancel error-tolerance
-		// pattern (cancel-proration credit). If the final invoice can't
-		// be generated, the operator can manually invoice from the
-		// dashboard. The cancel itself must succeed regardless.
-		svcWithBiller := NewService(newMemStore(), nil)
-		fb := &fakeBiller{finalCancelErr: fmt.Errorf("tax provider down")}
+	t.Run("ADR-056 a final-on-cancel billing failure rolls the cancel back (atomic)", func(t *testing.T) {
+		// Pre-ADR-056 a final-on-cancel invoice failure was swallowed: the sub
+		// was canceled with the partial period UNINVOICED — a revenue leak (no
+		// final-on-cancel reconciler exists; the "G3 deferred reconciler" the old
+		// comment referenced never did). Now the final invoice is built IN the
+		// cancel tx, so a failure rolls the cancel back rather than orphaning an
+		// uninvoiced canceled sub.
+		store := newMemStore()
+		svcWithBiller := NewService(store, nil)
+		fb := &fakeBiller{finalCancelErr: fmt.Errorf("invoice insert failed")}
 		svcWithBiller.SetBiller(fb)
 		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
 			Code: "sub-cancel-final-err", DisplayName: "Final errpath",
@@ -888,12 +909,20 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		canceled, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID)
-		if err != nil {
-			t.Errorf("Cancel should not fail when BillFinalOnImmediateCancel errors: %v", err)
+		if _, _, err := svcWithBiller.Cancel(ctx, "t1", sub.ID); err == nil {
+			t.Fatal("a final-on-cancel billing failure must fail Cancel (atomic), not leave an uninvoiced canceled sub")
 		}
-		if canceled.Status != domain.SubscriptionCanceled {
-			t.Errorf("status: got %q, want canceled", canceled.Status)
+		// The cancel must have rolled back — the sub is still active, not canceled.
+		after, gerr := store.Get(ctx, "t1", sub.ID)
+		if gerr != nil {
+			t.Fatalf("get after rollback: %v", gerr)
+		}
+		if after.Status != domain.SubscriptionActive {
+			t.Errorf("cancel must roll back on a final-invoice failure; status=%q, want active", after.Status)
+		}
+		// BillOnCancel (the proration credit) must NOT run when the cancel didn't commit.
+		if fb.cancelCalls != 0 {
+			t.Errorf("BillOnCancel must not run when the cancel rolled back; got %d", fb.cancelCalls)
 		}
 	})
 
@@ -985,6 +1014,7 @@ type fakeBiller struct {
 	planSwapAt          time.Time
 	err                 error
 	finalCancelErr      error
+	finalCancelInv      domain.Invoice
 	cancelErr           error
 	planSwapErr         error
 	cancelCreditCents   int64
@@ -1004,6 +1034,11 @@ func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (dom
 func (f *fakeBiller) BillFinalOnImmediateCancel(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
 	f.finalCalls++
 	return domain.Invoice{}, f.finalCancelErr
+}
+
+func (f *fakeBiller) BillFinalOnImmediateCancelTx(_ context.Context, _ *sql.Tx, _ domain.Subscription) (domain.Invoice, error) {
+	f.finalCalls++
+	return f.finalCancelInv, f.finalCancelErr
 }
 
 func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) (int64, error) {
