@@ -48,6 +48,11 @@ type Biller interface {
 	// usage). No-op when canceled_at is at/after current_period_end
 	// (clean cancel, cycle close handles it).
 	BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error)
+	// BillFinalOnImmediateCancelTx is the in-tx variant: inserts the
+	// final-on-cancel invoice on the caller's coordinator tx (ADR-056); the
+	// external finalize runs post-commit via FinalizeOnCreateInvoice. Empty
+	// invoice (nil error) for the no-op cases.
+	BillFinalOnImmediateCancelTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, error)
 	BillOnCancel(ctx context.Context, sub domain.Subscription) (int64, error)
 	// BillOnPlanSwapImmediate issues a refund credit for the unused
 	// portion of an in_advance billed period when an immediate
@@ -1406,32 +1411,37 @@ func (s *Service) RemoveItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 // credit balance).
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
-	canceled, err := s.store.CancelAtomic(ctx, tenantID, id)
+
+	// PR-10 / ADR-056: emit the final partial-period invoice (in_arrears
+	// prorated base + usage from current_period_start → canceled_at) IN THE SAME
+	// tx as the cancel flip, so a billing failure rolls the cancel back rather
+	// than leaving a canceled sub with an uninvoiced partial period — a permanent
+	// revenue leak (there is no final-on-cancel reconciler; the prior "G3
+	// deferred reconciler" referenced here never existed). No-op for a clean
+	// cancel (canceled_at at/after current_period_end). The build runs BEFORE
+	// BillOnCancel so the credit grant doesn't pre-apply against this invoice.
+	var finalInv domain.Invoice
+	canceled, err := s.store.CancelAtomicWithBill(ctx, tenantID, id, func(tx *sql.Tx, c domain.Subscription) error {
+		if s.biller == nil {
+			return nil
+		}
+		inv, billErr := s.biller.BillFinalOnImmediateCancelTx(ctx, tx, c)
+		if billErr != nil {
+			return fmt.Errorf("final-on-cancel invoice: %w", billErr)
+		}
+		finalInv = inv
+		return nil
+	})
 	if err != nil {
 		return domain.Subscription{}, 0, err
 	}
 
-	// PR-10: emit the final partial-period invoice for any mid-period
-	// cancel. Covers in_arrears prorated base + usage from
-	// current_period_start → canceled_at. No-op when canceled_at lands
-	// at/after current_period_end (clean cancel — cycle close handles
-	// it normally) or before current_period_start (defensive).
-	// Best-effort; operator can manually invoice from the dashboard
-	// if this fails. Runs BEFORE BillOnCancel so the credit grant
-	// (in_advance unused-base refund) doesn't pre-apply against this
-	// invoice — credit application is a separate balance operation,
-	// independent of the final-on-cancel invoice line items.
-	if s.biller != nil {
-		if _, err := s.biller.BillFinalOnImmediateCancel(ctx, canceled); err != nil {
-			// ERROR (not WARN) to match the sibling credit leg below: a dropped
-			// final-on-cancel invoice silently leaks partial-period revenue and
-			// must be alarmable, not buried. Best-effort by design (post-cancel,
-			// not in the cancel tx — see product-audit G3 deferred reconciler).
-			slog.ErrorContext(ctx, "final-on-cancel invoice FAILED; partial-period usage uninvoiced — manual invoice required",
-				"subscription_id", canceled.ID,
-				"tenant_id", tenantID,
-				"error", err)
-		}
+	// Post-commit external finalize for the final invoice (audit + tax commit +
+	// auto-charge) — Stripe calls must never ride a DB tx; the invoice is now
+	// durable + atomic with the cancel. Recoverable by the existing reconciler /
+	// retry sweeps if a step fails.
+	if s.biller != nil && finalInv.ID != "" {
+		s.biller.FinalizeOnCreateInvoice(ctx, canceled, finalInv)
 	}
 
 	// ADR-031: in_advance plans get a cancel-proration credit for the

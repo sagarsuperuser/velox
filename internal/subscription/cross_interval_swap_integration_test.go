@@ -38,6 +38,9 @@ func (b *billOnCreateTxErrBiller) BillOnCreate(context.Context, domain.Subscript
 func (b *billOnCreateTxErrBiller) BillFinalOnImmediateCancel(context.Context, domain.Subscription) (domain.Invoice, error) {
 	return domain.Invoice{}, nil
 }
+func (b *billOnCreateTxErrBiller) BillFinalOnImmediateCancelTx(context.Context, *sql.Tx, domain.Subscription) (domain.Invoice, error) {
+	return domain.Invoice{}, nil
+}
 func (b *billOnCreateTxErrBiller) BillOnCancel(context.Context, domain.Subscription) (int64, error) {
 	return 0, nil
 }

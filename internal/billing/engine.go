@@ -3312,6 +3312,21 @@ func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscri
 // marked auto_charge_pending and the no-PM notifier fires. Dunning
 // takes over from there on a failed charge.
 func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subscription) (domain.Invoice, error) {
+	return e.billFinalOnImmediateCancelImpl(ctx, nil, sub)
+}
+
+// BillFinalOnImmediateCancelTx is the in-tx variant: it inserts the
+// final-on-cancel invoice on the caller's coordinator tx (ADR-056) and leaves
+// the external finalize (audit + tax commit + auto-charge) to the caller's
+// post-commit FinalizeOnCreateInvoice. Used by CancelAtomicWithBill so a billing
+// failure rolls the cancel back rather than orphaning a canceled sub with an
+// uninvoiced partial period. Returns an empty invoice (nil error) for the no-op
+// cases (nothing to bill on cancel).
+func (e *Engine) BillFinalOnImmediateCancelTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, error) {
+	return e.billFinalOnImmediateCancelImpl(ctx, tx, sub)
+}
+
+func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, error) {
 	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillFinalOnImmediateCancel",
 		trace.WithAttributes(
 			attribute.String("subscription_id", sub.ID),
@@ -3748,7 +3763,7 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		return domain.Invoice{}, fmt.Errorf("mint invoice number on cancel: %w", err)
 	}
 
-	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+	invToCreate := domain.Invoice{
 		TenantID:       sub.TenantID,
 		CustomerID:     sub.CustomerID,
 		SubscriptionID: sub.ID,
@@ -3785,7 +3800,17 @@ func (e *Engine) BillFinalOnImmediateCancel(ctx context.Context, sub domain.Subs
 		NetPaymentTermDays: netDays,
 		BillingReason:      domain.BillingReasonSubscriptionCancel,
 		IsSimulated:        sub.TestClockID != "",
-	}, lineItems)
+	}
+	if tx != nil {
+		// Atomic path (CancelAtomicWithBill): insert on the caller's coordinator
+		// tx; the external finalize (audit + tax commit + auto-charge) runs
+		// post-commit via FinalizeOnCreateInvoice. No idempotent-skip — a unique
+		// violation poisons the caller's tx, so surface it and let the cancel
+		// roll back (same contract as the swap path's BillOnCreateTx).
+		return e.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, sub.TenantID, invToCreate, lineItems)
+	}
+
+	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, invToCreate, lineItems)
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
 			slog.Info("subscription_cancel final invoice already exists (idempotent skip)",
