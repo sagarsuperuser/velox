@@ -861,23 +861,66 @@ func TestHandleWebhook_SetupIntent_NoAttacher(t *testing.T) {
 // TestHandleWebhook_SetupIntent_MissingMetadata — a setup_intent with no
 // velox metadata AND no resolvable customer shouldn't error (someone else's
 // SI passing through); we just skip.
-func TestHandleWebhook_SetupIntent_MissingMetadata(t *testing.T) {
-	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+// TestHandleWebhook_SetupIntent_UnresolvedCustomerRedelivers locks the
+// dropped-card fix: a setup_intent.succeeded that HAS a payment method but
+// whose customer can't be resolved (no metadata + resolver NotFound — the
+// customer↔Stripe-id link isn't written yet) must REDELIVER, not be acked.
+// Pre-fix it returned nil → the event was dedup-marked → Stripe never
+// redelivered → the saved card was permanently dropped and the invoice
+// looped in auto-charge retry forever.
+func TestHandleWebhook_SetupIntent_UnresolvedCustomerRedelivers(t *testing.T) {
+	store := newMockWebhookStore()
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), store, nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+	// Resolver can't place cus_foreign (link not yet written) → NotFound.
+	stripe.SetCustomerResolver(&recordingCustomerResolver{wantStripeID: "cus_known", veloxID: "cus_x"})
+
+	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_unresolved",
+		EventType:     "setup_intent.succeeded",
+		Payload: map[string]any{"raw": `{
+			"data": {"object": {"id": "seti_2", "payment_method": "pm_1", "customer": "cus_foreign", "metadata": {}}}
+		}`},
+	})
+	if err == nil {
+		t.Fatal("unresolved-customer setup_intent with a card must redeliver, got nil (would dedup-drop the card)")
+	}
+	if !isTransientWebhookError(err) {
+		t.Fatalf("error must be transient (redeliver), got %v", err)
+	}
+	if attacher.called != 0 {
+		t.Fatalf("attacher must not be called when the customer is unresolved")
+	}
+	if store.ingestCalls != 0 {
+		t.Fatalf("no dedup row may be written on a redeliverable miss (else the redelivery short-circuits); ingestCalls=%d", store.ingestCalls)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_NoPaymentMethodAcks verifies the genuinely-
+// nothing-to-do case (no payment_method on the SetupIntent) is acked, not
+// redelivered — there's no card to attach.
+func TestHandleWebhook_SetupIntent_NoPaymentMethodAcks(t *testing.T) {
+	store := newMockWebhookStore()
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), store, nil)
 	attacher := &recordingAttacher{}
 	stripe.SetPaymentMethodAttacher(attacher)
 
 	err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
-		StripeEventID: "evt_no_meta",
+		StripeEventID: "evt_no_pm",
 		EventType:     "setup_intent.succeeded",
 		Payload: map[string]any{"raw": `{
-			"data": {"object": {"id": "seti_2", "payment_method": "pm_1"}}
+			"data": {"object": {"id": "seti_2", "metadata": {"velox_customer_id": "cus_7"}}}
 		}`},
 	})
 	if err != nil {
-		t.Fatalf("missing metadata should skip, got %v", err)
+		t.Fatalf("no-payment-method setup_intent should ack, got %v", err)
 	}
 	if attacher.called != 0 {
-		t.Fatalf("attacher must not be called when velox_customer_id is missing")
+		t.Fatalf("attacher must not be called with no payment method")
+	}
+	if store.ingestCalls != 1 {
+		t.Fatalf("a no-op ack should still record the dedup row; ingestCalls=%d", store.ingestCalls)
 	}
 }
 

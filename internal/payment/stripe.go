@@ -775,10 +775,27 @@ func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string
 		}
 	}
 
-	if customerID == "" || pmID == "" {
-		slog.Warn("setup_intent.succeeded missing velox_customer_id or payment_method — skipping",
+	if pmID == "" {
+		// No payment method on the SetupIntent — nothing to attach. Ack.
+		slog.Warn("setup_intent.succeeded with no payment_method — skipping",
 			"stripe_event_id", event.StripeEventID)
 		return nil
+	}
+	if customerID == "" {
+		// The card was saved at Stripe but we can't yet resolve which Velox
+		// customer it belongs to (no velox_customer_id in metadata AND the
+		// SetupIntent.customer isn't linked locally yet — a race against the
+		// customer↔Stripe-id link-write, or a session created before the
+		// setup_intent_data.metadata stamp shipped). Return a NON-ErrNotFound
+		// error so HandleWebhook treats it as TRANSIENT: no dedup row is
+		// written, the HTTP layer returns 5xx, and Stripe REDELIVERS — by
+		// which point the link (or a sibling checkout.session.completed) has
+		// resolved the customer. Pre-fix this returned nil → the event was
+		// dedup-marked → the saved card was permanently dropped (the invoice
+		// then looped in auto-charge retry forever). Stripe bounds redelivery
+		// to ~3 days, so a genuinely-foreign event can't redeliver unbounded.
+		return fmt.Errorf("setup_intent.succeeded: customer not yet resolvable for stripe customer %q (pm %s) — retry",
+			parsed.Data.Object.Customer, pmID)
 	}
 
 	if err := s.pmAttacher.AttachForWebhook(ctx, tenantID, customerID, pmID); err != nil {

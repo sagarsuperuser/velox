@@ -173,6 +173,18 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		SuccessURL:         stripe.String(successURL),
 		CancelURL:          stripe.String(cancelURL),
+		// Stamp velox_customer_id on the underlying SetupIntent, not just the
+		// session: Stripe Checkout does NOT copy session metadata onto the
+		// SetupIntent, so without this the setup_intent.succeeded webhook
+		// arrives with empty metadata and must resolve the customer by Stripe
+		// id — which races the customer↔Stripe-id link-write and can drop the
+		// saved card. setup_intent_data.metadata makes the event self-resolving.
+		SetupIntentData: &stripe.CheckoutSessionCreateSetupIntentDataParams{
+			Metadata: map[string]string{
+				"velox_customer_id": req.CustomerID,
+				"velox_tenant_id":   tenantID,
+			},
+		},
 		Params: stripe.Params{
 			Metadata: map[string]string{
 				"velox_customer_id": req.CustomerID,
