@@ -824,6 +824,20 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}); err != nil {
 				return domain.CreditNote{}, fmt.Errorf("grant credit: %w", err)
 			}
+			// KNOWN GAP (deferred — liveness audit 2026-06-23): the draft→issued
+			// CAS above already committed in its OWN transaction, so if this grant
+			// fails the credit note is persisted status=issued with NO balance
+			// credit — the customer is shown a completed credit they never
+			// received, and there is no automatic resume (re-Issue refused:
+			// status!=draft; Void refused: issued is final). The 0093 dedup index
+			// makes a RE-GRANT idempotent/safe, but nothing calls
+			// GrantForCreditNote post-issue. Fix-when-triggered: a reconciler that
+			// re-runs the grant for issued credit-channel CNs that have no ledger
+			// entry (no-migration path: scan all issued credit-channel CNs + an
+			// idempotent re-grant via 0093; an at-scale alternative is a bounded
+			// grant_settled column). TRIGGER: the first design partner issuing
+			// account-credit credit notes (the feature carries real money). Until
+			// then a grant failure here is an operator-visible error + manual fix.
 		}
 	} else {
 		// Invoice not yet paid — reduce amount_due. This is the
