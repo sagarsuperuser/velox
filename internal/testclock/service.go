@@ -65,6 +65,14 @@ type BillingRunner interface {
 	// THIS advance, not on a future wall-clock tick. ADR-029 Phase 1.
 	RetryPendingChargesForClock(ctx context.Context, tenantID, clockID string, limit int) (int, []error)
 
+	// EnrollStalledForDunningForClock routes clock-pinned, card-less
+	// auto_charge_pending invoices into dunning during catchup, so a
+	// simulated subscription with no payment method reaches a terminal
+	// (pause/cancel/uncollectible) under test clocks — mirroring the
+	// wall-clock scheduler's no-payment enrollment step. Runs after the
+	// charge retry; StartDunning is idempotent.
+	EnrollStalledForDunningForClock(ctx context.Context, tenantID, clockID string, limit int) (int, []error)
+
 	// ScanThresholdsForClock fires hard-cap (Stripe-parity billing-
 	// thresholds) invoices for clock-pinned subs whose running cycle
 	// subtotal has crossed a configured threshold. Runs during catchup
@@ -619,6 +627,19 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		chargeCount, chargeErrs := s.billing.RetryPendingChargesForClock(ctx, job.TenantID, job.ClockID, 100)
 		sum.ChargesRetried = chargeCount
 		runErrs = append(runErrs, chargeErrs...)
+
+		// Phase 3.5: enroll card-less stalled invoices into dunning so a
+		// simulated subscription with no payment method reaches a terminal
+		// under test clocks too (mirrors the wall-clock scheduler step).
+		// Runs after the charge retry — a card attached since the last
+		// advance is charged first and drops out of the candidate set.
+		// StartDunning is idempotent; the created runs advance on a LATER
+		// Advance once simulated time passes the grace window.
+		if s.dunning != nil {
+			if _, enrollErrs := s.billing.EnrollStalledForDunningForClock(ctx, job.TenantID, job.ClockID, 100); len(enrollErrs) > 0 {
+				runErrs = append(runErrs, enrollErrs...)
+			}
+		}
 
 		// Phases 4 and 5 both need frozen_time — already read once at
 		// the top of the catchup block and bound to ctx via

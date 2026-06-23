@@ -71,6 +71,7 @@ type Engine struct {
 	testClocks         TestClockReader
 	events             domain.EventDispatcher
 	noPMNotifier       NoPaymentMethodNotifier
+	dunningStarter     DunningStarter
 	auditLogger        AuditWriter
 }
 
@@ -207,6 +208,30 @@ var _ clock.Resolver = (*Engine)(nil)
 // integration tests). Wire in router.go via SetNoPaymentMethodNotifier.
 type NoPaymentMethodNotifier interface {
 	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
+}
+
+// DunningStarter enrolls a stuck invoice into a dunning campaign.
+//
+// Why this exists: a card DECLINE already starts dunning inline
+// (ChargeInvoice → StartDunning), so the declined-card customer is
+// escalated toward a terminal (pause/cancel/uncollectible). But an
+// invoice with NO resolvable payment method is only flagged
+// auto_charge_pending + emailed once, then retried by RetryPendingCharges
+// forever with nothing to charge — it never reaches a terminal. That
+// card-less "limbo" is an absorbing sink: unbounded unpaid invoices, no
+// escalation. Routing the no-card invoice into the SAME dunning machine
+// gives it the same escalation-to-terminal the declined-card path gets.
+//
+// StartDunning is idempotent (one run per invoice, lifetime), so calling
+// it every tick for the same candidate is safe — an invoice that already
+// has a run (e.g. from a prior decline) is a no-op. A "dunning disabled"
+// outcome is a deliberate skip (the adapter swallows it), matching the
+// declined-card path's behaviour when dunning is off.
+//
+// Optional — when nil, the engine skips enrollment (local dev,
+// integration tests). Wire in router.go via SetDunningStarter.
+type DunningStarter interface {
+	StartDunning(ctx context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) error
 }
 
 // TestClockReader looks up a test clock's frozen_time. The billing engine
@@ -644,6 +669,14 @@ func (e *Engine) SetEventDispatcher(d domain.EventDispatcher) {
 // the NoPaymentMethodNotifier doc-comment for the full rationale.
 func (e *Engine) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
 	e.noPMNotifier = n
+}
+
+// SetDunningStarter wires the no-payment-method dunning enroller — the
+// sweep that routes card-less auto_charge_pending invoices into dunning
+// so they reach a terminal instead of looping in RetryPendingCharges
+// forever. See the DunningStarter doc-comment for the full rationale.
+func (e *Engine) SetDunningStarter(d DunningStarter) {
+	e.dunningStarter = d
 }
 
 // shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
@@ -4438,6 +4471,82 @@ func (e *Engine) RetryPendingChargesForClock(ctx context.Context, tenantID, cloc
 		return 0, []error{fmt.Errorf("list pending charges for clock %s: %w", clockID, err)}
 	}
 	return e.processAutoCharge(ctx, pending)
+}
+
+// EnrollStalledForDunning routes finalized, still-pending invoices that
+// are auto_charge_pending with NO resolvable payment method into a
+// dunning campaign so they reach a terminal (pause/cancel/uncollectible)
+// instead of being retried forever by RetryPendingCharges — closing the
+// card-less auto_charge_pending "limbo" sink. CRON path; clock-pinned
+// subs are excluded (ListAutoChargePending's NOT EXISTS) and handled by
+// EnrollStalledForDunningForClock during catchup.
+//
+// Runs AFTER RetryPendingCharges in the cycle: a card decline already
+// sets auto_charge_pending=false + starts dunning inline, and a
+// successful charge clears the flag, so the candidates that remain are
+// the no-card ones. StartDunning is idempotent, so any invoice that
+// still carries a run is a no-op.
+func (e *Engine) EnrollStalledForDunning(ctx context.Context, limit int) (int, []error) {
+	if e.dunningStarter == nil {
+		return 0, nil
+	}
+	pending, err := e.invoices.ListAutoChargePending(ctx, limit)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list stalled auto-charge for dunning: %w", err)}
+	}
+	return e.enrollStalledForDunning(ctx, pending)
+}
+
+// EnrollStalledForDunningForClock is the catchup-path counterpart to
+// EnrollStalledForDunning — enrolls clock-pinned no-card invoices into
+// dunning as part of an Advance, so a card-less SIMULATED subscription
+// reaches a terminal under test clocks too, not only on the wall clock.
+// ADR-029 disjoint flows.
+func (e *Engine) EnrollStalledForDunningForClock(ctx context.Context, tenantID, clockID string, limit int) (int, []error) {
+	if e.dunningStarter == nil {
+		return 0, nil
+	}
+	pending, err := e.invoices.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list stalled auto-charge for dunning (clock %s): %w", clockID, err)}
+	}
+	return e.enrollStalledForDunning(ctx, pending)
+}
+
+// enrollStalledForDunning is the shared body: enroll each candidate via
+// the idempotent StartDunning. failureAt anchors on the invoice's issue/
+// period instant (simulation-relative for clock-pinned invoices), NOT
+// wall-clock now, so the first retry lands grace-days after the real
+// (simulated) collection failure — matching the inline decline path's
+// timing. A "dunning disabled" outcome is swallowed by the adapter as a
+// deliberate skip; other errors are collected per-invoice so one bad row
+// doesn't abort the sweep.
+func (e *Engine) enrollStalledForDunning(ctx context.Context, pending []domain.Invoice) (int, []error) {
+	swept := 0
+	var errs []error
+	for _, inv := range pending {
+		if err := e.dunningStarter.StartDunning(ctx, inv.TenantID, inv.ID, inv.CustomerID, dunningFailureAt(inv)); err != nil {
+			errs = append(errs, fmt.Errorf("enroll invoice %s for dunning: %w", inv.ID, err))
+			continue
+		}
+		swept++
+	}
+	return swept, errs
+}
+
+// dunningFailureAt resolves the simulated instant a no-card invoice's
+// collection "failed" — its issue time, else its period end. Returns the
+// zero Time when neither is set; StartDunning then falls back to its own
+// clock. Anchoring on the invoice (not wall-clock now) keeps clock-pinned
+// dunning on simulated time.
+func dunningFailureAt(inv domain.Invoice) time.Time {
+	if inv.IssuedAt != nil && !inv.IssuedAt.IsZero() {
+		return *inv.IssuedAt
+	}
+	if !inv.BillingPeriodEnd.IsZero() {
+		return inv.BillingPeriodEnd
+	}
+	return time.Time{}
 }
 
 // processAutoCharge is the shared body of RetryPendingCharges and

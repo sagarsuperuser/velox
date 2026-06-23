@@ -373,6 +373,21 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 	}
 
+	// 0.1 Enroll card-less stalled invoices into dunning. Runs AFTER the
+	// auto-charge retry so a declined card (which already started dunning
+	// inline + cleared auto_charge_pending) and a successful charge are
+	// both gone from the candidate set — what remains is the no-card case
+	// that RetryPendingCharges can never resolve. Without this, a finalized
+	// auto_charge_pending invoice with no payment method is retried forever
+	// and never reaches a terminal (the card-less "limbo" sink). StartDunning
+	// is idempotent, so this is safe to run every tick.
+	if swept, dErrs := s.engine.EnrollStalledForDunning(ctx, s.batch); swept > 0 || len(dErrs) > 0 {
+		slog.Info("no-payment dunning enrollment", "mode", mode, "swept", swept, "errors", len(dErrs))
+		for _, e := range dErrs {
+			slog.Error("no-payment dunning enrollment error", "mode", mode, "error", e)
+		}
+	}
+
 	// 0.5 Billing thresholds — Stripe-parity hard-cap scan. Runs before the
 	// natural cycle so a threshold-fired invoice and (when reset_billing_cycle
 	// is true) the cycle advance both land on this tick. The partial unique

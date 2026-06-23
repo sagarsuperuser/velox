@@ -673,6 +673,10 @@ func (r *countingRunner) RetryPendingChargesForClock(_ context.Context, _, _ str
 	return 0, nil
 }
 
+func (r *countingRunner) EnrollStalledForDunningForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+
 // TestRunCatchup_RecordsAdvanceSummary verifies the post-advance summary
 // captures the (exact) per-phase counts and the simulated span, on both the
 // success transition and the partial-failure transition.
@@ -753,6 +757,10 @@ type stubRunner struct {
 // semantics. Tests that exercise the orchestration sequence end-to-end
 // live in the integration-test suite where a real engine is wired.
 func (r *stubRunner) RetryPendingChargesForClock(_ context.Context, _, _ string, _ int) (int, []error) {
+	return 0, nil
+}
+
+func (r *stubRunner) EnrollStalledForDunningForClock(_ context.Context, _, _ string, _ int) (int, []error) {
 	return 0, nil
 }
 
