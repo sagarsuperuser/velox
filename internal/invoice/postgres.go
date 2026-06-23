@@ -1728,9 +1728,13 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 	return out, rows.Err()
 }
 
-// ListPendingTaxCommit finds finalized stripe_tax invoices whose Stripe Tax
-// calculation succeeded (tax_status=ok, tax_calculation_id set) but whose
-// tax_transaction_id never got persisted — the orphan state left when
+// ListPendingTaxCommit finds finalized/paid/voided/uncollectible stripe_tax
+// invoices whose Stripe Tax calculation succeeded (tax_status=ok,
+// tax_calculation_id set) but whose tax_transaction_id never got persisted.
+// Includes non-finalized terminals because the orphan can outlive 'finalized'
+// when finalize + auto-charge run synchronously (billOnePeriod) and flip the
+// invoice to 'paid' before the reconciler's first scan — the orphan state
+// left when
 // CommitTax's Stripe commit succeeded upstream but the local SetTaxTransaction
 // write failed (or the process crashed in between). Powers the commit
 // reconciler, which re-commits each to recover the transaction id (idempotency
@@ -1766,7 +1770,14 @@ func (s *PostgresStore) ListPendingTaxCommit(ctx context.Context, batch int, liv
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices i
 		WHERE i.livemode = $1
-		  AND i.status = 'finalized'
+		  -- NOT only 'finalized': on the synchronous finalize+auto-charge path
+		  -- the invoice flips to 'paid' in the same flow before any scheduler
+		  -- tick, so a finalized-only filter misses that orphan and a later
+		  -- credit-note/void can't reverse its tax (the reversal guards key on
+		  -- a non-empty tax_transaction_id) → the tenant over-remits. CommitTax
+		  -- is status-agnostic + idempotent, so re-committing a paid/voided row
+		  -- is safe; the 24h window below bounds it to Stripe's calc TTL.
+		  AND i.status IN ('finalized', 'paid', 'voided', 'uncollectible')
 		  AND i.tax_status = 'ok'
 		  AND i.tax_provider = 'stripe_tax'
 		  AND COALESCE(i.tax_calculation_id, '') <> ''

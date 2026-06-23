@@ -2804,10 +2804,12 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// create time (i.e., tax_status=ok and pause_collection unset, per
 	// InvoiceFinalizationStatus). For draft invoices (tax pending or
 	// pause-collection set), skip the MarkPaid call: leave the
-	// invoice draft with credits already applied. Tax retry's
-	// auto-finalize chain will land the draft → finalized + auto-pay
-	// when tax resolves; pause-collection's resume path will do the
-	// same when collection unpauses.
+	// invoice draft with credits already applied. A tax-pending draft
+	// auto-finalizes later via the tax-retry chain when tax resolves; a
+	// pause-collection draft stays draft until the operator finalizes it
+	// (resume clears the pause and the next cycle generates finalized
+	// invoices, but the accrued drafts are NOT auto-finalized — there is
+	// no pause-resume auto-finalize chain).
 	//
 	// Pre-fix bug (caught 2026-05-22): this block called MarkPaid
 	// regardless of status, transitioning a tax-pending draft directly

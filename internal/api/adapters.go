@@ -350,10 +350,27 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	// webhook's "Payment failed for invoice X" plus dunning's
 	// "Action required — payment retry for invoice X (Attempt N of M)".
 	_, err = a.charger.ChargeInvoiceForDunningRetry(chargeCtx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
-	// Map payment's internal "call never happened" sentinel to dunning's
-	// equivalent. Keeps peer domains from importing each other and gives
-	// dunning a stable signal to skip attempt_count bookkeeping.
-	if errors.Is(err, payment.ErrPaymentTransient) {
+	return classifyDunningRetryError(err)
+}
+
+// classifyDunningRetryError maps a dunning-retry CHARGE result to the signal
+// dunning's processRun consumes. A "call never happened" transient
+// (payment.ErrPaymentTransient) AND an AMBIGUOUS outcome (Stripe
+// 5xx/timeout/network — the PaymentIntent may have actually succeeded) both
+// map to dunning.ErrTransientSkip, so dunning does NOT tick attempt_count or
+// exhaust on an outcome that might be a real payment. The inline charge path
+// already defers unknowns to the reconciler the same way; pre-fix the
+// dunning-retry path counted an unknown as a failed attempt and could
+// exhaust → cancel / write off a possibly-PAID invoice. A DEFINITE decline
+// (*PaymentError{Unknown:false}) returns the raw error so dunning counts it
+// and the campaign advances to its terminal. Applied ONLY to the charge
+// result — the earlier "no payment method" return is a real counted failure
+// (drives the no-card invoice to its dunning terminal, ADR-060), unchanged.
+func classifyDunningRetryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, payment.ErrPaymentTransient) || payment.IsUnknownPaymentFailure(err) {
 		return dunning.ErrTransientSkip
 	}
 	return err
