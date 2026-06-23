@@ -829,15 +829,22 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			// fails the credit note is persisted status=issued with NO balance
 			// credit — the customer is shown a completed credit they never
 			// received, and there is no automatic resume (re-Issue refused:
-			// status!=draft; Void refused: issued is final). The 0093 dedup index
-			// makes a RE-GRANT idempotent/safe, but nothing calls
-			// GrantForCreditNote post-issue. Fix-when-triggered: a reconciler that
-			// re-runs the grant for issued credit-channel CNs that have no ledger
-			// entry (no-migration path: scan all issued credit-channel CNs + an
-			// idempotent re-grant via 0093; an at-scale alternative is a bounded
-			// grant_settled column). TRIGGER: the first design partner issuing
-			// account-credit credit notes (the feature carries real money). Until
-			// then a grant failure here is an operator-visible error + manual fix.
+			// status!=draft; Void refused: issued is final).
+			//
+			// PREFERRED fix-when-triggered = make it ATOMIC, not eventually
+			// consistent. The grant is an INTERNAL DB write (the credit ledger),
+			// so the draft→issued CAS and the grant belong in ONE transaction —
+			// thread a coordinator *sql.Tx through the creditnote + credit stores
+			// (the ADR-056 pattern), so a grant failure rolls the issue back and
+			// the orphan simply cannot exist. Reconcilers are the right tool only
+			// for the GENUINELY-EXTERNAL effects in this same flow (the Stripe
+			// refund + tax reversal, which can't share a DB tx) — those move
+			// post-commit and recover idempotently. A reconciler re-grant via the
+			// 0093 dedup index is the eventual-consistency FALLBACK if the atomic
+			// refactor is itself deferred. TRIGGER: the first design partner
+			// issuing account-credit credit notes (the feature carries real
+			// money). Until then a grant failure here is an operator-visible
+			// error + manual fix.
 		}
 	} else {
 		// Invoice not yet paid — reduce amount_due. This is the
