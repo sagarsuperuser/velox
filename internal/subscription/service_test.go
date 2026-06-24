@@ -285,6 +285,23 @@ func (m *memStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, 
 	return s, nil
 }
 
+func (m *memStore) ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
+	prev, existed := m.subs[id]
+	activated, err := m.ActivateAfterTrial(ctx, tenantID, id, at)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(nil, activated); err != nil {
+			if existed {
+				m.subs[id] = prev
+			}
+			return domain.Subscription{}, err
+		}
+	}
+	return activated, nil
+}
+
 func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
@@ -311,6 +328,23 @@ func (m *memStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, p
 	m.subs[id] = s
 	s.Items = m.hydrateItems(id)
 	return s, nil
+}
+
+func (m *memStore) EndTrialEarlyWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
+	prev, existed := m.subs[id]
+	activated, err := m.EndTrialEarly(ctx, tenantID, id, at, periodStart, periodEnd, nextBilling, anchorDay)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(nil, activated); err != nil {
+			if existed {
+				m.subs[id] = prev
+			}
+			return domain.Subscription{}, err
+		}
+	}
+	return activated, nil
 }
 
 func (m *memStore) ListExpiredTrials(_ context.Context, before time.Time, _ bool, limit int) ([]domain.Subscription, error) {
@@ -827,18 +861,21 @@ func TestCreate(t *testing.T) {
 		if _, err := svcWithBiller.EndTrial(ctx, "t1", sub.ID); err != nil {
 			t.Fatalf("EndTrial: %v", err)
 		}
-		if fb.calls != 1 {
-			t.Errorf("biller calls after EndTrial: got %d, want 1 (covers in_advance first paid period)", fb.calls)
+		// ADR-056: the day-1 invoice is now built in-tx via BillOnCreateTx.
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx after EndTrial: got %d, want 1 (covers in_advance first paid period)", fb.createTxCalls)
 		}
 	})
 
-	t.Run("EndTrial BillOnCreate failure does NOT roll back activation", func(t *testing.T) {
-		// Activation already happened atomically in EndTrialEarly;
-		// BillOnCreate is best-effort. A failure logs but the sub
-		// stays active — operator can manually issue the invoice. Same
-		// shape as the Cancel + BillOnCancel error path.
-		svcWithBiller := NewService(newMemStore(), nil)
-		fb := &fakeBiller{err: fmt.Errorf("billing engine unavailable")}
+	t.Run("ADR-056 EndTrial day-1 billing failure rolls the early-end back (atomic)", func(t *testing.T) {
+		// Pre-ADR-056 a BillOnCreate failure was swallowed: the trial ended,
+		// the sub went active with NO first-period invoice — a revenue leak (the
+		// cycle scheduler skips the just-elapsed in_advance segment). Now the
+		// day-1 invoice is built IN the early-end tx, so a hard failure rolls the
+		// activation back and the sub stays trialing.
+		store := newMemStore()
+		svcWithBiller := NewService(store, nil)
+		fb := &fakeBiller{createTxErr: fmt.Errorf("invoice insert failed")}
 		svcWithBiller.SetBiller(fb)
 		sub, err := svcWithBiller.Create(ctx, "t1", CreateInput{
 			Code: "sub-end-trial-billfail", DisplayName: "Bill-fail path",
@@ -849,12 +886,15 @@ func TestCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		out, err := svcWithBiller.EndTrial(ctx, "t1", sub.ID)
-		if err != nil {
-			t.Errorf("EndTrial should not fail when BillOnCreate errors (best-effort): %v", err)
+		if _, err := svcWithBiller.EndTrial(ctx, "t1", sub.ID); err == nil {
+			t.Fatal("a day-1 billing failure must fail EndTrial (atomic), not leave an active sub with no first-period invoice")
 		}
-		if out.Status != domain.SubscriptionActive {
-			t.Errorf("status: got %q, want active (activation must succeed even if billing fails)", out.Status)
+		after, gerr := store.Get(ctx, "t1", sub.ID)
+		if gerr != nil {
+			t.Fatalf("get after rollback: %v", gerr)
+		}
+		if after.Status != domain.SubscriptionTrialing {
+			t.Errorf("early-end must roll back on a billing failure; status=%q, want trialing", after.Status)
 		}
 	})
 
@@ -2130,8 +2170,9 @@ func TestProcessExpiredTrials(t *testing.T) {
 		if out.ActivatedAt == nil || !out.ActivatedAt.Equal(*sub.TrialEndAt) {
 			t.Errorf("activated_at: got %v, want %v (= trial_end_at)", out.ActivatedAt, sub.TrialEndAt)
 		}
-		if fb.calls != 1 {
-			t.Errorf("BillOnCreate: got %d calls, want 1", fb.calls)
+		// ADR-056: the day-1 invoice is now built in-tx via BillOnCreateTx.
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx: got %d calls, want 1", fb.createTxCalls)
 		}
 	})
 

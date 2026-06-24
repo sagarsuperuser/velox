@@ -160,6 +160,12 @@ type Store interface {
 	// instant.
 	ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
+	// ActivateAfterTrialWithBill flips trialing→active AND runs billFn (the day-1
+	// in_advance invoice insert) in the SAME transaction, so a billing failure
+	// rolls the activation back rather than leaving an active sub with no
+	// first-period invoice (revenue leak). billFn may be nil.
+	ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error)
+
 	// EndTrialEarly is the operator-driven counterpart to
 	// ActivateAfterTrial. In one atomic UPDATE it: flips status to
 	// 'active', stamps activated_at if currently NULL, truncates
@@ -177,6 +183,13 @@ type Store interface {
 	// Returns errs.InvalidState if the row's status is not 'trialing'
 	// at UPDATE time.
 	EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error)
+
+	// EndTrialEarlyWithBill flips trialing→active (resetting the period anchor)
+	// AND runs billFn (the day-1 in_advance invoice insert) in the SAME
+	// transaction, so a billing failure rolls the early-end back rather than
+	// leaving an active sub with no first-period invoice (revenue leak). billFn
+	// may be nil.
+	EndTrialEarlyWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error)
 
 	// ExtendTrial atomically updates trial_end_at AND recomputes the
 	// period anchor on a 'trialing' row. Mirrors EndTrialEarly's shape
