@@ -166,6 +166,23 @@ func (s *Service) SetAuditLogger(l AuditLogger) { s.audit = l }
 // Optional — unset paths skip dispatch.
 func (s *Service) SetEventDispatcher(d domain.EventDispatcher) { s.events = d }
 
+// dispatchEvent enqueues an outbound webhook event and LOGS on failure rather
+// than silently dropping it. The dispatcher persists durably (ADR-040 outbox)
+// once the enqueue commits, so a non-nil error here means the enqueue INSERT
+// itself failed (a transient DB hiccup) and the event is lost — make that
+// visible (no-silent-fallbacks) instead of the prior `_ =` swallow. Atomicity
+// with the state-change (DispatchTx) is the deferred follow-up; this only closes
+// the silent-error vector.
+func (s *Service) dispatchEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
+	if s.events == nil {
+		return
+	}
+	if err := s.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.ErrorContext(ctx, "failed to enqueue webhook event",
+			"event_type", eventType, "tenant_id", tenantID, "error", err)
+	}
+}
+
 func NewService(store Store, clk clock.Clock, numberer InvoiceNumberer) *Service {
 	if clk == nil {
 		clk = clock.Real()
@@ -617,7 +634,7 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	// tax-retry auto-finalize chain (RetryTax → Finalize) silently never
 	// notified integrators that a tax-deferred invoice finalized.
 	if s.events != nil {
-		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceFinalized, map[string]any{
+		s.dispatchEvent(ctx, tenantID, domain.EventInvoiceFinalized, map[string]any{
 			"invoice_id":         finalized.ID,
 			"invoice_number":     finalized.InvoiceNumber,
 			"customer_id":        finalized.CustomerID,
@@ -802,7 +819,7 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	// unpaid-prebill relief on immediate cancel routes through this method
 	// via the InvoiceVoider interface) silently skipped it.
 	if s.events != nil {
-		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceVoided, map[string]any{
+		s.dispatchEvent(ctx, tenantID, domain.EventInvoiceVoided, map[string]any{
 			"invoice_id":         voided.ID,
 			"invoice_number":     voided.InvoiceNumber,
 			"customer_id":        voided.CustomerID,
@@ -882,7 +899,7 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 		})
 	}
 	if s.events != nil {
-		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoiceMarkedUncollectible, map[string]any{
+		s.dispatchEvent(ctx, tenantID, domain.EventInvoiceMarkedUncollectible, map[string]any{
 			"invoice_id":       updated.ID,
 			"invoice_number":   updated.InvoiceNumber,
 			"customer_id":      updated.CustomerID,
@@ -956,7 +973,7 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, meta)
 	}
 	if s.events != nil {
-		_ = s.events.Dispatch(ctx, tenantID, domain.EventInvoicePaymentRecorded, map[string]any{
+		s.dispatchEvent(ctx, tenantID, domain.EventInvoicePaymentRecorded, map[string]any{
 			"invoice_id":     updated.ID,
 			"invoice_number": updated.InvoiceNumber,
 			"customer_id":    updated.CustomerID,

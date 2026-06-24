@@ -156,6 +156,22 @@ func (s *Service) SetEventDispatcher(d domain.EventDispatcher) {
 	s.events = d
 }
 
+// dispatchEvent enqueues an outbound webhook event and LOGS on failure rather
+// than silently dropping it. Once the enqueue commits the dispatcher delivers
+// durably (ADR-040 outbox); a non-nil error means the enqueue INSERT failed and
+// the event is lost — make that visible (no-silent-fallbacks) instead of the
+// prior `_ =` swallow. In-tx atomicity with the state change (DispatchTx) is the
+// deferred follow-up; this only closes the silent-error vector.
+func (s *Service) dispatchEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
+	if s.events == nil {
+		return
+	}
+	if err := s.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.ErrorContext(ctx, "failed to enqueue webhook event",
+			"event_type", eventType, "tenant_id", tenantID, "error", err)
+	}
+}
+
 // SetBiller wires the billing engine for the in_advance first-invoice
 // path (ADR-031). Optional — without it, in_advance plans silently
 // behave like in_arrears until the next cycle close. Production wires
@@ -1770,7 +1786,7 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 		// auto-flip path. triggered_by="schedule" signals it was the
 		// catchup orchestrator (not the operator's EndTrial action).
 		if s.events != nil {
-			_ = s.events.Dispatch(bound, tenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+			s.dispatchEvent(bound, tenantID, domain.EventSubscriptionTrialEnded, map[string]any{
 				"subscription_id": activated.ID,
 				"customer_id":     activated.CustomerID,
 				"ended_at":        trialEndAt.UTC(),
@@ -1861,7 +1877,7 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			s.biller.FinalizeOnCreateInvoice(ctx, activated, firstInv)
 		}
 		if s.events != nil {
-			_ = s.events.Dispatch(ctx, activated.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+			s.dispatchEvent(ctx, activated.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
 				"subscription_id": activated.ID,
 				"customer_id":     activated.CustomerID,
 				"ended_at":        trialEndAt.UTC(),
@@ -1913,7 +1929,7 @@ func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, te
 			})
 		}
 		if s.events != nil {
-			_ = s.events.Dispatch(bound, tenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
+			s.dispatchEvent(bound, tenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
 				"subscription_id": cleared.ID,
 				"customer_id":     cleared.CustomerID,
 				"resumed_at":      frozen.UTC(),
@@ -1958,7 +1974,7 @@ func (s *Service) ProcessExpiredPauseCollections(ctx context.Context, batch int)
 			})
 		}
 		if s.events != nil {
-			_ = s.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
+			s.dispatchEvent(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
 				"subscription_id": cleared.ID,
 				"customer_id":     cleared.CustomerID,
 				"resumed_at":      now.UTC(),
