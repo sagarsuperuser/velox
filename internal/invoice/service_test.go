@@ -621,6 +621,43 @@ func (m *memStore) ListPendingTaxCommit(_ context.Context, batch int, _ bool) ([
 	return out, nil
 }
 
+func (m *memStore) ListPendingTaxReversal(_ context.Context, batch int, _ bool) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	var out []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.Status != domain.InvoiceVoided && inv.Status != domain.InvoiceUncollectible {
+			continue
+		}
+		if inv.TaxProvider != "stripe_tax" || inv.TaxTransactionID == "" || inv.TaxReversedAt != nil {
+			continue
+		}
+		if inv.IsSimulated {
+			continue
+		}
+		out = append(out, inv)
+		if len(out) >= batch {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) MarkTaxReversed(_ context.Context, tenantID, id string) error {
+	// Match the real store: the UPDATE is RLS-scoped + guarded by
+	// `tax_reversed_at IS NULL`, so a missing/wrong-tenant id or an
+	// already-stamped row is a silent no-op (zero rows), never an error.
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID || inv.TaxReversedAt != nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	inv.TaxReversedAt = &now
+	m.invoices[id] = inv
+	return nil
+}
+
 func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// that exercise retry-after-partial-failure paths silently double-insert
