@@ -93,6 +93,22 @@ func (e *Engine) SetAuditLogger(a AuditWriter) {
 	e.auditLogger = a
 }
 
+// dispatchEvent enqueues an outbound webhook event and LOGS on failure rather
+// than silently dropping it. Once the enqueue commits the dispatcher delivers
+// durably (ADR-040 outbox); a non-nil error means the enqueue INSERT failed and
+// the event is lost — make that visible (no-silent-fallbacks) instead of the
+// prior `_ =` swallow. In-tx atomicity with the state change (DispatchTx) is the
+// deferred follow-up; this only closes the silent-error vector.
+func (e *Engine) dispatchEvent(ctx context.Context, tenantID, eventType string, payload map[string]any) {
+	if e.events == nil {
+		return
+	}
+	if err := e.events.Dispatch(ctx, tenantID, eventType, payload); err != nil {
+		slog.ErrorContext(ctx, "failed to enqueue webhook event",
+			"event_type", eventType, "tenant_id", tenantID, "error", err)
+	}
+}
+
 // auditInvoiceFinalized writes the finalize audit row for an invoice the
 // engine created already-finalized (cycle close, subscription create,
 // cancel-final, threshold). The operator HTTP path and the tax-retry
@@ -132,7 +148,7 @@ func (e *Engine) auditInvoiceFinalized(ctx context.Context, sub domain.Subscript
 		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
 	}
 	if e.events != nil {
-		_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventInvoiceFinalized, map[string]any{
+		e.dispatchEvent(ctx, sub.TenantID, domain.EventInvoiceFinalized, map[string]any{
 			"invoice_id":         inv.ID,
 			"invoice_number":     inv.InvoiceNumber,
 			"customer_id":        inv.CustomerID,
@@ -1933,7 +1949,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				)
 			}
 			if e.events != nil {
-				_ = e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
+				e.dispatchEvent(ctx, sub.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
 					"subscription_id": sub.ID,
 					"customer_id":     sub.CustomerID,
 					"ended_at":        now.UTC(),
