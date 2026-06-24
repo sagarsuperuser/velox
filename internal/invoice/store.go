@@ -95,6 +95,17 @@ type Store interface {
 	// to 'paid' before the reconciler's first scan). Powers the commit
 	// reconciler.
 	ListPendingTaxCommit(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error)
+	// ListPendingTaxReversal finds voided/uncollectible stripe_tax invoices that
+	// still carry a tax_transaction_id but have tax_reversed_at NULL — a tax
+	// reversal that failed (or never completed) at Stripe, leaving the tenant
+	// over-remitting. Powers the reversal recovery sweep (symmetric sibling of
+	// the #267 commit reconciler). Bounded to a freshness window so it doesn't
+	// re-scan ancient voids forever.
+	ListPendingTaxReversal(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error)
+	// MarkTaxReversed stamps tax_reversed_at=now() once the upstream reversal is
+	// confirmed (or there was nothing to reverse), dropping the row from the
+	// reversal sweep.
+	MarkTaxReversed(ctx context.Context, tenantID, id string) error
 
 	// ListPendingTaxRetryForClock is the catchup-path counterpart to
 	// ListPendingTaxRetry — returns clock-pinned draft invoices stuck

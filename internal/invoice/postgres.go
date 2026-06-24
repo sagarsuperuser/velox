@@ -179,7 +179,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
 	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,''),
-	is_simulated`
+	is_simulated, tax_reversed_at`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -1848,6 +1848,104 @@ func (s *PostgresStore) ListPendingTaxCommit(ctx context.Context, batch int, liv
 	return out, rows.Err()
 }
 
+// ListPendingTaxReversal finds voided/uncollectible stripe_tax invoices that
+// still carry a committed tax_transaction_id but have tax_reversed_at NULL — a
+// reversal that failed (transient Stripe error) or never completed, leaving the
+// upstream transaction reported as collected → the tenant over-remits. Powers
+// RetryPendingTaxReversal, the symmetric sibling of the #267 commit reconciler.
+//
+// Bounded to invoices touched in the last 24h. Unlike ListPendingTaxCommit —
+// whose 24h matches a HARD limit (the Stripe Tax calc TTL, after which a
+// re-commit is impossible) — a reversal has no such ceiling; here the window is
+// purely (a) anti-churn and (b) a grandfather for pre-0122 voids (whose
+// tax_reversed_at is NULL by default but were almost certainly reversed inline
+// already), avoiding a one-time re-reversal burst on first deploy WITHOUT a data
+// backfill. A transient failure resolves in seconds-to-minutes, well inside the
+// window. A SUSTAINED (>24h) failure ages out to manual reconcile — the loud
+// ERROR at the inline failure (raised from WARN) is the operator signal, same
+// recovery model as ListPendingTaxCommit's aged-out orphans. Re-reversal is
+// idempotent at Stripe (the invoice-stable `inv_taxrev_<id>` reference dedups),
+// so a row that WAS reversed but failed to stamp tax_reversed_at re-confirms
+// harmlessly and stamps out next tick.
+//
+// LIMITATION (mode-drift): reverseInvoiceTax recomputes the reversal amount
+// (total − credited) on each re-drive. If the invoice's credit-noted total
+// CHANGES after the status flip while a reversal is pending-failed (e.g. an
+// operator issues a credit note on an uncollectible invoice), the re-drive's
+// body differs under the SAME idempotency key and Stripe rejects it — surfaced
+// as the loud per-tick ERROR (→ manual reconcile), never a silent corruption.
+// We deliberately do NOT vary the key by mode/amount: the G1 fix relies on the
+// stable `inv_taxrev_<id>` reference to dedup an uncollectible-then-void pair to
+// ONE reversal, so a mode-keyed scheme would reintroduce that double-reversal
+// under-remit. Snapshotting the request body at status-change time is the clean
+// fix if a real tax-filing DP hits this; deferred (pre-existing to the
+// same-reference design, and zero live tax tenants today).
+//
+// Simulated (test-clock) invoices are excluded via is_simulated — the durable
+// write-time flag (ADR-030), which covers BOTH subscription-pinned and
+// customer-pinned one-off invoices (a subscriptions-only NOT EXISTS would miss
+// the latter). Like ListPendingTaxCommit there is no ForClock half: a stranded
+// reversal on a test-mode (livemode=false) void only breaks SIMULATED fidelity,
+// never real tax reporting, and replaying the clock recovers it. Build a
+// ForClock counterpart only when a DP's test-clock void simulation reports a
+// silently no-op'd reversal.
+func (s *PostgresStore) ListPendingTaxReversal(ctx context.Context, batch int, livemode bool) ([]domain.Invoice, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.livemode = $1
+		  AND i.status IN ('voided', 'uncollectible')
+		  AND i.tax_provider = 'stripe_tax'
+		  AND COALESCE(i.tax_transaction_id, '') <> ''
+		  AND i.tax_reversed_at IS NULL
+		  AND i.is_simulated = false
+		  AND i.updated_at > now() - interval '24 hours'
+		ORDER BY i.updated_at ASC
+		LIMIT $2
+	`, livemode, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// MarkTaxReversed stamps tax_reversed_at once the upstream reversal is confirmed
+// (or there was nothing to reverse), dropping the invoice from the reversal
+// sweep. Idempotent: the `IS NULL` guard makes a re-confirm a no-op.
+func (s *PostgresStore) MarkTaxReversed(ctx context.Context, tenantID, id string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET tax_reversed_at = $1 WHERE id = $2 AND tax_reversed_at IS NULL`,
+		clock.Now(ctx), id,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ListPendingTaxRetryForClock is the catchup-path counterpart to
 // ListPendingTaxRetry. ADR-029 Phase 2.
 //
@@ -2004,7 +2102,7 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		&inv.TaxErrorCode, &inv.TaxNextRetryAt,
 		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
 		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
-		&inv.IsSimulated,
+		&inv.IsSimulated, &inv.TaxReversedAt,
 	}
 }
 

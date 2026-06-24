@@ -181,6 +181,14 @@ type Invoice struct {
 	// time per the exponential backoff curve in
 	// internal/billing/tax_retry.go. Migration 0074. ADR-017.
 	TaxNextRetryAt *time.Time `json:"tax_next_retry_at,omitempty"`
+	// TaxReversedAt records when the upstream tax transaction was
+	// successfully reversed on void / mark-uncollectible (or when there
+	// was nothing left to reverse). NULL on a voided/uncollectible
+	// stripe_tax invoice that still carries a TaxTransactionID means the
+	// reversal has not been confirmed yet — RetryPendingTaxReversal keys
+	// on this to re-drive a failed reversal (the symmetric sibling of the
+	// #267 commit reconciler). Migration 0122.
+	TaxReversedAt *time.Time `json:"tax_reversed_at,omitempty"`
 	// PaymentCardBrand / PaymentCardLast4 capture the card used to
 	// settle this invoice — populated at payment_intent.succeeded
 	// time by looking up the PI's payment_method against the

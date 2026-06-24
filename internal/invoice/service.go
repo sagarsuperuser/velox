@@ -652,9 +652,9 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 //
 // Preconditions: taxReverser wired (skipped for narrow tests + none/manual
 // providers) and a committed upstream transaction (TaxTransactionID non-empty).
-func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv domain.Invoice, reference string) {
+func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv domain.Invoice, reference string) error {
 	if s.taxReverser == nil || inv.TaxTransactionID == "" {
-		return
+		return nil
 	}
 	req := tax.ReversalRequest{
 		OriginalTransactionID: inv.TaxTransactionID,
@@ -691,7 +691,14 @@ func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv do
 			remainingGross = 0
 		}
 		if remainingGross <= 0 {
-			return
+			// Fully credit-noted: nothing for THIS reference to reverse. Each
+			// credit note already reversed its own slice under its OWN reference
+			// (cn_<id>), with its own retry/recovery (the creditnote path) — so
+			// reversing nothing here is correct, not a hidden failure. Terminal
+			// success: stamp tax_reversed_at so the sweep stops re-scanning the
+			// row (it carries a tax_transaction_id but the inv_taxrev slice is 0).
+			s.markTaxReversed(ctx, tenantID, inv.ID)
+			return nil
 		}
 		if remainingGross < inv.TotalAmountCents {
 			req.Mode = tax.ReversalModePartial
@@ -699,17 +706,39 @@ func (s *Service) reverseInvoiceTax(ctx context.Context, tenantID string, inv do
 		}
 	}
 	if _, err := s.taxReverser.ReverseTax(ctx, tenantID, req); err != nil {
-		// DEFERRED: no reconciler re-drives a failed reversal yet, so a transient
-		// failure here leaves the tenant over-remitting until manual reconcile.
-		// Recovery (a durable reversal-pending marker + sweep, the
-		// RetryPendingTaxCommit shape) is a tracked follow-up — ADR-057
-		// §Deferred(b); see docs/adr/README.md "Open follow-ups".
-		slog.WarnContext(ctx, "tax reversal failed on invoice status change — invoice still updated locally",
+		// Leave tax_reversed_at NULL: RetryPendingTaxReversal (the scheduler
+		// sweep, symmetric sibling of #267's RetryPendingTaxCommit) re-drives
+		// this on the next tick. The re-drive converges via the request's
+		// Idempotency-Key (velox_tax_rev_<ref>): within Stripe's cache window a
+		// retry returns the original reversal (a true no-op), and the stable
+		// `inv_taxrev_<id>` Reference prevents a duplicate reversal from ever
+		// being created. (A retry after the idempotency cache expires for a
+		// reversal that already succeeded would get a reference-already-used
+		// rejection — surfaced as this same loud ERROR, never a double-reverse.)
+		// ERROR (not WARN) so a sustained failure is alertable and the
+		// manual-reconcile path has a loud signal.
+		slog.ErrorContext(ctx, "tax reversal failed on invoice status change — invoice updated locally; recovery sweep will retry",
 			"invoice_id", inv.ID,
 			"tax_transaction_id", inv.TaxTransactionID,
 			"reference", reference,
 			"reversal_mode", string(req.Mode),
 			"error", err)
+		return err
+	}
+	// Reversal confirmed upstream — stamp the marker so the sweep drops this row.
+	s.markTaxReversed(ctx, tenantID, inv.ID)
+	return nil
+}
+
+// markTaxReversed records that an invoice's upstream tax transaction has been
+// reversed (or needed no reversal), clearing it from the RetryPendingTaxReversal
+// sweep. Best-effort: a failed stamp leaves the row in the sweep, which re-drives
+// the (idempotent) reversal until the stamp sticks — the same self-healing shape
+// as the commit reconciler.
+func (s *Service) markTaxReversed(ctx context.Context, tenantID, invoiceID string) {
+	if err := s.store.MarkTaxReversed(ctx, tenantID, invoiceID); err != nil {
+		slog.WarnContext(ctx, "failed to stamp tax_reversed_at; recovery sweep will re-confirm",
+			"invoice_id", invoiceID, "error", err)
 	}
 }
 
@@ -764,7 +793,9 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	// key) and the tax is reversed exactly once. Pre-fix this used inv_void_<id>,
 	// a distinct reference that did NOT dedup → uncollectible-then-void reversed
 	// the tax twice → tenant under-remitted (ADR-056 follow-up / product audit G1).
-	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
+	// Best-effort post-commit: a failure here is logged ERROR and recovered by
+	// RetryPendingTaxReversal, so the caller deliberately ignores the return.
+	_ = s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
 	// invoice.voided webhook — single-writer at the service layer (same
 	// pattern as finalized/marked_uncollectible/payment_recorded). Pre-fix
 	// it fired from the HTTP handler only, so engine-triggered voids (the
@@ -819,8 +850,18 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 		return domain.Invoice{}, errs.InvalidState("a charge is in flight on this invoice — wait for it to settle or cancel it before marking uncollectible")
 	}
 
-	// Reverse the upstream tax transaction (remaining un-reversed portion only;
-	// see reverseInvoiceTax). Jurisdictional caveat — bad-debt VAT relief rules
+	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+
+	// Reverse the upstream tax transaction AFTER the status flip commits —
+	// mirrors Void (ADR-056). Flipping first means a status-write failure leaves
+	// the invoice 'finalized' with NO upstream reversal fired (no orphaned
+	// Stripe side effect on a still-collectible invoice); a reversal failure
+	// post-flip leaves the row 'uncollectible' with tax_reversed_at NULL, which
+	// RetryPendingTaxReversal then recovers. Remaining un-reversed portion only
+	// (see reverseInvoiceTax). Jurisdictional caveat — bad-debt VAT relief rules
 	// vary (EU permits reclaim under specific conditions; US sales tax varies by
 	// state). We follow Stripe's default behaviour and let tenants whose
 	// jurisdiction requires the tax to stay re-commit manually. The reversal
@@ -828,12 +869,10 @@ func (s *Service) MarkUncollectible(ctx context.Context, tenantID, id string) (d
 	// INVOICE: a retry converges, AND a later Void of this now-uncollectible
 	// invoice reuses the same reference and dedups at Stripe instead of
 	// reversing the same tax transaction twice (which would under-remit tax).
-	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
+	// Best-effort post-commit: a failure here is logged ERROR and recovered by
+	// RetryPendingTaxReversal, so the caller deliberately ignores the return.
+	_ = s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
 
-	updated, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceUncollectible)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
 	if s.audit != nil {
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, map[string]any{
 			"action":           "marked_uncollectible",
@@ -1289,6 +1328,40 @@ func (s *Service) RetryPendingTaxCommit(ctx context.Context, batch int) (int, []
 	for _, inv := range orphans {
 		if err := s.taxCommitter.CommitTax(ctx, inv.TenantID, inv.ID, inv.TaxCalculationID); err != nil {
 			errsOut = append(errsOut, fmt.Errorf("re-commit tax for invoice %s: %w", inv.ID, err))
+			continue
+		}
+		recovered++
+	}
+	return recovered, errsOut
+}
+
+// RetryPendingTaxReversal recovers voided/uncollectible stripe_tax invoices
+// whose upstream tax reversal failed at status-change time (a transient Stripe
+// error left the transaction reported as collected → the tenant over-remits).
+// The symmetric sibling of RetryPendingTaxCommit. Each is re-driven through
+// reverseInvoiceTax — idempotent at Stripe (the invoice-stable inv_taxrev_<id>
+// reference dedups), and it stamps tax_reversed_at on success so the row falls
+// out of the next scan. Self-healing: a re-reversal whose stamp fails again is
+// picked up next tick.
+//
+// Runs on the wall-clock scheduler tick (clock-pinned invoices excluded by the
+// store query). Per-row errors collected, not aborted-on.
+func (s *Service) RetryPendingTaxReversal(ctx context.Context, batch int) (int, []error) {
+	if s.taxReverser == nil {
+		return 0, nil
+	}
+	livemode := postgres.Livemode(ctx)
+	pending, err := s.store.ListPendingTaxReversal(ctx, batch, livemode)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending tax reversals: %w", err)}
+	}
+	var errsOut []error
+	recovered := 0
+	for _, inv := range pending {
+		// reverseInvoiceTax already logs an ERROR + leaves tax_reversed_at NULL
+		// on failure (re-scanned next tick); aggregate the error for the return.
+		if rerr := s.reverseInvoiceTax(ctx, inv.TenantID, inv, "inv_taxrev_"+inv.ID); rerr != nil {
+			errsOut = append(errsOut, fmt.Errorf("re-reverse tax for invoice %s: %w", inv.ID, rerr))
 			continue
 		}
 		recovered++

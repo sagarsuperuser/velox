@@ -38,6 +38,11 @@ type TaxRetrier interface {
 	// (so a later void couldn't reverse it). Idempotent — Stripe returns the
 	// original transaction, never a duplicate.
 	RetryPendingTaxCommit(ctx context.Context, batch int) (int, []error)
+	// RetryPendingTaxReversal re-reverses voided/uncollectible stripe_tax
+	// invoices whose upstream reversal failed at status-change time (tenant
+	// over-remits until recovered). Symmetric sibling of RetryPendingTaxCommit;
+	// idempotent at Stripe via the invoice-stable reversal reference.
+	RetryPendingTaxReversal(ctx context.Context, batch int) (int, []error)
 }
 
 // ClawbackRetrier re-issues subscription downgrade/removal/qty-decrease clawback
@@ -341,6 +346,19 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, e := range commitErrs {
 			slog.Error("tax commit recovery error", "mode", mode, "error", e)
+		}
+
+		// Reversal reconciler: re-drive the upstream tax reversal for
+		// voided/uncollectible invoices whose reversal failed at status-change
+		// time — else the tax authority keeps reporting it as collected and the
+		// tenant over-remits. Symmetric sibling of the commit reconciler above;
+		// idempotent at Stripe (the invoice-stable reversal reference dedups).
+		reversed, reversalErrs := s.taxRetrier.RetryPendingTaxReversal(ctx, s.batch)
+		if reversed > 0 || len(reversalErrs) > 0 {
+			slog.Info("tax reversal recoveries", "mode", mode, "recovered", reversed, "errors", len(reversalErrs))
+		}
+		for _, e := range reversalErrs {
+			slog.Error("tax reversal recovery error", "mode", mode, "error", e)
 		}
 	}
 
