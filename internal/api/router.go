@@ -280,9 +280,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	dunningStore := dunning.NewPostgresStore(db)
 	dunningSvc := dunning.NewService(dunningStore, nil, clk) // retrier set below after stripeAdapter created
 	dunningH := dunning.NewHandler(dunningSvc, dunning.HandlerDeps{
-		Invoices:       invoiceStore,
-		CreditReverser: creditSvc,
-		PaymentCancel:  payment.NewLiveStripeClient(stripeClients),
+		Invoices:      invoiceStore,
+		PaymentCancel: payment.NewLiveStripeClient(stripeClients),
 	})
 
 	// Recipe registry — built-in pricing recipes loaded once at boot from
@@ -357,7 +356,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		CreditNotes:     &creditNoteListerAdapter{svc: creditNoteSvc},
 		Charger:         stripeAdapter,
 		PaymentSetups:   paymentSetupStore,
-		CreditReverser:  creditSvc,
 		PaymentCancel:   stripeClient,
 		Dunning:         dunningSvc,
 		WebhookEvents:   webhookStore,
@@ -780,6 +778,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// So void/uncollectible reverses exactly the un-credit-noted tax (total −
 	// credited), correct even when customer credit was applied to the invoice.
 	invoiceSvc.SetCreditNoteTotaler(creditNoteSvc)
+
+	// Void reverses applied customer credits atomically with the status flip
+	// (one coordinator tx) instead of the prior best-effort post-void handler
+	// step that silently stripped paid-with credits on any transient failure.
+	invoiceSvc.SetCreditReverser(creditSvc)
 
 	// Operator-initiated retry-tax routes through the billing engine,
 	// which owns provider resolve → recompute → atomic persist. Backs

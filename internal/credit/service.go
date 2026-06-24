@@ -225,6 +225,34 @@ func (s *Service) ApplyToInvoiceAt(ctx context.Context, tenantID, customerID, in
 }
 
 func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {
+	return s.reverseForInvoice(ctx, tenantID, customerID, invoiceID, invoiceNumber,
+		func(entry domain.CreditLedgerEntry) error {
+			_, err := s.store.AppendEntry(ctx, tenantID, entry)
+			return err
+		})
+}
+
+// ReverseForInvoiceTx is the in-transaction variant: the reversal grant is
+// appended on the caller's *sql.Tx so it commits (or rolls back) atomically
+// with the invoice status flip that drives the void. invoice.Service.Void
+// threads its coordinator tx through here — a reversal failure rolls the void
+// back, so the invoice never lands voided with the customer's applied credits
+// still consumed. The reading of usage entries runs on its own conn (those
+// rows were committed when the credit was applied); only the grant INSERT
+// rides the tx, and the 0106 dedup index keeps it exactly-once.
+func (s *Service) ReverseForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error) {
+	return s.reverseForInvoice(ctx, tenantID, customerID, invoiceID, invoiceNumber,
+		func(entry domain.CreditLedgerEntry) error {
+			_, err := s.store.AppendEntryTx(ctx, tx, tenantID, entry)
+			return err
+		})
+}
+
+// reverseForInvoice is the shared body: sum the usage entries applied to the
+// invoice and append a matching grant via the supplied appender (own tx vs
+// caller's tx). bindForCustomer stamps the grant in simulated time when the
+// customer is clock-pinned.
+func (s *Service) reverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string, appendFn func(domain.CreditLedgerEntry) error) (int64, error) {
 	// Bind ctx clock to the customer pin so the reversal grant entry's
 	// created_at stamps in simulated time when called from the void /
 	// dunning-writeoff flow on a clock-pinned customer.
@@ -255,7 +283,7 @@ func (s *Service) ReverseForInvoice(ctx context.Context, tenantID, customerID, i
 		desc = fmt.Sprintf("Reversed — invoice %s voided", invoiceID)
 	}
 
-	_, err = s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+	err = appendFn(domain.CreditLedgerEntry{
 		CustomerID:              customerID,
 		EntryType:               domain.CreditGrant,
 		AmountCents:             totalUsed,
