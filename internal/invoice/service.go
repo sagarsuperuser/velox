@@ -115,6 +115,17 @@ type TenantSettingsReader interface {
 	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
 }
 
+// CreditReverser restores customer-balance credits that were applied to an
+// invoice when that invoice is voided. Void calls the in-tx variant so the
+// reversal grant commits in the SAME transaction as the status flip — a void
+// either restores the credits or doesn't happen. Optional: when nil (narrow
+// tests, none-credit tenants) Void proceeds without a reversal. Satisfied by
+// *credit.Service. Kept as a local interface so this package doesn't import
+// internal/credit.
+type CreditReverser interface {
+	ReverseForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
+}
+
 type Service struct {
 	store          Store
 	clock          clock.Clock
@@ -123,6 +134,7 @@ type Service struct {
 	taxCommitter   TaxCommitter
 	taxReverser    TaxReverser
 	creditNotes    CreditNoteTotaler
+	creditReverser CreditReverser
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
@@ -178,6 +190,14 @@ func (s *Service) SetTaxReverser(tr TaxReverser) {
 
 func (s *Service) SetCreditNoteTotaler(c CreditNoteTotaler) {
 	s.creditNotes = c
+}
+
+// SetCreditReverser wires the consumed-credit reverser used by Void to restore
+// applied customer credits atomically with the status flip. Called from
+// router.go with the credit service. Without it, Void still voids but reverses
+// no credits (correct for tenants that never apply customer credit).
+func (s *Service) SetCreditReverser(r CreditReverser) {
+	s.creditReverser = r
 }
 
 // SetResolver wires the unified clock.Resolver used to bind
@@ -715,6 +735,28 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		return domain.Invoice{}, errs.InvalidState("a charge is in flight on this invoice — wait for it to settle or cancel it before voiding")
 	}
 
+	// Atomic: flip status to voided AND reverse the consumed customer credits
+	// (credits applied to this invoice reduce amount_due without touching the
+	// ledger balance; voiding must hand them back) in ONE transaction. A
+	// reversal failure rolls the void back, so the invoice never lands
+	// voided-but-credits-still-consumed — the pre-fix shape, where the handler
+	// called ReverseForInvoice as a separate WARN-swallowed step AFTER the void
+	// committed, silently stripped the customer of paid-with credits on any
+	// transient failure (no reconciler re-drove it). The 0106 dedup index keeps
+	// the in-tx reversal exactly-once across redelivery.
+	voided, err := s.store.UpdateStatusWithReversal(ctx, tenantID, id, domain.InvoiceVoided, func(tx *sql.Tx) error {
+		if s.creditReverser == nil || inv.CustomerID == "" {
+			return nil
+		}
+		_, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber)
+		return rerr
+	})
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+
+	// Reverse the upstream tax transaction AFTER the void durably commits —
+	// external Stripe call, best-effort (WARN on failure; see reverseInvoiceTax).
 	// Invoice-stable reversal reference (inv_taxrev_<id>). Void permits an
 	// `uncollectible` source (annulling a bad debt is a legitimate operator
 	// action), and MarkUncollectible already reversed the tax under THIS same
@@ -723,11 +765,6 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	// a distinct reference that did NOT dedup → uncollectible-then-void reversed
 	// the tax twice → tenant under-remitted (ADR-056 follow-up / product audit G1).
 	s.reverseInvoiceTax(ctx, tenantID, inv, "inv_taxrev_"+inv.ID)
-
-	voided, err := s.store.UpdateStatus(ctx, tenantID, id, domain.InvoiceVoided)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
 	// invoice.voided webhook — single-writer at the service layer (same
 	// pattern as finalized/marked_uncollectible/payment_recorded). Pre-fix
 	// it fired from the HTTP handler only, so engine-triggered voids (the

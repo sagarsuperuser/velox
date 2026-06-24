@@ -200,6 +200,26 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return inv, nil
 }
 
+func (m *memStore) UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error) {
+	prev, ok := m.invoices[id]
+	if !ok || prev.TenantID != tenantID {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	inv, err := m.UpdateStatus(ctx, tenantID, id, status)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if reverseFn != nil {
+		// In-memory: no real tx — pass nil and, on error, restore the pre-flip
+		// invoice so the test store mirrors the all-or-nothing store contract.
+		if err := reverseFn(nil); err != nil {
+			m.invoices[id] = prev
+			return domain.Invoice{}, err
+		}
+	}
+	return inv, nil
+}
+
 func (m *memStore) FinalizeWithDates(_ context.Context, tenantID, id string, issuedAt, dueAt time.Time) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {

@@ -15,9 +15,9 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
-// fakeInvoiceUpdater is the dunning handler's InvoiceUpdater (Get is the only
-// method resolveRun's manual-resolve branch reads — for the inline
-// credit-reversal/PI-cancel inputs).
+// fakeInvoiceUpdater is the dunning handler's InvoiceUpdater (only the
+// PaymentRecovered branch reads it now, via MarkPaid; the manual-resolve void
+// branch routes entirely through the InvoiceVoider).
 type fakeInvoiceUpdater struct{ inv domain.Invoice }
 
 func (f *fakeInvoiceUpdater) Get(_ context.Context, _, _ string) (domain.Invoice, error) {
@@ -43,14 +43,9 @@ func (v *recordingVoider) Void(_ context.Context, tenantID, id string) (domain.I
 	if v.err != nil {
 		return domain.Invoice{}, v.err
 	}
-	return domain.Invoice{ID: id, TenantID: tenantID, Status: domain.InvoiceVoided}, nil
-}
-
-type recordingReverser struct{ calls int }
-
-func (r *recordingReverser) ReverseForInvoice(_ context.Context, _, _, _, _ string) (int64, error) {
-	r.calls++
-	return 0, nil
+	// The PI id rides the Void return (the dunning handler cancels it
+	// post-void); the consumed-credit reversal happens inside Void itself.
+	return domain.Invoice{ID: id, TenantID: tenantID, CustomerID: "cus_1", Status: domain.InvoiceVoided, StripePaymentIntentID: "pi_1"}, nil
 }
 
 type recordingCanceler struct{ calls int }
@@ -73,57 +68,49 @@ func resolveManually(t *testing.T, h *Handler, runID string) {
 
 // TestResolveRun_ManualVoid_RoutesThroughServiceAndGatesSideEffects pins D5
 // (single void writer, ADR-059): a manually-resolved dunning run voids the
-// invoice through invoice.Service.Void (which reverses tax + emits the
-// single-writer invoice.voided event + enforces the in-flight guard) instead of
-// the raw store. The inline credit-reversal + PI-cancel must run ONLY when the
-// void SUCCEEDS — otherwise an in-flight invoice (whose void the service refuses)
-// would still get its live PaymentIntent canceled and its credits reversed,
-// defeating the in-flight guard.
+// invoice through invoice.Service.Void (which reverses the consumed credits
+// atomically + reverses tax + emits the single-writer invoice.voided event +
+// enforces the in-flight guard) instead of the raw store. The post-void
+// PI-cancel must run ONLY when the void SUCCEEDS — otherwise an in-flight
+// invoice (whose void the service refuses) would still get its live
+// PaymentIntent canceled, defeating the in-flight guard.
 func TestResolveRun_ManualVoid_RoutesThroughServiceAndGatesSideEffects(t *testing.T) {
 	ctx := context.Background()
-	newHandler := func(voider *recordingVoider) (*Handler, *recordingReverser, *recordingCanceler, string) {
+	newHandler := func(voider *recordingVoider) (*Handler, *recordingCanceler, string) {
 		svc := NewService(newMemStore(), &noopRetrier{}, nil)
 		run, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", time.Now())
 		if err != nil {
 			t.Fatalf("StartDunning: %v", err)
 		}
-		reverser := &recordingReverser{}
 		canceler := &recordingCanceler{}
 		h := NewHandler(svc, HandlerDeps{
 			Invoices: &fakeInvoiceUpdater{inv: domain.Invoice{
 				ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", StripePaymentIntentID: "pi_1",
 			}},
-			CreditReverser: reverser,
-			PaymentCancel:  canceler,
+			PaymentCancel: canceler,
 		})
 		h.SetInvoiceVoider(voider)
-		return h, reverser, canceler, run.ID
+		return h, canceler, run.ID
 	}
 
-	t.Run("void succeeds → routes through service voider + runs inline side-effects", func(t *testing.T) {
+	t.Run("void succeeds → routes through service voider + cancels PI", func(t *testing.T) {
 		voider := &recordingVoider{}
-		h, reverser, canceler, runID := newHandler(voider)
+		h, canceler, runID := newHandler(voider)
 		resolveManually(t, h, runID)
 		if voider.calls != 1 {
 			t.Errorf("void must route through the invoice service voider; calls=%d, want 1", voider.calls)
-		}
-		if reverser.calls != 1 {
-			t.Errorf("credit reversal should run after a successful void; calls=%d, want 1", reverser.calls)
 		}
 		if canceler.calls != 1 {
 			t.Errorf("PI cancel should run after a successful void; calls=%d, want 1", canceler.calls)
 		}
 	})
 
-	t.Run("void refused (in-flight) → inline PI-cancel + credit-reversal SKIPPED", func(t *testing.T) {
+	t.Run("void refused (in-flight) → post-void PI-cancel SKIPPED", func(t *testing.T) {
 		voider := &recordingVoider{err: errs.InvalidState("a charge is in flight on this invoice")}
-		h, reverser, canceler, runID := newHandler(voider)
+		h, canceler, runID := newHandler(voider)
 		resolveManually(t, h, runID)
 		if voider.calls != 1 {
 			t.Errorf("voider should be attempted once; calls=%d", voider.calls)
-		}
-		if reverser.calls != 0 {
-			t.Errorf("credit reversal MUST NOT run when the void was refused (in-flight guard); calls=%d, want 0", reverser.calls)
 		}
 		if canceler.calls != 0 {
 			t.Errorf("PI cancel MUST NOT run when the void was refused — would cancel a live in-flight charge; calls=%d, want 0", canceler.calls)

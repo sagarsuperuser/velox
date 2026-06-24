@@ -58,11 +58,6 @@ type NoPaymentMethodNotifier interface {
 	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
 }
 
-// CreditReverser returns credits to the customer when an invoice is voided.
-type CreditReverser interface {
-	ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
-}
-
 // PaymentCanceler cancels a Stripe PaymentIntent when an invoice is voided.
 type PaymentCanceler interface {
 	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
@@ -166,7 +161,6 @@ type Handler struct {
 	creditNotes     CreditNoteLister
 	charger         PaymentCharger
 	paymentSetups   PaymentSetupGetter
-	creditReverser  CreditReverser
 	paymentCancel   PaymentCanceler
 	dunning         DunningResolver
 	webhookEvents   WebhookEventLister
@@ -191,7 +185,6 @@ type HandlerDeps struct {
 	CreditNotes     CreditNoteLister
 	Charger         PaymentCharger
 	PaymentSetups   PaymentSetupGetter
-	CreditReverser  CreditReverser
 	PaymentCancel   PaymentCanceler
 	Dunning         DunningResolver
 	WebhookEvents   WebhookEventLister
@@ -207,7 +200,6 @@ func NewHandler(svc *Service, customers CustomerGetter, settings SettingsGetter,
 		h.creditNotes = deps[0].CreditNotes
 		h.charger = deps[0].Charger
 		h.paymentSetups = deps[0].PaymentSetups
-		h.creditReverser = deps[0].CreditReverser
 		h.paymentCancel = deps[0].PaymentCancel
 		h.dunning = deps[0].Dunning
 		h.webhookEvents = deps[0].WebhookEvents
@@ -538,14 +530,8 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reverse any credits that were applied to this invoice
-	if h.creditReverser != nil && inv.CustomerID != "" {
-		if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, inv.CustomerID, id, inv.InvoiceNumber); err != nil {
-			slog.WarnContext(r.Context(), "failed to reverse credits on void", "invoice_id", id, "error", err)
-		} else if reversed > 0 {
-			slog.InfoContext(r.Context(), "credits reversed on invoice void", "invoice_id", id, "reversed_cents", reversed)
-		}
-	}
+	// Consumed-credit reversal now happens atomically inside svc.Void (status
+	// flip + reversal in one tx) — single-writer, no separate best-effort step.
 
 	// Resolve any active dunning runs for this invoice
 	if h.dunning != nil {

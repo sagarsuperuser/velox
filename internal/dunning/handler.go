@@ -26,11 +26,6 @@ type InvoiceUpdater interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 }
 
-// CreditReverser reverses credits when an invoice is voided via dunning.
-type CreditReverser interface {
-	ReverseForInvoice(ctx context.Context, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
-}
-
 // PaymentCanceler cancels Stripe PaymentIntent when invoice is voided via dunning.
 type PaymentCanceler interface {
 	CancelPaymentIntent(ctx context.Context, paymentIntentID string) error
@@ -47,13 +42,12 @@ type InvoiceVoider interface {
 }
 
 type Handler struct {
-	svc            *Service
-	invoices       InvoiceUpdater
-	invoiceVoider  InvoiceVoider
-	creditReverser CreditReverser
-	paymentCancel  PaymentCanceler
-	auditLogger    AuditWriter
-	resolver       clock.Resolver
+	svc           *Service
+	invoices      InvoiceUpdater
+	invoiceVoider InvoiceVoider
+	paymentCancel PaymentCanceler
+	auditLogger   AuditWriter
+	resolver      clock.Resolver
 }
 
 // AuditWriter is the narrow audit surface dunning handler uses.
@@ -87,16 +81,14 @@ func (h *Handler) SetResolver(r clock.Resolver) { h.resolver = r }
 func (h *Handler) SetInvoiceVoider(v InvoiceVoider) { h.invoiceVoider = v }
 
 type HandlerDeps struct {
-	Invoices       InvoiceUpdater
-	CreditReverser CreditReverser
-	PaymentCancel  PaymentCanceler
+	Invoices      InvoiceUpdater
+	PaymentCancel PaymentCanceler
 }
 
 func NewHandler(svc *Service, deps ...HandlerDeps) *Handler {
 	h := &Handler{svc: svc}
 	if len(deps) > 0 {
 		h.invoices = deps[0].Invoices
-		h.creditReverser = deps[0].CreditReverser
 		h.paymentCancel = deps[0].PaymentCancel
 	}
 	return h
@@ -370,32 +362,24 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 			}
 		case domain.ResolutionManuallyResolved:
 			// Void through the invoice SERVICE (single void writer): status flip
-			// + tax reversal + in-flight guard + single-writer invoice.voided
-			// event. The inline credit-reversal + PI-cancel below are gated on
-			// the void SUCCEEDING — otherwise an in-flight invoice (which the
+			// + atomic consumed-credit reversal + tax reversal + in-flight guard
+			// + single-writer invoice.voided event. The PI-cancel below is gated
+			// on the void SUCCEEDING — otherwise an in-flight invoice (which the
 			// service's guard refuses to void) would still get its live PI
-			// canceled and credits reversed, defeating the guard. They run only
-			// after a confirmed void.
-			inv, _ := h.invoices.Get(r.Context(), tenantID, run.InvoiceID)
+			// canceled, defeating the guard. It runs only after a confirmed void.
 			if h.invoiceVoider == nil {
 				slog.WarnContext(r.Context(), "invoice voider unwired; skipping dunning manual-resolve void", "invoice_id", run.InvoiceID)
 				break
 			}
-			if _, err := h.invoiceVoider.Void(r.Context(), tenantID, run.InvoiceID); err != nil {
-				slog.WarnContext(r.Context(), "failed to void invoice after dunning resolution; skipping credit reversal + PI cancel", "invoice_id", run.InvoiceID, "error", err)
+			voided, err := h.invoiceVoider.Void(r.Context(), tenantID, run.InvoiceID)
+			if err != nil {
+				slog.WarnContext(r.Context(), "failed to void invoice after dunning resolution; skipping PI cancel", "invoice_id", run.InvoiceID, "error", err)
 				break
 			}
-			// Reverse credits (only after a confirmed void)
-			if h.creditReverser != nil && inv.CustomerID != "" {
-				if reversed, err := h.creditReverser.ReverseForInvoice(r.Context(), tenantID, inv.CustomerID, run.InvoiceID, inv.InvoiceNumber); err != nil {
-					slog.WarnContext(r.Context(), "failed to reverse credits on dunning void", "invoice_id", run.InvoiceID, "error", err)
-				} else if reversed > 0 {
-					slog.InfoContext(r.Context(), "credits reversed on dunning void", "invoice_id", run.InvoiceID, "reversed_cents", reversed)
-				}
-			}
-			// Cancel Stripe PI (only after a confirmed void)
-			if h.paymentCancel != nil && inv.StripePaymentIntentID != "" {
-				if err := h.paymentCancel.CancelPaymentIntent(r.Context(), inv.StripePaymentIntentID); err != nil {
+			// Cancel Stripe PI (only after a confirmed void). Credit reversal
+			// already happened atomically inside Void.
+			if h.paymentCancel != nil && voided.StripePaymentIntentID != "" {
+				if err := h.paymentCancel.CancelPaymentIntent(r.Context(), voided.StripePaymentIntentID); err != nil {
 					slog.WarnContext(r.Context(), "failed to cancel PI on dunning void", "invoice_id", run.InvoiceID, "error", err)
 				}
 			}

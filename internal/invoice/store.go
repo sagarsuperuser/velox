@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -15,6 +16,10 @@ type Store interface {
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.Invoice, int, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.InvoiceStatus) (domain.Invoice, error)
+	// UpdateStatusWithReversal flips the status AND runs reverseFn (the
+	// consumed-credit reversal on void) on the SAME tx — either both commit or
+	// neither, so a void never strands the customer's applied credits unrestored.
+	UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error)
 	// FinalizeWithDates flips status to finalized AND re-stamps issued_at +
 	// due_at to the finalize moment. Used for operator-composed (manual)
 	// invoices so the issue/due dates anchor to issuance, not draft-create

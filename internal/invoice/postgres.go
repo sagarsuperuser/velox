@@ -469,6 +469,50 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	}
 	defer postgres.Rollback(tx)
 
+	inv, err := s.updateStatusInTx(ctx, tx, id, status)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
+// UpdateStatusWithReversal flips the invoice status AND runs a caller-supplied
+// in-tx side effect (the consumed-credit reversal on void) in ONE transaction.
+// Either both commit or neither does: a reversal failure rolls the status flip
+// back, so the invoice never lands voided-but-credits-still-consumed (which
+// would silently strip the customer of credits they paid the invoice with).
+// reverseFn receives the same *sql.Tx and must do all its writes on it.
+// Mirrors subscription.CreateWithBill — the store owns the tx, the cross-domain
+// effect is a callback so no peer-package import leaks in.
+func (s *PostgresStore) UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	inv, err := s.updateStatusInTx(ctx, tx, id, status)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if reverseFn != nil {
+		if err := reverseFn(tx); err != nil {
+			return domain.Invoice{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
+// updateStatusInTx is the shared body: the status flip without owning the tx.
+// UpdateStatus opens+commits its own; UpdateStatusWithReversal threads the
+// credit reversal through the same one.
+func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
 	now := clock.Now(ctx)
 	var voidedAt, uncollectibleAt *time.Time
 	if status == domain.InvoiceVoided {
@@ -479,7 +523,7 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 	}
 
 	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		UPDATE invoices SET status = $1, voided_at = $2,
 			uncollectible_at = COALESCE($3, uncollectible_at), updated_at = $4
 		WHERE id = $5
@@ -491,9 +535,6 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 		return domain.Invoice{}, errs.ErrNotFound
 	}
 	if err != nil {
-		return domain.Invoice{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err
 	}
 	return inv, nil
