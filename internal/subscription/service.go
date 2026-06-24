@@ -54,6 +54,17 @@ type Biller interface {
 	// invoice (nil error) for the no-op cases.
 	BillFinalOnImmediateCancelTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, error)
 	BillOnCancel(ctx context.Context, sub domain.Subscription) (int64, error)
+	// BillOnCancelDraftsTx is the ATOMIC half of the cancel-proration credit
+	// (ADR-057 extension): when every funding source is PAID, it creates the
+	// credit-note drafts (issue_pending) on the caller's cancel tx and returns
+	// their ids + the gross owed. handled=false means the in-tx path declined
+	// (any unpaid source, or no funding) and the caller must fall back to the
+	// post-commit BillOnCancel. A draft-create error rolls the cancel back.
+	BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (ids []string, creditedCents int64, handled bool, err error)
+	// IssueCancelDrafts issues the cancel-credit drafts post-commit (external
+	// Stripe tax reversal + balance grant); best-effort, recovered by the
+	// clawback reconciler. Mirrors FinalizeOnCreateInvoice.
+	IssueCancelDrafts(ctx context.Context, sub domain.Subscription, ids []string)
 	// BillOnPlanSwapImmediate issues a refund credit for the unused
 	// portion of an in_advance billed period when an immediate
 	// plan-swap restructures the cycle (cross-interval). No-op for
@@ -1437,6 +1448,9 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	// cancel (canceled_at at/after current_period_end). The build runs BEFORE
 	// BillOnCancel so the credit grant doesn't pre-apply against this invoice.
 	var finalInv domain.Invoice
+	var cancelDraftIDs []string
+	var cancelDraftCredit int64
+	var cancelDraftsHandled bool
 	canceled, err := s.store.CancelAtomicWithBill(ctx, tenantID, id, func(tx *sql.Tx, c domain.Subscription) error {
 		if s.biller == nil {
 			return nil
@@ -1446,6 +1460,17 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 			return fmt.Errorf("final-on-cancel invoice: %w", billErr)
 		}
 		finalInv = inv
+		// Cancel-proration credit drafts (ADR-057 extension): created IN this tx
+		// AFTER the final invoice (so the credit isn't sized against it — the
+		// documented ordering at service.go's original BillOnCancel-runs-after
+		// comment, now structurally guaranteed). All-paid funding only; any unpaid
+		// source declines (handled=false) and is relieved post-commit by
+		// BillOnCancel. A draft-create failure rolls the whole cancel back.
+		ids, credited, handled, draftErr := s.biller.BillOnCancelDraftsTx(ctx, tx, c)
+		if draftErr != nil {
+			return fmt.Errorf("cancel proration drafts: %w", draftErr)
+		}
+		cancelDraftIDs, cancelDraftCredit, cancelDraftsHandled = ids, credited, handled
 		return nil
 	})
 	if err != nil {
@@ -1460,25 +1485,35 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 		s.biller.FinalizeOnCreateInvoice(ctx, canceled, finalInv)
 	}
 
-	// ADR-031: in_advance plans get a cancel-proration credit for the
-	// unused portion of an already-billed period. No-op for in_arrears plans.
-	// Returns the cents amount granted so the handler can stamp it onto the
-	// cancel audit-log entry (powers the timeline "Prorated credit $X.XX"
-	// detail line). We don't block the terminal cancel on a credit failure,
-	// but the failure is logged at ERROR — it means the customer was NOT
-	// credited their unused prepayment and a manual credit is required. This
-	// must be alarmable: a silent warning here is exactly how the 2026-06-15
-	// upgrade→cancel overcharge went unnoticed.
+	// ADR-031 / ADR-057 ext: the in_advance cancel-proration credit for the
+	// unused portion of an already-billed period. No-op for in_arrears.
+	// Returns the cents granted so the handler can stamp the cancel audit row
+	// (the timeline "Prorated credit $X.XX" line).
+	//
+	// Two paths: (1) the ATOMIC path — when every funding source was paid, the
+	// credit drafts were created in the cancel tx above; here we just ISSUE them
+	// post-commit (external Stripe tax reversal + balance grant). The drafts are
+	// already durable, so a crash/transient failure here is recovered by the
+	// clawback reconciler — the customer can no longer be silently un-credited.
+	// (2) the FALLBACK path — any unpaid funding source (or the in-tx path
+	// declined): today's post-commit BillOnCancel, loud-on-failure (manual credit
+	// required; a silent warning here is exactly how the 2026-06-15 upgrade→cancel
+	// overcharge went unnoticed). PR1 scope: unpaid relief stays on this path.
 	var prorationCreditCents int64
 	if s.biller != nil {
-		amt, err := s.biller.BillOnCancel(ctx, canceled)
-		if err != nil {
-			slog.ErrorContext(ctx, "cancel proration credit FAILED — customer not credited for unused prepayment; manual credit required",
-				"subscription_id", canceled.ID,
-				"tenant_id", tenantID,
-				"error", err)
+		if cancelDraftsHandled {
+			s.biller.IssueCancelDrafts(ctx, canceled, cancelDraftIDs)
+			prorationCreditCents = cancelDraftCredit
 		} else {
-			prorationCreditCents = amt
+			amt, err := s.biller.BillOnCancel(ctx, canceled)
+			if err != nil {
+				slog.ErrorContext(ctx, "cancel proration credit FAILED — customer not credited for unused prepayment; manual credit required",
+					"subscription_id", canceled.ID,
+					"tenant_id", tenantID,
+					"error", err)
+			} else {
+				prorationCreditCents = amt
+			}
 		}
 	}
 

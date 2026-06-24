@@ -880,8 +880,11 @@ type cnAdjustCall struct {
 }
 
 type fakeCreditNoteAdjuster struct {
-	calls []cnAdjustCall
-	err   error
+	calls     []cnAdjustCall // create (issue+draft) calls
+	draftCall []cnAdjustCall // CreateAdjustmentDraftTx calls specifically
+	issued    []string       // Issue() ids
+	err       error
+	draftErr  error
 }
 
 func (a *fakeCreditNoteAdjuster) CreateAndIssueAdjustment(_ context.Context, _, invoiceID string, grossCents int64, _, _ string) (domain.CreditNote, error) {
@@ -890,6 +893,19 @@ func (a *fakeCreditNoteAdjuster) CreateAndIssueAdjustment(_ context.Context, _, 
 	}
 	a.calls = append(a.calls, cnAdjustCall{invoiceID: invoiceID, gross: grossCents})
 	return domain.CreditNote{ID: fmt.Sprintf("vlx_cn_%d", len(a.calls)), TotalCents: grossCents}, nil
+}
+
+func (a *fakeCreditNoteAdjuster) CreateAdjustmentDraftTx(_ context.Context, _ *sql.Tx, _, invoiceID string, grossCents int64, _, _ string) (domain.CreditNote, error) {
+	if a.draftErr != nil {
+		return domain.CreditNote{}, a.draftErr
+	}
+	a.draftCall = append(a.draftCall, cnAdjustCall{invoiceID: invoiceID, gross: grossCents})
+	return domain.CreditNote{ID: fmt.Sprintf("vlx_cn_draft_%d", len(a.draftCall)), TotalCents: grossCents}, nil
+}
+
+func (a *fakeCreditNoteAdjuster) Issue(_ context.Context, _, id string) (domain.CreditNote, error) {
+	a.issued = append(a.issued, id)
+	return domain.CreditNote{ID: id}, nil
 }
 
 func (m *mockInvoices) FindBaseInvoiceForPeriod(_ context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {

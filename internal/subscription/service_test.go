@@ -1064,6 +1064,15 @@ type fakeBiller struct {
 	createTxInv         domain.Invoice
 	createTxErr         error
 	finalizeCalls       int
+	// cancel-credit draft path (ADR-057 ext). draftHandled defaults FALSE, so
+	// existing cancel tests fall through to BillOnCancel (today's path) unchanged.
+	draftTxCalls    int
+	draftIDs        []string
+	draftCredit     int64
+	draftHandled    bool
+	draftTxErr      error
+	issueDraftCalls int
+	issuedDraftIDs  []string
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -1084,6 +1093,16 @@ func (f *fakeBiller) BillFinalOnImmediateCancelTx(_ context.Context, _ *sql.Tx, 
 func (f *fakeBiller) BillOnCancel(_ context.Context, _ domain.Subscription) (int64, error) {
 	f.cancelCalls++
 	return f.cancelCreditCents, f.cancelErr
+}
+
+func (f *fakeBiller) BillOnCancelDraftsTx(_ context.Context, _ *sql.Tx, _ domain.Subscription) ([]string, int64, bool, error) {
+	f.draftTxCalls++
+	return f.draftIDs, f.draftCredit, f.draftHandled, f.draftTxErr
+}
+
+func (f *fakeBiller) IssueCancelDrafts(_ context.Context, _ domain.Subscription, ids []string) {
+	f.issueDraftCalls++
+	f.issuedDraftIDs = append(f.issuedDraftIDs, ids...)
 }
 
 func (f *fakeBiller) BillOnPlanSwapImmediate(_ context.Context, _ domain.Subscription, at time.Time) (int64, error) {
