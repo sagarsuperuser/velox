@@ -574,14 +574,40 @@ func (s *PostgresStore) ClearPauseCollection(ctx context.Context, tenantID, id s
 // the caller distinguishes this from missing-row by querying current
 // status when no row matches.
 func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error) {
+	return s.ActivateAfterTrialWithBill(ctx, tenantID, id, at, nil)
+}
+
+// ActivateAfterTrialWithBill flips 'trialing' → 'active' AND runs billFn (the
+// day-1 in_advance invoice insert) in the SAME transaction, so a billing
+// failure rolls the activation back rather than leaving an active sub with no
+// first-period invoice (the cycle scheduler skips the just-elapsed in_advance
+// segment, so a lost day-1 invoice is a permanent revenue leak). ADR-056.
+// billFn may be nil.
+func (s *PostgresStore) ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
 	}
 	defer postgres.Rollback(tx)
 
+	sub, err := s.activateAfterTrialInTx(ctx, tx, id, at)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(tx, sub); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) activateAfterTrialInTx(ctx context.Context, tx *sql.Tx, id string, at time.Time) (domain.Subscription, error) {
 	var sub domain.Subscription
-	err = scanSubRow(tx.QueryRowContext(ctx, `
+	err := scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
 		SET status = 'active',
 		    activated_at = COALESCE(activated_at, $1),
@@ -604,12 +630,7 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 	if err != nil {
 		return domain.Subscription{}, err
 	}
-
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
-		return domain.Subscription{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil
@@ -624,14 +645,38 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 // reset honors billing_time. Returns errs.InvalidState if status is
 // not 'trialing' at UPDATE time.
 func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
+	return s.EndTrialEarlyWithBill(ctx, tenantID, id, at, periodStart, periodEnd, nextBilling, anchorDay, nil)
+}
+
+// EndTrialEarlyWithBill flips 'trialing' → 'active' (resetting the period anchor)
+// AND runs billFn (the day-1 in_advance invoice insert) in the SAME transaction,
+// so a billing failure rolls the early-end back rather than leaving an active
+// sub with no first-period invoice (revenue leak). ADR-056. billFn may be nil.
+func (s *PostgresStore) EndTrialEarlyWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
 	}
 	defer postgres.Rollback(tx)
 
+	sub, err := s.endTrialEarlyInTx(ctx, tx, id, at, periodStart, periodEnd, nextBilling, anchorDay)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(tx, sub); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
+func (s *PostgresStore) endTrialEarlyInTx(ctx context.Context, tx *sql.Tx, id string, at, periodStart, periodEnd, nextBilling time.Time, anchorDay int) (domain.Subscription, error) {
 	var sub domain.Subscription
-	err = scanSubRow(tx.QueryRowContext(ctx, `
+	err := scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
 		SET status = 'active',
 		    activated_at = COALESCE(activated_at, $1),
@@ -659,12 +704,7 @@ func (s *PostgresStore) EndTrialEarly(ctx context.Context, tenantID, id string, 
 	if err != nil {
 		return domain.Subscription{}, err
 	}
-
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
-		return domain.Subscription{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil

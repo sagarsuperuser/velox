@@ -1663,27 +1663,32 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 	loc := s.tenantLocation(ctx, tenantID)
 	interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
 	ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
-	activated, err := s.store.EndTrialEarly(ctx, tenantID, id, now, ps, pe, pe, anchorDay)
+
+	// ADR-031 / ADR-056: in_advance items get a day-1 invoice covering the first
+	// paid period (now → period_end). Build it IN THE SAME tx as the
+	// trialing→active flip so a billing failure rolls the early-end back rather
+	// than leaving an active sub with no first-period invoice (the cycle
+	// scheduler skips the just-elapsed in_advance segment — it is NOT "deferred
+	// to next cycle close", that was a revenue leak). External steps (tax commit
+	// + auto-charge) run post-commit via FinalizeOnCreateInvoice.
+	var firstInv domain.Invoice
+	var haveInv bool
+	activated, err := s.store.EndTrialEarlyWithBill(ctx, tenantID, id, now, ps, pe, pe, anchorDay, func(tx *sql.Tx, a domain.Subscription) error {
+		if s.biller == nil {
+			return nil
+		}
+		inv, ok, billErr := s.biller.BillOnCreateTx(ctx, tx, a)
+		if billErr != nil {
+			return fmt.Errorf("first-invoice-on-trial-end: %w", billErr)
+		}
+		firstInv, haveInv = inv, ok
+		return nil
+	})
 	if err != nil {
 		return domain.Subscription{}, err
 	}
-
-	// ADR-031: in_advance items get a day-1 invoice covering the first
-	// paid period (now → period_end) at the activation instant. Mirrors
-	// Service.Create's same call for non-trial subs. Best-effort —
-	// failures here log but don't roll back the activation; operator
-	// can manually issue the invoice from the dashboard. No-op when
-	// every item is in_arrears (those wait for cycle close).
-	//
-	// Idempotent via the (sub_id, period_start, period_end) UNIQUE
-	// constraint — a retry doesn't double-bill.
-	if s.biller != nil {
-		if _, err := s.biller.BillOnCreate(ctx, activated); err != nil {
-			slog.Warn("first-invoice-on-trial-end failed; in_advance base fee will be deferred to next cycle close",
-				"subscription_id", activated.ID,
-				"tenant_id", tenantID,
-				"error", err)
-		}
+	if haveInv {
+		s.biller.FinalizeOnCreateInvoice(ctx, activated, firstInv)
 	}
 
 	return activated, nil
@@ -1811,7 +1816,24 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			continue
 		}
 		trialEndAt := *sub.TrialEndAt
-		activated, err := s.store.ActivateAfterTrial(ctx, sub.TenantID, sub.ID, trialEndAt)
+		// ADR-056: build the day-1 in_advance invoice IN THE SAME tx as the
+		// trialing→active flip, so a billing failure rolls the activation back
+		// (the sub stays trialing and is retried next tick) rather than leaving
+		// an active sub with no first-period invoice — a revenue leak (the cycle
+		// scheduler skips the just-elapsed in_advance segment).
+		var firstInv domain.Invoice
+		var haveInv bool
+		activated, err := s.store.ActivateAfterTrialWithBill(ctx, sub.TenantID, sub.ID, trialEndAt, func(tx *sql.Tx, a domain.Subscription) error {
+			if s.biller == nil {
+				return nil
+			}
+			inv, ok, billErr := s.biller.BillOnCreateTx(ctx, tx, a)
+			if billErr != nil {
+				return fmt.Errorf("first-invoice-on-trial-expiry: %w", billErr)
+			}
+			firstInv, haveInv = inv, ok
+			return nil
+		})
 		if err != nil {
 			if errors.Is(err, errs.ErrInvalidState) {
 				// Operator-EndTrial race (or already-active by some
@@ -1832,13 +1854,11 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			})
 		}
 
-		if s.biller != nil {
-			if _, err := s.biller.BillOnCreate(ctx, activated); err != nil {
-				slog.Warn("trial-expiry first-invoice failed (wall-clock); in_advance base fee will be deferred",
-					"subscription_id", activated.ID,
-					"tenant_id", activated.TenantID,
-					"error", err)
-			}
+		// Post-commit external finalize for the day-1 invoice (tax commit +
+		// auto-charge) — Stripe calls must never ride a DB tx; the invoice is now
+		// durable + atomic with the activation.
+		if haveInv {
+			s.biller.FinalizeOnCreateInvoice(ctx, activated, firstInv)
 		}
 		if s.events != nil {
 			_ = s.events.Dispatch(ctx, activated.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
