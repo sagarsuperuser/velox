@@ -44,6 +44,11 @@ func (b *billOnCreateTxErrBiller) BillFinalOnImmediateCancelTx(context.Context, 
 func (b *billOnCreateTxErrBiller) BillOnCancel(context.Context, domain.Subscription) (int64, error) {
 	return 0, nil
 }
+func (b *billOnCreateTxErrBiller) BillOnCancelDraftsTx(context.Context, *sql.Tx, domain.Subscription) ([]string, int64, bool, error) {
+	return nil, 0, false, nil
+}
+func (b *billOnCreateTxErrBiller) IssueCancelDrafts(context.Context, domain.Subscription, []string) {
+}
 func (b *billOnCreateTxErrBiller) BillOnPlanSwapImmediate(context.Context, domain.Subscription, time.Time) (int64, error) {
 	return 0, nil
 }
