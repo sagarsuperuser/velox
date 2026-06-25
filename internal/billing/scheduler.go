@@ -314,93 +314,17 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		mode = "test"
 	}
 
-	// 0a. Reconcile PaymentUnknown invoices against Stripe. Runs before
-	// auto-charge retry so any stuck-unknown charge that actually succeeded
-	// is marked paid before the retry path considers re-charging.
-	if s.paymentReconciler != nil {
-		resolved, rErrs := s.paymentReconciler.Run(ctx, s.batch)
-		if resolved > 0 {
-			slog.Info("payment reconciler resolved unknowns", "mode", mode, "count", resolved)
-		}
-		for _, e := range rErrs {
-			slog.Error("payment reconciler error", "mode", mode, "error", e)
-		}
-	}
-
-	// 0a. Tax-retry reconciler. Recompute tax for invoices stuck at
-	// tax_status pending|failed with a retryable code (provider_outage,
-	// unknown) past their backoff timestamp. On success and engine-
-	// generated invoices, auto-finalize fires inside RetryTax. Runs
-	// BEFORE auto-charge retries so a freshly-finalized invoice's
-	// finalize-time auto-charge doesn't slip past this tick.
-	// ADR-017.
-	if s.taxRetrier != nil {
-		processed, taxErrs := s.taxRetrier.RetryPendingTax(ctx, s.batch)
-		if processed > 0 || len(taxErrs) > 0 {
-			slog.Info("tax retries", "mode", mode, "processed", processed, "errors", len(taxErrs))
-		}
-		for _, e := range taxErrs {
-			slog.Error("tax retry error", "mode", mode, "error", e)
-		}
-
-		// Commit reconciler: recover invoices whose Stripe tax_transaction
-		// was created at finalize but whose id never persisted locally — else
-		// a later void/uncollectible can't reverse the tax (the reversal guard
-		// keys on tax_transaction_id) and the tax authority over-reports.
-		committed, commitErrs := s.taxRetrier.RetryPendingTaxCommit(ctx, s.batch)
-		if committed > 0 || len(commitErrs) > 0 {
-			slog.Info("tax commit recoveries", "mode", mode, "recovered", committed, "errors", len(commitErrs))
-		}
-		for _, e := range commitErrs {
-			slog.Error("tax commit recovery error", "mode", mode, "error", e)
-		}
-
-		// Reversal reconciler: re-drive the upstream tax reversal for
-		// voided/uncollectible invoices whose reversal failed at status-change
-		// time — else the tax authority keeps reporting it as collected and the
-		// tenant over-remits. Symmetric sibling of the commit reconciler above;
-		// idempotent at Stripe (the invoice-stable reversal reference dedups).
-		reversed, reversalErrs := s.taxRetrier.RetryPendingTaxReversal(ctx, s.batch)
-		if reversed > 0 || len(reversalErrs) > 0 {
-			slog.Info("tax reversal recoveries", "mode", mode, "recovered", reversed, "errors", len(reversalErrs))
-		}
-		for _, e := range reversalErrs {
-			slog.Error("tax reversal recovery error", "mode", mode, "error", e)
-		}
-	}
-
-	// Clawback reconciler: re-issue downgrade/removal/qty-decrease clawback
-	// credit-note drafts whose post-commit Issue() NEVER RAN (created in the
-	// atomic item-change tx, still status='draft' AND issue_pending — the
-	// post-commit crash window). Else that transient gap leaves the customer
-	// un-credited for a removed/downgraded item. Safe by construction: a still-
-	// draft note has applied nothing yet. (A post-flip partial issue is NOT
-	// covered here — see RetryPendingClawbackIssue; ADR-057.) Runs every tick.
-	if s.clawbackRetrier != nil {
-		reissued, cbErrs := s.clawbackRetrier.RetryPendingClawbackIssue(ctx, s.batch)
-		if reissued > 0 || len(cbErrs) > 0 {
-			slog.Info("clawback credit-note recoveries", "mode", mode, "reissued", reissued, "errors", len(cbErrs))
-		}
-		for _, e := range cbErrs {
-			slog.Error("clawback recovery error", "mode", mode, "error", e)
-		}
-	}
-
-	// Credit-note tax-reversal reconciler: re-drive the upstream tax reversal for
-	// issued credit notes whose POST-COMMIT inline attempt failed
-	// (tax_reversal_pending). Without it a CN reversal that errors at Issue()
-	// leaves the tenant over-remitting — and #310 RetryPendingTaxReversal can't
-	// see it (it scans voided/uncollectible invoices; a CN reversal lands on a
-	// finalized/paid one). Stripe-idempotent via the per-CN key. Runs every tick.
-	if s.clawbackRetrier != nil {
-		cnReversed, cnErrs := s.clawbackRetrier.RetryPendingCreditNoteTaxReversal(ctx, s.batch)
-		if cnReversed > 0 || len(cnErrs) > 0 {
-			slog.Info("credit-note tax-reversal recoveries", "mode", mode, "reversed", cnReversed, "errors", len(cnErrs))
-		}
-		for _, e := range cnErrs {
-			slog.Error("credit-note tax-reversal recovery error", "mode", mode, "error", e)
-		}
-	}
+	// Recovery reconcilers — each scans for stuck/failed post-commit effects
+	// (eligibility derived from durable state) and re-drives them idempotently,
+	// every tick, in a DELIBERATE order (see s.reconcilers): payment_unknown and
+	// the tax reconcilers run BEFORE auto-charge below, so a stuck-unknown charge
+	// that actually succeeded is marked paid, and a freshly-finalized invoice's
+	// finalize-time auto-charge doesn't slip a tick. One uniform driver owns the
+	// logging + the per-reconciler sweep metric (previously only auto-charge was
+	// metered). The per-effect re-drive bodies and their eligibility SQL are
+	// unchanged in their own services. The future obligation-queue drainer
+	// (ADR-062) slots in here as one more Reconciler.
+	runReconcilers(ctx, mode, s.reconcilers(), s.batch)
 
 	// 0. Retry pending auto-charges from previous cycles
 	if chargeRetried, chargeErrs := s.engine.RetryPendingCharges(ctx, s.batch); chargeRetried > 0 || len(chargeErrs) > 0 {

@@ -100,6 +100,36 @@ way to arrive, not a speculative rewrite.
 - ADR-061's "committed PR3" wording is clarified: the *design* is committed
   (this ADR), the *build* is trigger-gated.
 
+## Amendment (2026-06-25): the sweep driver shipped as the thin log/metric envelope
+
+A pre-build design panel (asked to design a uniform reconciler *framework* as the
+foundation for this queue) reached a sharper conclusion: a generic
+`Source[T]`/`Drive[T]` framework would be a foundation for the *rejected* (c) —
+its "swap a scan Source for a queue Source" extension assumes a new obligation
+table + per-effect Source seam, which is the new-table/River shape this ADR ruled
+out. The decided (c) instead **enqueues** obligations onto the generalised
+`webhook_outbox` and drains them with **one** kind-dispatching drainer, collapsing
+the per-effect scans — so a per-effect Source seam would be discarded when (c)
+lands. We therefore shipped only the **thin sweep driver**: a single-method
+`billing.Reconciler{ Name(); Reconcile(ctx, batch) (int, []error) }` + a ~25-line
+ordered driver (`runReconcilers` / `s.reconcilers()`) that owns nil-skip, uniform
+logging, and ONE new per-reconciler metric (`velox_reconciler_sweeps_total{reconciler,mode,outcome}`
+— previously only auto-charge was metered). The six recovery sweeps
+(payment_unknown, tax_retry, tax_commit, tax_reversal, clawback_issue,
+cn_tax_reversal) ride it; their re-drive bodies and eligibility SQL are unchanged.
+
+This **is** the foundation-seam for (c), aimed correctly: when the four re-drive
+sweeps migrate onto the obligation queue (one at a time — enqueue in the
+coordinator tx, register a kind-dispatch handler reusing the same re-drive body,
+delete the bespoke `ListPendingX`), the outbox drainer slots in as **one more
+`Reconciler`** in the same ordered slice — driver, leader gate, mode fan-out,
+logging, and metric reused verbatim, **zero rewrite**. `payment_unknown` (a
+Stripe state-sync) rides the metric envelope but never migrates to (c). No
+generics, no `Source/Drive` split, and deliberately **no `Mark` hook** — marking
+stays the last line of each re-drive body, so the PR2 marker-gating anti-pattern
+has nowhere to recur. Shipped as a behaviour-preserving, net-negative-LOC PR; no
+migration, no new table.
+
 ## Related
 
 - ADR-040 — the transactional outbox this would generalise (`webhook_outbox`).
