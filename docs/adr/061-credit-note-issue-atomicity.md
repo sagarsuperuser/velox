@@ -198,9 +198,9 @@ recorded ways (per `feedback_amend_decisions_when_course_changes`):
    atomic — not to processor-truth reconciliation, nor to the CN tax-reversal sweep
    above (whose effect is genuinely external and cannot share the DB tx).
 
-4. **Async backbone — committed as PR3 (ADR-062), not "deferred until triggered."**
-   The four bespoke re-drive sweeps (tax-commit #267, tax-reversal #310,
-   clawback-issue ADR-057, PR2's CN-tax-reversal) will consolidate onto ONE durable
+4. **Async backbone — DESIGN decided (ADR-062), BUILD deferred.** The four
+   bespoke re-drive sweeps (tax-commit #267, tax-reversal #310, clawback-issue
+   ADR-057, PR2's CN-tax-reversal) will eventually consolidate onto ONE durable
    obligation queue, built by **generalising the existing `webhook_outbox`** (it
    already has in-tx `Enqueue(ctx, tx, …)`, `FOR UPDATE SKIP LOCKED`, DLQ,
    advisory-lock leader) with an internal/external discriminator. Decided AGAINST
@@ -209,8 +209,11 @@ recorded ways (per `feedback_amend_decisions_when_course_changes`):
    abstraction for single-step idempotent jobs) and AGAINST River-for-now (its
    `InsertTx` needs a pgx-native `pgx.Tx`; Velox is on `database/sql`, so its in-tx
    enqueue wouldn't compose with our coordinator `*sql.Tx` without migrating the
-   whole data layer — 60 files / 385 query sites / the RLS core). Full build-vs-buy
-   rationale in ADR-062 when PR3 lands.
+   whole data layer — 60 files / 385 query sites / the RLS core). At low/mid scale
+   the four sweeps are correct and the consolidation is a *maintainability* win,
+   not a correctness need, so the **build is trigger-gated** (≥~6 async effects, a
+   non-notification obligation a reconciler can't cover, or a worker-process
+   split). Full build-vs-buy + pgx-now-vs-later rationale and triggers in ADR-062.
 
 ### North stars / do-not-build (recorded, with triggers)
 
