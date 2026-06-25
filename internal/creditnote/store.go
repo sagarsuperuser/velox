@@ -26,6 +26,13 @@ type Store interface {
 	// post-commit Issue() hasn't succeeded yet (issue_pending, status='draft'),
 	// cross-tenant + scoped by livemode, for RetryPendingClawbackIssue.
 	ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error)
+	// ListPendingCreditNoteTaxReversal returns issued credit notes whose
+	// post-commit upstream tax reversal failed (tax_reversal_pending),
+	// cross-tenant + scoped by livemode, for RetryPendingCreditNoteTaxReversal.
+	ListPendingCreditNoteTaxReversal(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error)
+	// BeginTx opens the RLS-scoped coordinator tx Issue() owns (ADR-056/061):
+	// the draft→issued CAS and the internal money effect commit together.
+	BeginTx(ctx context.Context, tenantID string) (*sql.Tx, error)
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
@@ -33,15 +40,23 @@ type Store interface {
 	// only if the credit note is currently in `from`. Used to serialize the
 	// draft→issued transition against concurrent/retried Issue() calls.
 	TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
+	// TransitionStatusTx is TransitionStatus on the caller's coordinator tx, so
+	// the CAS commits atomically with Issue()'s internal money effect.
+	TransitionStatusTx(ctx context.Context, tx *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
 	// UpdateAllocation persists the three-channel allocation
 	// (refund / credit / out-of-band). Used by Issue() to re-derive the
 	// allocation from the current invoice state when a CN created against
 	// a then-unpaid invoice is issued after that invoice became paid.
 	UpdateAllocation(ctx context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error
+	// UpdateAllocationTx is UpdateAllocation on the caller's coordinator tx.
+	UpdateAllocationTx(ctx context.Context, tx *sql.Tx, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error
 	// SetTaxTransaction persists the reversal transaction id returned by
 	// the tax provider at Issue time.
 	SetTaxTransaction(ctx context.Context, tenantID, id string, taxTransactionID string) error
+	// SetTaxReversalPending flips the post-commit tax-reversal recovery marker
+	// (true on attempted-and-failed, false on success).
+	SetTaxReversalPending(ctx context.Context, tenantID, id string, pending bool) error
 	ListLineItems(ctx context.Context, tenantID, creditNoteID string) ([]domain.CreditNoteLineItem, error)
 }
 

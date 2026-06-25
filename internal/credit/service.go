@@ -191,6 +191,24 @@ func (s *Service) GrantForCreditNote(ctx context.Context, tenantID, creditNoteID
 	return entry, err
 }
 
+// GrantForCreditNoteTx is GrantForCreditNote on the caller's coordinator tx: the
+// ledger entry is appended via GrantTx so it commits atomically with the credit
+// note's draft→issued CAS (ADR-061, creditnote.Issue). The 0093 (tenant, CN)
+// dedup index still backs uniqueness, but the issue CAS makes a duplicate
+// UNREACHABLE — exactly one Issue() reaches the grant per credit note. Unlike
+// the non-tx GrantForCreditNote (whose own tx can be discarded on a dedup hit
+// and the existing grant re-fetched), a conflict here would ABORT the shared
+// coordinator tx, so we do NOT swallow ErrAlreadyExists: surfacing it correctly
+// fails the whole Issue() rather than committing a poisoned tx. Given the CAS
+// invariant it is dead code; if it ever fires, the invariant is broken.
+func (s *Service) GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, creditNoteID string, input GrantInput) (domain.CreditLedgerEntry, error) {
+	if creditNoteID == "" {
+		return domain.CreditLedgerEntry{}, errs.Required("credit_note_id")
+	}
+	input.SourceCreditNoteID = creditNoteID
+	return s.GrantTx(ctx, tx, tenantID, input)
+}
+
 // GetByProrationSource exposes the store-level source lookup. Used by the
 // subscription proration path to complete an idempotent retry after
 // AppendEntry returns ErrAlreadyExists.

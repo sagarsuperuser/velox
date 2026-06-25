@@ -179,6 +179,50 @@ func (m *memStore) ListLineItems(_ context.Context, _, creditNoteID string) ([]d
 	return m.lineItems[creditNoteID], nil
 }
 
+// BeginTx returns a nil *sql.Tx: the in-memory double has no real DB, so the
+// coordinator-tx ATOMICITY is exercised by the real-Postgres test, not here.
+// Issue() guards Commit/Rollback on tx != nil and the *Tx methods below ignore
+// the (nil) tx, mutating the map directly — so the logic still runs end-to-end.
+func (m *memStore) BeginTx(_ context.Context, _ string) (*sql.Tx, error) {
+	return nil, nil
+}
+
+func (m *memStore) TransitionStatusTx(ctx context.Context, _ *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
+	return m.TransitionStatus(ctx, tenantID, id, from, to)
+}
+
+func (m *memStore) UpdateAllocationTx(ctx context.Context, _ *sql.Tx, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
+	return m.UpdateAllocation(ctx, tenantID, id, refundCents, creditCents, outOfBandCents)
+}
+
+func (m *memStore) SetTaxReversalPending(_ context.Context, tenantID, id string, pending bool) error {
+	cn, ok := m.notes[id]
+	if !ok || cn.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	cn.TaxReversalPending = pending
+	m.notes[id] = cn
+	return nil
+}
+
+func (m *memStore) ListPendingCreditNoteTaxReversal(_ context.Context, _ int, _ bool) ([]domain.CreditNote, error) {
+	var out []domain.CreditNote
+	for _, cn := range m.notes {
+		if cn.Status != domain.CreditNoteIssued {
+			continue
+		}
+		// Marker fast-path OR the structural over-remit state (issued CN with no
+		// reversal stamped) — mirrors the store's broadened eligibility. The store
+		// ANDs a tax-bearing-source JOIN; this double omits it (no invoices here)
+		// and the service re-checks the invoice per row, clearing stale non-tax
+		// rows. The JOIN itself is covered by the real-Postgres store test.
+		if cn.TaxReversalPending || (cn.TaxTransactionID == "" && cn.TotalCents > 0) {
+			out = append(out, cn)
+		}
+	}
+	return out, nil
+}
+
 // fakeCNNumbers is the test NumberGenerator — the service now REQUIRES one
 // (no synthesized fallback), matching the invoice-numbering contract.
 type fakeCNNumbers struct {
@@ -222,6 +266,12 @@ func (m *memInvoiceReader) ApplyCreditNote(_ context.Context, tenantID, id strin
 	}
 	m.invoices[id] = inv
 	return inv, nil
+}
+
+// ApplyCreditNoteTx ignores the (nil) coordinator tx and delegates — the
+// in-memory double can't model rollback; the real-Postgres test covers it.
+func (m *memInvoiceReader) ApplyCreditNoteTx(ctx context.Context, _ *sql.Tx, tenantID, id string, amountCents int64) (domain.Invoice, error) {
+	return m.ApplyCreditNote(ctx, tenantID, id, amountCents)
 }
 
 // TestCreate_IsSimulated locks the per-CN time-domain flag (migration 0117):

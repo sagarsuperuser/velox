@@ -35,6 +35,13 @@ func (a *cnGrantAdapter) GrantForCreditNote(ctx context.Context, tenantID, credi
 	return err
 }
 
+func (a *cnGrantAdapter) GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, creditNoteID string, in creditnote.CreditGrantInput) error {
+	_, err := a.svc.GrantForCreditNoteTx(ctx, tx, tenantID, creditNoteID, credit.GrantInput{
+		CustomerID: in.CustomerID, AmountCents: in.AmountCents, Description: in.Description, InvoiceID: in.InvoiceID,
+	})
+	return err
+}
+
 func (a *cnGrantAdapter) Grant(ctx context.Context, tenantID string, in creditnote.CreditGrantInput) error {
 	_, err := a.svc.Grant(ctx, tenantID, credit.GrantInput{
 		CustomerID: in.CustomerID, AmountCents: in.AmountCents, Description: in.Description, InvoiceID: in.InvoiceID,

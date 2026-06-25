@@ -18,6 +18,9 @@ type InvoiceReader interface {
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
+	// ApplyCreditNoteTx reduces amount_due on the caller's coordinator tx, so
+	// the reduction commits atomically with Issue()'s draft→issued CAS (ADR-061).
+	ApplyCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, id string, amountCents int64) (domain.Invoice, error)
 }
 
 // Refunder processes refunds via the payment provider.
@@ -41,6 +44,11 @@ type Refunder interface {
 type CreditGranter interface {
 	Grant(ctx context.Context, tenantID string, input CreditGrantInput) error
 	GrantForCreditNote(ctx context.Context, tenantID, creditNoteID string, input CreditGrantInput) error
+	// GrantForCreditNoteTx grants on the caller's coordinator tx, so the credit
+	// ledger entry commits atomically with Issue()'s draft→issued CAS (ADR-061).
+	// The 0093 dedup index still backs it, but the CAS makes it unreachable: a
+	// dedup conflict here would mean a second CAS winner, which cannot happen.
+	GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, creditNoteID string, input CreditGrantInput) error
 }
 
 // TaxReverser issues a reversal of the invoice's committed tax transaction.
@@ -386,6 +394,77 @@ func (s *Service) RetryPendingClawbackIssue(ctx context.Context, batch int) (int
 	return issued, errsOut
 }
 
+// RetryPendingCreditNoteTaxReversal re-drives the POST-COMMIT upstream tax
+// reversal for issued credit notes whose inline attempt failed
+// (tax_reversal_pending). It is the CN-path counterpart to the invoice #310
+// RetryPendingTaxReversal: #310 scans voided/uncollectible invoices and keys off
+// invoices.tax_reversed_at, so a CN reversal on a FINALIZED/PAID invoice (which
+// stamps credit_notes.tax_transaction_id instead) is structurally invisible to
+// it — leaving the tenant over-remitting until recovered. Cross-tenant + scoped
+// to the ctx's livemode. Re-drive is Stripe-idempotent via the per-CN
+// velox_tax_rev_<cn.ID> reference; on success the marker is cleared and the
+// reversal transaction id stamped. Per-row errors are collected, not aborted-on.
+func (s *Service) RetryPendingCreditNoteTaxReversal(ctx context.Context, batch int) (int, []error) {
+	if s.taxRev == nil {
+		return 0, nil
+	}
+	livemode := postgres.Livemode(ctx)
+	pending, err := s.store.ListPendingCreditNoteTaxReversal(ctx, batch, livemode)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending credit-note tax reversals: %w", err)}
+	}
+	var errsOut []error
+	reversed := 0
+	for _, cn := range pending {
+		// Already reversed upstream (a prior sweep stamped the tx id but failed
+		// to clear the marker): just clear it so it leaves the scan.
+		if cn.TaxTransactionID != "" {
+			if err := s.store.SetTaxReversalPending(ctx, cn.TenantID, cn.ID, false); err != nil {
+				errsOut = append(errsOut, fmt.Errorf("clear tax_reversal_pending for %s: %w", cn.ID, err))
+				continue
+			}
+			reversed++
+			continue
+		}
+		inv, err := s.invoices.Get(ctx, cn.TenantID, cn.InvoiceID)
+		if err != nil {
+			errsOut = append(errsOut, fmt.Errorf("get invoice for pending tax reversal %s: %w", cn.ID, err))
+			continue
+		}
+		if inv.TaxTransactionID == "" {
+			// No upstream transaction to reverse (provider changed / legacy) —
+			// nothing to recover; clear the marker so it leaves the scan.
+			if err := s.store.SetTaxReversalPending(ctx, cn.TenantID, cn.ID, false); err != nil {
+				errsOut = append(errsOut, fmt.Errorf("clear stale tax_reversal_pending for %s: %w", cn.ID, err))
+			}
+			continue
+		}
+		res, err := s.taxRev.ReverseTax(ctx, cn.TenantID, tax.ReversalRequest{
+			OriginalTransactionID: inv.TaxTransactionID,
+			CreditNoteID:          cn.ID,
+			InvoiceID:             cn.InvoiceID,
+			Mode:                  tax.ReversalModePartial,
+			GrossAmountCents:      cn.TotalCents,
+		})
+		if err != nil {
+			errsOut = append(errsOut, fmt.Errorf("re-drive tax reversal for credit note %s: %w", cn.ID, err))
+			continue
+		}
+		if res != nil && res.TransactionID != "" {
+			if err := s.store.SetTaxTransaction(ctx, cn.TenantID, cn.ID, res.TransactionID); err != nil {
+				errsOut = append(errsOut, fmt.Errorf("persist reversal tx for %s: %w", cn.ID, err))
+				continue
+			}
+		}
+		if err := s.store.SetTaxReversalPending(ctx, cn.TenantID, cn.ID, false); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("clear tax_reversal_pending for %s: %w", cn.ID, err))
+			continue
+		}
+		reversed++
+	}
+	return reversed, errsOut
+}
+
 // buildCreditNote runs the tax-breakout, three-channel allocation, refund cap,
 // and number generation, returning the credit note to insert. Called inside
 // CreateUnderInvoiceLock with the lock-stable `existingCNs` snapshot.
@@ -721,14 +800,28 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		return cn, nil
 	}
 
-	// Compare-and-swap the draft→issued transition BEFORE any side effect.
-	// Issue() reduces the invoice amount_due (unpaid path) and grants/refunds
-	// (paid path); the amount_due reduction is not idempotent, so two
-	// concurrent or retried Issue() calls that both passed the draft check
-	// above would apply it twice — double-reducing amount_due. The CAS makes
-	// exactly one caller the winner; losers see won=false and return the
-	// already-issued credit note unchanged.
-	won, err := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteIssued)
+	// Coordinator transaction (ADR-056 / ADR-061). The draft→issued CAS and the
+	// INTERNAL money effect — amount_due reduction (unpaid) or credit grant
+	// (paid) — commit ATOMICALLY on this one tx:
+	//   - crash mid-tx  → both roll back; the note stays 'draft' and the
+	//     reconciler (RetryPendingClawbackIssue) re-drives cleanly.
+	//   - crash post-commit → the note is 'issued' AND the effect is applied
+	//     together; a re-entry loses the CAS (won=false) and never re-applies.
+	// So the reduction/grant is idempotent BY CONSTRUCTION — there is exactly
+	// ONE caller of each (here), gated by the CAS, so a second application is
+	// impossible without a second CAS win, which cannot happen. (This is why
+	// PR2 carries NO source-dedup row; ADR-061 records it as the deferred first
+	// brick of the amount_due-derived-ledger. A reviewer adding a second caller
+	// of ApplyCreditNote/GrantForCreditNote MUST reintroduce the dedup.)
+	// External effects (Stripe refund, upstream tax reversal) cannot share a DB
+	// tx, so they run POST-commit, idempotency-keyed and recoverable.
+	tx, err := s.store.BeginTx(ctx, tenantID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("begin issue tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	won, err := s.store.TransitionStatusTx(ctx, tx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteIssued)
 	if err != nil {
 		return domain.CreditNote{}, fmt.Errorf("claim issue transition: %w", err)
 	}
@@ -746,77 +839,24 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		// block entirely, so all three channels land at zero. If that
 		// invoice is then paid BEFORE the CN is issued, this Issue path
 		// sees a paid invoice but a CN with zero allocations — neither the
-		// refund leg nor the credit-grant leg below fires, and the
-		// refund/credit silently vanishes (the CN issues as a no-op).
-		//
-		// Mirror Create's documented paid-invoice default: when the
-		// invoice is now paid and the CN carries zero across all three
-		// channels, grant the full CN total to the customer's credit
-		// balance — the safest fallback (no cash movement, restorable
-		// later). Persist it so the dashboard and any retry see the same
-		// allocation the Issue path acts on.
+		// refund leg nor the credit-grant leg fires, and the refund/credit
+		// silently vanishes (the CN issues as a no-op). Mirror Create's
+		// paid-invoice default: grant the full CN total to credit balance.
+		// Persisted IN the coordinator tx so it commits with the CAS.
 		if cn.RefundAmountCents == 0 && cn.CreditAmountCents == 0 && cn.OutOfBandAmountCents == 0 && cn.TotalCents > 0 {
 			cn.CreditAmountCents = cn.TotalCents
-			if err := s.store.UpdateAllocation(ctx, tenantID, id, cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents); err != nil {
+			if err := s.store.UpdateAllocationTx(ctx, tx, tenantID, id, cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents); err != nil {
 				return domain.CreditNote{}, fmt.Errorf("re-derive credit-note allocation at issue: %w", err)
 			}
 		}
 
-		// Invoice already paid — handle based on refund type.
-		//
-		// Idempotency contract (added 2026-05-22 after audit):
-		//   - Stripe refund: deterministic idempotency key
-		//     `velox_cn_<cn_id>` so a retry after a partial failure
-		//     hits Stripe's cache and returns the original refund_id
-		//     rather than creating a duplicate.
-		//   - StripeRefundID is persisted IMMEDIATELY after the Stripe
-		//     call succeeds, BEFORE the credit-grant step. So even if
-		//     a retry happens after a credit-grant failure, the next
-		//     call's `cn.StripeRefundID != ""` guard skips the Stripe
-		//     re-call. Stripe's idempotency cache is the second line
-		//     of defense.
-		//
-		// Pre-fix shape (caught in audit): no idempotency key + status
-		// persisted last → retry-after-partial-failure double-refunded
-		// the customer.
-		if cn.RefundAmountCents > 0 && cn.StripeRefundID == "" {
-			if s.refunder != nil && inv.StripePaymentIntentID != "" {
-				idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
-				refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
-				if err != nil {
-					slog.Warn("stripe refund failed, credit note will be issued with failed refund status",
-						"credit_note_id", cn.ID, "error", err)
-					cn.RefundStatus = domain.RefundFailed
-				} else {
-					cn.StripeRefundID = refundID
-					cn.RefundStatus = domain.RefundSucceeded
-				}
-			} else {
-				cn.RefundStatus = domain.RefundPending
-			}
-			// Persist refund result IMMEDIATELY (before the credit
-			// grant step) so a downstream failure doesn't lose the
-			// refund_id. Best-effort: if this fails the in-memory cn
-			// still carries refund_id and the Stripe idempotency key
-			// covers the duplicate-call case on retry.
-			if cn.RefundStatus != domain.RefundNone {
-				if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
-					slog.Warn("failed to persist refund status",
-						"credit_note_id", cn.ID, "refund_status", cn.RefundStatus,
-						"stripe_refund_id", cn.StripeRefundID, "error", err)
-				}
-			}
-		}
-
+		// INTERNAL effect — grant credit to the customer's balance IN the
+		// coordinator tx (ADR-061). A grant failure rolls the draft→issued CAS
+		// back together, so the issued-but-ungranted orphan (formerly a deferred
+		// liveness gap) structurally cannot exist. The Stripe refund leg is
+		// EXTERNAL and runs post-commit below.
 		if cn.CreditAmountCents > 0 && s.credits != nil {
-			// Credit-type CN: add to customer's prepaid balance via
-			// the dedup-safe GrantForCreditNote path. The partial
-			// unique index idx_credit_ledger_credit_note_dedup
-			// (migration 0093) enforces one grant per (tenant, CN),
-			// so a retry after a downstream-step failure (tax
-			// reversal / UpdateStatus) returns the existing grant
-			// silently instead of double-crediting the customer.
-			if err := s.credits.GrantForCreditNote(ctx, tenantID, cn.ID, CreditGrantInput{
+			if err := s.credits.GrantForCreditNoteTx(ctx, tx, tenantID, cn.ID, CreditGrantInput{
 				CustomerID:  cn.CustomerID,
 				AmountCents: cn.CreditAmountCents,
 				Description: fmt.Sprintf("Credit note %s — %s", cn.CreditNoteNumber, cn.Reason),
@@ -824,59 +864,69 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			}); err != nil {
 				return domain.CreditNote{}, fmt.Errorf("grant credit: %w", err)
 			}
-			// KNOWN GAP (deferred — liveness audit 2026-06-23): the draft→issued
-			// CAS above already committed in its OWN transaction, so if this grant
-			// fails the credit note is persisted status=issued with NO balance
-			// credit — the customer is shown a completed credit they never
-			// received, and there is no automatic resume (re-Issue refused:
-			// status!=draft; Void refused: issued is final).
-			//
-			// PREFERRED fix-when-triggered = make it ATOMIC, not eventually
-			// consistent. The grant is an INTERNAL DB write (the credit ledger),
-			// so the draft→issued CAS and the grant belong in ONE transaction —
-			// thread a coordinator *sql.Tx through the creditnote + credit stores
-			// (the ADR-056 pattern; full blueprint in ADR-061), so a grant
-			// failure rolls the issue back and
-			// the orphan simply cannot exist. Reconcilers are the right tool only
-			// for the GENUINELY-EXTERNAL effects in this same flow (the Stripe
-			// refund + tax reversal, which can't share a DB tx) — those move
-			// post-commit and recover idempotently. A reconciler re-grant via the
-			// 0093 dedup index is the eventual-consistency FALLBACK if the atomic
-			// refactor is itself deferred. TRIGGER: the first design partner
-			// issuing account-credit credit notes (the feature carries real
-			// money). Until then a grant failure here is an operator-visible
-			// error + manual fix.
 		}
 	} else {
-		// Invoice not yet paid — reduce amount_due. This is the
-		// non-idempotent step; the draft→issued CAS at the top of Issue
-		// guarantees exactly one caller reaches here per credit note, so a
-		// concurrent/retried Issue() can't double-reduce amount_due.
-		if _, err := s.invoices.ApplyCreditNote(ctx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
+		// Invoice not yet paid — reduce amount_due IN the coordinator tx. The
+		// draft→issued CAS guarantees exactly one caller reaches here per credit
+		// note, so the reduction is idempotent by construction (see the tx
+		// comment above): a concurrent/retried Issue() can't double-reduce.
+		if _, err := s.invoices.ApplyCreditNoteTx(ctx, tx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
 		}
 	}
 
-	// Reverse the invoice's upstream tax liability so the tenant's Stripe
-	// Tax reports (or equivalent provider dashboard) reflect the reduced
-	// revenue. Industry standard: EU VAT Directive Art. 90, UK VATA 1994,
-	// India CGST §34 all require output-tax reduction when a credit note
-	// is issued. Preconditions:
-	//   - taxRev wired (skipped in narrow tests and for tenants with no
-	//     provider configured)
-	//   - invoice has a committed upstream transaction (inv.TaxTransactionID
-	//     non-empty — none/manual providers and legacy invoices leave it
-	//     empty and silently opt out)
-	//   - this CN has not already been reversed (idempotency guard against
-	//     retried Issue calls; Stripe also enforces reference uniqueness
-	//     on the CN id but the local check avoids the round-trip)
-	// Mode is partial with the CN's gross total as the flat amount so
-	// multi-CN invoices reverse exactly the slice each CN credits,
-	// leaving residual liability on the original transaction for any
-	// uncredited portion. Failures are logged but do not unwind the CN —
-	// the refund/credit side has already committed and the CN is an
-	// accounting document; operators reconcile any stuck reversals
-	// manually.
+	// Commit the CAS + internal effect atomically. From here the credit note is
+	// durably issued; the remaining steps are EXTERNAL and recover independently.
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("commit issue tx: %w", err)
+		}
+	}
+
+	// ===== POST-COMMIT external effects (idempotency-keyed, recoverable) =====
+
+	// Paid-branch Stripe refund (EXTERNAL — cannot share the DB tx, per "no
+	// network I/O in a DB transaction"). Idempotency contract: the deterministic
+	// `velox_cn_<cn_id>` key makes a retry after a partial failure return the
+	// original refund_id rather than double-refund; refund_status is persisted
+	// immediately, and a failed/pending leg recovers via RetryRefund.
+	if inv.PaymentStatus == domain.PaymentSucceeded && cn.RefundAmountCents > 0 && cn.StripeRefundID == "" {
+		if s.refunder != nil && inv.StripePaymentIntentID != "" {
+			idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
+			refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
+			if err != nil {
+				slog.Warn("stripe refund failed, credit note will be issued with failed refund status",
+					"credit_note_id", cn.ID, "error", err)
+				cn.RefundStatus = domain.RefundFailed
+			} else {
+				cn.StripeRefundID = refundID
+				cn.RefundStatus = domain.RefundSucceeded
+			}
+		} else {
+			cn.RefundStatus = domain.RefundPending
+		}
+		if cn.RefundStatus != domain.RefundNone {
+			if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
+				slog.Warn("failed to persist refund status",
+					"credit_note_id", cn.ID, "refund_status", cn.RefundStatus,
+					"stripe_refund_id", cn.StripeRefundID, "error", err)
+			}
+		}
+	}
+
+	// Reverse the invoice's upstream tax liability so the tenant's tax reports
+	// reflect the reduced revenue (EU VAT Directive Art. 90, UK VATA 1994, India
+	// CGST §34). EXTERNAL call → post-commit. Preconditions: taxRev wired, the
+	// invoice has a committed upstream transaction, and this CN hasn't already
+	// reversed. Partial mode with the CN's gross total so multi-CN invoices each
+	// reverse only their slice.
+	//
+	// On failure this is NO LONGER fire-and-forget: set tax_reversal_pending so
+	// RetryPendingCreditNoteTaxReversal re-drives with the same per-CN key, and
+	// raise the log to ERROR (the #310 void-path sibling's alertable signal).
+	// #310 itself cannot recover this — it scans voided/uncollectible invoices,
+	// while a CN reversal lands on a finalized/paid invoice and stamps
+	// credit_notes.tax_transaction_id, structurally invisible to that sweep.
 	if s.taxRev != nil && inv.TaxTransactionID != "" && cn.TaxTransactionID == "" && cn.TotalCents > 0 {
 		res, err := s.taxRev.ReverseTax(ctx, tenantID, tax.ReversalRequest{
 			OriginalTransactionID: inv.TaxTransactionID,
@@ -886,11 +936,19 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			GrossAmountCents:      cn.TotalCents,
 		})
 		if err != nil {
-			slog.Warn("tax reversal failed, credit note will be issued without upstream reversal",
+			slog.ErrorContext(ctx, "tax reversal failed; marked pending for sweep recovery",
 				"credit_note_id", cn.ID,
 				"invoice_id", cn.InvoiceID,
 				"tax_transaction_id", inv.TaxTransactionID,
 				"error", err)
+			if merr := s.store.SetTaxReversalPending(ctx, tenantID, id, true); merr != nil {
+				// Even if this fast-path marker write fails, the sweep still
+				// recovers the reversal: RetryPendingCreditNoteTaxReversal also
+				// derives eligibility structurally (issued CN, no reversal stamped,
+				// tax-bearing source), so this is not a lost-recovery window.
+				slog.ErrorContext(ctx, "failed to set tax_reversal_pending marker; sweep recovers structurally regardless",
+					"credit_note_id", cn.ID, "error", merr)
+			}
 		} else if res != nil && res.TransactionID != "" {
 			if err := s.store.SetTaxTransaction(ctx, tenantID, id, res.TransactionID); err != nil {
 				slog.Warn("tax reversal succeeded upstream but local persist failed",
@@ -901,8 +959,8 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		}
 	}
 
-	// Status was already flipped to issued by the CAS at the top; just return
-	// the current row (with the refund/tax fields persisted above).
+	// Status was already flipped to issued by the CAS; return the current row
+	// (with the refund/tax fields persisted above).
 	return s.store.Get(ctx, tenantID, id)
 }
 
