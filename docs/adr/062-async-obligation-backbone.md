@@ -34,11 +34,33 @@ advisory-lock leader. It is wired as a **customer-notification fan-out**
 
 ## Decision
 
-**When we consolidate, generalise the existing `webhook_outbox` into the
-obligation queue** — add an internal/external **discriminator** + an
-obligation handler-registry so internal obligations (tax reversal, refund
-retry, …) drain to in-process handlers instead of fanning out to `'*'`-
-subscribed customer endpoints. Then migrate the four sweeps onto it.
+**When we consolidate, build a SEPARATE `obligations` table (B2) that reuses the
+`webhook_outbox` DRAIN machinery** — in-tx `Enqueue`, `FOR UPDATE SKIP LOCKED`,
+DLQ, advisory-lock leader, and the `billing.Reconciler` seam (#315) — with a
+kind→handler registry that only ever calls **in-process** handlers reusing the
+existing re-drive bodies. Effects enqueue an obligation IN their coordinator
+`*sql.Tx`; the drainer dispatches by kind; the bespoke `ListPendingX` scan +
+marker column are then deleted. Migrate the four re-drive sweeps one at a time —
+the cheap, already-in-an-in-scope-tx effects (`clawback_issue`,
+`cn_tax_reversal`) first; the post-commit `tax_commit`/`tax_reversal` LAST
+(money-path surgery on the finalize/void paths where #267/#310/G1 already bit —
+dual-run the bespoke sweep as a backstop during cutover, and don't inherit the
+webhook DLQ's terminal-at-15 tuning for money kinds: a tax reversal must retry
+until recovered, not dead-letter into a silent over-remit).
+
+**Amended 2026-06-25: build shape flipped B1 → B2** (current-vs-queue decision
+panel). The original lean was B1 — *generalise `webhook_outbox`* with an
+internal/external discriminator. Rejected: `webhook_outbox` is a
+customer-notification fan-out — `webhook.Service.Dispatch` writes a
+customer/dashboard-visible event + an operator SSE frame, and `matchesEvent`
+returns true on `'*'` for ANY event type — so an internal obligation sharing it
+is one `Dispatch` call from leaking tax/refund payloads (`customer_id`, amounts,
+intent ids) to customer endpoints, the worst bug class for a billing engine. A
+discriminator would make that leak *impossible-by-correct-branch* on the hottest
+customer-delivery path; **B2 makes it impossible-by-construction** (no `Dispatch`
+reachability at all) for the cost of one table + one lock key. PR2/ADR-061
+already refused `webhook_outbox` for this exact fan-out reason — B2 is consistent
+with that precedent.
 
 Decided **against**:
 
@@ -71,18 +93,43 @@ Decided **against**:
 
 The **design** is decided; the **build** is not scheduled. Reasons: at low/mid
 scale (0 customers, 1 dev) the four bespoke sweeps are **correct** and the
-consolidation is a *maintainability* win, not a correctness need — adopting any
-queue does not make money more correct (exactly-once effects = at-least-once
+consolidation is **mostly** a *maintainability* win — adopting any queue does not
+make money more correct on 5 of 6 sweeps (exactly-once effects = at-least-once
 delivery + idempotent consumers + reconciliation, which the sweeps already are).
 Per `feedback_pre_launch_scoping` / `feedback_no_overengineering`, a generic
 async backbone is a solution to a problem (many heterogeneous effects + an ops
 team) we do not have yet.
 
+**ONE correctness exception, named honestly** (current-vs-queue panel, verified
+in `creditnote/postgres.go`): `RetryPendingCreditNoteTaxReversal` carries a
+second, structural eligibility branch — an issued CN with no reversal stamped
+against a tax-bearing source, bounded to 24h — that exists ONLY to catch the
+compound failure where `ReverseTax` *and* the `tax_reversal_pending` marker write
+both fail in the same `Issue()`, an otherwise-invisible **permanent silent tax
+over-remit** whose 24h window can age the orphan out for good. Enqueue-in-tx
+(B2) deletes that failure mode and its window outright, because the obligation
+commits atomically with the state change — there is no "did the marker write
+land" question. This is real money-correctness, not maintainability — but it is
+true for exactly **one of the four** migratable sweeps (`tax_commit`/`tax_reversal`
+derive from pure durable state with TTL-encoding windows no queue can delete;
+`clawback_issue` is safe-by-construction), and it is a low-probability, isolatable
+failure. So it does **not** justify the backbone today — and if that orphan ever
+bites, the cheap hedge is to make `cn_tax_reversal` alone enqueue-in-tx, not to
+build the whole queue. The deferral stands; the "zero correctness on the table"
+framing does not.
+
 **Triggers to build the obligation queue:** a durable async obligation that is
 NOT webhook-notification-shaped AND for which a targeted reconciler is
-insufficient, OR the count of distinct async effects outgrows "one outbox + a
-few bespoke sweeps" (rule of thumb: ~6+), OR a `cmd/velox-worker` process split
-(ADR-040 anticipates it).
+insufficient (e.g. it needs multi-step ordering / cross-effect dependency a flat
+sweep can't model); OR the `cn_tax_reversal` orphan above actually bites in
+production, OR a *second* sweep grows its own structural-orphan + bounded-window
+backstop (the duplication has become a correctness pattern); OR the count of
+**obligation-shaped** effects outgrows "one drainer + a few bespoke sweeps"
+(rule of thumb ~6–7 — count MIGRATABLE effects only: Stripe state-syncs like
+`payment_unknown` and settlement/payout reconciliation never enqueue, so the
+migratable set is **4 today, not 6**); OR a `cmd/velox-worker` process split; OR
+a second engineer joins (copy-paste a 1-dev shop tolerates, a 2-dev shop
+shouldn't).
 
 **Triggers to revisit pgx-native (and then River):** usage-event ingestion
 becomes a *measured* bottleneck → stand up a pgx-native pool on **just the
