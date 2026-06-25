@@ -1,0 +1,96 @@
+package billing
+
+import (
+	"context"
+	"log/slog"
+
+	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+)
+
+// Reconciler is one recovery sweep: it scans for stuck/failed post-commit
+// effects (eligibility derived from DURABLE STATE — never a marker the sweep
+// itself must have written; see ListPendingCreditNoteTaxReversal for the
+// exemplar) and re-drives each, idempotently, every tick. Reconcile returns
+// (advanced, errs): advanced counts real work done; per-row errs are collected,
+// never abort the batch, and the same item may be handed back next tick.
+//
+// This is the seam the future obligation-queue drainer (ADR-062) plugs into:
+// when the four re-drive sweeps migrate onto the generalised webhook_outbox, the
+// drainer is just one more Reconciler in s.reconcilers() — the driver below,
+// the leader gate, the mode fan-out, the logging, and the metric are reused
+// verbatim. (That is why this is a single-method interface, not a Source/Drive
+// split: the queue collapses the per-effect scans into one drainer, so a
+// per-effect Source seam would be discarded when (c) lands.)
+type Reconciler interface {
+	Name() string
+	Reconcile(ctx context.Context, batch int) (int, []error)
+}
+
+// reconcilerFunc adapts an existing RetryPendingX/Run method into a named
+// Reconciler. The re-drive body and its eligibility SQL stay UNCHANGED in their
+// own service/store (with their load-bearing comments); this is a presentational
+// shim, no behaviour.
+type reconcilerFunc struct {
+	name string
+	fn   func(ctx context.Context, batch int) (int, []error)
+}
+
+func (r reconcilerFunc) Name() string { return r.name }
+func (r reconcilerFunc) Reconcile(ctx context.Context, batch int) (int, []error) {
+	return r.fn(ctx, batch)
+}
+
+// recordReconcilerSweep is the metric sink, a var so tests can observe it.
+var recordReconcilerSweep = mw.RecordReconcilerSweep
+
+// reconcilers returns the recovery sweeps in their deliberate tick order. THE
+// ORDER IS LOAD-BEARING: the tax reconcilers must run before auto-charge so a
+// freshly-finalised invoice's finalize-time auto-charge doesn't slip a tick, and
+// payment_unknown runs first so a stuck-unknown charge that actually succeeded is
+// marked paid before the retry path considers re-charging. An order-asserting
+// test guards this. Only wired (non-nil) reconcilers are included.
+func (s *Scheduler) reconcilers() []Reconciler {
+	var rs []Reconciler
+	if s.paymentReconciler != nil {
+		// payment_unknown is a STATE-SYNC against Stripe (3-valued:
+		// succeeded/failed/still-in-flight), NOT a re-drive of a local failed
+		// effect. It rides this driver only for uniform log+metric and will
+		// NEVER migrate to the obligation queue (ADR-062) — its truth lives at
+		// Stripe, there is no local obligation to enqueue.
+		rs = append(rs, reconcilerFunc{"payment_unknown", s.paymentReconciler.Run})
+	}
+	if s.taxRetrier != nil {
+		rs = append(rs,
+			reconcilerFunc{"tax_retry", s.taxRetrier.RetryPendingTax},
+			reconcilerFunc{"tax_commit", s.taxRetrier.RetryPendingTaxCommit},
+			reconcilerFunc{"tax_reversal", s.taxRetrier.RetryPendingTaxReversal},
+		)
+	}
+	if s.clawbackRetrier != nil {
+		rs = append(rs,
+			reconcilerFunc{"clawback_issue", s.clawbackRetrier.RetryPendingClawbackIssue},
+			reconcilerFunc{"cn_tax_reversal", s.clawbackRetrier.RetryPendingCreditNoteTaxReversal},
+		)
+	}
+	return rs
+}
+
+// runReconcilers runs each sweep in order under the caller's already-leader-gated,
+// mode-scoped ctx, with one uniform log + the per-reconciler sweep metric. A
+// per-row error is logged and metered but never aborts the batch or the next
+// reconciler. This replaces six near-identical copy-pasted log blocks.
+func runReconcilers(ctx context.Context, mode string, rs []Reconciler, batch int) {
+	for _, r := range rs {
+		if r == nil {
+			continue
+		}
+		n, errs := r.Reconcile(ctx, batch)
+		if n > 0 || len(errs) > 0 {
+			slog.Info("reconciler swept", "reconciler", r.Name(), "mode", mode, "advanced", n, "errors", len(errs))
+		}
+		for _, e := range errs {
+			slog.Error("reconciler error", "reconciler", r.Name(), "mode", mode, "error", e)
+		}
+		recordReconcilerSweep(r.Name(), mode, n, len(errs))
+	}
+}

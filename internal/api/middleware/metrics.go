@@ -125,6 +125,14 @@ var (
 		[]string{"result"},
 	)
 
+	reconcilerSweeps = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "velox_reconciler_sweeps_total",
+			Help: "Recovery reconciler sweeps by reconciler, mode, and outcome (run|advanced|error). 'run' increments every tick (liveness); 'advanced'/'error' carry the per-tick counts.",
+		},
+		[]string{"reconciler", "mode", "outcome"},
+	)
+
 	auditWriteErrors *prometheus.CounterVec
 
 	stripeBreakerState = promauto.NewGauge(
@@ -249,6 +257,21 @@ func RecordCreditOperation(opType string) {
 // RecordAutoChargeRetry records an auto-charge retry result ("succeeded" or "failed").
 func RecordAutoChargeRetry(result string) {
 	autoChargeRetries.WithLabelValues(result).Inc()
+}
+
+// RecordReconcilerSweep records one recovery-reconciler sweep: a 'run' tick
+// (always, so operators can alert on a reconciler that stops running), plus the
+// items advanced and per-row errors this tick. `mode` is "live"/"test".
+// Powers per-reconciler dashboards/alerts (e.g. a stuck tax-reversal backlog) —
+// previously only auto-charge was metered.
+func RecordReconcilerSweep(reconciler, mode string, advanced, errs int) {
+	reconcilerSweeps.WithLabelValues(reconciler, mode, "run").Inc()
+	if advanced > 0 {
+		reconcilerSweeps.WithLabelValues(reconciler, mode, "advanced").Add(float64(advanced))
+	}
+	if errs > 0 {
+		reconcilerSweeps.WithLabelValues(reconciler, mode, "error").Add(float64(errs))
+	}
 }
 
 // RecordScheduledCleanup records rows purged by a scheduled cleanup task.
