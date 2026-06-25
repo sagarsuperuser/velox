@@ -96,6 +96,9 @@ messages + CHANGELOG.md, not here.
 | [057](057-atomic-recoverable-downgrade-clawback.md) | 2026-06-20 | Accepted | Downgrade/removal clawback credit note — created atomically, issued recoverably |
 | [058](058-billing-date-math-tenant-timezone.md) | 2026-06-09 | Accepted | Billing calendar date-math is anchored in the tenant timezone (renumbered from a duplicate 050) |
 | [059](059-guard-invoice-mutations-while-payment-in-flight.md) | 2026-06-22 | Accepted | Guard invoice mutations while a payment is in flight — block void/uncollectible/offline-record; single void writer; defer the automated clawback until the source settles |
+| [060](060-no-payment-method-dunning-enrollment.md) | 2026-06-23 | Accepted | Card-less invoices enter dunning (no-payment-method enrollment) |
+| [061](061-credit-note-issue-atomicity.md) | 2026-06-25 | Built (PR2) | Credit-note `Issue()` atomicity — CAS + internal money effect in one coordinator tx; external effects post-commit + recoverable |
+| [062](062-async-obligation-backbone.md) | 2026-06-25 | Decided (design); build deferred | Async obligation backbone — generalise the outbox (not Temporal/River/pgx-now); consolidate the four re-drive sweeps; trigger-gated |
 
 > ℹ️ **ADR-058 was renumbered from a duplicate ADR-050** (2026-06-21). Two
 > concurrent sessions had each taken `050` — the same hazard the migration-numbering
