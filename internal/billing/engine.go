@@ -4180,12 +4180,15 @@ func (e *Engine) IssueCancelDrafts(ctx context.Context, sub domain.Subscription,
 	}
 	for _, id := range ids {
 		if _, err := e.creditNoteAdjuster.Issue(ctx, sub.TenantID, id); err != nil {
-			// Honest about both recovery cases: if Issue() never flipped the draft
-			// (status still 'draft'+issue_pending), RetryPendingClawbackIssue
-			// re-issues it; if it failed AFTER flipping to 'issued' (the ADR-057
-			// inherited post-flip gap), the reconciler can't see it and it needs
-			// manual reconcile (the paid grant is 0093-deduped, so safe to re-drive).
-			slog.ErrorContext(ctx, "cancel proration draft issue failed post-commit — reconciler re-issues if not yet issued; a post-flip failure needs manual reconcile (ADR-057 known gap)",
+			// Issue() is atomic + recoverable (ADR-061): the draft→issued CAS and
+			// the internal money effect (amount_due reduction / credit grant) commit
+			// together, and the external legs recover on their own. So an error here
+			// is self-healing — either the CAS never committed (still 'draft' +
+			// issue_pending → RetryPendingClawbackIssue re-drives) or a post-commit
+			// external leg failed (refund → RetryRefund; tax reversal →
+			// RetryPendingCreditNoteTaxReversal). The credit is durable; no manual
+			// reconcile, and no post-flip orphan window (closed by ADR-061).
+			slog.ErrorContext(ctx, "cancel proration draft issue failed post-commit; self-heals via reconciler (no manual reconcile needed)",
 				"subscription_id", sub.ID, "credit_note_id", id, "error", err)
 		}
 	}

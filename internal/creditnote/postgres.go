@@ -29,6 +29,7 @@ const cnReadCols = `id, tenant_id, invoice_id, customer_id, credit_note_number,
 	refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
 	currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
 	COALESCE(tax_transaction_id,''), is_simulated, issue_pending,
+	tax_reversal_pending,
 	metadata, created_at, updated_at`
 
 // cnScanDest returns Scan destinations in cnReadCols order. metaJSON is the
@@ -40,6 +41,7 @@ func cnScanDest(cn *domain.CreditNote, metaJSON *[]byte) []any {
 		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
 		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
 		&cn.TaxTransactionID, &cn.IsSimulated, &cn.IssuePending,
+		&cn.TaxReversalPending,
 		metaJSON, &cn.CreatedAt, &cn.UpdatedAt,
 	}
 }
@@ -337,6 +339,16 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 // serializes concurrent/retried Issue() calls: exactly one caller gets won=true
 // and proceeds to the (non-idempotent) amount_due reduction; the losers get
 // won=false and must not re-apply.
+// BeginTx opens an RLS-scoped (TxTenant) coordinator transaction the
+// creditnote Service owns for Issue(): the draft→issued CAS and the internal
+// money effect (amount_due reduction or credit grant) run on this one tx and
+// commit/roll back together (ADR-056 / ADR-061). The caller owns
+// Commit/Rollback. Cross-domain stores (invoice, credit) run their *Tx methods
+// on this same handle — one Postgres, one transaction, one RLS context.
+func (s *PostgresStore) BeginTx(ctx context.Context, tenantID string) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+}
+
 func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -344,6 +356,22 @@ func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id strin
 	}
 	defer postgres.Rollback(tx)
 
+	won, err := s.TransitionStatusTx(ctx, tx, tenantID, id, from, to)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return won, nil
+}
+
+// TransitionStatusTx is TransitionStatus on the caller's coordinator tx: the
+// compare-and-swap runs but is NOT committed here, so Issue() can fold the
+// status flip and the internal money effect into one atomic commit. The CAS
+// (UPDATE ... WHERE status=$from) still serializes concurrent/retried Issue()
+// calls — exactly one caller gets won=true.
+func (s *PostgresStore) TransitionStatusTx(ctx context.Context, tx *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
 	now := clock.Now(ctx)
 	var issuedAt, voidedAt *time.Time
 	if to == domain.CreditNoteIssued {
@@ -363,9 +391,6 @@ func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id strin
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return n == 1, nil
@@ -452,15 +477,116 @@ func (s *PostgresStore) UpdateAllocation(ctx context.Context, tenantID, id strin
 	}
 	defer postgres.Rollback(tx)
 
-	_, err = tx.ExecContext(ctx, `
+	if err := s.UpdateAllocationTx(ctx, tx, tenantID, id, refundCents, creditCents, outOfBandCents); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateAllocationTx is UpdateAllocation on the caller's coordinator tx, so the
+// re-derived allocation commits atomically with the draft→issued CAS and the
+// credit grant during Issue().
+func (s *PostgresStore) UpdateAllocationTx(ctx context.Context, tx *sql.Tx, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
+	_, err := tx.ExecContext(ctx, `
 		UPDATE credit_notes SET refund_amount_cents=$1, credit_amount_cents=$2,
 			out_of_band_amount_cents=$3, updated_at=$4
 		WHERE id=$5`,
 		refundCents, creditCents, outOfBandCents, clock.Now(ctx), id)
+	return err
+}
+
+// SetTaxReversalPending flips the recovery marker for a credit note's
+// POST-COMMIT upstream tax reversal: set true when the reversal is attempted and
+// fails (→ RetryPendingCreditNoteTaxReversal re-drives it with the per-CN key),
+// cleared on success. Runs in its own tx — the reversal is a post-commit
+// external effect, not part of the issue coordinator tx.
+func (s *PostgresStore) SetTaxReversalPending(ctx context.Context, tenantID, id string, pending bool) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE credit_notes SET tax_reversal_pending=$1, updated_at=$2 WHERE id=$3`,
+		pending, clock.Now(ctx), id)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ListPendingCreditNoteTaxReversal returns issued credit notes whose POST-COMMIT
+// upstream tax reversal still needs to run, cross-tenant + scoped by livemode,
+// for RetryPendingCreditNoteTaxReversal. The CN-path counterpart to invoice #310
+// RetryPendingTaxReversal, which scans only voided/uncollectible invoices and so
+// is structurally blind to a CN reversal stamped on a finalized/paid invoice.
+//
+// Eligibility is DERIVABLE FROM DURABLE STATE, not dependent on a marker write
+// landing (the #310 design): a row qualifies if EITHER
+//
+//	(a) tax_reversal_pending — the fast path: the inline attempt failed and set
+//	    the marker (cheap, partial-index-backed); recovered until success, or
+//	(b) the structural over-remit state — an issued CN with NO reversal stamped
+//	    (tax_transaction_id='') against a tax-bearing stripe_tax source invoice.
+//
+// (b) is the backstop for the compound failure where BOTH ReverseTax AND the
+// marker write fail in the same Issue(): the orphan (issued, no tx id, marker
+// false) would otherwise be invisible to every sweep — a permanent silent
+// over-remit. (b) is bounded to a 24h freshness window (anti-churn + no
+// first-deploy re-reversal burst over pre-feature CNs, matching #310); a
+// transient failure resolves in seconds-to-minutes, well inside it. The marker
+// branch is unbounded (a known owed reversal is never aged out). Re-reversal is
+// Stripe-idempotent via the per-CN velox_tax_rev_<cn.ID> reference, so any
+// overlap between (a) and (b), or with the inline attempt, dedups to one.
+func (s *PostgresStore) ListPendingCreditNoteTaxReversal(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+cnReadCols+`
+		FROM credit_notes
+		WHERE livemode = $1
+		  AND status = 'issued'
+		  AND is_simulated = false
+		  AND (
+		        tax_reversal_pending
+		     OR (
+		            COALESCE(tax_transaction_id, '') = ''
+		        AND total_cents > 0
+		        AND updated_at > now() - interval '24 hours'
+		        AND EXISTS (
+		              SELECT 1 FROM invoices i
+		              WHERE i.id = credit_notes.invoice_id
+		                AND i.tenant_id = credit_notes.tenant_id
+		                AND i.tax_provider = 'stripe_tax'
+		                AND COALESCE(i.tax_transaction_id, '') <> ''
+		            )
+		        )
+		  )
+		ORDER BY updated_at ASC
+		LIMIT $2`, livemode, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var notes []domain.CreditNote
+	for rows.Next() {
+		var cn domain.CreditNote
+		var metaJSON []byte
+		if err := rows.Scan(cnScanDest(&cn, &metaJSON)...); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaJSON, &cn.Metadata)
+		notes = append(notes, cn)
+	}
+	return notes, rows.Err()
 }
 
 // insertLineItemTx writes one line item inside the caller's transaction —

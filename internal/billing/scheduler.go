@@ -54,6 +54,13 @@ type TaxRetrier interface {
 // removed/downgraded item until manual reconciliation (ADR-056 follow-up).
 type ClawbackRetrier interface {
 	RetryPendingClawbackIssue(ctx context.Context, batch int) (int, []error)
+	// RetryPendingCreditNoteTaxReversal re-drives credit-note upstream tax
+	// reversals whose POST-COMMIT inline attempt failed (tax_reversal_pending).
+	// The CN-path counterpart to RetryPendingTaxReversal, which only scans
+	// voided/uncollectible invoices and so can't see a reversal stamped on a
+	// finalized/paid invoice by an issued credit note. Implemented by
+	// *creditnote.Service.
+	RetryPendingCreditNoteTaxReversal(ctx context.Context, batch int) (int, []error)
 }
 
 // TrialExpirer is the narrow hook the scheduler uses to flip
@@ -376,6 +383,22 @@ func (s *Scheduler) runBillingCycleForMode(ctx context.Context, live bool) {
 		}
 		for _, e := range cbErrs {
 			slog.Error("clawback recovery error", "mode", mode, "error", e)
+		}
+	}
+
+	// Credit-note tax-reversal reconciler: re-drive the upstream tax reversal for
+	// issued credit notes whose POST-COMMIT inline attempt failed
+	// (tax_reversal_pending). Without it a CN reversal that errors at Issue()
+	// leaves the tenant over-remitting — and #310 RetryPendingTaxReversal can't
+	// see it (it scans voided/uncollectible invoices; a CN reversal lands on a
+	// finalized/paid one). Stripe-idempotent via the per-CN key. Runs every tick.
+	if s.clawbackRetrier != nil {
+		cnReversed, cnErrs := s.clawbackRetrier.RetryPendingCreditNoteTaxReversal(ctx, s.batch)
+		if cnReversed > 0 || len(cnErrs) > 0 {
+			slog.Info("credit-note tax-reversal recoveries", "mode", mode, "reversed", cnReversed, "errors", len(cnErrs))
+		}
+		for _, e := range cnErrs {
+			slog.Error("credit-note tax-reversal recovery error", "mode", mode, "error", e)
 		}
 	}
 

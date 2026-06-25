@@ -940,9 +940,26 @@ func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string
 	}
 	defer postgres.Rollback(tx)
 
+	inv, err := s.ApplyCreditNoteTx(ctx, tx, tenantID, id, amountCents)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Invoice{}, err
+	}
+	return inv, nil
+}
+
+// ApplyCreditNoteTx reduces amount_due on the caller's coordinator tx, so the
+// reduction commits atomically with the credit note's draft→issued CAS (ADR-061,
+// creditnote.Issue). The single-CAS-gated-caller invariant — exactly one Issue()
+// reaches this per credit note — makes the reduction idempotent by construction,
+// so no source-dedup row is needed. A reviewer adding a second caller of this
+// method MUST reintroduce (tenant, source) dedup; see ADR-061.
+func (s *PostgresStore) ApplyCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, id string, amountCents int64) (domain.Invoice, error) {
 	now := clock.Now(ctx)
 	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		UPDATE invoices SET
 			amount_due_cents = GREATEST(amount_due_cents - $1, 0),
 			updated_at = $2
@@ -955,9 +972,6 @@ func (s *PostgresStore) ApplyCreditNote(ctx context.Context, tenantID, id string
 		return domain.Invoice{}, errs.ErrNotFound
 	}
 	if err != nil {
-		return domain.Invoice{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err
 	}
 	return inv, nil

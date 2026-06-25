@@ -2,6 +2,7 @@ package creditnote
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -279,6 +280,113 @@ func TestIssue_ReversalFailureStillIssuesCN(t *testing.T) {
 	if cn.TaxTransactionID != "" {
 		t.Errorf("TaxTransactionID: got %q, want empty on failure", cn.TaxTransactionID)
 	}
+	if !cn.TaxReversalPending {
+		t.Error("TaxReversalPending: got false, want true — a failed reversal must be marked so the recovery sweep re-drives it (no silent over-remit)")
+	}
+	if len(rev.calls) != 1 {
+		t.Errorf("reverse calls: got %d, want 1", len(rev.calls))
+	}
+}
+
+// TestRetryPendingCreditNoteTaxReversal_ReDrivesAndClears proves the CN-scoped
+// reconciler closes the over-remit gap #310 can't see: it re-drives a failed
+// credit-note tax reversal and clears the marker on success. The first inline
+// attempt fails (marked pending); the sweep, once Stripe recovers, reverses and
+// stamps the transaction id.
+func TestRetryPendingCreditNoteTaxReversal_ReDrivesAndClears(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	invoices := &memInvoiceReader{
+		invoices: map[string]domain.Invoice{
+			"inv_paid": {
+				ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
+				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
+				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1800,
+				TotalAmountCents: 11800, AmountPaidCents: 11800,
+				StripePaymentIntentID: "pi_5",
+				TaxTransactionID:      "tx_upstream_3",
+			},
+		},
+	}
+	rev := &fakeTaxReverser{failWith: errors.New("stripe: transient")}
+	svc := NewService(store, invoices, &fakeRefunder{}, &fakeCreditGranter{})
+	svc.SetNumberGenerator(&fakeCNNumbers{})
+	svc.SetTaxReverser(rev)
+
+	cn, err := svc.CreateRefund(context.Background(), "t1", RefundInput{InvoiceID: "inv_paid", Reason: "fraudulent"})
+	if err != nil {
+		t.Fatalf("CreateRefund: %v", err)
+	}
+	if !cn.TaxReversalPending {
+		t.Fatal("precondition: CN must be marked tax_reversal_pending after the failed inline reversal")
+	}
+
+	// Stripe recovers; the sweep must re-drive and clear the marker.
+	rev.failWith = nil
+	rev.returnID = "tx_reversal_recovered"
+	n, sweepErrs := svc.RetryPendingCreditNoteTaxReversal(context.Background(), 10)
+	if len(sweepErrs) != 0 {
+		t.Fatalf("sweep errors: %v", sweepErrs)
+	}
+	if n != 1 {
+		t.Errorf("recovered: got %d, want 1", n)
+	}
+
+	got, _ := store.Get(context.Background(), "t1", cn.ID)
+	if got.TaxReversalPending {
+		t.Error("marker not cleared after a successful re-drive")
+	}
+	if got.TaxTransactionID != "tx_reversal_recovered" {
+		t.Errorf("reversal tx id: got %q, want tx_reversal_recovered", got.TaxTransactionID)
+	}
+	if len(rev.calls) != 2 {
+		t.Errorf("reverse calls: got %d, want 2 (failed inline + recovered sweep)", len(rev.calls))
+	}
+}
+
+// TestRetryPendingCreditNoteTaxReversal_RecoversMarkerlessOrphan proves the fix
+// for the review finding: even when the tax_reversal_pending marker is false
+// (its write failed in the compound ReverseTax-fails-AND-marker-fails window),
+// the sweep still recovers — eligibility is derived structurally (issued CN, no
+// reversal stamped, tax-bearing source), not gated on the marker write landing.
+func TestRetryPendingCreditNoteTaxReversal_RecoversMarkerlessOrphan(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	invoices := &memInvoiceReader{
+		invoices: map[string]domain.Invoice{
+			"inv_tax": {
+				ID: "inv_tax", TenantID: "t1", CustomerID: "cus_1",
+				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
+				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1000,
+				TotalAmountCents: 11000, AmountPaidCents: 11000,
+				TaxTransactionID: "tx_upstream_orphan",
+			},
+		},
+	}
+	rev := &fakeTaxReverser{returnID: "tx_reversal_orphan_recovered"}
+	svc := NewService(store, invoices, &fakeRefunder{}, &fakeCreditGranter{})
+	svc.SetTaxReverser(rev)
+
+	// The orphan: issued, no reversal stamped, marker FALSE (its write failed).
+	cn, err := store.Create(context.Background(), "t1", domain.CreditNote{
+		InvoiceID: "inv_tax", CustomerID: "cus_1", Status: domain.CreditNoteIssued,
+		TotalCents: 5500, TaxReversalPending: false, TaxTransactionID: "",
+	})
+	if err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	n, sweepErrs := svc.RetryPendingCreditNoteTaxReversal(context.Background(), 10)
+	if len(sweepErrs) != 0 {
+		t.Fatalf("sweep errors: %v", sweepErrs)
+	}
+	if n != 1 {
+		t.Errorf("recovered: got %d, want 1 (structural derivation must catch the marker-less orphan)", n)
+	}
+	got, _ := store.Get(context.Background(), "t1", cn.ID)
+	if got.TaxTransactionID != "tx_reversal_orphan_recovered" {
+		t.Errorf("reversal tx id: got %q, want recovered", got.TaxTransactionID)
+	}
 	if len(rev.calls) != 1 {
 		t.Errorf("reverse calls: got %d, want 1", len(rev.calls))
 	}
@@ -318,4 +426,10 @@ func (f *fakeCreditGranter) GrantForCreditNote(_ context.Context, _, creditNoteI
 	f.seenCNIDs[creditNoteID] = true
 	f.cnCalls = append(f.cnCalls, fakeCreditGranterCNCall{creditNoteID: creditNoteID, input: in})
 	return nil
+}
+
+// GrantForCreditNoteTx ignores the (nil) coordinator tx and delegates — the
+// fake records the same way; real in-tx atomicity is covered by the PG test.
+func (f *fakeCreditGranter) GrantForCreditNoteTx(ctx context.Context, _ *sql.Tx, _, creditNoteID string, in CreditGrantInput) error {
+	return f.GrantForCreditNote(ctx, "", creditNoteID, in)
 }

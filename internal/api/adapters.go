@@ -257,6 +257,19 @@ func (a *creditGrantAdapter) GrantForCreditNote(ctx context.Context, tenantID, c
 	return err
 }
 
+// GrantForCreditNoteTx bridges to credit.Service.GrantForCreditNoteTx so the
+// grant rides CN Issue()'s coordinator tx (ADR-061): the credit ledger entry
+// commits atomically with the draft→issued CAS.
+func (a *creditGrantAdapter) GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, creditNoteID string, input creditnote.CreditGrantInput) error {
+	_, err := a.svc.GrantForCreditNoteTx(ctx, tx, tenantID, creditNoteID, credit.GrantInput{
+		CustomerID:  input.CustomerID,
+		AmountCents: input.AmountCents,
+		Description: input.Description,
+		InvoiceID:   input.InvoiceID,
+	})
+	return err
+}
+
 // creditNoteListerAdapter bridges creditnote.Service → invoice.CreditNoteLister.
 type creditNoteListerAdapter struct {
 	svc *creditnote.Service

@@ -60,15 +60,26 @@ type CreditNote struct {
 	// post-commit. Set true ONLY at create; NEVER cleared. RetryPendingClawback
 	// Issue recovers a draft whose post-commit Issue() never ran (e.g. a crash
 	// before issuance) — it scans status='draft' AND issue_pending, so an
-	// issued CN drops out via its status, not via this flag. NOTE: a post-CAS
-	// Issue() failure (status already flipped to 'issued', side-effect
-	// un-applied) is NOT auto-recovered — it surfaces via a loud ERROR log for
-	// manual reconciliation; auto-recovering that window is a tracked follow-up
-	// (ADR-057). Always false for operator-created drafts (migration 0121).
-	IssuePending bool           `json:"issue_pending"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	// issued CN drops out via its status, not via this flag. (As of ADR-061 the
+	// post-CAS window is closed: Issue() commits the status flip and the internal
+	// money effect on ONE tx, so there is no 'issued' CN with an un-applied
+	// internal effect; the external legs self-heal via their own sweeps —
+	// RetryRefund and RetryPendingCreditNoteTaxReversal.) Always false for
+	// operator-created drafts (migration 0121).
+	IssuePending bool `json:"issue_pending"`
+	// TaxReversalPending is the FAST-PATH marker for an issued credit note whose
+	// POST-COMMIT upstream tax reversal was attempted and FAILED (transient Stripe
+	// error). RetryPendingCreditNoteTaxReversal re-drives marked rows with the
+	// per-CN velox_tax_rev_<cn.ID> key and clears the flag on success. It is an
+	// optimisation (partial-index-backed), NOT the sole recovery key: the sweep
+	// ALSO derives eligibility structurally (an issued CN with no reversal stamped
+	// against a tax-bearing source), so a failed marker write does not lose
+	// recovery (ADR-061). Distinct from a NULL tax_transaction_id (ambiguous
+	// across not-tried / no-provider): this boolean is the explicit "tried, failed."
+	TaxReversalPending bool           `json:"tax_reversal_pending"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
 type CreditNoteLineItem struct {

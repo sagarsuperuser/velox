@@ -2,10 +2,11 @@
 
 ## Status
 
-Accepted (design-only) — 2026-06-24. **Build deferred** to a named trigger
-(see Scope). This ADR is the settled blueprint so the eventual build
-doesn't re-derive it, and so a maintainer who touches `Issue()` first
-doesn't reach for the convenient (second-practice) fix.
+**Built — PR2 (2026-06-25).** See the **Amendment (2026-06-25)** at the end of
+this ADR, which records where the implementation diverged from this blueprint.
+Original status: Accepted (design-only) — 2026-06-24, build deferred to a named
+trigger. The course changed (the user prioritised the end-to-end long-term fix
+over deferral) and it shipped.
 
 ## Context
 
@@ -146,3 +147,93 @@ fix; the marker comment at the grant site records this.
   table needs no cross-peer import), so the clawback path may warrant the
   same outbox treatment for consistency. Tracked by the product-wide
   first-vs-second-practice audit (2026-06-24).
+
+## Amendment (2026-06-25): Built in PR2
+
+`creditnote.Service.Issue()` now runs the `draft→issued` CAS and the **internal**
+money effect — `amount_due` reduction (unpaid) or credit grant (paid) — on one
+coordinator `*sql.Tx` (ADR-056), committing them together. The **external**
+effects (Stripe refund, upstream tax reversal) run post-commit, idempotency-keyed
+and recoverable. The implementation diverges from the blueprint above in four
+recorded ways (per `feedback_amend_decisions_when_course_changes`):
+
+1. **Coordinator-tx is the mechanism; NO source-dedup table.** `ApplyCreditNote`
+   and `GrantForCreditNote` each have exactly **one** caller (`Issue()`), gated by
+   the CAS, so the reduction/grant is idempotent **by construction** — a crash
+   mid-tx rolls both back (note stays `draft`, reconciler re-drives cleanly); a
+   crash post-commit leaves `status='issued'`, so a re-entry loses the CAS
+   (`won=false`) and never re-applies. The blueprint's `(tenant, source)` dedup row
+   is therefore dead weight today and would be belt-and-suspenders
+   (`feedback_no_belt_and_suspenders`); it is recorded as the **first brick of the
+   deferred `amount_due`-derived-ledger** (north star below). A code comment at
+   each apply/grant site pins the single-CAS-gated-caller invariant — a reviewer
+   adding a second caller MUST reintroduce the dedup.
+
+2. **CN tax reversal: post-commit + durable marker + CN-scoped sweep — NOT on
+   `webhook_outbox`.** The blueprint said "tax reversal on the transactional
+   outbox." That outbox (ADR-040) is a **customer-notification fan-out**
+   (`dispatcher → svc.Dispatch → matchesEvent` against `'*'`/prefix
+   subscriptions), so an `internal.*` obligation row would **leak to customer
+   endpoints**. Instead PR2 keeps the reversal post-commit with its existing per-CN
+   `velox_tax_rev_<cn.ID>` key and makes it recoverable: a durable
+   `credit_notes.tax_reversal_pending` marker (migration 0123), a CN-scoped
+   scheduler sweep (`RetryPendingCreditNoteTaxReversal`) that re-drives with the
+   same key, and the inline failure raised `WARN→ERROR`. The sweep's eligibility
+   is **derived from durable structural state** (an issued CN with no reversal
+   stamped against a tax-bearing `stripe_tax` source), with the marker as a
+   fast-path index — **not** the sole key — so a compound failure (reversal *and*
+   marker write both fail) is still recovered, mirroring #310 whose eligibility is
+   the default persisted state (caught by the pre-merge review). This closes a
+   **reachable live over-remit**: `#310 RetryPendingTaxReversal` scans only
+   voided/uncollectible invoices and keys off `invoices.tax_reversed_at`, so a CN
+   reversal stamped on a finalized/paid invoice is structurally invisible to it.
+   The outbox-obligation route is the **north star**, un-deferred at the first live
+   tax design partner (when a dispatcher event-type discriminator + obligation
+   handler-registry is justified).
+
+3. **Reconciliation is first-class.** Reconciliation against processor truth is
+   mandatory even with an idempotent external API (chargebacks, async settlement
+   the queue can never see). The "second practice" caution applies only to a
+   reconciler used as the *primary* mechanism for an effect that **could** be made
+   atomic — not to processor-truth reconciliation, nor to the CN tax-reversal sweep
+   above (whose effect is genuinely external and cannot share the DB tx).
+
+4. **Async backbone — committed as PR3 (ADR-062), not "deferred until triggered."**
+   The four bespoke re-drive sweeps (tax-commit #267, tax-reversal #310,
+   clawback-issue ADR-057, PR2's CN-tax-reversal) will consolidate onto ONE durable
+   obligation queue, built by **generalising the existing `webhook_outbox`** (it
+   already has in-tx `Enqueue(ctx, tx, …)`, `FOR UPDATE SKIP LOCKED`, DLQ,
+   advisory-lock leader) with an internal/external discriminator. Decided AGAINST
+   Temporal (its enqueue is an RPC to a separate datastore → reintroduces the
+   dual-write; a cluster/SaaS breaks the self-host wedge; workflows are the wrong
+   abstraction for single-step idempotent jobs) and AGAINST River-for-now (its
+   `InsertTx` needs a pgx-native `pgx.Tx`; Velox is on `database/sql`, so its in-tx
+   enqueue wouldn't compose with our coordinator `*sql.Tx` without migrating the
+   whole data layer — 60 files / 385 query sites / the RLS core). Full build-vs-buy
+   rationale in ADR-062 when PR3 lands.
+
+### North stars / do-not-build (recorded, with triggers)
+
+- **Generic durable obligation queue** (PR3 above) — trigger: a durable async
+  obligation that is not webhook-notification-shaped, or a `cmd/velox-worker`
+  process split (ADR-040 anticipates it).
+- **`amount_due` as a derived ledger** (+ its `(tenant, source)` dedup first
+  brick) — trigger: a **second** independent `amount_due` mutator (e.g.
+  out-of-band partial payments racing a credit note), at which point the
+  single-CAS-gated-caller invariant no longer covers all writers.
+- **`EventDispatcher.Dispatch` `*sql.Tx` threading** across the ~8 fire-and-forget
+  webhook emitters — trigger: first observed lost-event incident, or a design
+  partner reconciling off webhook delivery. A notification seam (a lost event
+  self-heals via subscriber re-poll), not a money-state seam.
+
+### What shipped
+
+Migration 0123 (`credit_notes.tax_reversal_pending` + partial index); tx-variant
+store methods (`TransitionStatusTx`, `UpdateAllocationTx`, `ApplyCreditNoteTx`,
+`GrantForCreditNoteTx`, `creditnote` `BeginTx`); the `Issue()` coordinator-tx
+rewrite (both paid and unpaid branches); `RetryPendingCreditNoteTaxReversal` +
+its scheduler tick; the `WARN→ERROR` raise; deletion of the now-false
+"manual reconcile" comment in `engine.IssueCancelDrafts`. Tests: a real-Postgres
+grant-failure-rolls-back-the-CAS proof, an in-memory failed-reversal-marks-pending
++ sweep-recovers proof, and the existing CAS-idempotency suite (unchanged, still
+green). No new reconciler key beyond the marker; reuses ADR-056/057 primitives.
