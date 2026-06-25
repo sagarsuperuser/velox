@@ -186,17 +186,21 @@ func TestListPendingCreditNoteTaxReversal_FindsMarkerlessOrphan(t *testing.T) {
 		t.Fatalf("create orphan CN: %v", err)
 	}
 
-	// Control: a CN that DID stamp its reversal — must NOT be eligible.
+	// Control: a CN that DID stamp its reversal — must NOT be eligible. Create
+	// doesn't persist tax_transaction_id (it's stamped post-reversal, like the
+	// invoice), so set it explicitly via SetTaxTransaction.
 	doneInv := mkInvoice("INV-REVSTRUCT-DONE")
 	done, err := store.Create(ctx, tenantID, domain.CreditNote{
 		InvoiceID: doneInv.ID, CustomerID: cust.ID, CreditNoteNumber: "CN-REVSTRUCT-DONE",
 		Status: domain.CreditNoteIssued, Reason: "fraudulent",
 		SubtotalCents: 5000, TaxAmountCents: 500, TotalCents: 5500,
 		Currency: "USD", RefundStatus: domain.RefundNone,
-		TaxTransactionID: "tx_reversal_already_done",
 	})
 	if err != nil {
 		t.Fatalf("create done CN: %v", err)
+	}
+	if err := store.SetTaxTransaction(ctx, tenantID, done.ID, "tx_reversal_already_done"); err != nil {
+		t.Fatalf("stamp done CN reversal tx: %v", err)
 	}
 
 	pending, err := store.ListPendingCreditNoteTaxReversal(ctx, 50, false)
