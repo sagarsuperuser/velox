@@ -511,6 +511,10 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
 				slog.Warn("threshold scan: failed to mark fully-credited invoice as paid",
 					"invoice_id", inv.ID, "error", err)
+			} else {
+				// Background credit settle — close any active dunning run so it
+				// isn't left stale (best-effort; processRun pre-check backstops).
+				e.resolveDunningRecovered(ctx, sub.TenantID, inv.ID)
 			}
 		}
 	}

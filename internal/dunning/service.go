@@ -436,6 +436,29 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		return nil // Skip paused runs
 	}
 
+	// Paid-pre-check — the durable backstop for an invoice settled OUT-OF-BAND
+	// (a credit-cover sweep MarkPaids the invoice without resolving its run, or
+	// any settle path the prompt-resolve doesn't instrument). Resolve the run in
+	// place instead of retrying. CRITICALLY placed BEFORE the max-retries →
+	// exhaustRun branch below: exhaustRun's terminal action can pause-collection
+	// or CANCEL THE SUBSCRIPTION with no paid-check, so a max-retries run on a
+	// now-paid invoice would otherwise cancel a paying customer's subscription.
+	// Gate on terminal STATUS (not amount_due<=0, which a mid-tax-retry draft can
+	// momentarily show). On a fetch error, fall through to the normal path (which
+	// itself short-circuits at $0) — don't burn an attempt on a DB blip.
+	if s.invoiceGet != nil {
+		if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil {
+			switch {
+			case inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded:
+				_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionPaymentRecovered, "payment_recovered")
+				return rerr
+			case inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible:
+				_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionManuallyResolved, "invoice_"+string(inv.Status))
+				return rerr
+			}
+		}
+	}
+
 	// Check if max retries exhausted
 	if run.AttemptCount >= policy.MaxRetryAttempts {
 		return s.exhaustRun(ctx, tenantID, run, policy, s.clock.Now(ctx))
@@ -537,38 +560,13 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			s.enqueueDunningWarning(ctx, tenantID, run, policy, retryErr.Error())
 		}
 	} else {
-		run.State = domain.DunningResolved
-		run.Resolution = domain.ResolutionPaymentRecovered
-		run.ResolvedAt = &now
-		run.NextActionAt = nil
-
-		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
-			RunID:        run.ID,
-			InvoiceID:    run.InvoiceID,
-			EventType:    domain.DunningEventResolved,
-			State:        domain.DunningResolved,
-			AttemptCount: run.AttemptCount,
-			Reason:       "payment_recovered",
-			CreatedAt:    now,
-		})
-
 		slog.Info("dunning resolved — payment succeeded",
 			"run_id", run.ID,
 			"invoice_id", run.InvoiceID,
 			"attempt", run.AttemptCount,
 		)
-
-		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
-			return err
-		}
-
-		s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
-			"run_id":      run.ID,
-			"invoice_id":  run.InvoiceID,
-			"customer_id": run.CustomerID,
-			"resolution":  string(run.Resolution),
-		})
-		return nil
+		_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionPaymentRecovered, "payment_recovered")
+		return rerr
 	}
 
 	// Schedule next retry.
@@ -829,15 +827,14 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 	return updated, nil
 }
 
-// ResolveByInvoice resolves any active dunning run for the given invoice.
-// Called when an invoice is voided or paid outside of dunning.
-func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error {
-	run, err := s.store.GetActiveRunByInvoice(ctx, tenantID, invoiceID)
-	if err != nil {
-		return nil // No active run — nothing to resolve
-	}
-
-	ctx = s.bindForInvoice(ctx, tenantID, invoiceID)
+// resolveRunNow transitions an already-loaded run to resolved with the given
+// resolution: stamps state/resolution/resolved_at, clears next_action_at, writes
+// the DunningEventResolved row, persists, and fires EventDunningResolved. Binds
+// the clock to the invoice so resolved_at lands in simulated time on clock-pinned
+// invoices. Shared by ResolveByInvoice, the processRun success branch, and the
+// processRun paid-pre-check so the transition is identical across all of them.
+func (s *Service) resolveRunNow(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, resolution domain.DunningResolution, eventReason string) (domain.InvoiceDunningRun, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
 	now := s.clock.Now(ctx)
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
@@ -845,16 +842,18 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 	run.NextActionAt = nil
 
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
-		RunID:     run.ID,
-		InvoiceID: run.InvoiceID,
-		EventType: domain.DunningEventResolved,
-		State:     domain.DunningResolved,
-		Reason:    fmt.Sprintf("invoice %s", string(resolution)),
-		CreatedAt: now,
+		RunID:        run.ID,
+		InvoiceID:    run.InvoiceID,
+		EventType:    domain.DunningEventResolved,
+		State:        domain.DunningResolved,
+		AttemptCount: run.AttemptCount,
+		Reason:       eventReason,
+		CreatedAt:    now,
 	})
 
-	if _, err = s.store.UpdateRun(ctx, tenantID, run); err != nil {
-		return err
+	updated, err := s.store.UpdateRun(ctx, tenantID, run)
+	if err != nil {
+		return domain.InvoiceDunningRun{}, err
 	}
 
 	s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
@@ -863,7 +862,18 @@ func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID stri
 		"customer_id": run.CustomerID,
 		"resolution":  string(run.Resolution),
 	})
-	return nil
+	return updated, nil
+}
+
+// ResolveByInvoice resolves any active dunning run for the given invoice.
+// Called when an invoice is voided or paid outside of dunning.
+func (s *Service) ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error {
+	run, err := s.store.GetActiveRunByInvoice(ctx, tenantID, invoiceID)
+	if err != nil {
+		return nil // No active run — nothing to resolve
+	}
+	_, rerr := s.resolveRunNow(ctx, tenantID, run, resolution, fmt.Sprintf("invoice %s", string(resolution)))
+	return rerr
 }
 
 // GetDefaultPolicy returns the tenant's default dunning policy.
