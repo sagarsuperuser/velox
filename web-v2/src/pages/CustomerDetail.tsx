@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type DunningPolicyWithCount, type Subscription, type CustomerPaymentMethod } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
+import { startOfDayInTZ } from '@/lib/dates'
 import { Layout } from '@/components/Layout'
 import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import { CostDashboard } from '@/components/CostDashboard'
@@ -1590,6 +1591,11 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   const initialCurrency = (billingProfile?.currency || 'USD').toUpperCase()
   const [currency, setCurrency] = useState(initialCurrency)
   const [memo, setMemo] = useState('')
+  // Service period (optional) — the inclusive dates this invoice covers.
+  // Industry-standard (Stripe invoiceitem.period); shows as the invoice
+  // "Period" and feeds revenue recognition. Stored half-open (ADR-058).
+  const [periodStart, setPeriodStart] = useState('')
+  const [periodEnd, setPeriodEnd] = useState('')
   // Payment terms in days from issue → due date. Net 30 is the default;
   // Net 0 means due on receipt. Passed straight through as
   // net_payment_term_days (the backend computes due_at = issued_at + N).
@@ -1598,6 +1604,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   const [errors, setErrors] = useState<{
     lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }>
     form?: string
+    period?: string
   }>({})
   const [submitting, setSubmitting] = useState<null | 'draft' | 'send'>(null)
 
@@ -1681,12 +1688,35 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   const submit = async (action: 'draft' | 'send') => {
     const cleaned = validate()
     if (!cleaned) return
+    // Service period (optional): both-or-neither, start on/before end. The
+    // operator enters INCLUSIVE dates; store half-open [start, endExclusive)
+    // (ADR-058) so the invoice reads "Jun 1 – Jun 30" — endExclusive = end+1d,
+    // grounded at start-of-day in tenant TZ (same boundary math as the engine).
+    let period: { billing_period_start?: string; billing_period_end?: string } = {}
+    if (periodStart || periodEnd) {
+      if (!periodStart || !periodEnd) {
+        setErrors({ period: 'Enter both a start and end date, or leave both blank.' })
+        return
+      }
+      if (periodStart > periodEnd) {
+        setErrors({ period: 'The start date must be on or before the end date.' })
+        return
+      }
+      const [ey, em, ed] = periodEnd.split('-').map(Number)
+      const next = new Date(ey, em - 1, ed + 1)
+      const endExclusive = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`
+      period = {
+        billing_period_start: startOfDayInTZ(periodStart),
+        billing_period_end: startOfDayInTZ(endExclusive),
+      }
+    }
     setSubmitting(action)
     let invoice: Invoice | null = null
     try {
       invoice = await api.createInvoice({
         customer_id: customerId,
         currency: currency,
+        ...period,
         net_payment_term_days: paymentTermDays,
         memo: memo.trim() || undefined,
         line_items: cleaned,
@@ -1901,6 +1931,35 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
             <p className="text-xs text-muted-foreground">
               Amounts are in cents (e.g. 2500 = {formatCents(2500, currency)}). Tax is applied per the tenant's tax provider when the invoice finalizes.
             </p>
+          </div>
+
+          {/* Service period (optional) — the dates this invoice covers. Shows
+              as the invoice "Period" and feeds revenue recognition (Stripe
+              invoiceitem.period parity). Inclusive dates; stored half-open so
+              it reads "Jun 1 – Jun 30". Blank = a one-off charge with no period. */}
+          <div className="space-y-2">
+            <Label>Service period (optional)</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                aria-label="Service period start"
+                className="w-auto"
+                value={periodStart}
+                onChange={e => setPeriodStart(e.target.value)}
+                disabled={isBusy}
+              />
+              <span className="text-sm text-muted-foreground">to</span>
+              <Input
+                type="date"
+                aria-label="Service period end"
+                className="w-auto"
+                value={periodEnd}
+                onChange={e => setPeriodEnd(e.target.value)}
+                disabled={isBusy}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">Both dates inclusive. Leave blank for a one-off charge with no period.</p>
+            {errors.period && <p className="text-xs text-destructive">{errors.period}</p>}
           </div>
 
           {/* Memo */}
