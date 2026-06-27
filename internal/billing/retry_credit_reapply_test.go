@@ -42,6 +42,24 @@ func (c *recordingCharger) ChargeInvoice(_ context.Context, _ string, inv domain
 	return inv, nil
 }
 
+// fakeDunResolver records ResolveByInvoice calls so a test can prove a background
+// credit-cover settle resolves the invoice's dunning run (the prompt half of the
+// stranded-active-run fix).
+type fakeDunResolver struct {
+	got []struct {
+		invoiceID  string
+		resolution domain.DunningResolution
+	}
+}
+
+func (f *fakeDunResolver) ResolveByInvoice(_ context.Context, _, invoiceID string, res domain.DunningResolution) error {
+	f.got = append(f.got, struct {
+		invoiceID  string
+		resolution domain.DunningResolution
+	}{invoiceID, res})
+	return nil
+}
+
 func pendingInvoice() domain.Invoice {
 	return domain.Invoice{
 		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
@@ -100,6 +118,8 @@ func TestRetrySweep_ReappliesCreditsBeforeCharge(t *testing.T) {
 func TestRetrySweep_FullyCreditCovered_MarksPaidWithoutCharge(t *testing.T) {
 	applier := &fakeCreditApplier{applyCents: 1000}
 	inv, charger, engine := retryHarness(t, applier)
+	resolver := &fakeDunResolver{}
+	engine.SetDunningResolver(resolver)
 
 	charged, errs := engine.RetryPendingCharges(context.Background(), 50)
 	if len(errs) != 0 {
@@ -117,6 +137,11 @@ func TestRetrySweep_FullyCreditCovered_MarksPaidWithoutCharge(t *testing.T) {
 	}
 	if row.AutoChargePending {
 		t.Error("AutoChargePending must be cleared after credit settlement")
+	}
+	// The fix: a background credit settle resolves the invoice's dunning run so
+	// it isn't left active (stale red badge / risk of dunning a paid invoice).
+	if len(resolver.got) != 1 || resolver.got[0].invoiceID != "inv_1" || resolver.got[0].resolution != domain.ResolutionPaymentRecovered {
+		t.Errorf("credit settle must resolve dunning as payment_recovered, got %+v", resolver.got)
 	}
 }
 

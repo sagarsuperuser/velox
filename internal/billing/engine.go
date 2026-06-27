@@ -72,6 +72,7 @@ type Engine struct {
 	events             domain.EventDispatcher
 	noPMNotifier       NoPaymentMethodNotifier
 	dunningStarter     DunningStarter
+	dunningResolver    DunningResolver
 	auditLogger        AuditWriter
 }
 
@@ -248,6 +249,21 @@ type NoPaymentMethodNotifier interface {
 // integration tests). Wire in router.go via SetDunningStarter.
 type DunningStarter interface {
 	StartDunning(ctx context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) error
+}
+
+// DunningResolver resolves an active dunning run when an invoice settles via a
+// BACKGROUND path — a credit-cover sweep or threshold-close that MarkPaids the
+// invoice WITHOUT going through the invoice handler (which is the only place that
+// resolved dunning before this). Without it, a paid invoice keeps an active
+// dunning run: a stale red badge, and — worse — on the run's next due tick
+// dunning.processRun could fire a dunning email or a TERMINAL action
+// (pause-collection / subscription-cancel) on a fully-paid invoice. The resolve
+// is idempotent (no active run → no-op via GetActiveRunByInvoice) so it's safe to
+// call on every settle, and it is best-effort post-commit — a failure logs and
+// never fails the settle; the dunning.processRun paid-pre-check is the durable
+// backstop. Optional — when nil the engine skips it. Wire via SetDunningResolver.
+type DunningResolver interface {
+	ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error
 }
 
 // TestClockReader looks up a test clock's frozen_time. The billing engine
@@ -700,6 +716,29 @@ func (e *Engine) SetNoPaymentMethodNotifier(n NoPaymentMethodNotifier) {
 // forever. See the DunningStarter doc-comment for the full rationale.
 func (e *Engine) SetDunningStarter(d DunningStarter) {
 	e.dunningStarter = d
+}
+
+// SetDunningResolver wires the resolver that closes an active dunning run when an
+// invoice settles via a background path (credit-cover sweep / threshold close).
+// See the DunningResolver doc-comment.
+func (e *Engine) SetDunningResolver(d DunningResolver) {
+	e.dunningResolver = d
+}
+
+// resolveDunningRecovered best-effort resolves an active dunning run for an
+// invoice that just settled via a BACKGROUND path that bypasses the invoice
+// handler's dunning resolve. Idempotent state-correctness (no active run →
+// no-op), NOT money-exactly-once: post-commit, a failure logs and never fails the
+// settle (the dunning.processRun paid-pre-check is the durable backstop). nil
+// resolver (local dev / tests) → no-op.
+func (e *Engine) resolveDunningRecovered(ctx context.Context, tenantID, invoiceID string) {
+	if e.dunningResolver == nil {
+		return
+	}
+	if err := e.dunningResolver.ResolveByInvoice(ctx, tenantID, invoiceID, domain.ResolutionPaymentRecovered); err != nil {
+		slog.WarnContext(ctx, "failed to resolve dunning after background credit settle",
+			"invoice_id", invoiceID, "error", err)
+	}
 }
 
 // shouldFireScheduledCancel reports whether a sub's soft-cancel intent has
@@ -2848,6 +2887,10 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				slog.Warn("failed to mark fully-credited invoice as paid", "invoice_id", inv.ID, "error", err)
 			} else {
 				slog.Info("invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)
+				// Background credit settle bypasses the invoice handler's dunning
+				// resolve — close any active run so it isn't left stale (ADR-040
+				// framework: post-commit best-effort idempotent state-correctness).
+				e.resolveDunningRecovered(ctx, sub.TenantID, inv.ID)
 				// Still advance the billing cycle (billing_time-aware
 				// so calendar subs auto-realign on credit-paid cycles too).
 				nextPeriodStart := periodEnd
@@ -4831,6 +4874,10 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 					continue
 				}
 				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+				// This is the path that strands dunning (the confirmed bug): the
+				// sweep settles via credits without the handler's resolve. Close
+				// the run here (best-effort; processRun pre-check backstops).
+				e.resolveDunningRecovered(ctx, inv.TenantID, inv.ID)
 				charged++
 				slog.Info("auto-charge retry: fully covered by credits, marked paid", "invoice_id", inv.ID)
 				continue

@@ -657,9 +657,13 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 		}
 
 		// Phase 5 (ADR-029): dunning advance for clock-pinned invoices.
-		// Runs after Phase 3 (charge) so a successful charge clears
-		// dunning state; no point advancing dunning on an invoice that
-		// just got paid. next_action_at compared against simulated time.
+		// Runs after the charge/credit-settle phases. A Phase 1/1.5/3
+		// credit-cover settle now resolves the invoice's dunning run in place —
+		// the engine calls resolveDunningRecovered on a credit-cover settle, and
+		// processRun carries a paid-pre-check backstop — so a just-settled
+		// invoice's run is resolved, never re-advanced (a credit-cover settle
+		// previously left it active, the bug this fixes). next_action_at vs
+		// simulated time.
 		if s.dunning != nil && needFrozen {
 			dunningCount, dunningErrs := s.dunning.ProcessDueRunsForClock(ctx, job.TenantID, job.ClockID, frozen, 50)
 			sum.DunningAdvanced = dunningCount
