@@ -248,6 +248,14 @@ func endpointAuthoritativeEvent(eventType string) bool {
 	switch eventType {
 	case "setup_intent.succeeded", "setup_intent.setup_failed":
 		return true
+	case "charge.refund.updated", "refund.updated", "refund.failed":
+		// Refund objects carry no velox_* metadata (we create them with only an
+		// idempotency key), so without admitting them here they'd be silently
+		// skipped and the async-refund-status reconciliation would never run. The
+		// endpoint tenant is authoritative (per-tenant secret + HMAC); the handler
+		// still matches the refund to a Velox credit note by stripe_refund_id and
+		// acks anything foreign.
+		return true
 	default:
 		return false
 	}

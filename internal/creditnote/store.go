@@ -44,6 +44,12 @@ type Store interface {
 	// the CAS commits atomically with Issue()'s internal money effect.
 	TransitionStatusTx(ctx context.Context, tx *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
+	// ApplyRefundWebhookStatus monotonically applies an async refund-webhook
+	// status to the credit note carrying stripeRefundID: terminal
+	// (succeeded/failed) always wins; a stale out-of-order 'pending' never
+	// clobbers a terminal state. Returns ErrNotFound when no credit note carries
+	// that refund id (foreign/dashboard refund, or the row hasn't committed yet).
+	ApplyRefundWebhookStatus(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error
 	// UpdateAllocation persists the three-channel allocation
 	// (refund / credit / out-of-band). Used by Issue() to re-derive the
 	// allocation from the current invoice state when a CN created against

@@ -13,8 +13,9 @@ import (
 // (or didn't) with the expected amount. The returned refund ID is
 // deterministic for easy assertions.
 type fakeRefunder struct {
-	calls    []fakeRefundCall
-	failWith error
+	calls        []fakeRefundCall
+	failWith     error
+	returnStatus domain.RefundStatus // empty → succeeded (back-compat with existing tests)
 }
 
 type fakeRefundCall struct {
@@ -23,16 +24,20 @@ type fakeRefundCall struct {
 	idempotencyKey  string
 }
 
-func (f *fakeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error) {
+func (f *fakeRefunder) CreateRefund(_ context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, domain.RefundStatus, error) {
 	f.calls = append(f.calls, fakeRefundCall{
 		paymentIntentID: paymentIntentID,
 		amountCents:     amountCents,
 		idempotencyKey:  idempotencyKey,
 	})
 	if f.failWith != nil {
-		return "", f.failWith
+		return "", "", f.failWith
 	}
-	return fmt.Sprintf("re_fake_%d", len(f.calls)), nil
+	status := f.returnStatus
+	if status == "" {
+		status = domain.RefundSucceeded
+	}
+	return fmt.Sprintf("re_fake_%d", len(f.calls)), status, nil
 }
 
 // setupRefundSvc builds a Service with a paid invoice ready for refund. The

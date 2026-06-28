@@ -354,7 +354,7 @@ export default function CreditNotesPage() {
       {refundStatusFilter === 'needs_attention' && (
         <div className="mt-3 flex items-center gap-2 text-xs">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 font-medium text-destructive">
-            Showing refunds needing attention (failed or pending)
+            Showing refunds needing attention (failed, or pending &gt; 72h)
             <button
               onClick={() => setUrlState({ refund_status: '', page: '1' })}
               className="hover:text-foreground"

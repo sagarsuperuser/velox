@@ -31,7 +31,9 @@ type InvoiceReader interface {
 // deterministic key tied to the credit-note id (Velox uses
 // `velox_cn_<cn_id>`).
 type Refunder interface {
-	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
+	// Returns the refund id + Stripe's create-time status (mapped to a Velox
+	// refund_status). A pending result settles later via a refund webhook.
+	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, domain.RefundStatus, error)
 }
 
 // CreditGranter adds credits to a customer's balance.
@@ -893,14 +895,17 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	if inv.PaymentStatus == domain.PaymentSucceeded && cn.RefundAmountCents > 0 && cn.StripeRefundID == "" {
 		if s.refunder != nil && inv.StripePaymentIntentID != "" {
 			idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
-			refundID, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
+			refundID, refStatus, err := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
 			if err != nil {
 				slog.Warn("stripe refund failed, credit note will be issued with failed refund status",
 					"credit_note_id", cn.ID, "error", err)
 				cn.RefundStatus = domain.RefundFailed
 			} else {
 				cn.StripeRefundID = refundID
-				cn.RefundStatus = domain.RefundSucceeded
+				// Record what Stripe actually said — succeeded OR pending (async).
+				// A pending refund settles later via the refund webhook; recording
+				// a blanket "succeeded" here is the false-success bug this fixes.
+				cn.RefundStatus = refStatus
 			}
 		} else {
 			cn.RefundStatus = domain.RefundPending
@@ -1026,7 +1031,7 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 	// (network failure after Stripe completed): Stripe returns the
 	// existing refund_id, Velox persists it.
 	idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
-	refundID, refundErr := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
+	refundID, refStatus, refundErr := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
 	if refundErr != nil {
 		// Persist the still-failed state so the next retry has the
 		// latest error context and the dashboard surfaces accurate
@@ -1035,7 +1040,11 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 		return domain.CreditNote{}, fmt.Errorf("stripe refund retry: %w", refundErr)
 	}
 
-	if err := s.store.UpdateRefundStatus(ctx, tenantID, id, domain.RefundSucceeded, refundID); err != nil {
+	// Record Stripe's actual status — a re-driven refund can come back `pending`
+	// (still settling), not necessarily succeeded; the refund webhook settles it.
+	// Recording a blanket succeeded here would re-introduce the false-success lie
+	// and permanently 409 a legitimate later retry.
+	if err := s.store.UpdateRefundStatus(ctx, tenantID, id, refStatus, refundID); err != nil {
 		// Stripe call succeeded but local persist failed. The
 		// idempotency key on the next retry converges (Stripe
 		// returns same refund_id, local persist runs again).
@@ -1043,6 +1052,16 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 	}
 
 	return s.store.Get(ctx, tenantID, id)
+}
+
+// ApplyRefundWebhook applies an async refund-webhook status (already mapped to a
+// Velox refund_status by the payment layer) to the credit note carrying
+// stripeRefundID, monotonically (terminal wins; a stale 'pending' never clobbers
+// a terminal). This is the source of truth for the async refund outcome
+// (pending→succeeded/failed) that the create-call cannot observe. Returns
+// ErrNotFound for an unknown/foreign refund id — the caller decides ack vs retry.
+func (s *Service) ApplyRefundWebhook(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error {
+	return s.store.ApplyRefundWebhookStatus(ctx, tenantID, stripeRefundID, status)
 }
 
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {
