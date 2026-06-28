@@ -123,7 +123,7 @@ func TestOverviewResponse_JSONShape(t *testing.T) {
 		"revenue", "revenue_prev", "outstanding_ar", "avg_invoice_value", "credit_balance_total",
 		"active_customers", "new_customers", "active_subscriptions", "trialing_subscriptions",
 		"paid_invoices", "failed_payments", "open_invoices",
-		"dunning_active", "usage_events",
+		"dunning_active", "refunds_needing_attention", "usage_events",
 		"logo_churn_rate", "revenue_churn_rate", "nrr", "dunning_recovery_rate",
 		"mrr_movement",
 	}

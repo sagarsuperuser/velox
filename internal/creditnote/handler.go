@@ -115,13 +115,14 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	page := middleware.ParsePageParams(r)
 
 	cns, err := h.svc.List(r.Context(), ListFilter{
-		TenantID:  tenantID,
-		InvoiceID: r.URL.Query().Get("invoice_id"),
-		Status:    r.URL.Query().Get("status"),
-		Limit:     page.Limit,
-		Offset:    page.Offset,
-		Sort:      r.URL.Query().Get("sort"),
-		SortDir:   r.URL.Query().Get("dir"),
+		TenantID:     tenantID,
+		InvoiceID:    r.URL.Query().Get("invoice_id"),
+		Status:       r.URL.Query().Get("status"),
+		RefundStatus: r.URL.Query().Get("refund_status"),
+		Limit:        page.Limit,
+		Offset:       page.Offset,
+		Sort:         r.URL.Query().Get("sort"),
+		SortDir:      r.URL.Query().Get("dir"),
 	})
 	if err != nil {
 		respond.InternalError(w, r)

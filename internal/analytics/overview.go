@@ -35,15 +35,16 @@ type OverviewResponse struct {
 	CreditBalance   int64 `json:"credit_balance_total"`
 
 	// Counts
-	ActiveCustomers int   `json:"active_customers"`
-	NewCustomers    int   `json:"new_customers"`
-	ActiveSubs      int   `json:"active_subscriptions"`
-	TrialingSubs    int   `json:"trialing_subscriptions"`
-	PaidInvoices    int   `json:"paid_invoices"`
-	FailedPayments  int   `json:"failed_payments"`
-	OpenInvoices    int   `json:"open_invoices"`
-	DunningActive   int   `json:"dunning_active"`
-	UsageEvents     int64 `json:"usage_events"`
+	ActiveCustomers  int   `json:"active_customers"`
+	NewCustomers     int   `json:"new_customers"`
+	ActiveSubs       int   `json:"active_subscriptions"`
+	TrialingSubs     int   `json:"trialing_subscriptions"`
+	PaidInvoices     int   `json:"paid_invoices"`
+	FailedPayments   int   `json:"failed_payments"`
+	OpenInvoices     int   `json:"open_invoices"`
+	DunningActive    int   `json:"dunning_active"`
+	RefundsAttention int   `json:"refunds_needing_attention"`
+	UsageEvents      int64 `json:"usage_events"`
 
 	// Rates (0..1)
 	LogoChurnRate       float64 `json:"logo_churn_rate"`
@@ -155,6 +156,13 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		{"usage_events", &resp.UsageEvents,
 			`SELECT COUNT(*) FROM usage_events WHERE timestamp >= $1 AND timestamp < $2`,
 			[]any{period.Start, period.End}},
+		// Issued credit notes whose Stripe refund leg is failed/pending — i.e.
+		// a customer is owed money that hasn't been pushed back yet. The refund
+		// is operator-retried (no auto-sweep), so surfacing the count is what
+		// turns "an operator will notice" into "an operator is told". Real
+		// refunds only (test-clock sims aren't an operator obligation).
+		{"refunds_needing_attention", &resp.RefundsAttention,
+			`SELECT COUNT(*) FROM credit_notes WHERE status = 'issued' AND refund_status IN ('failed', 'pending') AND is_simulated = false`, nil},
 	}
 	for _, q := range queries {
 		if err := tx.QueryRowContext(ctx, q.sql, q.args...).Scan(q.dst); err != nil {

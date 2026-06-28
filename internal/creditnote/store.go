@@ -65,8 +65,12 @@ type ListFilter struct {
 	InvoiceID  string
 	CustomerID string
 	Status     string
-	Limit      int
-	Offset     int
-	Sort       string // closed allow-list (validated in store); empty defaults to created_at
-	SortDir    string // "asc" or "desc"; empty defaults to desc
+	// RefundStatus filters by the Stripe refund leg. Exact match, except the
+	// sentinel "needs_attention" → refund_status IN ('failed','pending') (the
+	// dashboard "refunds need attention" alert links here).
+	RefundStatus string
+	Limit        int
+	Offset       int
+	Sort         string // closed allow-list (validated in store); empty defaults to created_at
+	SortDir      string // "asc" or "desc"; empty defaults to desc
 }
