@@ -315,6 +315,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeAdapter.SetCardFetcher(stripeClient)
 	stripeAdapter.SetEventDispatcher(eventDispatcher)
 	stripeAdapter.SetBreaker(stripeBreaker)
+	// Reconcile async refund outcomes (pending→succeeded/failed) from refund
+	// webhooks onto the credit note — the create-call only sees the initial state.
+	stripeAdapter.SetRefundStatusUpdater(creditNoteSvc)
 
 	// Wire payment retrier now that stripeAdapter exists
 	dunningSvc.SetRetrier(&paymentRetrierAdapter{

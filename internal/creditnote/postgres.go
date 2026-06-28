@@ -303,9 +303,13 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		idx++
 	}
 	if filter.RefundStatus == "needs_attention" {
-		// failed OR pending — the operator-actionable refund states. Literal,
-		// no arg (closed set), so no injection surface.
-		clauses = append(clauses, "refund_status IN ('failed', 'pending')")
+		// failed (terminal — money returned to the platform, customer un-refunded)
+		// OR a 'pending' that's genuinely STUCK (>72h ≈ 3 business days). Fresh
+		// pending is normal async settlement and must NOT alert (it would flood
+		// the dashboard once true-pending is recorded). is_simulated excluded —
+		// test-clock CNs aren't an operator obligation. Literal, no arg → no
+		// injection surface.
+		clauses = append(clauses, "status = 'issued' AND (refund_status = 'failed' OR (refund_status = 'pending' AND updated_at < now() - interval '72 hours')) AND is_simulated = false")
 	} else if filter.RefundStatus != "" {
 		clauses = append(clauses, fmt.Sprintf("refund_status = $%d", idx))
 		args = append(args, filter.RefundStatus)
@@ -469,6 +473,49 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 		status, stripeRefundID, clock.Now(ctx), id)
 	if err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+func (s *PostgresStore) ApplyRefundWebhookStatus(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Monotonic precedence (webhooks have no ordering guarantee):
+	//   failed  > succeeded > pending
+	//   - 'failed' is ABSORBING — once recorded it never changes (the customer
+	//     was not refunded; a stale 'succeeded' redelivery must not un-fail it).
+	//   - 'succeeded' yields ONLY to 'failed' — Stripe can legitimately move a
+	//     refund succeeded→failed (bank rejects an initially-accepted refund), so
+	//     a later 'failed' must win; a stale 'pending' must not clobber succeeded.
+	//   - 'pending' yields to any terminal.
+	// Same-value re-delivery is a harmless no-op (zero rows → handled below).
+	res, err := tx.ExecContext(ctx, `
+		UPDATE credit_notes SET refund_status=$1, updated_at=$2
+		WHERE stripe_refund_id=$3
+		  AND refund_status <> 'failed'
+		  AND ($1 = 'failed' OR refund_status <> 'succeeded')`,
+		status, clock.Now(ctx), stripeRefundID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Zero rows = either no CN carries this refund id (foreign/dashboard
+		// refund, or not-yet-committed), OR the monotonic guard correctly
+		// skipped a stale pending over a terminal. Distinguish: a genuinely
+		// missing refund id is ErrNotFound (caller acks/retries); a skipped
+		// stale write is a success.
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM credit_notes WHERE stripe_refund_id=$1)`, stripeRefundID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return errs.ErrNotFound
+		}
 	}
 	return tx.Commit()
 }

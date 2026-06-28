@@ -4,8 +4,32 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/stripe/stripe-go/v82"
 )
+
+// mapStripeRefundStatus collapses Stripe's 5 refund states into Velox's 4-value
+// refund_status (DB CHECK: none/pending/succeeded/failed). canceled→failed (the
+// money returned to the platform balance, not the customer — operator-actionable);
+// requires_action→pending (still in-flight). Shared by CreateRefund (create-time)
+// and handleRefundUpdated (the async webhook truth) so both agree. Note: even
+// `succeeded` means "submitted to the card network", NOT "on the cardholder
+// statement" (5–10 business days, no confirming event).
+// Takes the raw Stripe status STRING (stable API values) so the webhook handler
+// in stripe.go — which abstracts stripe-go behind StripeClient and doesn't import
+// it — can share this exact mapping.
+func mapStripeRefundStatus(s string) domain.RefundStatus {
+	switch s {
+	case "succeeded":
+		return domain.RefundSucceeded
+	case "failed", "canceled":
+		return domain.RefundFailed
+	case "pending", "requires_action":
+		return domain.RefundPending
+	default:
+		return domain.RefundPending // unknown → in-flight; the webhook corrects it
+	}
+}
 
 // StripeRefunder processes refunds via the Stripe API.
 // Mode-aware: selects live/test client per ctx livemode.
@@ -34,10 +58,15 @@ func NewStripeRefunder(clients *StripeClients) *StripeRefunder {
 // returns error → CN stays draft → operator retries → Stripe called
 // again with no idempotency key → DUPLICATE refund → customer over-
 // refunded (caught 2026-05-22).
-func (r *StripeRefunder) CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error) {
+// Returns the refund id AND Stripe's create-time status (mapped to a Velox
+// refund_status). A card refund on a healthy balance returns `succeeded`
+// synchronously; ACH/balance-constrained refunds legitimately return `pending`,
+// whose terminal outcome (succeeded/failed) lands later via a refund webhook —
+// so the caller must record what Stripe actually said, not a blanket success.
+func (r *StripeRefunder) CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, domain.RefundStatus, error) {
 	sc := r.clients.ForCtx(ctx)
 	if sc == nil {
-		return "", ErrStripeNotConfigured
+		return "", "", ErrStripeNotConfigured
 	}
 	params := &stripe.RefundCreateParams{
 		PaymentIntent: stripe.String(paymentIntentID),
@@ -48,8 +77,8 @@ func (r *StripeRefunder) CreateRefund(ctx context.Context, paymentIntentID strin
 	}
 	ref, err := sc.V1Refunds.Create(ctx, params)
 	if err != nil {
-		return "", fmt.Errorf("stripe refund: %s", stripeErrorMessage(err))
+		return "", "", fmt.Errorf("stripe refund: %s", stripeErrorMessage(err))
 	}
 
-	return ref.ID, nil
+	return ref.ID, mapStripeRefundStatus(string(ref.Status)), nil
 }

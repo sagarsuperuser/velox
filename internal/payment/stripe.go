@@ -88,6 +88,7 @@ type Stripe struct {
 	breaker            *breaker.Breaker // optional; nil = no breaker
 	pmAttacher         PaymentMethodAttacher
 	customerResolver   CustomerByStripeIDResolver // optional; resolves SetupIntent.customer → velox id
+	refundUpdater      RefundStatusUpdater        // optional; applies async refund-webhook status to a CN
 	resolver           clock.Resolver             // optional; binds effective-now from invoice
 }
 
@@ -280,6 +281,21 @@ type CustomerByStripeIDResolver interface {
 // handler dependent on SetupIntent metadata alone (test default).
 func (s *Stripe) SetCustomerResolver(r CustomerByStripeIDResolver) {
 	s.customerResolver = r
+}
+
+// RefundStatusUpdater applies an async refund-webhook status (already mapped to a
+// Velox refund_status) to the credit note carrying stripeRefundID, monotonically.
+// Returns errs.ErrNotFound when no credit note matches (foreign/dashboard refund,
+// or the row hasn't committed yet). Optional — nil logs+acks refund events.
+// payment imports nothing from creditnote; creditnote.Service satisfies this.
+type RefundStatusUpdater interface {
+	ApplyRefundWebhook(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error
+}
+
+// SetRefundStatusUpdater wires the async refund-status reconciler used by the
+// refund.* / charge.refund.updated webhook handlers.
+func (s *Stripe) SetRefundStatusUpdater(u RefundStatusUpdater) {
+	s.refundUpdater = u
 }
 
 // IsUnknownPaymentFailure classifies an error returned from ChargeInvoice
@@ -753,6 +769,10 @@ func (s *Stripe) processEvent(ctx context.Context, tenantID string, event domain
 			"stripe_event_id", event.StripeEventID,
 			"failure_message", event.FailureMessage)
 		return nil
+	case "charge.refund.updated", "refund.updated", "refund.failed":
+		// One status-driven handler for all three: each carries a Refund object;
+		// the source event is irrelevant once we read Refund.status.
+		return s.handleRefundUpdated(ctx, tenantID, event)
 	default:
 		slog.Debug("unhandled webhook event type", "type", event.EventType)
 		return nil
@@ -858,6 +878,73 @@ func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string
 		"stripe_payment_method_id": pmID,
 	})
 
+	return nil
+}
+
+// refundWebhookRaceWindow bounds redelivery for a refund webhook that arrives
+// before its credit note's stripe_refund_id row commits. The create→persist is
+// synchronous (Issue/RetryRefund) and beats the async webhook, so this is rare;
+// the window just has to comfortably exceed Stripe's first redelivery backoff
+// while keeping a genuinely-foreign refund from looping for days.
+const refundWebhookRaceWindow = 15 * time.Minute
+
+// handleRefundUpdated reconciles the ASYNC outcome of a refund. A refund can
+// return pending at create then later flip to succeeded or FAILED (bank reject /
+// insufficient platform balance → money back to the platform, customer
+// un-refunded), so the create-call status is not final — this webhook is the
+// source of truth. Re-parses the raw payload (data.object is a Refund, NOT the
+// PI-shaped struct HandleWebhook pre-parses), maps the status, and applies it
+// monotonically to the matching credit note.
+func (s *Stripe) handleRefundUpdated(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
+	if s.refundUpdater == nil {
+		slog.Debug("refund webhook: no RefundStatusUpdater wired, skipping", "type", event.EventType)
+		return nil
+	}
+	raw, ok := event.Payload["raw"].(string)
+	if !ok {
+		return fmt.Errorf("%s: missing raw payload", event.EventType)
+	}
+	var parsed struct {
+		Data struct {
+			Object struct {
+				ID      string `json:"id"`
+				Status  string `json:"status"`
+				Created int64  `json:"created"`
+			} `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return fmt.Errorf("%s: parse payload: %w", event.EventType, err)
+	}
+	rf := parsed.Data.Object
+	if rf.ID == "" {
+		return fmt.Errorf("%s: refund payload missing id", event.EventType)
+	}
+	status := mapStripeRefundStatus(rf.Status)
+
+	err := s.refundUpdater.ApplyRefundWebhook(ctx, tenantID, rf.ID, status)
+	if errors.Is(err, errs.ErrNotFound) {
+		// No Velox credit note carries this refund id. Either a refund created
+		// OUTSIDE Velox (dashboard / direct API) — ack and ignore, never fabricate
+		// a credit note — OR our own refund whose CN row hasn't committed yet
+		// (rare; the create→persist is synchronous). Disambiguate by age: a very
+		// recent refund gets a bounded redelivery so the row can land; an older
+		// one is foreign and is ack'd permanently.
+		// Fail toward redelivery when the age is recent OR unknown (Created==0,
+		// a malformed/partial payload) — better a bounded retry than silently
+		// dropping a reconciliation for our own not-yet-committed refund.
+		if rf.Created == 0 || time.Now().Unix()-rf.Created < int64(refundWebhookRaceWindow.Seconds()) {
+			return fmt.Errorf("refund %s: no matching credit note yet (recent — retry)", rf.ID)
+		}
+		slog.Info("refund webhook acknowledged, no matching credit note (external/dashboard refund)",
+			"refund_id", rf.ID, "stripe_status", rf.Status, "type", event.EventType)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: apply refund status: %w", event.EventType, err)
+	}
+	slog.Info("refund status reconciled from webhook",
+		"refund_id", rf.ID, "stripe_status", rf.Status, "velox_status", status, "type", event.EventType)
 	return nil
 }
 

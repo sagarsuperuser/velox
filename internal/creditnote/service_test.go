@@ -153,6 +153,26 @@ func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, st
 	return nil
 }
 
+func (m *memStore) ApplyRefundWebhookStatus(_ context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error {
+	for id, cn := range m.notes {
+		if cn.TenantID != tenantID || cn.StripeRefundID != stripeRefundID {
+			continue
+		}
+		// failed-absorbing precedence (mirrors the ApplyRefundWebhookStatus SQL):
+		// failed never changes; succeeded yields only to failed; pending yields to any terminal.
+		if cn.RefundStatus == domain.RefundFailed {
+			return nil
+		}
+		if cn.RefundStatus == domain.RefundSucceeded && status != domain.RefundFailed {
+			return nil
+		}
+		cn.RefundStatus = status
+		m.notes[id] = cn
+		return nil
+	}
+	return errs.ErrNotFound
+}
+
 func (m *memStore) UpdateAllocation(_ context.Context, tenantID, id string, refundCents, creditCents, outOfBandCents int64) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
