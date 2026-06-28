@@ -302,6 +302,15 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		args = append(args, filter.Status)
 		idx++
 	}
+	if filter.RefundStatus == "needs_attention" {
+		// failed OR pending — the operator-actionable refund states. Literal,
+		// no arg (closed set), so no injection surface.
+		clauses = append(clauses, "refund_status IN ('failed', 'pending')")
+	} else if filter.RefundStatus != "" {
+		clauses = append(clauses, fmt.Sprintf("refund_status = $%d", idx))
+		args = append(args, filter.RefundStatus)
+		idx++
+	}
 	if len(clauses) > 0 {
 		query += " WHERE "
 		for i, c := range clauses {

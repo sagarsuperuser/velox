@@ -1558,6 +1558,7 @@ export interface AnalyticsOverview {
   failed_payments: number
   open_invoices: number
   dunning_active: number
+  refunds_needing_attention: number
   usage_events: number
   logo_churn_rate: number
   revenue_churn_rate: number

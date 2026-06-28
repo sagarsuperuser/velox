@@ -87,6 +87,16 @@ export default function DashboardPage() {
         to: '/dunning',
       })
     }
+    if (overview.refunds_needing_attention > 0) {
+      // A failed/pending refund = money owed to a customer that hasn't been
+      // pushed back. The refund is operator-retried (no auto-sweep), so this is
+      // the nudge that makes a stuck refund visible. Links to the filtered list.
+      items.push({
+        severity: 'danger',
+        text: `${overview.refunds_needing_attention} ${overview.refunds_needing_attention === 1 ? 'refund needs' : 'refunds need'} attention`,
+        to: '/credit-notes?refund_status=needs_attention',
+      })
+    }
     if (overview.open_invoices > 0 && overview.outstanding_ar > 0) {
       items.push({
         severity: 'warning',

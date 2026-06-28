@@ -111,11 +111,12 @@ export default function CreditNotesPage() {
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
+    refund_status: '',
     page: '1',
     sort: 'created_at',
     dir: 'desc',
   })
-  const { search, status: filterStatus, sort: sortKey } = urlState
+  const { search, status: filterStatus, refund_status: refundStatusFilter, sort: sortKey } = urlState
   const sortDir = urlState.dir as SortDir
   const page = Math.max(1, parseInt(urlState.page) || 1)
   const queryClient = useQueryClient()
@@ -129,12 +130,13 @@ export default function CreditNotesPage() {
     // rows stay client-paginated; the notice below surfaces truncation.
     params.set('limit', '100')
     if (filterStatus) params.set('status', filterStatus)
+    if (refundStatusFilter) params.set('refund_status', refundStatusFilter)
     if (sortKey) params.set('sort', sortKey)
     if (sortDir) params.set('dir', sortDir)
     return params.toString()
-  }, [filterStatus, sortKey, sortDir])
+  }, [filterStatus, refundStatusFilter, sortKey, sortDir])
   const { data: notesData, isLoading: notesLoading, error: notesErrorObj, refetch: refetchNotes } = useQuery({
-    queryKey: ['credit-notes', filterStatus, sortKey, sortDir],
+    queryKey: ['credit-notes', filterStatus, refundStatusFilter, sortKey, sortDir],
     queryFn: () => api.listCreditNotes(notesQueryParams),
   })
 
@@ -346,6 +348,21 @@ export default function CreditNotesPage() {
               className="pl-9"
             />
           </div>
+        </div>
+      )}
+
+      {refundStatusFilter === 'needs_attention' && (
+        <div className="mt-3 flex items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 font-medium text-destructive">
+            Showing refunds needing attention (failed or pending)
+            <button
+              onClick={() => setUrlState({ refund_status: '', page: '1' })}
+              className="hover:text-foreground"
+              aria-label="Clear refund filter"
+            >
+              ✕
+            </button>
+          </span>
         </div>
       )}
 
