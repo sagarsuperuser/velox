@@ -13,6 +13,63 @@ Each flow has a stable ID (A1, B2, …) for cross-referencing. Steps use
 `- [ ]`; copy a section into a scratch doc when running it. This file is
 the canonical source, not a progress tracker.
 
+## Flow index
+
+<details>
+<summary><b>118 flows, grouped by section — click to expand</b></summary>
+
+**Tier 1 — Smoke**  
+`S1` End-to-end smoke · `S2` AI-native end-to-end smoke
+
+**Authentication & API keys**  
+`A1` Sign-in · `A2` /v1/whoami · `A3` Test/Live mode toggle · `K1` API key permissions · `K2` Expiration · `K3` API Keys page UX · `K4` Rotate
+
+**Test Clocks**  
+`TC1` Test Clocks page · `TC2` Detail + Advance · `TC3` Pinning · `TC4` Catchup correctness · `TC5` Dunning via catchup (clock-pinned failure recovery) · `TC6` Trial expiration via catchup · `TC7` Plan change at period boundary via catchup · `TC8` Subscription cancellation at period end (via catchup) · `TC8b` Mid-period cancel of an UNPAID in-advance prebill · `SUB-CARD` Subscription billing-cycle card surface · `TIMELINE-ORDER` Activity timeline ordering (invoice + subscription) · `SUB-REALIGN` Calendar-billing subs auto-realign anchor at cycle close · `TC9` Pause collection auto-resume (via catchup) · `TC10` Credit grant expiry firing (via catchup) · `E` Email delivery (SMTP) · `EX` Streaming CSV exports
+
+**Billing Engine**  
+`B1` Arrears + proration (default `in_arrears` plans) · `B2` Tax precision (NUMERIC(7,4), ADR-042/043) · `B2b` Per-unit rate precision (decimal, ADR-045) · `B3` Idempotency · `B4` Auto-charge retry · `B5` Idempotency-Key header · `B6` Subscription lifecycle · `B7` Plan change + proration · `B8` Usage caps · `B9` Customer price overrides · `B10` Manual tax + customer tax status · `B11` Tax-ID validation · `B12` Subscription activity timeline · `B13` Multi-dimensional meters · `B14` Billing thresholds · `B15` `in_advance` plan happy path · `B16` Hybrid `in_advance` base + `in_arrears` usage on one invoice · `B16b` token usage billed on immediate cancel · `B17` `in_advance` cancel proration credit · `B17b` upgrade then cancel — credit fans across both funding invoices · `B17c` downgrade after upgrade — clawback reverses the upgrade invoice (LIFO) · `B18` Meter Detail page · `B19` Cancel-flow billing artifacts (PR-9 + PR-10) · `B20` Segment-aware billing at cycle close (Lago / Orb shape) · `B21` Immediate same-cadence cross-interval plan-swap (yearly ↔ monthly)
+
+**Pricing Recipes**  
+`R1` List + preview · `R2` Instantiate · `R3` Per-tenant idempotency · `R4` Atomic rollback · `R5` Dashboard UI
+
+**Invoices**  
+`I1` Multiple meters · `I2` Negative usage · `I3` Manual line items · `I4` Void · `I4b` Uncollectible invoice lifecycle · `I5` Collect + payment timeline · `I5b` Invoice attention banner · `I6` Email + PDF preview · `I7` Zero-amount invoice · `I8` Currency consistency · `SUB7` Mid-period change outcome on the timeline + invoice · `I9` Credit note on void · `I9b` Credit note PDF totals reconcile · `I10` Hosted invoice page · `I11` `create_preview` · `I12` One-off invoice composer · `I13` Timeline completeness
+
+**Dunning**  
+`D1` Retry cycle + escalation · `D2` Resolution · `D4` Self-service payment update · `D5` Dunning policy admin (CRUD + assignment + terminal actions)
+
+**Credits & Credit Notes**  
+`C1` Credits lifecycle · `C2` Credit notes · `C2b` Credits ledger readability · `C3` Credit-note refund handling
+
+**Webhooks**  
+`W1` Stripe signature verification · `W2` Outbound secret rotation (72h grace) · `W3` Delivery stats · `W4` Live event stream + replay
+
+**Customers**  
+`CU1` Settings + billing profile · `CU2` Operator customer-portal API · `CU4` Archive cascade · `CU6` Brand color + logo URL · `CU9` Sent emails on customer page · `CU8` Cost-dashboard public projection
+
+**Platform**  
+`P1` Feature flags · `P2` Audit log · `P2A` Audit log — customer-initiated + Tier 2 coverage · `P2B` Operator-side payment-method management · `P3` Usage summary · `P4` Empty billing cycle · `P5` Health checks · `P6` Tax deferral metrics · `REC1` Self-healing background reconcilers
+
+**UI / UX**  
+`U1` Dashboard · `U3` Usage Events page · `U11` Operator search + list filters · `U12` Dashboard consistency sweep · `U7` Edge cases · `U8` Request-ID in error toasts · `U10` Public pages
+
+**Tier 3 — Deep / Rare**  
+`X1` RLS multi-tenant isolation · `X2` Bootstrap lockdown · `X3` Rate limiting · `X4` Security headers + metrics auth · `X5` PII encryption at rest · `X7` Stripe Tax · `X8` Migration rollback · `X9` Config validation · `X10` OpenTelemetry tracing · `X11` Large batch usage ingestion · `X14` Self-host (Compose) · `X15` LiteLLM integration
+
+</details>
+
+## Conventions
+
+Keep this runbook runnable and rot-free:
+
+- **One observable per checkbox.** A `- [ ]` is a single pass/fail — if you catch yourself writing "and then… and also…", split it.
+- **Lead with a bold imperative title**, then the concise observable — e.g. `- [ ] **Void hands back applied credit** — the customer balance increases by the applied amount`.
+- **File a checkbox under the flow that owns the feature** — never "the end of the longest flow." A genuinely new feature gets a **new flow** under the right section (next free number in that section's prefix). IDs are stable for cross-referencing — don't renumber existing ones.
+- **Provenance is a terse trailing tag, not the step.** `(ADR-057)` is fine; dates, migration numbers, PR links, and "pre-fix this was…" history belong in CHANGELOG / ADRs / git, not in the test instruction.
+- **Assert what's observable** (UI, API response, email). Reach for `psql` only when the DB row *is* the pass/fail.
+- **Update the Flow index above** when you add or rename a flow.
+
 ---
 
 ## Setup
@@ -190,6 +247,8 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Calendar-monthly anchored on the **31st** rolls to the **1st of next month** (does not skip February: Jan 31 → Feb 1).
 - [ ] **Invoice period shows the INCLUSIVE last day (ADR-058 follow-up).** The invoice (detail-page header, Invoices-list Period column, and the PDF / hosted invoice / portal) shows **"Jun 1, 2028 – Jun 30, 2028"** for a June period — the last day actually covered — NOT the exclusive boundary "Jun 1 – Jul 1". Same string on every surface (one backend-authored `billing_period_display`). A one-off invoice (no period) shows no Period row. A per-line **"Covers <start> – <inclusive end>"** note (shown on a proration/mixed line whose span differs from the invoice's) is likewise inclusive — "Covers Jun 15, 2028 – Jun 30, 2028", not "– Jul 1". The raw API `billing_period_start`/`billing_period_end` stay unchanged (half-open RFC3339 instants).
 - [ ] Wire format always UTC ISO 8601 with `Z` (storage/display is UTC; the *calendar arithmetic* for period boundaries is done in the tenant TZ per ADR-058).
+
+## Authentication & API keys
 
 ## FLOW A1: Sign-in
 
