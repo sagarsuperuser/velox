@@ -370,14 +370,13 @@ func (s *Service) CreateAdjustmentDraftTx(ctx context.Context, tx *sql.Tx, tenan
 // fresh — no double-reverse, no double-credit. Once Issue() succeeds the note
 // leaves status='draft' and drops out of the scan.
 //
-// LIMITATION: this does NOT recover a PARTIAL issue — one where Issue() already
-// flipped the status to 'issued' (its own committed tx) but a later side-effect
-// (tax reversal / balance credit) then failed. That row is status='issued', so
-// the scan never sees it; it surfaces only via the loud ERROR log in Issue()
-// and needs manual reconciliation. Closing that window — making Issue() fully
-// re-entrant (the unpaid-source ApplyCreditNote is not yet idempotent) and
-// scanning issue_pending regardless of status — is a tracked follow-up
-// (ADR-057). Per-row errors are collected, not aborted-on.
+// No partial-INTERNAL-issue window to recover (ADR-061): Issue() is a coordinator
+// tx — the draft→issued CAS AND the internal effect (balance credit / amount_due
+// reduction) commit together, so a failed internal effect rolls the flip back and
+// the note stays status='draft' for this scan to re-issue. The only post-commit
+// leg is the EXTERNAL tax reversal, which on failure sets tax_reversal_pending and
+// self-heals via RetryPendingCreditNoteTaxReversal — not something this sweep
+// chases. Per-row errors are collected, not aborted-on.
 func (s *Service) RetryPendingClawbackIssue(ctx context.Context, batch int) (int, []error) {
 	livemode := postgres.Livemode(ctx)
 	drafts, err := s.store.ListPendingClawbackDrafts(ctx, batch, livemode)

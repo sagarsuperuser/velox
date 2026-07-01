@@ -20,8 +20,9 @@ import (
 // real-Postgres proof of the ADR-056/ADR-057 atomicity guarantee on the
 // downgrade/removal CLAWBACK path: createClawbackDraftsTx creates the
 // tax-reversing credit note as a DRAFT inside the SAME tx as the item delete,
-// so a draft-create failure must roll the item delete back. Today this is only
-// exercised manually (MANUAL_TEST FLOW B3 "REVOKE INSERT ON credit_notes").
+// so a draft-create failure must roll the item delete back. (The manual analog is
+// MANUAL_TEST FLOW B3's "REVOKE INSERT ON credit_notes" injection; this test is the
+// automated counterpart.)
 //
 // The sibling cross_interval_swap_integration_test.go proves the rollback when
 // the in-tx new-period BILL fails (a different in-tx side effect); this is the

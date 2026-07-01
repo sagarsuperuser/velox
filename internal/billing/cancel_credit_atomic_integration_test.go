@@ -135,9 +135,14 @@ func TestCancelCredit_DraftFailure_RealTxRollsBackCancel(t *testing.T) {
 
 	// Cancel through the real service → the billFn calls BillOnCancelDraftsTx,
 	// whose draft-create fails on the failing adjuster → the cancel tx rolls back.
+	// Bind effective-now to cancelAt so canceled_at (stamped via clock.Now(ctx) in
+	// CancelAtomicWithBill) lands mid-period, matching what the HTTP handler binds
+	// from the sub pin. Without this the stamp fell back to wall-clock, making this
+	// a time-bomb: it only passed while real-now was inside the June 2026 period.
+	cancelCtx := clock.WithEffectiveNow(ctx, cancelAt)
 	subSvc := subscription.NewService(subStore, clock.NewFake(cancelAt))
 	subSvc.SetBiller(e)
-	if _, _, err := subSvc.Cancel(ctx, tenantID, sub.ID); err == nil {
+	if _, _, err := subSvc.Cancel(cancelCtx, tenantID, sub.ID); err == nil {
 		t.Fatal("cancel must fail when the in-tx cancel-credit draft create fails")
 	}
 

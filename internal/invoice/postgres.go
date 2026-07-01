@@ -1534,6 +1534,16 @@ func (s *PostgresStore) SetAutoChargePending(ctx context.Context, tenantID, id s
 	return tx.Commit()
 }
 
+// SetAutoChargePendingTx is the tx-aware variant: it runs the enrollment UPDATE on
+// the caller's (RLS-scoped) tx so it commits atomically with the surrounding change
+// — used by the atomic proration item-change path so enrollment can't fail as a
+// separate post-commit write and strand a committed charge invoice unenrolled.
+func (s *PostgresStore) SetAutoChargePendingTx(ctx context.Context, tx *sql.Tx, tenantID, id string, pending bool) error {
+	_, err := tx.ExecContext(ctx, `UPDATE invoices SET auto_charge_pending = $1, updated_at = $2 WHERE id = $3`,
+		pending, clock.Now(ctx), id)
+	return err
+}
+
 // SetTaxTransaction persists the upstream tax_transaction reference
 // (Stripe: tx_xxx) after a successful CommitTax. Required by the credit
 // note reversal path, which keys the reversal on the original

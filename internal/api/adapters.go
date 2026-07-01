@@ -741,6 +741,12 @@ func (a *prorationInvoiceCreatorAdapter) SetAutoChargePending(ctx context.Contex
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
 
+// SetAutoChargePendingTx forwards to the store's tx-aware variant so the atomic
+// proration path enrolls inside its own tx.
+func (a *prorationInvoiceCreatorAdapter) SetAutoChargePendingTx(ctx context.Context, tx *sql.Tx, tenantID, id string, pending bool) error {
+	return a.store.SetAutoChargePendingTx(ctx, tx, tenantID, id, pending)
+}
+
 // prorationTaxApplierAdapter bridges billing.Engine → subscription.ProrationTaxApplier.
 // Narrow translation: same signature, different named return type so the
 // subscription package doesn't import billing.
