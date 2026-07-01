@@ -250,17 +250,17 @@ re-litigate them. Every MEDIUM finding from the original census has shipped:
   sweep had missed `user_tenants` — enumeration beats lists; the whole
   missing-RLS class is now CI-caught.
 
-Remaining residue (LOW, latent — build when convenient):
+The LOW residue is closed too — **the census is fully discharged**:
 
-1. **[LOW] `UpsertPolicyTx` skips the retry-schedule-length invariant** that
-   `UpsertPolicy` enforces (`internal/dunning/service.go:1043`). Latent (no
-   built-in recipe currently mismatches); a future maintainer's mismatched recipe
-   would stall a campaign at retry-time instead of failing import-time. *Fix:*
-   enforce the length check in the Tx variant too.
-2. **[LOW] Webhook body capped at 64KB** (`internal/payment/handler.go:89`) — a
-   >64KB event truncates → HMAC fails → permanent loss after ~3 days with a
-   misleading signature-failure log. Low probability for Velox's event shapes.
-   *Fix:* distinguish a size-exceeded read from a signature failure.
+- ~~`UpsertPolicyTx` validation parity~~ — **fixed #333**: both policy writers
+  route through one shared `normalizeAndValidatePolicy` chokepoint, so a
+  mismatched recipe fails at instantiate-time, not mid-campaign. Locked by
+  `TestUpsertPolicyTx_ValidationParity` (mutation-verified).
+- ~~64KB webhook-body truncation~~ — **fixed #334**: an over-cap body is
+  detected (read cap+1) and rejected as 413 `payload_too_large` with a size
+  diagnostic, instead of truncating → HMAC-failing → a misleading
+  "invalid signature" 400. Locked by
+  `TestWebhookHandler_OversizedBodyIs413NotSignatureFailure` (mutation-verified).
 
 Deferred-with-trigger and honestly documented (do not re-flag): the failed
 customer **email** post-commit best-effort (by design — symmetric to the receipt
