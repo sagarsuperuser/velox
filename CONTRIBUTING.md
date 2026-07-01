@@ -65,3 +65,9 @@ internal/{domain}/
 2. Write tests for new functionality
 3. Run `go test -p 1 ./... -count=1 -short=false` (all tests must pass)
 4. Submit a PR with a clear description of what and why
+
+**Touching money or a state machine** (invoices, payments, credits, dunning,
+subscriptions, tax)? Follow the [Money-Path Robustness Playbook](docs/dev/money-path-robustness-playbook.md):
+run the implementation checklist (§3) before opening the PR, and include the
+state's site-set enumeration (§2) in the PR description. Concurrency and
+money-invariant guards need an automated collision + mutation-verified test (§5).

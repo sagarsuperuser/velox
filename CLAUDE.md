@@ -16,6 +16,15 @@ Velox is an open-source usage-based billing engine built in Go. It handles prici
 - API key auth with 3 types: platform, secret, publishable
 - HMAC-SHA256 webhook signing (both inbound Stripe and outbound)
 
+## Money-path changes — read the playbook first
+Any change touching money or a state machine (invoices, payments, credits,
+dunning, subscriptions, tax) follows **[docs/dev/money-path-robustness-playbook.md](docs/dev/money-path-robustness-playbook.md)**.
+The one rule it exists to enforce: **don't reason locally — enumerate the state's
+complete site-set (every writer, effect-firer, gated reader, caller/callee, crash
+point) before writing.** Use it at four stages: design (site-set enumeration +
+adversarial panel), implementation (the 12 gates), review (the per-class lens),
+and tests (collision + real-Postgres + concurrent-resolver fake + mutation-verify).
+
 ## Running locally
 ```bash
 docker compose up -d postgres
