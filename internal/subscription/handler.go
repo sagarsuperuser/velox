@@ -71,6 +71,9 @@ type ProrationInvoiceCreator interface {
 	// filter gates when it fires (so enrolling a still-draft tax-pending invoice
 	// is safe — it stays parked until tax resolves and it finalizes).
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	// SetAutoChargePendingTx is the tx-aware variant — enrolls inside the caller's
+	// tx so enrollment commits atomically with the proration item change.
+	SetAutoChargePendingTx(ctx context.Context, tx *sql.Tx, tenantID, id string, pending bool) error
 }
 
 // ProrationCreditGranter grants credits for downgrade proration. Dedup key is
@@ -1538,6 +1541,13 @@ func (h *Handler) atomicAddItemWithProration(
 	if err := h.createClawbackDraftsTx(ctx, tx, tenantID, detail); err != nil {
 		return domain.SubscriptionItem{}, nil, fmt.Errorf("create clawback draft in atomic addItem tx: %w", err)
 	}
+	// Enroll the proration CHARGE invoice for the auto-charge sweep IN this tx, so
+	// enrollment commits atomically with the item change — closes the window where
+	// a failed post-commit enrollment left a committed charge invoice unenrolled
+	// and unpaid (no sweep scans auto_charge_pending=false). No-op for credit paths.
+	if err := h.enrollAutoChargeTx(ctx, tx, tenantID, detail); err != nil {
+		return domain.SubscriptionItem{}, nil, fmt.Errorf("enroll proration charge in atomic addItem tx: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.SubscriptionItem{}, nil, fmt.Errorf("commit atomic addItem tx: %w", err)
 	}
@@ -1549,10 +1559,7 @@ func (h *Handler) atomicAddItemWithProration(
 	// reversal is external). On failure the draft persists + RetryPendingClawback
 	// Issue re-issues it. No-op for the add path (no clawback).
 	h.issueClawbackDrafts(ctx, tenantID, detail)
-	// Enroll the charge invoice for the auto-charge sweep AFTER the tx is durable
-	// (a flag UPDATE on a not-yet-committed row would be lost). No-op for credit/
-	// adjustment paths.
-	h.enrollAutoCharge(ctx, tenantID, detail)
+	// (Auto-charge enrollment now happens IN the tx above — see enrollAutoChargeTx.)
 	// Return the proration detail so addItem's audit row can show the
 	// charge the add produced (see atomicUpdateItemWithProration).
 	return item, detail, nil
@@ -1652,6 +1659,11 @@ func (h *Handler) atomicUpdateItemWithProration(
 	if err := h.createClawbackDraftsTx(ctx, tx, tenantID, detail); err != nil {
 		return ItemChangeResult{}, fmt.Errorf("create clawback draft in atomic updateItem tx: %w", err)
 	}
+	// Enroll the proration CHARGE invoice for the auto-charge sweep IN this tx, so
+	// enrollment commits atomically with the item change (see atomicAddItem).
+	if err := h.enrollAutoChargeTx(ctx, tx, tenantID, detail); err != nil {
+		return ItemChangeResult{}, fmt.Errorf("enroll proration charge in atomic updateItem tx: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return ItemChangeResult{}, fmt.Errorf("commit atomic updateItem tx: %w", err)
 	}
@@ -1662,9 +1674,7 @@ func (h *Handler) atomicUpdateItemWithProration(
 	// failure the draft persists + RetryPendingClawbackIssue re-issues it. No-op
 	// on upgrades / qty-increases (those bill via the invoice path).
 	h.issueClawbackDrafts(ctx, tenantID, detail)
-	// Enroll an upgrade / qty-increase charge invoice for the auto-charge sweep
-	// (post-commit; no-op for the downgrade credit path).
-	h.enrollAutoCharge(ctx, tenantID, detail)
+	// (Auto-charge enrollment now happens IN the tx above — see enrollAutoChargeTx.)
 	// Surface the proration outcome so the caller's audit row (and the
 	// activity timeline built from it) can show WHAT the change billed —
 	// not just that a change happened. Pre-fix this detail was dropped
@@ -1768,6 +1778,18 @@ func (h *Handler) enrollAutoCharge(ctx context.Context, tenantID string, detail 
 		slog.ErrorContext(ctx, "proration charge invoice not enrolled for auto-charge; collect manually or it will sit unpaid",
 			"error", err, "tenant_id", tenantID, "invoice_id", detail.AutoChargeInvoiceID)
 	}
+}
+
+// enrollAutoChargeTx is the atomic-path variant of enrollAutoCharge: it enrolls the
+// proration CHARGE invoice INSIDE the caller's tx, so enrollment commits atomically
+// with the item change. A failure here rolls the whole change back (the operator
+// retries) instead of leaving a committed-but-unenrolled charge invoice to sit
+// unpaid with no reconciler. No-op for credit/adjustment paths.
+func (h *Handler) enrollAutoChargeTx(ctx context.Context, tx *sql.Tx, tenantID string, detail *ProrationDetail) error {
+	if detail == nil || detail.AutoChargeInvoiceID == "" {
+		return nil
+	}
+	return h.invoices.SetAutoChargePendingTx(ctx, tx, tenantID, detail.AutoChargeInvoiceID, true)
 }
 
 // issueClawbackCreditNote issues the tax-reversing adjustment credit note for a
@@ -1952,21 +1974,21 @@ func (h *Handler) createClawbackDraftsTx(ctx context.Context, tx *sql.Tx, tenant
 // can't ride the DB tx). The draft itself is durable (committed with the item
 // change), so an Issue() failure here is never a silent loss of the obligation.
 //
-// Recovery depends on WHERE Issue() failed. Issue() flips status draft→issued in
-// its own committed tx BEFORE the side-effects (tax reversal, balance credit).
-// A failure BEFORE that flip leaves status='draft' AND issue_pending=true, which
-// RetryPendingClawbackIssue re-issues on the next scheduler tick. A failure
-// AFTER the flip (status already 'issued', a side-effect un-applied) is NOT
-// picked up by the reconciler — it scans status='draft' — and needs manual
-// reconciliation; the ERROR below is the signal. Auto-recovering that post-flip
-// window is a tracked follow-up (ADR-057).
+// Issue() is a coordinator-tx (ADR-061): the draft→issued CAS AND the internal
+// effect (balance credit / amount_due reduction) commit ATOMICALLY in one tx, so
+// there is no "issued but un-credited" window. A failure before/during that commit
+// leaves status='draft' AND issue_pending=true, which RetryPendingClawbackIssue
+// re-issues on the next scheduler tick. The ONLY post-commit step is the EXTERNAL
+// Stripe Tax reversal, which self-heals via RetryPendingCreditNoteTaxReversal (it
+// sets tax_reversal_pending on failure); the ERROR below is the surfacing signal,
+// not a manual-reconciliation requirement.
 func (h *Handler) issueClawbackDrafts(ctx context.Context, tenantID string, detail *ProrationDetail) {
 	if h.creditNotes == nil || detail == nil {
 		return
 	}
 	for _, id := range detail.ClawbackDraftIDs {
 		if _, err := h.creditNotes.Issue(ctx, tenantID, id); err != nil {
-			slog.ErrorContext(ctx, "clawback credit note issue failed post-commit; draft persisted (reconciler retries it only while status='draft'; a partial issue needs manual reconciliation)",
+			slog.ErrorContext(ctx, "clawback credit note issue failed post-commit; draft persisted — RetryPendingClawbackIssue re-issues while status='draft' (Issue's internal effect is atomic per ADR-061; any external tax reversal self-heals via its own sweep)",
 				"error", err,
 				"tenant_id", tenantID,
 				"credit_note_id", id,
@@ -2013,9 +2035,10 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	//     immediate credit gives "refund" against money never paid.
 	//     Industry-aligned: Stripe `proration_behavior=none` for this
 	//     case; Lago defers downgrades entirely. Velox defers the
-	//     proration to cycle close (cycle bills at the NEW plan/qty
-	//     full-period — slight imprecision vs. true segment math, but
-	//     no double-counting and no phantom credit).
+	//     proration to cycle close, which bills SEGMENT-AWARE (FLOW B20,
+	//     itemBaseSegments): each slice of the period is billed at the
+	//     plan/qty actually in effect for it — accurate per-segment, no
+	//     double-counting and no phantom credit.
 	//
 	// (2) effective plan is in_advance BUT the source invoice for the
 	//     current period was not paid: the would-be credit is against
@@ -2028,7 +2051,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	// downstream item change itself still applies — just no proration
 	// artifact.
 	if effectivePlan.BaseBillTiming != domain.BillInAdvance {
-		slog.InfoContext(ctx, "item proration deferred: in_arrears plan; cycle close bills under new plan/qty",
+		slog.InfoContext(ctx, "item proration deferred: in_arrears plan; cycle close bills segment-aware",
 			"subscription_id", sub.ID,
 			"item_id", spec.itemID,
 			"change_type", spec.changeType,

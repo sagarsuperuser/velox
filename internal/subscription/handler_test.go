@@ -37,6 +37,7 @@ func (m *plansMock) GetPlan(_ context.Context, _, id string) (domain.Plan, error
 
 type invoicesMock struct {
 	createInvoiceErr    error
+	setAutoChargeErr    error
 	nextNumberErr       error
 	nextNumberCalls     int
 	createdInvoices     []domain.Invoice
@@ -60,6 +61,16 @@ type invoicesMock struct {
 }
 
 func (m *invoicesMock) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
+	if pending {
+		m.autoChargeEnrolled = append(m.autoChargeEnrolled, id)
+	}
+	return nil
+}
+
+func (m *invoicesMock) SetAutoChargePendingTx(_ context.Context, _ *sql.Tx, _, id string, pending bool) error {
+	if m.setAutoChargeErr != nil {
+		return m.setAutoChargeErr
+	}
 	if pending {
 		m.autoChargeEnrolled = append(m.autoChargeEnrolled, id)
 	}
