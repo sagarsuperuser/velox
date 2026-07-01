@@ -225,49 +225,50 @@ Four non-negotiable patterns:
 
 ---
 
-## 6. Current posture (as of 2026-07-01)
+## 6. Current posture (as of 2026-07-02)
 
-Classes **A** (exactly-once), the money-event slice of **B**, and **D**
-(concurrency C1–C4) are locked and test-covered — don't re-litigate them. The
-real residue, ranked (verified against current code; full detail in the audit
-memories):
+Classes **A** (exactly-once), **B** (money-event dual-writes), **D** (concurrency
+C1–C4), and **H** (tenant isolation) are locked and test-covered — don't
+re-litigate them. Every MEDIUM finding from the original census has shipped:
 
-1. **[MEDIUM] `subscription.Activate` lost-update** — `internal/subscription/postgres.go:249`
-   writes `SET status='active' … WHERE id=$14` with no status predicate; a
-   concurrent draft→cancel committing between `Activate`'s `Get` (service.go:626)
-   and this `Update` is clobbered back to `active` (resurrecting a canceled sub
-   with fresh billing bounds), and `handler.go:528` fires `subscription.activated`
-   on it. The one status-flip that bypasses the `transitionInTx` chokepoint.
-   *Fix:* add `AND status='draft'` + treat `RowsAffected==0` as a state conflict.
-   (C3 + C1.)
-2. **[MEDIUM] `SettleFailed` auto-starts dunning post-commit with no
-   failed-invoice reconciler** — `internal/payment/settlement.go:275`. A crash
-   between the `failed` commit and `StartDunning` leaves the invoice `failed` with
-   no run; a same-PI redelivery skips it, and `reconciler.go` sweeps only
-   `unknown`/`processing`, never `failed`. Loud + operator-banner-softened, but
-   never auto-recovers. *Fix:* a `ListFailedWithoutDunningRun` reconciler sweep.
-   The single highest-value build item. (Class B/C/E — documented in
-   `docs/adr/README.md` Open follow-ups.)
-3. **[LOW] `dashboard_sessions` has no RLS** — the one `tenant_id` table not
-   brought in line with 0111/0113. ~nil exploitability today (accessed only by
-   unguessable `id_hash`), but a future tenant-predicate query would have no
-   DB-level isolation. *Fix:* `ENABLE`+`FORCE`+policy, or a one-line "deliberate
-   user-scoped auth state like `users`" comment. The `pg_class` enumeration test
-   (§5.2) converts this from silent to CI-caught.
-4. **[LOW] `UpsertPolicyTx` skips the retry-schedule-length invariant** that
+- ~~`subscription.Activate` lost-update~~ — **fixed #327**: `Update` now carries
+  `AND status='draft'` + an `ErrNoRows` re-query → `InvalidState` conflict,
+  matching the `transitionInTx` chokepoint its siblings use. Locked by the
+  real-Postgres `TestActivate_StoreUpdate_GuardsAgainstConcurrentCancel`
+  (mutation-verified).
+- ~~`SettleFailed` dunning crash-window~~ — **fixed #328**: the `dunning_backfill`
+  reconciler (`Engine.EnrollFailedWithoutDunning`) re-drives the idempotent
+  `StartDunning` for failed invoices with no run (state-agnostic `NOT EXISTS`,
+  0085-exactly-once). **ADR-064** ratifies the triggered-primary +
+  derived-backstop architecture; **#330** additionally moved the `payment.failed`
+  event into the fail-tx (outbox, gated on `firstForThisPI`).
+- ~~`dashboard_sessions` no RLS~~ — **fixed #331 (m0124)**, which also fenced
+  `user_tenants` — a second unfenced table **found by the new
+  `TestRLSIsolation_EveryTenantTableIsFenced`** (the §5.2 enumeration test, now
+  built: discovers every `tenant_id` table from `information_schema`, asserts
+  `ENABLE`+`FORCE`+policy, empty reason-required allowlist). The manual audit
+  sweep had missed `user_tenants` — enumeration beats lists; the whole
+  missing-RLS class is now CI-caught.
+
+Remaining residue (LOW, latent — build when convenient):
+
+1. **[LOW] `UpsertPolicyTx` skips the retry-schedule-length invariant** that
    `UpsertPolicy` enforces (`internal/dunning/service.go:1043`). Latent (no
    built-in recipe currently mismatches); a future maintainer's mismatched recipe
    would stall a campaign at retry-time instead of failing import-time. *Fix:*
    enforce the length check in the Tx variant too.
-5. **[LOW] Webhook body capped at 64KB** (`internal/payment/handler.go:89`) — a
+2. **[LOW] Webhook body capped at 64KB** (`internal/payment/handler.go:89`) — a
    >64KB event truncates → HMAC fails → permanent loss after ~3 days with a
    misleading signature-failure log. Low probability for Velox's event shapes.
    *Fix:* distinguish a size-exceeded read from a signature failure.
 
-Deferred-with-trigger and honestly documented (do not re-flag): `payment.failed`
-event/email post-commit best-effort; `EventDispatcher.Dispatch` no-`*sql.Tx` for
-~16 *notification* webhooks (zero consumers, no money event affected);
+Deferred-with-trigger and honestly documented (do not re-flag): the failed
+customer **email** post-commit best-effort (by design — symmetric to the receipt
+email; the *event* is in-tx since #330); `EventDispatcher.Dispatch` no-`*sql.Tx`
+for ~16 *notification* webhooks (zero consumers, no money event affected);
 `relieveUnpaidPrebill` unpaid-branch post-commit; exhaustRun's 24h self-heal
 re-attempting a permanently-failing mover unbounded (the deliberate
 "keep requeryable" tradeoff); `RetryPendingTaxCommitForClock` absent (test-mode
-only — clock-pinned ⇒ `livemode=false` by CHECK constraint, no real-VAT exposure).
+only — clock-pinned ⇒ `livemode=false` by CHECK constraint, no real-VAT exposure);
+a durable `collection_failed_at` anchor + the ADR-062 queue (see ADR-064's
+cheap-strengthening triggers).
