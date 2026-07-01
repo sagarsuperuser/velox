@@ -253,7 +253,7 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 			next_billing_at = $9, billing_anchor_day = $10,
 			usage_cap_units = $11, overage_action = COALESCE(NULLIF($12,''),'charge'),
 			updated_at = $13
-		WHERE id = $14
+		WHERE id = $14 AND status = 'draft'
 		RETURNING `+subCols,
 		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
 		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
@@ -265,7 +265,25 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 	), &sub)
 
 	if err == sql.ErrNoRows {
-		return domain.Subscription{}, errs.ErrNotFound
+		// The row is gone OR no longer draft. `AND status = 'draft'` is the
+		// concurrency guard: without it this UPDATE writes status='active'
+		// WHERE id alone, so a draft→canceled cancel that commits between
+		// Service.Activate's status check and this write would be clobbered
+		// back to active — a terminal subscription resurrected into a live
+		// billing state with fresh period bounds, and the handler then fires
+		// subscription.activated on it. Every sibling transition already carries
+		// this guard via transitionInTx (WHERE status IN (...)); this bespoke
+		// multi-column writer is the one that historically didn't. Re-query to
+		// distinguish not-found from a lost race and return a precise error.
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, sub.ID).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("can only activate draft subscriptions, current status: %s", currentStatus))
 	}
 	if err != nil {
 		return domain.Subscription{}, err
