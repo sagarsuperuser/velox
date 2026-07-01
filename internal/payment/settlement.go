@@ -231,6 +231,14 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 	// and each is a real event that SHOULD notify; and (b) the synchronous
 	// charge path stamps payment_status='failed' (same PI) WITHOUT notifying,
 	// so a status gate would suppress the webhook's notifications entirely.
+	//
+	// payment.failed itself is enqueued INSIDE that tx (gated on the same
+	// firstForThisPI), so the event is crash-safe with the failed-stamp — the
+	// mirror of payment.succeeded in the paid path. Do NOT also fire it here:
+	// that would double-emit (once in-tx, once post-commit). The customer email
+	// below stays post-commit best-effort by design — folding it in-tx would
+	// drag customer-email resolution + the suppression-list read under the
+	// invoice row lock (same reasoning as the receipt email on the paid path).
 	_, firstForThisPI, err := s.invoices.MarkPaymentFailedReportingTransition(ctx, tenantID, inv.ID, paymentIntentID, failureMsg)
 	if err != nil {
 		return fmt.Errorf("update payment status: %w", err)
@@ -247,15 +255,6 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 		"failure_message", failureMsg,
 		"source", source,
 	)
-
-	s.fireEvent(ctx, tenantID, domain.EventPaymentFailed, map[string]any{
-		"invoice_id":        inv.ID,
-		"customer_id":       inv.CustomerID,
-		"payment_intent_id": paymentIntentID,
-		"failure_message":   failureMsg,
-		"amount_cents":      inv.TotalAmountCents,
-		"currency":          inv.Currency,
-	})
 
 	// Auto-start dunning for failed payments. failureAt is the simulated
 	// cycle-close instant — the moment in the invoice's own time domain when

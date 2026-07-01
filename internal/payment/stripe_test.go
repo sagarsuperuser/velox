@@ -64,6 +64,10 @@ type mockInvoiceUpdater struct {
 	// store enqueuing payment.succeeded IN-TX, gated on the transition (so a
 	// concurrent redelivery increments it once, not twice).
 	cardEventEnqueues int
+	// failedEventEnqueues counts payment.failed enqueues — mirrors the real
+	// store enqueuing payment.failed IN-TX, gated on firstForThisPI (same-PI
+	// redelivery no-ops; a new retry PI fires again).
+	failedEventEnqueues int
 }
 
 func newMockInvoiceUpdater() *mockInvoiceUpdater {
@@ -173,6 +177,12 @@ func (m *mockInvoiceUpdater) MarkPaymentFailedReportingTransition(_ context.Cont
 	m.failNotedPI[id] = piID
 	if piID != "" {
 		m.byPI[piID] = id
+	}
+	// Mirror the real store: payment.failed is enqueued IN-TX, gated on
+	// firstForThisPI (crash-safe with the failed-stamp; SettleFailed no longer
+	// post-commit-fires it).
+	if first {
+		m.failedEventEnqueues++
 	}
 	return inv, first, nil
 }

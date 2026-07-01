@@ -681,6 +681,25 @@ func (s *PostgresStore) MarkPaymentFailedReportingTransition(ctx context.Context
 		}
 		return domain.Invoice{}, false, err
 	}
+	// payment.failed — enqueued in the SAME tx as the failed-stamp, so the event
+	// is crash-safe with the transition instead of fire-and-forget post-commit
+	// (the mirror of payment.succeeded in markPaidReportingTransition; ADR-040
+	// transactional outbox). Gated on firstForThisPI: a same-PI redelivery must
+	// not double-notify, while a NEW retry PI is a genuinely distinct failure and
+	// fires again. The out-of-order paid guard above returns before reaching
+	// here, so a stale failure on a settled invoice never emits.
+	if firstForThisPI && s.outbox != nil {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventPaymentFailed, map[string]any{
+			"invoice_id":        inv.ID,
+			"customer_id":       inv.CustomerID,
+			"payment_intent_id": paymentIntentID,
+			"failure_message":   lastPaymentError,
+			"amount_cents":      inv.TotalAmountCents,
+			"currency":          inv.Currency,
+		}); err != nil {
+			return domain.Invoice{}, false, fmt.Errorf("enqueue payment.failed: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, false, err
 	}

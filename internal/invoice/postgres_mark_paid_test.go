@@ -220,6 +220,86 @@ func TestMarkPaymentFailedReportingTransition_FlagsTheRealNotification(t *testin
 	}
 }
 
+// TestMarkPaymentFailed_EnqueuesPaymentFailedInTx locks the failed-path mirror of
+// the payment.succeeded in-tx fix: payment.failed is enqueued INSIDE the
+// failed-stamp tx (crash-safe with the transition; SettleFailed no longer fires it
+// post-commit), gated on firstForThisPI — a same-PI redelivery does not re-enqueue,
+// a NEW retry PI is a distinct failure and fires again, a stale failure on a
+// settled invoice never emits, and a failed ENQUEUE rolls the whole failed-stamp
+// back (atomicity: no event ⇒ no stamp).
+func TestMarkPaymentFailed_EnqueuesPaymentFailedInTx(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("in-tx enqueue, gated on firstForThisPI", func(t *testing.T) {
+		tenantID := testutil.CreateTestTenant(t, db, "MarkFailed InTx Event")
+		store := invoice.NewPostgresStore(db)
+		rec := &recordingOutbox{}
+		store.SetOutboxEnqueuer(rec)
+		invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
+
+		// First failure for pi_a → one payment.failed enqueued in the same tx.
+		if _, first, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_a", "card declined"); err != nil || !first {
+			t.Fatalf("first failure: first=%v err=%v", first, err)
+		}
+		if want := []string{domain.EventPaymentFailed}; !reflect.DeepEqual(rec.events, want) {
+			t.Fatalf("after first failure: events=%v, want %v", rec.events, want)
+		}
+
+		// Same-PI redelivery → no second enqueue.
+		if _, dup, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_a", "card declined"); err != nil || dup {
+			t.Fatalf("duplicate failure: dup=%v err=%v", dup, err)
+		}
+		if len(rec.events) != 1 {
+			t.Fatalf("same-PI redelivery re-enqueued: events=%v, want exactly 1 (double-notify)", rec.events)
+		}
+
+		// A retry's failure on a fresh PI is a genuinely new event → fires again.
+		if _, retry, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_b", "declined again"); err != nil || !retry {
+			t.Fatalf("retry failure: retry=%v err=%v", retry, err)
+		}
+		if len(rec.events) != 2 {
+			t.Fatalf("new retry PI must enqueue a fresh payment.failed: events=%v, want 2", rec.events)
+		}
+
+		// Settle, then a stale out-of-order failure → guard returns before the
+		// enqueue; a paid invoice never emits payment.failed.
+		if _, err := store.MarkPaid(ctx, tenantID, invID, "pi_b", now); err != nil {
+			t.Fatalf("mark paid: %v", err)
+		}
+		preStale := len(rec.events)
+		if _, staleFirst, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_stale", "late decline"); err != nil || staleFirst {
+			t.Fatalf("stale failure: first=%v err=%v", staleFirst, err)
+		}
+		// preStale includes the invoice.paid enqueue from MarkPaid.
+		if len(rec.events) != preStale {
+			t.Errorf("stale failure on a paid invoice enqueued payment.failed: events=%v", rec.events)
+		}
+	})
+
+	t.Run("failed enqueue rolls the failed-stamp back", func(t *testing.T) {
+		tenantID := testutil.CreateTestTenant(t, db, "MarkFailed InTx Rollback")
+		store := invoice.NewPostgresStore(db)
+		store.SetOutboxEnqueuer(&failingOutbox{failOn: domain.EventPaymentFailed})
+		invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
+
+		if _, _, err := store.MarkPaymentFailedReportingTransition(ctx, tenantID, invID, "pi_x", "declined"); err == nil {
+			t.Fatal("a failed in-tx enqueue must surface an error")
+		}
+		after, err := store.Get(ctx, tenantID, invID)
+		if err != nil {
+			t.Fatalf("get after rollback: %v", err)
+		}
+		if after.PaymentStatus == domain.PaymentFailed {
+			t.Fatal("the failed-stamp must roll back with the failed enqueue (atomic: no event ⇒ no stamp)")
+		}
+		if after.LastPaymentError != "" {
+			t.Errorf("last_payment_error must be unset after rollback, got %q", after.LastPaymentError)
+		}
+	})
+}
+
 // recordingOutbox captures the events MarkPaid enqueues, ignoring the tx.
 type recordingOutbox struct{ events []string }
 
