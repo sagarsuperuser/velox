@@ -86,9 +86,27 @@ func (h *Handler) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
+	// Read ONE byte beyond the cap so an oversized body is DETECTED, not
+	// silently truncated. Pre-fix a >64KB event was truncated at the limit,
+	// the HMAC then failed over the truncated bytes, and the request died as a
+	// misleading "invalid signature" 400 — after ~3 days of Stripe retries the
+	// event was permanently lost with nothing in the logs pointing at size.
+	// A 413 + ERROR names the real problem (an event shape larger than the
+	// cap) so the operator raises maxWebhookBodySize instead of chasing a
+	// phantom signing-secret issue.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize+1))
 	if err != nil {
 		respond.BadRequest(w, r, "failed to read body")
+		return
+	}
+	if len(body) > maxWebhookBodySize {
+		slog.ErrorContext(r.Context(), "stripe webhook body exceeds the size cap — Stripe will retry ~3 days then drop the event permanently; raise maxWebhookBodySize if this event type is legitimate",
+			"endpoint_id", endpointID,
+			"tenant_id", lookup.TenantID,
+			"cap_bytes", maxWebhookBodySize,
+		)
+		respond.Error(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "payload_too_large",
+			"webhook body exceeds the size cap")
 		return
 	}
 
