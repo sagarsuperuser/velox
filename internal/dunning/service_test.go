@@ -747,6 +747,46 @@ func TestUpsertPolicy(t *testing.T) {
 	}
 }
 
+// TestUpsertPolicyTx_ValidationParity locks the recipe-path (tx) upsert to the
+// SAME save-time invariants as the API path. Pre-fix UpsertPolicyTx forwarded
+// straight to the store — its comment claimed "the recipe template layer
+// already validated," but recipe/parse.go validates only final_action, so a
+// mismatched recipe (max_retries exceeding intervals_hours) persisted fine and
+// stalled its campaign at retry-time ("retry_schedule index out of bounds" in a
+// background tick) instead of failing loudly at instantiate-time.
+func TestUpsertPolicyTx_ValidationParity(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	ctx := context.Background()
+
+	// The invariant the recipe layer does NOT check: under-length schedule.
+	_, err := svc.UpsertPolicyTx(ctx, nil, "t1", domain.DunningPolicy{
+		Name:             "Bad Recipe",
+		Enabled:          true,
+		MaxRetryAttempts: 4,
+		RetrySchedule:    []string{"24h", "72h"}, // need 3, got 2
+	})
+	if err == nil {
+		t.Error("UpsertPolicyTx must reject an under-length retry_schedule exactly like UpsertPolicy (a mismatched recipe must fail at instantiate-time, not stall a campaign at retry-time)")
+	}
+
+	// A valid recipe-shaped policy (the embedded recipes' 4/4 shape) still
+	// persists, and the shared normalize applies the same defaults.
+	p, err := svc.UpsertPolicyTx(ctx, nil, "t1", domain.DunningPolicy{
+		Name:          "Good Recipe",
+		Enabled:       true,
+		RetrySchedule: []string{"24h", "72h", "168h", "336h"},
+		FinalAction:   domain.DunningActionPause,
+		// MaxRetryAttempts / GracePeriodDays unset → shared defaults (3 / 3).
+	})
+	if err != nil {
+		t.Fatalf("valid recipe policy rejected: %v", err)
+	}
+	if p.MaxRetryAttempts != 3 || p.GracePeriodDays != 3 {
+		t.Errorf("tx path must apply the same defaults: max=%d grace=%d, want 3/3", p.MaxRetryAttempts, p.GracePeriodDays)
+	}
+}
+
 // stubClockResolver returns a fixed time per invoice ID — lets tests
 // pin the simulated "now" deterministically. Implements clock.Resolver
 // (the customer / subscription methods are unused by dunning tests but

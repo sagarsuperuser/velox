@@ -993,6 +993,35 @@ func (s *Service) CountCustomersOnPolicy(ctx context.Context, tenantID, policyID
 // (a feedback_no_silent_fallbacks violation; the pre-ADR-036 runtime
 // fallback `idx >= len(retryIntervals)` was removed alongside this).
 func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
+	policy, err := normalizeAndValidatePolicy(policy)
+	if err != nil {
+		return domain.DunningPolicy{}, err
+	}
+	return s.store.UpsertPolicy(ctx, tenantID, policy)
+}
+
+// UpsertPolicyTx is the tx-aware upsert used by the recipe-instantiate path.
+// It runs the SAME normalize+validate as UpsertPolicy — the recipe schema layer
+// validates only final_action (recipe/parse.go), NOT the schedule-length
+// invariant, so skipping validation here let a mismatched recipe (max_retries
+// exceeding its intervals_hours count) persist and stall that campaign at
+// retry-time in a background tick ("retry_schedule index out of bounds")
+// instead of failing loudly at instantiate-time. One validation chokepoint for
+// every writer; a policy the API path would reject must never enter via a
+// recipe. (The pre-fix comment claiming the recipe layer "already validated"
+// was wrong for this invariant.)
+func (s *Service) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
+	policy, err := normalizeAndValidatePolicy(policy)
+	if err != nil {
+		return domain.DunningPolicy{}, err
+	}
+	return s.store.UpsertPolicyTx(ctx, tx, tenantID, policy)
+}
+
+// normalizeAndValidatePolicy applies the save-time defaults and enforces the
+// policy invariants. The single chokepoint shared by UpsertPolicy and
+// UpsertPolicyTx so no writer can persist a policy another path would reject.
+func normalizeAndValidatePolicy(policy domain.DunningPolicy) (domain.DunningPolicy, error) {
 	if policy.MaxRetryAttempts <= 0 {
 		policy.MaxRetryAttempts = 3
 	}
@@ -1034,14 +1063,7 @@ func (s *Service) UpsertPolicy(ctx context.Context, tenantID string, policy doma
 			fmt.Sprintf("max_retry_attempts (%d) requires at least %d retry_schedule entries — got %d",
 				policy.MaxRetryAttempts, needed, len(policy.RetrySchedule)))
 	}
-	return s.store.UpsertPolicy(ctx, tenantID, policy)
-}
-
-// UpsertPolicyTx forwards to the store's tx-aware upsert. Validation is
-// skipped here because the recipe template layer already validated against
-// the recipe schema. See pricing.Service tx variants for the same rationale.
-func (s *Service) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, policy domain.DunningPolicy) (domain.DunningPolicy, error) {
-	return s.store.UpsertPolicyTx(ctx, tx, tenantID, policy)
+	return policy, nil
 }
 
 // ListRuns returns dunning runs matching the filter.
