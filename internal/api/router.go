@@ -318,6 +318,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Reconcile async refund outcomes (pending→succeeded/failed) from refund
 	// webhooks onto the credit note — the create-call only sees the initial state.
 	stripeAdapter.SetRefundStatusUpdater(creditNoteSvc)
+	// Resolve an active dunning run promptly when a card payment settles (the
+	// background-settle paths already resolve via the engine; this closes the
+	// card-success symmetry — #317 follow-up). dunningSvc implements ResolveByInvoice.
+	stripeAdapter.SetDunningResolver(dunningSvc)
 
 	// Wire payment retrier now that stripeAdapter exists
 	dunningSvc.SetRetrier(&paymentRetrierAdapter{

@@ -2,11 +2,80 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
+
+// recordingDunningResolver records ResolveByInvoice calls (and can inject an error)
+// so the card-success dunning-resolve path can be asserted.
+type dunningResolveCall struct {
+	invoiceID  string
+	resolution domain.DunningResolution
+}
+
+type recordingDunningResolver struct {
+	calls []dunningResolveCall
+	err   error
+}
+
+func (r *recordingDunningResolver) ResolveByInvoice(_ context.Context, _, invoiceID string, resolution domain.DunningResolution) error {
+	r.calls = append(r.calls, dunningResolveCall{invoiceID, resolution})
+	return r.err
+}
+
+// TestSettleSucceeded_ResolvesDunningRun locks the #317 card-success symmetry: when
+// a card payment settles a finalized invoice, any active dunning run is resolved
+// (payment_recovered) IMMEDIATELY — not left active until the dunning sweep's
+// paid-pre-check floor catches it on the next tick.
+func TestSettleSucceeded_ResolvesDunningRun(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentProcessing, StripePaymentIntentID: "pi_abc",
+	}
+	invoices.byPI["pi_abc"] = "inv_1"
+	resolver := &recordingDunningResolver{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+	s.SetDunningResolver(resolver)
+
+	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", SourceWebhook); err != nil {
+		t.Fatalf("SettleSucceeded: %v", err)
+	}
+	if len(resolver.calls) != 1 {
+		t.Fatalf("ResolveByInvoice calls: got %d, want 1 (a card success must resolve the active dunning run)", len(resolver.calls))
+	}
+	if resolver.calls[0].invoiceID != "inv_1" {
+		t.Errorf("resolved invoice: got %q, want inv_1", resolver.calls[0].invoiceID)
+	}
+	if resolver.calls[0].resolution != domain.ResolutionPaymentRecovered {
+		t.Errorf("resolution: got %q, want %q", resolver.calls[0].resolution, domain.ResolutionPaymentRecovered)
+	}
+}
+
+// TestSettleSucceeded_ResolverErrorDoesNotFailSettle: the resolve is best-effort —
+// a resolver failure must NOT fail the settle (the dunning sweep's paid-pre-check
+// floor still resolves the run on the next tick).
+func TestSettleSucceeded_ResolverErrorDoesNotFailSettle(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", Status: domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentProcessing, StripePaymentIntentID: "pi_abc",
+	}
+	invoices.byPI["pi_abc"] = "inv_1"
+	resolver := &recordingDunningResolver{err: errors.New("dunning store blip")}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+	s.SetDunningResolver(resolver)
+
+	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", SourceWebhook); err != nil {
+		t.Fatalf("SettleSucceeded must succeed even when the resolver errors (best-effort): %v", err)
+	}
+	if invoices.invoices["inv_1"].Status != domain.InvoicePaid {
+		t.Error("invoice must still be marked paid despite the resolver error")
+	}
+}
 
 // The webhook tests (stripe_test.go) already pin the primitive via the webhook
 // entry point. These exercise it DIRECTLY — calling SettleSucceeded /

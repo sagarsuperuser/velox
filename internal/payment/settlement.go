@@ -86,6 +86,25 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		"source", source,
 	)
 
+	// Resolve any active dunning run for this now-paid invoice — symmetric with the
+	// engine's background-settle DunningResolver (#317). A card success should clear
+	// the "in dunning" state promptly instead of waiting for the dunning sweep's
+	// paid-pre-check floor to catch it on the next tick. Best-effort + nil-tolerant
+	// (narrow tests) + idempotent (no-op when there is no active run); on failure the
+	// floor still resolves it, so log and continue. Runs in the invoice-bound ctx
+	// (line above) so it stamps simulated time on clock-pinned invoices.
+	//
+	// Exactly-once: dunning's resolveRunNow CASes the resolve, so this and
+	// processRun's own resolve on a synchronous retry-success emit ONE
+	// dunning.resolved. processRun persists the attempt count BEFORE the charge, so a
+	// resolver firing synchronously here re-reads the FULL attempt_count (not one low).
+	if s.dunningResolver != nil {
+		if err := s.dunningResolver.ResolveByInvoice(ctx, tenantID, inv.ID, domain.ResolutionPaymentRecovered); err != nil {
+			slog.Warn("payment succeeded: resolve dunning run failed; the dunning sweep's paid-pre-check floor will resolve it on the next tick",
+				"invoice_id", inv.ID, "error", err)
+		}
+	}
+
 	// DURABILITY TIERING (2026-06-22 fix). The consistency-critical events —
 	// invoice.paid AND payment.succeeded — are now BOTH enqueued INSIDE
 	// MarkPaidCardSettlementTransition's tx (invoice/postgres.go), so they are

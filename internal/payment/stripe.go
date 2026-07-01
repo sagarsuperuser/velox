@@ -28,6 +28,16 @@ type DunningStarter interface {
 	StartDunning(ctx context.Context, tenantID string, invoiceID, customerID string, failureAt time.Time) (domain.InvoiceDunningRun, error)
 }
 
+// DunningResolver closes an active dunning run when a card payment settles —
+// symmetric with the engine's DunningResolver for background settles (credits /
+// threshold / auto-charge, #317). Optional; nil = skip (the dunning sweep's
+// paid-pre-check floor still resolves the run on the next tick). Wire via
+// SetDunningResolver. ResolveByInvoice no-ops when there is no active run, so it
+// is safe to call on every card success.
+type DunningResolver interface {
+	ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error
+}
+
 // CardDetails holds card info fetched from Stripe for display.
 type CardDetails struct {
 	PaymentMethodID string
@@ -79,6 +89,7 @@ type Stripe struct {
 	invoices           InvoiceUpdater
 	webhooks           WebhookStore
 	dunning            DunningStarter
+	dunningResolver    DunningResolver
 	paymentSetups      PaymentSetupStore
 	cardFetcher        CardFetcher
 	events             domain.EventDispatcher
@@ -211,6 +222,12 @@ func NewStripe(client StripeClient, invoices InvoiceUpdater, webhooks WebhookSto
 // SetCardFetcher configures card detail fetching from Stripe.
 func (s *Stripe) SetCardFetcher(cf CardFetcher) {
 	s.cardFetcher = cf
+}
+
+// SetDunningResolver wires the resolver that closes an active dunning run when a
+// card payment settles (SettleSucceeded). See the DunningResolver doc-comment.
+func (s *Stripe) SetDunningResolver(d DunningResolver) {
+	s.dunningResolver = d
 }
 
 // SetEmailReceipt configures payment receipt email sending.
