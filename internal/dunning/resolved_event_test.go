@@ -32,6 +32,81 @@ func (c *captureDispatcher) firstOf(eventType string) (map[string]any, bool) {
 	return nil, false
 }
 
+func (c *captureDispatcher) countOf(eventType string) int {
+	n := 0
+	for _, e := range c.events {
+		if e.eventType == eventType {
+			n++
+		}
+	}
+	return n
+}
+
+// TestResolveRunNow_Idempotent_FiresEventOnce locks the resolve CAS: two resolvers
+// hitting the SAME active run via resolveRunNow — the reported regression, where a
+// card-settle resolve fires just before processRun's own resolve on a synchronous
+// retry-success — must fire dunning.resolved EXACTLY ONCE (one outbound webhook, one
+// resolved timeline row), not double-notify integrators. Calls resolveRunNow
+// directly (not ResolveByInvoice, which pre-guards on GetActiveRunByInvoice) so the
+// CAS itself is what's under test.
+func TestResolveRunNow_Idempotent_FiresEventOnce(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	disp := &captureDispatcher{}
+	svc.SetEventDispatcher(disp)
+	ctx := context.Background()
+
+	run, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", time.Now())
+	if err != nil {
+		t.Fatalf("StartDunning: %v", err)
+	}
+
+	// Resolver #1 wins the CAS and fires the event.
+	if _, err := svc.resolveRunNow(ctx, "t1", run, domain.ResolutionPaymentRecovered, "payment_recovered"); err != nil {
+		t.Fatalf("resolve #1: %v", err)
+	}
+	// Resolver #2 passes the SAME stale in-memory run (as processRun does — its copy
+	// is still State=active); the CAS must make it a no-op, not a second fire.
+	if _, err := svc.resolveRunNow(ctx, "t1", run, domain.ResolutionPaymentRecovered, "payment_recovered"); err != nil {
+		t.Fatalf("resolve #2 must no-op, not error: %v", err)
+	}
+
+	if got := disp.countOf(domain.EventDunningResolved); got != 1 {
+		t.Fatalf("dunning.resolved dispatched %d times, want exactly 1 (a double-resolve must fire once)", got)
+	}
+}
+
+// TestServiceResolveRun_Idempotent_AfterAutomatedResolve locks that the operator
+// manual-resolve (Service.ResolveRun) also goes through the resolve CAS: if the run
+// was already resolved by an automated path (a card settle / the scheduler), an
+// operator resolve on the same run does NOT fire a second dunning.resolved.
+func TestServiceResolveRun_Idempotent_AfterAutomatedResolve(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	disp := &captureDispatcher{}
+	svc.SetEventDispatcher(disp)
+	ctx := context.Background()
+
+	run, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", time.Now())
+	if err != nil {
+		t.Fatalf("StartDunning: %v", err)
+	}
+
+	// An automated path (e.g. the card-settle resolve) resolves the run first.
+	if err := svc.ResolveByInvoice(ctx, "t1", "inv_1", domain.ResolutionPaymentRecovered); err != nil {
+		t.Fatalf("automated resolve: %v", err)
+	}
+	// The operator then hits Resolve on the same (now-resolved) run — must no-op, not
+	// fire a second webhook.
+	if _, err := svc.ResolveRun(ctx, "t1", run.ID, domain.ResolutionManuallyResolved); err != nil {
+		t.Fatalf("operator ResolveRun must no-op, not error: %v", err)
+	}
+
+	if got := disp.countOf(domain.EventDunningResolved); got != 1 {
+		t.Fatalf("dunning.resolved dispatched %d times, want exactly 1 (operator resolve after an automated resolve must not double-fire)", got)
+	}
+}
+
 // TestDunningResolved_EventFires covers the medium-severity audit finding:
 // dunning.resolved was advertised in the event catalog but never dispatched,
 // silently dropping the payment-recovery signal that integrators subscribe to.

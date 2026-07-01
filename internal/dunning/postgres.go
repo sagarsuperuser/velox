@@ -474,6 +474,71 @@ func (s *PostgresStore) UpdateRun(ctx context.Context, tenantID string, run doma
 	return run, nil
 }
 
+// ResolveRun applies the run's resolved fields as a CAS — only when the row is not
+// already 'resolved' — and returns whether THIS call won the transition. Same field
+// set as UpdateRun plus the `state <> 'resolved'` guard; the RowsAffected==1 result
+// is the exactly-once gate the service uses to fire the resolve side-effects once.
+func (s *PostgresStore) ResolveRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := clock.Now(ctx)
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoice_dunning_runs SET state=$1, reason=$2, attempt_count=$3,
+			last_attempt_at=$4, next_action_at=$5, paused=$6, resolved_at=$7, resolution=$8, updated_at=$9
+		WHERE id=$10 AND state <> 'resolved'`,
+		run.State, postgres.NullableString(run.Reason), run.AttemptCount,
+		postgres.NullableTime(run.LastAttemptAt), postgres.NullableTime(run.NextActionAt),
+		run.Paused, postgres.NullableTime(run.ResolvedAt), postgres.NullableString(string(run.Resolution)),
+		now, run.ID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// UpdateRunIfActive is UpdateRun guarded on `state <> 'resolved'` — it applies the
+// run's fields only when the row has not been concurrently resolved, returning
+// whether it applied. See the Store interface doc-comment.
+func (s *PostgresStore) UpdateRunIfActive(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := clock.Now(ctx)
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoice_dunning_runs SET state=$1, reason=$2, attempt_count=$3,
+			last_attempt_at=$4, next_action_at=$5, paused=$6, resolved_at=$7, resolution=$8, updated_at=$9
+		WHERE id=$10 AND state <> 'resolved'`,
+		run.State, postgres.NullableString(run.Reason), run.AttemptCount,
+		postgres.NullableTime(run.LastAttemptAt), postgres.NullableTime(run.NextActionAt),
+		run.Paused, postgres.NullableTime(run.ResolvedAt), postgres.NullableString(string(run.Resolution)),
+		now, run.ID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // ListDueRuns — CRON path. ADR-029 Phase 5: dunning runs whose owning
 // invoice's subscription is clock-pinned are excluded; the catchup
 // orchestrator drives those through ListDueRunsForClock against the

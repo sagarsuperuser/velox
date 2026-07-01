@@ -175,6 +175,26 @@ func (m *memStore) UpdateRun(_ context.Context, _ string, run domain.InvoiceDunn
 	return run, nil
 }
 
+// ResolveRun mirrors the store's CAS: apply the resolved fields only if the row is
+// not already resolved, and report whether this call won the transition.
+func (m *memStore) ResolveRun(_ context.Context, _ string, run domain.InvoiceDunningRun) (bool, error) {
+	if existing, ok := m.runs[run.ID]; ok && existing.State == domain.DunningResolved {
+		return false, nil
+	}
+	m.runs[run.ID] = run
+	return true, nil
+}
+
+// UpdateRunIfActive mirrors the guarded update: apply the run's fields only if the row
+// is not already resolved, and report whether it applied.
+func (m *memStore) UpdateRunIfActive(_ context.Context, _ string, run domain.InvoiceDunningRun) (bool, error) {
+	if existing, ok := m.runs[run.ID]; ok && existing.State == domain.DunningResolved {
+		return false, nil
+	}
+	m.runs[run.ID] = run
+	return true, nil
+}
+
 // ListDueRunsForClock — mirrors ListDueRuns but compares against the
 // caller-supplied frozenTime instead of the cron's wall-clock "now."
 // Narrow-test version: ignores the clockID filter since memStore has

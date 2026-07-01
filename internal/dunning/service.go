@@ -466,6 +466,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 
 	// Attempt retry
 	run.AttemptCount++
+	prevLastAttemptAt := run.LastAttemptAt // for the transient-skip rewind below
 	var pinned bool
 	ctx, pinned = clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, InvoiceID: run.InvoiceID})
 	// Anchor this attempt's instant.
@@ -493,6 +494,22 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	}
 	run.LastAttemptAt = &now
 
+	// Record the attempt BEFORE the charge (record-before-effect): a resolver that
+	// fires synchronously inside RetryPayment — a card success that settles this
+	// invoice — re-reads the run from the store, so it must see the FULL
+	// attempt_count; and a crash mid-charge then cannot lose the attempt (we won't
+	// under-retry). The transient-skip branch below rewinds this if the charge never
+	// actually happened. Guarded on state <> 'resolved': if a concurrent settle
+	// resolved this run between the paid-pre-check above and here, don't clobber it
+	// back to active — and don't charge an already-resolved run — just stop.
+	if applied, err := s.store.UpdateRunIfActive(ctx, tenantID, run); err != nil {
+		return fmt.Errorf("persist dunning attempt before retry: %w", err)
+	} else if !applied {
+		slog.Info("dunning retry skipped — run resolved concurrently before the charge",
+			"run_id", run.ID, "invoice_id", run.InvoiceID)
+		return nil
+	}
+
 	// Actually retry the payment
 	retryErr := fmt.Errorf("payment retrier not configured")
 	if s.retrier != nil {
@@ -500,13 +517,26 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	}
 
 	// Transient skip: the Stripe call never happened (circuit breaker open or
-	// timeout before the call). Rewind the attempt count, leave state
-	// untouched in DB, and let the next scheduler tick retry. This is NOT a
-	// dunning attempt — do not tick attempt_count, do not log a failure
-	// event, do not reschedule. A five-minute Stripe outage should not burn
-	// a tenant's entire retry budget.
+	// timeout before the call). This is NOT a dunning attempt — rewind the attempt we
+	// recorded above (count + last_attempt_at) so the run looks as it did before this
+	// tick, don't log a failure event or reschedule, and let the next scheduler tick
+	// retry. A five-minute Stripe outage should not burn a tenant's entire retry
+	// budget.
 	if errors.Is(retryErr, ErrTransientSkip) {
 		run.AttemptCount--
+		run.LastAttemptAt = prevLastAttemptAt
+		// GUARDED rewind. ErrTransientSkip also covers the ambiguous
+		// PI-may-have-succeeded outcome (client saw a 5xx/timeout but the charge
+		// actually went through): its webhook may have resolved this run during the
+		// charge window. UpdateRunIfActive no-ops on a resolved run, so we never
+		// clobber that resolve back to active (which would re-fire dunning.resolved).
+		// A failed rewind on a still-active run leaves the count one high — the SAFE
+		// direction: the exhaustion gate uses `>=`, so an over-count can only end a
+		// retry cycle early, never over-retry.
+		if _, err := s.store.UpdateRunIfActive(ctx, tenantID, run); err != nil {
+			slog.Warn("dunning transient-skip: failed to rewind the pre-charge attempt persist",
+				"run_id", run.ID, "invoice_id", run.InvoiceID, "error", err)
+		}
 		slog.Info("dunning retry skipped — upstream transient (breaker/timeout)",
 			"run_id", run.ID, "invoice_id", run.InvoiceID)
 		return nil
@@ -597,8 +627,13 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		run.NextActionAt = nil
 	}
 
-	if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
+	if applied, err := s.store.UpdateRunIfActive(ctx, tenantID, run); err != nil {
 		return err
+	} else if !applied {
+		// Concurrently resolved during the failed-charge window (a non-charge settle
+		// such as an operator resolve or credit-cover sweep) — don't reschedule or
+		// exhaust a resolved run, and don't clobber the resolve back to active.
+		return nil
 	}
 
 	// Check if exhausted after this attempt. Pass the simulated instant
@@ -624,6 +659,28 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 	now := firedAt
 	if now.IsZero() {
 		now = s.clock.Now(ctx)
+	}
+
+	// Late paid re-check — the terminal final_action (cancel_subscription in
+	// particular) is IRREVERSIBLE, and the tick-start paid-pre-check goes stale
+	// across the retry's Stripe round-trip: an invoice that settled out-of-band
+	// mid-tick would otherwise cancel a paying customer's subscription here. Re-
+	// read invoice status as late as possible and, if it is now terminal, resolve
+	// the run (CAS-safe) instead of firing the terminal action. Same STATUS gate
+	// as the tick-start check; on a fetch error fall through (a DB blip must not
+	// strand an exhausted run — the guarded writes below still protect a resolve
+	// that lands during the action itself).
+	if s.invoiceGet != nil {
+		if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil {
+			switch {
+			case inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded:
+				_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionPaymentRecovered, "payment_recovered")
+				return rerr
+			case inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible:
+				_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionManuallyResolved, "invoice_"+string(inv.Status))
+				return rerr
+			}
+		}
 	}
 
 	// actionFailed records whether the terminal final_action mover errored.
@@ -709,8 +766,15 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		run.ResolvedAt = nil
 		retryAt := now.Add(24 * time.Hour)
 		run.NextActionAt = &retryAt
-		if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
+		// Guarded: a settle may have resolved this run during the failed terminal
+		// action. Don't clobber that resolve back to active — the invoice is paid,
+		// so resolved is the correct terminal state and no re-attempt is needed.
+		if applied, err := s.store.UpdateRunIfActive(ctx, tenantID, run); err != nil {
 			return err
+		} else if !applied {
+			slog.Info("dunning final_action failed but run resolved concurrently — leaving it resolved",
+				"run_id", run.ID, "invoice_id", run.InvoiceID)
+			return nil
 		}
 		slog.Warn("dunning final_action failed; run kept active for re-attempt",
 			"run_id", run.ID, "invoice_id", run.InvoiceID, "final_action", policy.FinalAction)
@@ -722,6 +786,19 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 	run.ResolvedAt = &now
 	run.NextActionAt = nil
 
+	// Guarded escalation write. If a settle resolved this run during the
+	// (successful) terminal action, don't clobber resolved→escalated or emit a
+	// contradictory dunning.escalated on top of the settle's dunning.resolved.
+	// The timeline row, escalation email, and webhook below fire only when THIS
+	// call actually escalated the run.
+	if applied, err := s.store.UpdateRunIfActive(ctx, tenantID, run); err != nil {
+		return err
+	} else if !applied {
+		slog.Info("dunning exhaust: run resolved concurrently during the terminal action — not escalating",
+			"run_id", run.ID, "invoice_id", run.InvoiceID)
+		return nil
+	}
+
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:        run.ID,
 		InvoiceID:    run.InvoiceID,
@@ -731,10 +808,6 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		Reason:       string(policy.FinalAction),
 		CreatedAt:    now,
 	})
-
-	if _, err := s.store.UpdateRun(ctx, tenantID, run); err != nil {
-		return err
-	}
 
 	slog.Info("dunning exhausted",
 		"run_id", run.ID,
@@ -784,33 +857,13 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 		return domain.InvoiceDunningRun{}, err
 	}
 
-	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
-	now := s.clock.Now(ctx)
-	run.State = domain.DunningResolved
-	run.Resolution = resolution
-	run.ResolvedAt = &now
-	run.NextActionAt = nil
-
-	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
-		RunID:     run.ID,
-		InvoiceID: run.InvoiceID,
-		EventType: domain.DunningEventResolved,
-		State:     domain.DunningResolved,
-		Reason:    string(resolution),
-		CreatedAt: now,
-	})
-
-	updated, err := s.store.UpdateRun(ctx, tenantID, run)
+	// Resolve via the shared CAS path so an operator resolve racing an automated
+	// resolver (a card settle or the scheduler) fires dunning.resolved exactly once —
+	// the CAS winner owns the timeline row + the outbound webhook.
+	updated, err := s.resolveRunNow(ctx, tenantID, run, resolution, string(resolution))
 	if err != nil {
 		return domain.InvoiceDunningRun{}, err
 	}
-
-	s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
-		"run_id":      updated.ID,
-		"invoice_id":  updated.InvoiceID,
-		"customer_id": updated.CustomerID,
-		"resolution":  string(updated.Resolution),
-	})
 
 	if resolution == domain.ResolutionInvoiceNotCollectible && s.invoiceUncollect != nil {
 		if err := s.invoiceUncollect.MarkUncollectible(ctx, tenantID, run.InvoiceID); err != nil {
@@ -841,6 +894,26 @@ func (s *Service) resolveRunNow(ctx context.Context, tenantID string, run domain
 	run.ResolvedAt = &now
 	run.NextActionAt = nil
 
+	// CAS the resolve transition FIRST so the side-effects below fire exactly once.
+	// If another path already resolved this run — e.g. the card-settle resolve firing
+	// just before processRun's own resolve on a synchronous retry-success — this call
+	// loses the CAS and no-ops, so integrators get exactly one dunning.resolved and
+	// the timeline shows one resolved row per recovery.
+	won, err := s.store.ResolveRun(ctx, tenantID, run)
+	if err != nil {
+		return domain.InvoiceDunningRun{}, err
+	}
+	if !won {
+		// Already resolved by another path — return the ACTUAL persisted state so a
+		// caller (Service.ResolveRun) doesn't report a resolution it didn't apply.
+		if current, gerr := s.store.GetRun(ctx, tenantID, run.ID); gerr == nil {
+			return current, nil
+		}
+		return run, nil
+	}
+
+	// Only the CAS winner writes the (non-idempotent) resolved timeline row + fires
+	// the outbound dunning.resolved webhook.
 	_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 		RunID:        run.ID,
 		InvoiceID:    run.InvoiceID,
@@ -851,18 +924,13 @@ func (s *Service) resolveRunNow(ctx context.Context, tenantID string, run domain
 		CreatedAt:    now,
 	})
 
-	updated, err := s.store.UpdateRun(ctx, tenantID, run)
-	if err != nil {
-		return domain.InvoiceDunningRun{}, err
-	}
-
 	s.fireEvent(ctx, tenantID, domain.EventDunningResolved, map[string]any{
 		"run_id":      run.ID,
 		"invoice_id":  run.InvoiceID,
 		"customer_id": run.CustomerID,
 		"resolution":  string(run.Resolution),
 	})
-	return updated, nil
+	return run, nil
 }
 
 // ResolveByInvoice resolves any active dunning run for the given invoice.

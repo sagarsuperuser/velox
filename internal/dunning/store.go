@@ -25,6 +25,21 @@ type Store interface {
 	GetRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
 	ListRuns(ctx context.Context, filter RunListFilter) ([]domain.InvoiceDunningRun, int, error)
 	UpdateRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (domain.InvoiceDunningRun, error)
+	// ResolveRun is the exactly-once resolve transition: it flips the run to its
+	// resolved fields ONLY if it is not already resolved (CAS on
+	// `state <> 'resolved'`) and reports whether THIS call won the transition.
+	// The caller fires the non-idempotent side-effects (the resolved timeline row +
+	// the dunning.resolved webhook) only on a win, so two resolvers racing the same
+	// run (e.g. a card-settle resolve and processRun's own resolve) emit exactly one
+	// dunning.resolved per recovery.
+	ResolveRun(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (bool, error)
+	// UpdateRunIfActive is UpdateRun guarded on `state <> 'resolved'`: it writes the
+	// run's fields only if the row has NOT been concurrently resolved, and reports
+	// whether it applied. processRun's retry-path writes (the pre-charge attempt
+	// persist and the transient-skip rewind) use it so a concurrent card-settle
+	// webhook resolve landing during the up-to-15s charge window is never clobbered
+	// back to active — preserving the exactly-once dunning.resolved contract.
+	UpdateRunIfActive(ctx context.Context, tenantID string, run domain.InvoiceDunningRun) (bool, error)
 	ListDueRuns(ctx context.Context, tenantID string, dueBefore time.Time, limit int) ([]domain.InvoiceDunningRun, error)
 
 	// ListDueRunsForClock is the catchup-path counterpart to ListDueRuns.
