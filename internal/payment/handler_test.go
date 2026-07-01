@@ -133,6 +133,49 @@ func TestWebhookHandler_SuccessfulPayment(t *testing.T) {
 	}
 }
 
+// TestWebhookHandler_OversizedBodyIs413NotSignatureFailure locks the size
+// diagnostic: a legitimate (validly signed) event whose body exceeds
+// maxWebhookBodySize must be rejected as 413 payload_too_large — NOT truncated
+// at the cap, HMAC-failed over the truncated bytes, and died as a misleading
+// 400 "invalid signature" (the pre-fix behavior, which left the operator
+// chasing a phantom signing-secret problem while Stripe retried for ~3 days
+// and then dropped the event permanently).
+func TestWebhookHandler_OversizedBodyIs413NotSignatureFailure(t *testing.T) {
+	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
+	secret := "whsec_size_test"
+	resolver := &stubResolver{rows: map[string]tenantstripe.EndpointLookup{
+		"vlx_spc_abc": {ID: "vlx_spc_abc", TenantID: "t1", Livemode: true, WebhookSecret: secret},
+	}}
+	handler := NewHandler(stripeAdapter, resolver)
+
+	// A valid event inflated past the cap by a padding field, signed over the
+	// FULL body — so the only thing wrong with this request is its size.
+	event := map[string]any{
+		"id":       "evt_huge",
+		"type":     "payment_intent.succeeded",
+		"created":  time.Now().Unix(),
+		"livemode": true,
+		"padding":  strings.Repeat("x", maxWebhookBodySize),
+		"data":     map[string]any{"object": map[string]any{"id": "pi_huge", "object": "payment_intent"}},
+	}
+	body, _ := json.Marshal(event)
+	if len(body) <= maxWebhookBodySize {
+		t.Fatalf("fixture bug: body is %d bytes, need > %d", len(body), maxWebhookBodySize)
+	}
+
+	req := httptest.NewRequest("POST", "/stripe/vlx_spc_abc", strings.NewReader(string(body)))
+	req.Header.Set("Stripe-Signature", signStripePayload(body, secret))
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized signed body: got %d (%s), want 413 — a truncation surfacing as a signature failure is the misleading-diagnostic bug", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "payload_too_large") {
+		t.Errorf("response must carry the payload_too_large code so the failure is attributable to size, got: %s", rec.Body.String())
+	}
+}
+
 func TestWebhookHandler_NoVeloxMetadata(t *testing.T) {
 	stripeAdapter := NewStripe(nil, newMockInvoiceUpdaterH(), newMockWebhookStoreHandler(), nil)
 	secret := "whsec_foreign_test"
