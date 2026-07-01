@@ -263,15 +263,18 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 	// inside the operator's Advance window for clock-pinned invoices. See
 	// simulatedFailureAt.
 	//
-	// KNOWN GAP (deferred — docs/adr/README.md "Open follow-ups"): this runs
-	// POST-COMMIT, behind the firstForThisPI gate that MarkPaymentFailedReporting
-	// Transition already committed above. So a crash here (or a transient
-	// StartDunning error) is NOT recovered: a same-PI redelivery returns
-	// firstForThisPI=false and skips this, and the reconciler only sweeps
-	// unknown/processing, never 'failed'. The 0085 UNIQUE guards against DOUBLE-
-	// start, NOT never-start — so dunning genuinely won't auto-start in that
-	// window (operator can still start it from the attention banner). The fix is
-	// a reconciler sweep for 'failed' invoices with no dunning run.
+	// Best-effort. StartDunning runs POST-COMMIT (behind the firstForThisPI gate
+	// that MarkPaymentFailedReportingTransition already committed above), so a crash
+	// here — or an exhausted StartDunning retry — leaves the invoice 'failed' with
+	// no run, and a same-PI redelivery skips this (firstForThisPI=false). That
+	// window is RECOVERED by the dunning_backfill reconciler
+	// (billing.Engine.EnrollFailedWithoutDunning): it re-drives the idempotent
+	// StartDunning for finalized 'failed' invoices that have no run. The 0085 UNIQUE
+	// (tenant_id, invoice_id) makes this inline call and the sweep exactly-once per
+	// invoice, so the backstop can never double-start. NOT folded into the fail-tx:
+	// that would hold the invoice FOR UPDATE across StartDunning's ~600ms retry
+	// sleep + a cross-domain policy read on every failed charge (see the design
+	// panel — dunning-start is a schedule, not a money artifact).
 	if s.dunning != nil {
 		failureAt := simulatedFailureAt(inv)
 		if err := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {

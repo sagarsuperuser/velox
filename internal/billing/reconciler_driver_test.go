@@ -75,13 +75,15 @@ func TestScheduler_ReconcilerOrder(t *testing.T) {
 		paymentReconciler: &fakePaymentReconciler{order: &order},
 		taxRetrier:        &fakeTaxRetrier{order: &order},
 		clawbackRetrier:   &fakeClawbackRetrier{order: &order},
+		engine:            &Engine{}, // wires dunning_backfill (Name() only; never Reconcile'd here)
 	}
 
 	var got []string
 	for _, r := range s.reconcilers() {
 		got = append(got, r.Name())
 	}
-	want := []string{"payment_unknown", "tax_retry", "tax_commit", "tax_reversal", "clawback_issue", "cn_tax_reversal"}
+	// dunning_backfill runs LAST — an order-independent backstop on already-failed invoices.
+	want := []string{"payment_unknown", "tax_retry", "tax_commit", "tax_reversal", "clawback_issue", "cn_tax_reversal", "dunning_backfill"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("reconciler order:\n got %v\nwant %v", got, want)
 	}
