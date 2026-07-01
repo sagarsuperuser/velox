@@ -228,8 +228,11 @@ func TestSettleFailed_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) {
 	if got := invoices.invoices["inv_1"].PaymentStatus; got != domain.PaymentFailed {
 		t.Fatalf("invoice not marked failed: payment_status=%q", got)
 	}
-	if got := events.byType[domain.EventPaymentFailed]; got != 1 {
-		t.Errorf("payment.failed fired %d times, want exactly 1 (concurrent redelivery must not double-fire the webhook)", got)
+	if got := invoices.failedEventEnqueues; got != 1 {
+		t.Errorf("payment.failed enqueued %d times, want exactly 1 (concurrent redelivery must not double-fire the webhook)", got)
+	}
+	if got := events.byType[domain.EventPaymentFailed]; got != 0 {
+		t.Errorf("payment.failed dispatched post-commit %d times, want 0 (it is enqueued IN-TX by the store; a post-commit fire would double-emit)", got)
 	}
 	if failedEmail.sends != 1 {
 		t.Errorf("payment-failed email enqueued %d times, want exactly 1 (no double-notify)", failedEmail.sends)
@@ -266,8 +269,8 @@ func TestSettleFailed_InlinePresetThenWebhookStillNotifiesOnce(t *testing.T) {
 	if err := s.SettleFailed(context.Background(), "t1", invoices.invoices["inv_1"], "pi_y", "Your card was declined.", false, SourceWebhook); err != nil {
 		t.Fatalf("SettleFailed: %v", err)
 	}
-	if got := events.byType[domain.EventPaymentFailed]; got != 1 {
-		t.Errorf("payment.failed fired %d times after inline preset, want 1 (status was already failed but notifications had not fired)", got)
+	if got := invoices.failedEventEnqueues; got != 1 {
+		t.Errorf("payment.failed enqueued %d times after inline preset, want 1 (status was already failed but notifications had not fired)", got)
 	}
 	if failedEmail.sends != 1 {
 		t.Errorf("payment-failed email enqueued %d times, want 1", failedEmail.sends)
@@ -297,8 +300,8 @@ func TestSettleFailed_NewRetryPIFiresAgain(t *testing.T) {
 			t.Fatalf("SettleFailed %s: %v", pi, err)
 		}
 	}
-	if got := events.byType[domain.EventPaymentFailed]; got != 2 {
-		t.Errorf("payment.failed fired %d times across two distinct PIs, want 2 (a new retry failure is a fresh event)", got)
+	if got := invoices.failedEventEnqueues; got != 2 {
+		t.Errorf("payment.failed enqueued %d times across two distinct PIs, want 2 (a new retry failure is a fresh event)", got)
 	}
 }
 

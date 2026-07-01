@@ -128,8 +128,10 @@ recorded here as **reasons, not accidents**:
   mutation-driven cool-off starvation is ever observed.
 - **`payment.failed` event emitted in the fail-tx** via the transactional outbox
   (symmetric to `payment.succeeded` in `MarkPaidCardSettlementTransition`; the
-  failed-*email* stays post-commit by design, like the receipt email). ~30–50 LOC,
-  atomic-appropriate; the one genuinely-first-practice slice adjacent to this area.
+  failed-*email* stays post-commit by design, like the receipt email). The one
+  genuinely-first-practice slice adjacent to this area — **built immediately after
+  this ADR** (enqueued inside `MarkPaymentFailedReportingTransition`, gated on
+  `firstForThisPI`).
 - **ADR-062 obligation queue.** When it lands, its drainer becomes the single
   creator and removing the last inline trigger is nearly free — at which point
   revisit whether the instant-feedback / co-instant-audit tradeoffs still justify
