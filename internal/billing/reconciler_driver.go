@@ -72,6 +72,16 @@ func (s *Scheduler) reconcilers() []Reconciler {
 			reconcilerFunc{"cn_tax_reversal", s.clawbackRetrier.RetryPendingCreditNoteTaxReversal},
 		)
 	}
+	if s.engine != nil {
+		// dunning_backfill runs LAST — an order-independent backstop. The invoice
+		// is already terminally failed, so no earlier sweep touches it; it re-drives
+		// the idempotent StartDunning for invoices SettleFailed left failed-but-
+		// undunned (post-commit crash / exhausted retry). Kept out of the hot fail
+		// path deliberately: folding StartDunning into the fail-tx would hold the
+		// invoice FOR UPDATE across StartDunning's ~600ms retry sleep + a cross-
+		// domain policy read (see the design panel for SettleFailed).
+		rs = append(rs, reconcilerFunc{"dunning_backfill", s.engine.EnrollFailedWithoutDunning})
+	}
 	return rs
 }
 

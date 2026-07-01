@@ -770,6 +770,23 @@ func (m *mockInvoices) ListAutoChargePending(_ context.Context, limit int) ([]do
 	return result, nil
 }
 
+// ListFailedWithoutDunningRun models only the invoice-level predicates; the
+// "no dunning run" NOT EXISTS and clock-pinned exclusion are DB concerns the
+// fake can't see (the real coverage is the real-Postgres backfill test).
+func (m *mockInvoices) ListFailedWithoutDunningRun(_ context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	var result []domain.Invoice
+	for _, inv := range m.invoices {
+		if inv.PaymentStatus == domain.PaymentFailed && inv.Status == domain.InvoiceFinalized &&
+			inv.AmountDueCents > 0 && inv.UpdatedAt.Before(olderThan) {
+			result = append(result, inv)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
 func (m *mockInvoices) SetTaxTransaction(_ context.Context, _, id string, taxTransactionID string) error {
 	for i, inv := range m.invoices {
 		if inv.ID == id {

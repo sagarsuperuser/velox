@@ -172,6 +172,10 @@ func (a *invoiceStoreAdapter) ListAutoChargePending(ctx context.Context, limit i
 	return a.store.ListAutoChargePending(ctx, limit)
 }
 
+func (a *invoiceStoreAdapter) ListFailedWithoutDunningRun(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	return a.store.ListFailedWithoutDunningRun(ctx, olderThan, limit)
+}
+
 func (a *invoiceStoreAdapter) ListAutoChargePendingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Invoice, error) {
 	return a.store.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
 }

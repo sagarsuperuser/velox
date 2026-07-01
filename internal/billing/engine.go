@@ -498,6 +498,11 @@ type InvoiceWriter interface {
 	// charge attempts only fire on operator Advance, never on the
 	// wall-clock cron tick, mirroring Stripe Test Clocks.
 	ListAutoChargePendingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Invoice, error)
+	// ListFailedWithoutDunningRun powers the dunning_backfill reconciler:
+	// finalized, still-owed invoices in payment_status='failed' with NO
+	// dunning run — the SettleFailed post-commit crash / exhausted-retry
+	// window. olderThan is the cool-off.
+	ListFailedWithoutDunningRun(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error)
 	// SetTaxTransaction persists the upstream provider's tax_transaction
 	// reference (Stripe: tx_xxx) after CommitTax succeeds. Required for
 	// later reversal when a credit note is issued against the invoice.
@@ -4774,6 +4779,37 @@ func (e *Engine) EnrollStalledForDunningForClock(ctx context.Context, tenantID, 
 	pending, err := e.invoices.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list stalled auto-charge for dunning (clock %s): %w", clockID, err)}
+	}
+	return e.enrollStalledForDunning(ctx, pending)
+}
+
+// failedDunningBackfillCoolOff lets the inline SettleFailed StartDunning win the
+// common case before the backfill sweep considers an invoice — so the sweep stays
+// a pure backstop for the crash / exhausted-retry window, mirroring the payment
+// reconciler's unknown/processing cool-offs.
+const failedDunningBackfillCoolOff = 10 * time.Minute
+
+// EnrollFailedWithoutDunning is the dunning_backfill reconciler: it recovers
+// finalized invoices left in payment_status='failed' with NO dunning run.
+// SettleFailed starts dunning POST-COMMIT (best-effort, behind the firstForThisPI
+// gate), so a crash or an exhausted StartDunning retry in that window leaves the
+// invoice failed-but-undunned, and a same-PI webhook redelivery skips the restart
+// (firstForThisPI=false). This sweep re-drives the idempotent StartDunning so the
+// invoice still reaches a terminal instead of sitting failed forever. CRON /
+// livemode path; clock-pinned invoices are excluded by the store query and dunned
+// inline during Advance. Shares enrollStalledForDunning's body, so it inherits the
+// adapter's "dunning disabled" swallow and dunningFailureAt simulated-time anchoring.
+func (e *Engine) EnrollFailedWithoutDunning(ctx context.Context, limit int) (int, []error) {
+	if e.dunningStarter == nil {
+		return 0, nil
+	}
+	// Cool-off cutoff. The sweep is livemode-only (clock-pinned rows are excluded
+	// by the store query), so a real-time cutoff against updated_at is correct and
+	// never touches simulated time.
+	olderThan := time.Now().UTC().Add(-failedDunningBackfillCoolOff) // wall-clock: reconciler is livemode-only; clock-pinned rows are excluded by the query
+	pending, err := e.invoices.ListFailedWithoutDunningRun(ctx, olderThan, limit)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list failed-without-dunning for backfill: %w", err)}
 	}
 	return e.enrollStalledForDunning(ctx, pending)
 }

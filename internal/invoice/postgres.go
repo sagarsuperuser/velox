@@ -1618,6 +1618,68 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 	return invoices, rows.Err()
 }
 
+// ListFailedWithoutDunningRun powers the dunning_backfill reconciler: finalized,
+// still-owed invoices in payment_status='failed' that have NO dunning run at all.
+// SettleFailed starts dunning POST-COMMIT (best-effort, behind the firstForThisPI
+// gate), so a crash — or an exhausted StartDunning retry — in that window leaves
+// the invoice failed-but-undunned, and a same-PI webhook redelivery skips the
+// restart (firstForThisPI=false). This sweep hands those invoices back to the
+// idempotent StartDunning so they still reach a terminal.
+//
+// The NOT EXISTS on invoice_dunning_runs is STATE-AGNOSTIC (no state filter):
+// StartDunning is exactly-once per invoice (GetRunByInvoice returns the existing
+// run regardless of state; 0085 UNIQUE is the DB backstop), so an invoice with ANY
+// run — active, escalated, or resolved — must be excluded, else the sweep would
+// re-dun a resolved invoice forever. Clock-pinned invoices are excluded (the
+// wall-clock scheduler must never dun a simulated sub; ADR-029 — their dunning is
+// driven inline during Advance). Cross-tenant sweep (TxBypass); livemode honoured
+// from ctx. olderThan is the cool-off so the inline SettleFailed path wins the
+// common case and this stays a pure backstop.
+func (s *PostgresStore) ListFailedWithoutDunningRun(ctx context.Context, olderThan time.Time, limit int) ([]domain.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.payment_status = 'failed'
+		  AND i.status = 'finalized'
+		  AND i.amount_due_cents > 0
+		  AND i.livemode = $1
+		  AND i.updated_at < $2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM invoice_dunning_runs r WHERE r.invoice_id = i.id
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM subscriptions s
+		    WHERE s.id = i.subscription_id
+		      AND s.test_clock_id IS NOT NULL
+		  )
+		ORDER BY i.updated_at ASC
+		LIMIT $3
+	`, postgres.Livemode(ctx), olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var invoices []domain.Invoice
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, inv)
+	}
+	return invoices, rows.Err()
+}
+
 // ListAutoChargePendingForClock is the catchup-path counterpart to
 // ListAutoChargePending. Returns invoices whose owning subscription is
 // pinned to the given clock and need auto-charge retry. ADR-029 Phase 1.
