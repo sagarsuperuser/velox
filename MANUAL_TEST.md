@@ -270,6 +270,7 @@ Single tenant-wide timezone used for date input and timestamp display
 (UTC for storage and billing math). Set in Settings → Account → Timezone.
 
 - [ ] Change timezone to `Asia/Kolkata` or `America/Los_Angeles` → dashboard timestamps shift, zone abbreviation appended (e.g. `2:14 PM PDT`).
+- [ ] **Settings saves are validated and merge-safe (P8)** — saving `timezone="Mars/Olympus_Mons"` (or `"Local"`), `default_currency="DOGE"`, `invoice_prefix="INV/26"`, or negative net terms → **422** naming the field; a lowercase currency saves as canonical UPPERCASE; `net_payment_terms: 0` saves as Net-0 (due immediately), not silently reset to 30. A partial API body (e.g. only `tax_name`) leaves every unsent setting untouched.
 - [ ] API key expiry / list-page from-to filters interpret civil dates as start/end of day in tenant TZ.
 - [ ] **Subscription billing dates are anchored in the tenant timezone (ADR-058).** Set tenant TZ = `Asia/Kolkata`. Create an anniversary-monthly sub starting the **1st of a month** (e.g. Jun 1, in IST). The first period is **Jun 1 → Jul 1** = **30 days** (a June anniversary), NOT `Jun 1 → Jul 2` / 31 days. A mid-cycle upgrade prorates against the **30-day** cycle.
 - [ ] Verify the SAME result regardless of whether the server runs `TZ=UTC` or `TZ=Asia/Kolkata` — the period and proration denominator must not depend on the host timezone.

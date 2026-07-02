@@ -20,6 +20,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
+var invoicePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,20}$`)
+
 var settingsPhonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 
 // brandColorPattern accepts the lowercase 7-char hex form (#rrggbb). Short
@@ -406,7 +408,27 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
-	var ts domain.TenantSettings
+	// MERGE semantics: decode the body OVER the tenant's current
+	// settings, so a field absent from the JSON keeps its stored value
+	// and an explicitly-present value (including "" / 0) sets it. The
+	// old code decoded into a zero struct — a partial body silently
+	// WIPED every unsent field (an SDK call updating just the tax rate
+	// reset the company address, invoice prefix, and net terms, which
+	// validateSettings then "helpfully" re-defaulted). Get synthesizes
+	// defaults on miss, so the merge base always exists; a Get failure
+	// is a real DB error and must fail the save — writing against an
+	// unknown base would resurrect replace semantics.
+	ts, err := h.store.Get(r.Context(), tenantID)
+	if err != nil {
+		slog.Error("get settings for merge", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+	// The same pre-decode snapshot is the audit diff's honest "before"
+	// (the synthesized defaults for a first-ever save).
+	before := ts
+	haveBefore := h.auditLogger != nil
+
 	if err := json.NewDecoder(r.Body).Decode(&ts); err != nil {
 		respond.BadRequest(w, r, "invalid JSON")
 		return
@@ -416,19 +438,6 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	if err := validateSettings(&ts); err != nil {
 		respond.FromError(w, r, err, "tenant_settings")
 		return
-	}
-
-	// Snapshot the pre-change settings for the field-level audit diff. Get
-	// synthesizes defaults on miss, so a first-ever save diffs against the
-	// defaults the tenant was effectively running on — the honest "before".
-	// A read failure skips the diff (audit falls back to the catch-all row)
-	// rather than blocking the save.
-	var before domain.TenantSettings
-	haveBefore := false
-	if h.auditLogger != nil {
-		if b, err := h.store.Get(r.Context(), tenantID); err == nil {
-			before, haveBefore = b, true
-		}
 	}
 
 	result, err := h.store.Upsert(r.Context(), ts)
@@ -520,15 +529,36 @@ func validateSettings(ts *domain.TenantSettings) error {
 	if ts.InvoicePrefix == "" {
 		ts.InvoicePrefix = "VLX"
 	}
-	if ts.NetPaymentTerms <= 0 {
-		ts.NetPaymentTerms = 30
+	// Net 0 (due immediately) is a legal, industry-standard term — the
+	// old `<= 0 → 30` coercion made it inexpressible. Only negatives
+	// are invalid.
+	if ts.NetPaymentTerms < 0 {
+		return errs.Invalid("net_payment_terms", "cannot be negative (0 = due immediately)")
 	}
 
+	// Canonical UPPERCASE before persisting — ValidateCurrency accepts
+	// any case, and a stored "usd" breaks every currency equality
+	// filter downstream (analytics, dunning; bitten once already).
+	ts.DefaultCurrency = strings.ToUpper(strings.TrimSpace(ts.DefaultCurrency))
 	if err := domain.ValidateCurrency(ts.DefaultCurrency); err != nil {
 		return errs.Invalid("default_currency", err.Error())
 	}
-	if len(ts.InvoicePrefix) > 20 {
-		return errs.Invalid("invoice_prefix", "must be at most 20 characters")
+	// The tenant timezone anchors ALL billing date math (ADR-058); an
+	// unloadable IANA name previously saved fine and then failed at
+	// cycle close, far from the operator's edit. "Local" loads but is
+	// whatever the host happens to run in — not a fixed zone.
+	if ts.Timezone == "Local" {
+		return errs.Invalid("timezone", "must be a fixed IANA zone name (e.g. 'America/New_York', 'UTC'), not 'Local'")
+	}
+	if _, err := time.LoadLocation(ts.Timezone); err != nil {
+		return errs.Invalid("timezone", "must be a valid IANA zone name (e.g. 'America/New_York', 'Asia/Kolkata', 'UTC')")
+	}
+	// The prefix flows verbatim into invoice numbers (INV filenames,
+	// PDF headers, emails) — control chars, slashes, or spaces there
+	// corrupt Content-Disposition filenames and number parsing.
+	ts.InvoicePrefix = strings.TrimSpace(ts.InvoicePrefix)
+	if !invoicePrefixPattern.MatchString(ts.InvoicePrefix) {
+		return errs.Invalid("invoice_prefix", "must be 1-20 characters: letters, digits, and hyphens only")
 	}
 	if ts.NetPaymentTerms > 365 {
 		return errs.Invalid("net_payment_terms", "cannot exceed 365 days")
