@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -75,6 +76,9 @@ type Engine struct {
 	dunningResolver    DunningResolver
 	auditLogger        AuditWriter
 	txRunner           TxRunner
+	// deferredThresholdNotes dedups the crossed-but-deferred loudness
+	// artifact to once per (sub, period) — see noteThresholdDeferred.
+	deferredThresholdNotes sync.Map
 }
 
 // TxRunner runs fn inside one tenant-scoped transaction — the coordinator-tx
