@@ -107,10 +107,34 @@ export default function HostedInvoicePage() {
   const [payingStatus, setPayingStatus] = useState<'idle' | 'creating' | 'redirecting'>('idle')
   const [payError, setPayError] = useState<string | null>(null)
 
-  // Invoice fetch keyed by (token, paidSignal). When Stripe Checkout
-  // redirects back with ?paid=1, the new key forces a refetch so the
-  // status flip from the webhook becomes visible. retry=false so a
-  // genuinely invalid token doesn't pound the public endpoint.
+  // The redirect from Stripe Checkout beats the webhook that flips the
+  // invoice to paid, so with ?paid=1 the page POLLS (3s) until the
+  // payload's payment_status — the authoritative backend signal, no
+  // client-side inference — turns terminal (succeeded or failed).
+  // Capped at 3 minutes: async payment methods can legitimately take
+  // longer, at which point the copy turns honest instead of spinning
+  // forever. Pre-fix the page promised to "update automatically", never
+  // refetched, and left the Pay button live — the direct feeder for
+  // double-charged cards.
+  const POLL_CAP_MS = 3 * 60 * 1000
+  const [pollTimedOut, setPollTimedOut] = useState(false)
+  useEffect(() => {
+    if (!paidSignal) return
+    const t = window.setTimeout(() => setPollTimedOut(true), POLL_CAP_MS)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paidSignal])
+
+  const isPaymentSettling = (d?: HostedInvoicePayload | null) =>
+    !!d &&
+    paidSignal &&
+    d.invoice.status === 'finalized' &&
+    d.invoice.payment_status !== 'succeeded' &&
+    d.invoice.payment_status !== 'failed'
+
+  // Invoice fetch keyed by (token, paidSignal). retry=false so a
+  // genuinely invalid token doesn't pound the public endpoint; the
+  // refetchInterval below handles the settle-poll instead.
   const invoiceQuery = useQuery({
     queryKey: ['public-invoice', token, paidSignal],
     queryFn: async (): Promise<HostedInvoicePayload> => {
@@ -123,6 +147,10 @@ export default function HostedInvoicePage() {
     },
     enabled: !!token,
     retry: false,
+    refetchInterval: (query) => {
+      if (pollTimedOut) return false
+      return isPaymentSettling(query.state.data as HostedInvoicePayload | undefined) ? 3000 : false
+    },
   })
   const data = invoiceQuery.data ?? null
   usePageTitle(data?.invoice?.invoice_number ?? 'Invoice')
@@ -252,10 +280,48 @@ export default function HostedInvoicePage() {
         </div>
       )
     }
-    if (paidSignal && invoice.status === 'finalized') {
+    if (paidSignal && invoice.status === 'finalized' && invoice.payment_status === 'failed') {
+      // Authoritative failure from the backend: the charge did not go
+      // through. Re-enabling Pay is safe — no successful charge exists.
+      return (
+        <div
+          role="alert"
+          className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 px-4 py-3 flex items-start gap-3"
+        >
+          <XCircle size={18} className="text-red-600 dark:text-red-400 mt-0.5 shrink-0" aria-hidden="true" />
+          <div className="text-sm">
+            <p className="font-medium text-red-800 dark:text-red-300">Payment didn't complete</p>
+            <p className="text-red-700/80 dark:text-red-400/80">
+              Your card was not charged. You can try again below.
+            </p>
+          </div>
+        </div>
+      )
+    }
+    if (isPaymentSettling(data) && pollTimedOut) {
+      // Async payment methods can take longer than our poll window.
+      // Honest copy, and the Pay button STAYS hidden — with session
+      // reuse a re-click returns the same Checkout session anyway, and
+      // a live Pay button here is how cards get charged twice.
+      return (
+        <div
+          role="status"
+          className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 px-4 py-3 flex items-start gap-3"
+        >
+          <Loader2 size={18} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" aria-hidden="true" />
+          <div className="text-sm">
+            <p className="font-medium text-amber-800 dark:text-amber-300">Confirmation is taking longer than usual</p>
+            <p className="text-amber-700/80 dark:text-amber-400/80">
+              Your payment is still being confirmed — you will not be charged twice. A receipt email will follow once it completes.
+            </p>
+          </div>
+        </div>
+      )
+    }
+    if (isPaymentSettling(data)) {
       // Stripe Checkout redirected with ?paid=1 but the webhook hasn't
-      // caught up yet. Show a provisional success note so the customer
-      // isn't confused; authoritative state arrives on next refetch.
+      // caught up yet. The page polls every 3s until payment_status
+      // turns terminal.
       return (
         <div
           role="status"
@@ -492,9 +558,14 @@ export default function HostedInvoicePage() {
               </section>
             )}
 
-            {/* Actions */}
+            {/* Actions. Pay is suppressed the whole time a redirect-back
+                payment is settling (including past the poll cap) — a live
+                Pay button during settle is how cards get charged twice.
+                It reappears only on an authoritative payment_status of
+                'failed' (no charge exists) or naturally when the invoice
+                flips paid (pay_enabled goes false). */}
             <section className="flex flex-col sm:flex-row gap-3 pt-2">
-              {data.pay_enabled ? (
+              {data.pay_enabled && !isPaymentSettling(data) ? (
                 <Button
                   onClick={handlePay}
                   disabled={payingStatus !== 'idle'}

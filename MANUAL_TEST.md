@@ -1054,7 +1054,17 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] On a taxed paid invoice (e.g. $100 net + 10% = $110), create + issue a full CN (one line, qty 1 × $110.00 gross). Download the CN PDF: line amount **$110.00**, totals rows read **"Total excluding tax" $100.00**, tax row **$10.00**, **"Credit Total" $110.00** — line amounts sum to Credit Total; no row claims to be a sum-of-lines "Subtotal" that doesn't match.
 - [ ] CN numbers are sequential per tenant (CN-…-0001, -0002). A failed number allocation FAILS the Create loudly; no CN with a timestamp-shaped number (CN-YYYYMM-…) is ever created.
 
+## FLOW C-ARCH: Archive semantics (ADR-067)
+
+- [ ] Customer with an ACTIVE subscription → Archive → 409 toast naming the subscription; customer stays active. Same for trialing and scheduled-cancel subs.
+- [ ] Cancel the subscription(s) → Archive succeeds; customer hidden from active list; unpaid invoices remain payable and dunning reminders continue.
+- [ ] Archived customer: `POST /v1/subscriptions` → 409 "customer is archived". Unarchive → create succeeds.
+- [ ] Archived plan: create/swap onto it → 409; existing subs on the plan keep billing.
+- [ ] Billing profile: set currency `EUR` while an active sub's plan is USD → 409 explaining the re-denomination; `usd` (lowercase) on a USD plan → saves as `USD`; `EURO` → 400.
+
 ## FLOW I10: Hosted invoice page
+
+- [ ] **Post-payment settle poll (ADR-067 companion):** pay via the hosted page → on the `?paid=1` redirect the page shows "Processing your payment…" with NO Pay button, then flips to Paid within a few seconds without a manual refresh. Simulate a failed charge → red "Payment didn't complete — your card was not charged" banner and Pay returns. Stall the webhook >3 min → amber "taking longer than usual — you will not be charged twice" copy, Pay still hidden.
 
 - [ ] Draft invoice has no `public_token`. Finalize → token minted (`vlx_pinv_` + 64 hex).
 - [ ] Detail page: **Copy Link** button. **Rotate** typed-confirm dialog (type `ROTATE`). Buttons hidden on draft.

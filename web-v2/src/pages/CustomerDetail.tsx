@@ -436,7 +436,7 @@ export default function CustomerDetailPage() {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Archive {customer.display_name}?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This customer will be archived. They won't appear in active lists and billing will stop for their subscriptions. This can be undone.
+                    Archiving hides this customer from active lists and blocks new subscriptions. It does <strong>not</strong> cancel existing subscriptions or stop billing — cancel any active subscriptions first. Unpaid invoices remain collectible and payment reminders continue. This can be undone.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -452,7 +452,14 @@ export default function CustomerDetailPage() {
                         // archived customer kept appearing on the
                         // /customers list until a hard refresh.
                         invalidateAll()
-                      }).catch((err: Error) => showApiError(err, 'Failed to update'))
+                      }).catch((err: Error) => {
+                        // The backend 409s while any subscription still
+                        // bills (ADR-067) and its message names the
+                        // blocking subscription ids — surface it verbatim
+                        // so the operator knows exactly what to cancel
+                        // (the subscriptions are listed on this page).
+                        showApiError(err, 'Cannot archive')
+                      })
                     }}
                   >
                     Archive Customer
