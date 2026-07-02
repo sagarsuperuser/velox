@@ -446,7 +446,6 @@ var ErrTrialCancelDue = errors.New("trial has a cancel schedule due — route to
 // canceled. The caller treats the sub as NOT handled this pass.
 var ErrTrialCancelConflict = errors.New("trial-end cancel conflicted — re-read and route")
 
-
 // DeriveCancelEffectiveAt computes CancelEffectiveAt from the schedule
 // fields (ADR-069). Called from the subscription store's row scan — the one
 // choke point every read path flows through.
