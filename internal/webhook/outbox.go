@@ -39,6 +39,20 @@ const (
 // Backoff ramp (see outboxBackoff) totals ~72h across 15 attempts.
 const MaxOutboxAttempts = 15
 
+// Claim-lease sizing (P5, symmetric with the email outbox — see
+// internal/email/outbox.go for the full model). The webhook outbox
+// handler is DB-bound (event + delivery rows in one tx + goroutine
+// spawns; no network wait), so its per-row budget is small.
+const (
+	outboxPerRowBudget         = 10 * time.Second
+	outboxMinRowStartBudget    = 3 * time.Second
+	outboxClaimLeaseMarginSecs = 60
+)
+
+func outboxClaimLease(batchSize int) time.Duration {
+	return time.Duration(batchSize)*outboxPerRowBudget + outboxClaimLeaseMarginSecs*time.Second
+}
+
 // outboxBackoff returns the delay before the next attempt given the current
 // attempt count (1 = after the first failure). Ramp: 1s, 5s, 30s, 2m, 5m,
 // 15m, 30m, 1h, 2h, 4h, 8h, 12h, 12h, 12h, 12h — ~72h total over 15 tries.
@@ -145,23 +159,34 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 		return 0, fmt.Errorf("outbox: handler required")
 	}
 
+	// CLAIM (one short tx, P5 — same shape as the email outbox): bump
+	// attempts and lease via next_attempt_at, locks released at commit.
+	// The old whole-batch tx held row locks across every handler call
+	// and lost ALL marks if a late row pushed past the tick deadline.
+	// The attempts bump at claim is the single increment site — a
+	// claim-then-crash row still advances toward DLQ.
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
-		return 0, fmt.Errorf("outbox: begin tx: %w", err)
+		return 0, fmt.Errorf("outbox: begin claim tx: %w", err)
 	}
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, event_type, payload, status, attempts,
-		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
-		FROM webhook_outbox
-		WHERE status = 'pending' AND next_attempt_at <= now()
-		ORDER BY next_attempt_at
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED
-	`, limit)
+		UPDATE webhook_outbox
+		SET attempts = attempts + 1,
+		    next_attempt_at = now() + make_interval(secs => $1)
+		WHERE id IN (
+			SELECT id FROM webhook_outbox
+			WHERE status = 'pending' AND next_attempt_at <= now()
+			ORDER BY next_attempt_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, tenant_id, livemode, event_type, payload, status, attempts,
+		          next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
+	`, int(outboxClaimLease(limit).Seconds()), limit)
 	if err != nil {
-		return 0, fmt.Errorf("outbox: select pending: %w", err)
+		return 0, fmt.Errorf("outbox: claim: %w", err)
 	}
 
 	var batch []OutboxRow
@@ -183,67 +208,105 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 		return 0, fmt.Errorf("outbox: rows err: %w", err)
 	}
 	_ = rows.Close()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("outbox: commit claim: %w", err)
+	}
 
 	if len(batch) == 0 {
-		return 0, tx.Commit()
+		return 0, nil
 	}
 
+	attempted := 0
 	for _, row := range batch {
-		hErr := handler(ctx, row)
-		if hErr == nil {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE webhook_outbox
-				SET status = 'dispatched',
-				    attempts = attempts + 1,
-				    dispatched_at = now(),
-				    last_error = NULL
-				WHERE id = $1
-			`, row.ID); err != nil {
-				return 0, fmt.Errorf("outbox: mark dispatched: %w", err)
-			}
-			continue
+		// Floor, not the full budget: marks are detached so outcomes
+		// are never lost; see the email outbox's gate rationale.
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < outboxMinRowStartBudget {
+			slog.Warn("webhook outbox: batch budget exhausted — leaving remaining rows leased",
+				"remaining", len(batch)-attempted)
+			break
 		}
+		attempted++
+		s.attemptRow(ctx, row, handler)
+	}
+	return attempted, nil
+}
 
-		// Failure path — pick retry-with-backoff or DLQ based on attempt count.
-		newAttempt := row.Attempts + 1
-		errMsg := truncateError(hErr.Error())
-		if newAttempt >= MaxOutboxAttempts {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE webhook_outbox
-				SET status = 'failed',
-				    attempts = $2,
-				    last_error = $3
-				WHERE id = $1
-			`, row.ID, newAttempt, errMsg); err != nil {
-				return 0, fmt.Errorf("outbox: mark failed: %w", err)
+// attemptRow runs the handler under the per-row budget (panic-recovered)
+// then CAS-marks on a ctx detached from the batch deadline. With
+// handler-owns-mark (DispatchFromOutbox marks the row inside the event
+// tx), the success mark here is a no-op backstop — the CAS's zero-row
+// case, expected and silent for success.
+func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler OutboxHandler) {
+	rowCtx, cancel := context.WithTimeout(ctx, outboxPerRowBudget)
+	hErr := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("outbox handler panic: %v", r)
 			}
-			slog.Error("webhook outbox: row moved to DLQ after max attempts",
-				"outbox_id", row.ID,
-				"tenant_id", row.TenantID,
-				"event_type", row.EventType,
-				"attempts", newAttempt,
-				"error", errMsg,
-			)
-			continue
-		}
+		}()
+		return handler(rowCtx, row)
+	}()
+	cancel()
 
-		delay := outboxBackoff(newAttempt)
-		nextAt := time.Now().UTC().Add(delay)
-		if _, err := tx.ExecContext(ctx, `
+	markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer markCancel()
+
+	mtx, err := s.db.BeginTx(markCtx, postgres.TxBypass, "")
+	if err != nil {
+		slog.Error("webhook outbox: begin mark tx", "outbox_id", row.ID, "error", err)
+		return
+	}
+	defer postgres.Rollback(mtx)
+
+	if hErr == nil {
+		// Backstop only — DispatchFromOutbox already marked it in-tx.
+		_, _ = mtx.ExecContext(markCtx, `
 			UPDATE webhook_outbox
-			SET attempts = $2,
-			    next_attempt_at = $3,
-			    last_error = $4
-			WHERE id = $1
-		`, row.ID, newAttempt, nextAt, errMsg); err != nil {
-			return 0, fmt.Errorf("outbox: mark retry: %w", err)
+			SET status = 'dispatched', dispatched_at = now(), last_error = NULL
+			WHERE id = $1 AND status = 'pending'
+		`, row.ID)
+		if err := mtx.Commit(); err != nil {
+			slog.Error("webhook outbox: commit backstop mark", "outbox_id", row.ID, "error", err)
 		}
+		return
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("outbox: commit: %w", err)
+	errMsg := truncateError(hErr.Error())
+	if row.Attempts >= MaxOutboxAttempts {
+		if _, err := mtx.ExecContext(markCtx, `
+			UPDATE webhook_outbox
+			SET status = 'failed', last_error = $2
+			WHERE id = $1 AND status = 'pending'
+		`, row.ID, errMsg); err != nil {
+			slog.Error("webhook outbox: DLQ mark failed", "outbox_id", row.ID, "error", err)
+			return
+		}
+		if err := mtx.Commit(); err != nil {
+			slog.Error("webhook outbox: commit DLQ mark", "outbox_id", row.ID, "error", err)
+			return
+		}
+		slog.Error("webhook outbox: row moved to DLQ after max attempts",
+			"outbox_id", row.ID,
+			"tenant_id", row.TenantID,
+			"event_type", row.EventType,
+			"attempts", row.Attempts,
+			"error", errMsg,
+		)
+		return
 	}
-	return len(batch), nil
+
+	nextAt := time.Now().UTC().Add(outboxBackoff(row.Attempts))
+	if _, err := mtx.ExecContext(markCtx, `
+		UPDATE webhook_outbox
+		SET next_attempt_at = $2, last_error = $3
+		WHERE id = $1 AND status = 'pending'
+	`, row.ID, nextAt, errMsg); err != nil {
+		slog.Error("webhook outbox: retry mark failed", "outbox_id", row.ID, "error", err)
+		return
+	}
+	if err := mtx.Commit(); err != nil {
+		slog.Error("webhook outbox: commit retry mark", "outbox_id", row.ID, "error", err)
+	}
 }
 
 // TryDispatcherLock tries to acquire the cluster-wide advisory lock that

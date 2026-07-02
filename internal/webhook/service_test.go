@@ -122,6 +122,36 @@ func (m *memStore) CreateEvent(ctx context.Context, tenantID string, event domai
 	return event, nil
 }
 
+// CreateEventWithDeliveries mirrors the store's one-tx create: event +
+// born-leased delivery rows (+ outbox mark, which the mem fake ignores —
+// outbox rows live in a different store).
+func (m *memStore) CreateEventWithDeliveries(ctx context.Context, tenantID string, event domain.WebhookEvent, endpointIDs []string, birthLease time.Duration, _ string) (domain.WebhookEvent, []domain.WebhookDelivery, error) {
+	ev, err := m.CreateEvent(ctx, tenantID, event)
+	if err != nil {
+		return domain.WebhookEvent{}, nil, err
+	}
+	ds, err := m.CreateDeliveriesForEvent(ctx, tenantID, ev.ID, endpointIDs, birthLease)
+	return ev, ds, err
+}
+
+func (m *memStore) CreateDeliveriesForEvent(ctx context.Context, tenantID, eventID string, endpointIDs []string, birthLease time.Duration) ([]domain.WebhookDelivery, error) {
+	lease := time.Now().UTC().Add(birthLease)
+	out := make([]domain.WebhookDelivery, 0, len(endpointIDs))
+	for _, epID := range endpointIDs {
+		d, err := m.CreateDelivery(ctx, tenantID, domain.WebhookDelivery{
+			WebhookEndpointID: epID,
+			WebhookEventID:    eventID,
+			Status:            domain.DeliveryPending,
+			NextRetryAt:       &lease,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 func (m *memStore) ListEvents(_ context.Context, tenantID string, limit int) ([]domain.WebhookEvent, error) {
 	// Mirror the postgres store: newest-first (created_at DESC), default 50,
 	// HARD-clamped to 100 regardless of the requested limit. The real store

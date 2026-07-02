@@ -578,6 +578,8 @@ Single delivery path: when SMTP isn't configured every send returns
 `ErrSMTPNotConfigured`. No stdout fallback. Local dev = Mailpit
 (`docker compose up -d mailpit`, `SMTP_HOST=localhost:1025 SMTP_TLS=none`).
 
+- [ ] **Strict STARTTLS + honest transport log (P5/ADR-072)** — boot logs `smtp transport mode=...`; pointing `SMTP_TLS=starttls` (the default) at Mailpit fails loudly at send with "does not advertise STARTTLS — set SMTP_TLS=none"; with `SMTP_TLS=none` (the shipped local config) delivery works. A failed batch marks each row individually — kill the API mid-batch and re-run: already-delivered rows stay `dispatched` in `email_outbox`, only unsent rows retry.
+
 Boot warnings on startup (one each when var unset; never fatal):
 - `SMTP NOT CONFIGURED`
 - `HOSTED_INVOICE_BASE_URL NOT SET` — invoice / receipt / dunning / payment-failed CTAs render with no link
