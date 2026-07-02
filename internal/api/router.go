@@ -568,6 +568,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// exists; before this point customer creation always rejects
 	// test_clock_id (defensive default).
 	customerSvc.SetTestClockChecker(testClockStore)
+	// Archive/currency guard (ADR-067): customer.Update refuses to archive
+	// while any subscription still bills, and UpsertBillingProfile refuses a
+	// currency that would re-denominate an active sub's plan prices. The
+	// adapter lives here (zero peer-imports between customer and
+	// subscription packages).
+	customerSvc.SetSubscriptionChecker(&subscriptionCheckerAdapter{subs: subStore, plans: pricingSvc})
 	// Wire the per-customer tax-retry flush so a billing-profile save
 	// (operator edits country / postal_code / state / tax_id) replays
 	// every draft invoice for that customer stuck on

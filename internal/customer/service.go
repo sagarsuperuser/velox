@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/mail"
 	"regexp"
@@ -21,6 +22,9 @@ var phonePattern = regexp.MustCompile(`^[\+\d\s\-\(\)]{7,20}$`)
 // a bad code ("USA") into a clean 400 instead of an opaque Stripe-side
 // rejection at invoice-compute time. Mirrors the tenant company_country check.
 var countryPattern = regexp.MustCompile(`^[A-Z]{2}$`)
+
+// currencyPattern: ISO-4217 alpha-3, canonical UPPERCASE (ADR-067 currency guard).
+var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // StripeSyncer syncs billing profile data to Stripe when a Stripe customer exists.
 type StripeSyncer interface {
@@ -61,6 +65,29 @@ type TaxFlusher interface {
 	RetryCustomerDataErrors(ctx context.Context, tenantID, customerID string) (int, []error)
 }
 
+// NonTerminalSubscription is one still-billing subscription blocking a
+// customer-level change — the archive guard's and the billing-profile
+// currency guard's shared ground truth (ADR-067).
+type NonTerminalSubscription struct {
+	ID     string
+	Status string
+	// PlanCurrencies are the distinct currencies of the subscription's
+	// item plans — the currency-mismatch guard compares the billing
+	// profile's currency against them (a profile currency override
+	// re-denominates plan prices at invoice time: $100 plan → €100).
+	PlanCurrencies []string
+}
+
+// SubscriptionChecker reports a customer's non-terminal (still-billing)
+// subscriptions: active or trialing, including active subs with a scheduled
+// cancel (they bill until the boundary). Narrow interface wired via
+// SetSubscriptionChecker (precedent: SetStripeSyncer) so the customer
+// package keeps the zero-peer-import rule; implemented by an adapter over
+// the subscription store in api/router.go.
+type SubscriptionChecker interface {
+	NonTerminalForCustomer(ctx context.Context, tenantID, customerID string) ([]NonTerminalSubscription, error)
+}
+
 type Service struct {
 	store         Store
 	stripeSyncer  StripeSyncer
@@ -69,6 +96,7 @@ type Service struct {
 	taxFlusher    TaxFlusher
 	events        domain.EventDispatcher
 	resolver      clock.Resolver
+	subChecker    SubscriptionChecker
 }
 
 func NewService(store Store) *Service {
@@ -100,6 +128,14 @@ func (s *Service) bindForCustomer(ctx context.Context, tenantID, customerID stri
 func (s *Service) SetStripeSyncer(syncer StripeSyncer, setups PaymentSetupReader) {
 	s.stripeSyncer = syncer
 	s.paymentSetups = setups
+}
+
+// SetSubscriptionChecker wires the archive/currency guard's subscription
+// lookup. Production always wires it (api/router.go); the guarded
+// transitions FAIL LOUDLY when it's missing rather than silently
+// permitting an archive that keeps billing (ADR-067).
+func (s *Service) SetSubscriptionChecker(c SubscriptionChecker) {
+	s.subChecker = c
 }
 
 // SetTestClockChecker wires the test-clock existence check used at
@@ -290,6 +326,35 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 		existing.Email = email
 	}
 	if status := domain.CustomerStatus(input.Status); status != "" {
+		// Archive = 409-BLOCK while any subscription still bills, never
+		// auto-cancel (ADR-067). Auto-cancel would run the immediate-cancel
+		// billing path — final prorated invoice + auto-charge of the saved
+		// card — turning "archive to stop billing" into N surprise charges.
+		// Archive only hides the customer + blocks NEW subscriptions;
+		// existing unpaid invoices remain collectible and dunning continues
+		// (both are invoice-driven). The operator cancels subs first, then
+		// archives.
+		if status == domain.CustomerStatusArchived && existing.Status != domain.CustomerStatusArchived {
+			if s.subChecker == nil {
+				// Fail closed: an unenforced archive silently keeps charging
+				// the customer against explicit operator intent — the exact
+				// HIGH this guard exists to prevent.
+				return domain.Customer{}, fmt.Errorf("subscription checker not wired: cannot verify archive safety")
+			}
+			blocking, err := s.subChecker.NonTerminalForCustomer(ctx, tenantID, id)
+			if err != nil {
+				return domain.Customer{}, fmt.Errorf("check subscriptions before archive: %w", err)
+			}
+			if len(blocking) > 0 {
+				ids := make([]string, 0, len(blocking))
+				for _, b := range blocking {
+					ids = append(ids, b.ID)
+				}
+				return domain.Customer{}, errs.InvalidState(fmt.Sprintf(
+					"customer has %d subscription(s) that still bill (%s) — cancel them before archiving; archiving does not stop billing",
+					len(blocking), strings.Join(ids, ", ")))
+			}
+		}
 		existing.Status = status
 	}
 	if input.DunningPolicyID != nil {
@@ -371,6 +436,40 @@ func (s *Service) UpsertBillingProfile(ctx context.Context, tenantID string, bp 
 	bp.Country = strings.ToUpper(strings.TrimSpace(bp.Country))
 	if bp.Country != "" && !countryPattern.MatchString(bp.Country) {
 		return domain.CustomerBillingProfile{}, errs.Invalid("country", "must be an ISO-3166 alpha-2 country code (e.g. 'IN', 'US')")
+	}
+	// Currency: normalize to canonical UPPERCASE (lowercase broke
+	// analytics/dunning filters once), format-validate, and — the money
+	// guard — reject a currency that mismatches a still-billing
+	// subscription's plan currency. The profile currency OVERRIDES the plan
+	// currency at every invoice writer, so a mismatch silently
+	// re-denominates plan prices ($100 plan invoiced as €100 or ¥100) with
+	// no conversion. ADR-067.
+	bp.Currency = strings.ToUpper(strings.TrimSpace(bp.Currency))
+	if bp.Currency != "" {
+		if !currencyPattern.MatchString(bp.Currency) {
+			return domain.CustomerBillingProfile{}, errs.Invalid("currency", "must be an ISO-4217 alpha-3 currency code (e.g. 'USD', 'EUR')")
+		}
+		if s.subChecker != nil {
+			subs, err := s.subChecker.NonTerminalForCustomer(ctx, tenantID, bp.CustomerID)
+			if err != nil {
+				return domain.CustomerBillingProfile{}, fmt.Errorf("check subscriptions for currency guard: %w", err)
+			}
+			for _, sub := range subs {
+				for _, cur := range sub.PlanCurrencies {
+					if cur != "" && !strings.EqualFold(cur, bp.Currency) {
+						return domain.CustomerBillingProfile{}, errs.InvalidState(fmt.Sprintf(
+							"billing profile currency %s conflicts with subscription %s's plan currency %s — invoices would relabel plan prices in %s without conversion; cancel the subscription or keep the currency",
+							bp.Currency, sub.ID, strings.ToUpper(cur), bp.Currency))
+					}
+				}
+			}
+		} else {
+			// Test-only path — production wires the checker in router.go. The
+			// format validation above still applies; only the cross-sub
+			// mismatch check is skipped.
+			slog.Warn("billing profile currency guard skipped: subscription checker not wired",
+				"customer_id", bp.CustomerID)
+		}
 	}
 	// Normalize + format-validate tax IDs. Unknown kinds pass through untouched
 	// so we don't reject jurisdictions we haven't added explicit support for.

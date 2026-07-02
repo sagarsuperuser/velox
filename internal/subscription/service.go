@@ -493,10 +493,33 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	var inheritedClockID string
 	if s.customers != nil {
 		if cust, err := s.customers.Get(ctx, tenantID, input.CustomerID); err == nil {
+			// Archived customer = no NEW subscriptions (ADR-067). Archive's
+			// contract is "hide + stop new business"; without this guard a
+			// direct API call quietly starts billing a customer the operator
+			// explicitly retired.
+			if cust.Status == domain.CustomerStatusArchived {
+				return domain.Subscription{}, errs.InvalidState("customer is archived — unarchive the customer before creating a subscription")
+			}
 			inheritedClockID = cust.TestClockID
 		}
 		// If err != nil here, fall through — the downstream FK check
 		// on customer_id will fail with a clean 400.
+	}
+
+	// Archived plans accept no new subscriptions (ADR-067; same enforcement
+	// seam as the archived-customer guard). Pre-fix an archived plan
+	// remained fully subscribable via the API — archive only hid it from
+	// the picker. Skipped when PlanReader isn't wired (narrow unit tests).
+	if s.plans != nil {
+		for _, it := range items {
+			plan, err := s.plans.GetPlan(ctx, tenantID, it.PlanID)
+			if err != nil {
+				return domain.Subscription{}, errs.Invalid("items", fmt.Sprintf("plan %q not found", it.PlanID))
+			}
+			if plan.Status == domain.PlanArchived {
+				return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — unarchive it or pick an active plan", it.PlanID))
+			}
+		}
 	}
 
 	status := domain.SubscriptionDraft
@@ -919,6 +942,12 @@ func (s *Service) UpdateItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 		if perr != nil {
 			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf("plan %q not found", input.NewPlanID))
 		}
+		// Swapping ONTO an archived plan is new business on a retired price
+		// (ADR-067) — same guard as subscription.Create. Existing items
+		// already on an archived plan keep billing (archive ≠ cancel).
+		if newPlan.Status == domain.PlanArchived {
+			return ItemChangeResult{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — pick an active plan", input.NewPlanID))
+		}
 		if !input.Immediate {
 			return ItemChangeResult{}, errAtomicNotApplicable
 		}
@@ -1086,6 +1115,12 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		newPlan, err := s.plans.GetPlan(ctx, tenantID, input.NewPlanID)
 		if err != nil {
 			return ItemChangeResult{}, errs.Invalid("new_plan_id", fmt.Sprintf("plan %q not found", input.NewPlanID))
+		}
+		// Same archived-plan guard as the atomic path (UpdateItemTx) and
+		// subscription.Create — swapping onto a retired price is new business
+		// (ADR-067).
+		if newPlan.Status == domain.PlanArchived {
+			return ItemChangeResult{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — pick an active plan", input.NewPlanID))
 		}
 		currentTiming := currentPlan.BaseBillTiming
 		if currentTiming == "" {
