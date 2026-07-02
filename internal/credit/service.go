@@ -348,48 +348,33 @@ func (s *Service) ExpireCreditsForClock(ctx context.Context, tenantID, clockID s
 
 // processExpiry is the shared per-grant body of ExpireCredits and
 // ExpireCreditsForClock — the candidate list shape differs by trigger
-// path; the per-grant ledger-append is identical.
+// path; the per-grant retirement is identical.
 //
-// Orb's credit-block model: each grant carries consumed_cents
-// reflecting how much was drained by usage entries (FIFO via
-// ApplyToInvoiceAtomic). Expiry deducts only the REMAINING portion
-// (amount - consumed), never the original amount. A fully-consumed
-// grant (consumed == amount) yields a 0-cents expiry — skipped
-// entirely so the customer's Credits tab doesn't show a meaningless
-// "Expired grant X — $0.00" row.
+// The candidate list is DISCOVERY only. All money decisions happen
+// inside store.ExpireGrantAtomic: it recomputes the remaining
+// (un-drained) portion under the same row lock the apply/adjust paths
+// hold — the list's snapshot here is stale by construction (a
+// backdated ApplyToInvoiceAt can drain a candidate between the list
+// read and the retirement) — flips consumed_cents to amount_cents,
+// and appends the -remaining expiry entry, all in one tx. A grant
+// that turns out fully consumed under the lock is a silent no-op
+// (retired == 0), so replayed or overlapping sweeps converge on
+// exactly one expiry entry per grant. Expiry entries are stamped at
+// the grant's own expires_at inside the store (per-fact chronology
+// on the Credits tab), and retirement wins over any later backdated
+// apply — a retired grant is never re-drained (ADR-071).
 func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedgerEntry) (int, []error) {
 	var expired int
 	var expiryErrs []error
 	for _, g := range grants {
-		remaining := g.AmountCents - g.ConsumedCents
-		if remaining <= 0 {
-			// Already fully drained by usage — nothing to expire.
-			// Defensive: the SQL filter (consumed_cents < amount_cents)
-			// should have excluded this row, but we double-check.
-			continue
-		}
-		// Stamp the expiry entry at the grant's own expires_at — the
-		// simulated instant the grant actually expired — instead of
-		// the store's clock.Now() fallback (= advance-end frozen_time
-		// during catchup, or wall-clock now from the CRON path).
-		// Without this, every grant expired in one Advance click
-		// stacks at one timestamp on the customer's Credits tab.
-		var expiredAt time.Time
-		if g.ExpiresAt != nil {
-			expiredAt = *g.ExpiresAt
-		}
-		_, err := s.store.AppendEntry(ctx, g.TenantID, domain.CreditLedgerEntry{
-			CustomerID:  g.CustomerID,
-			EntryType:   domain.CreditExpiry,
-			AmountCents: -remaining,
-			Description: fmt.Sprintf("Expired grant %s", g.ID),
-			CreatedAt:   expiredAt,
-		})
+		retired, err := s.store.ExpireGrantAtomic(ctx, g.TenantID, g.CustomerID, g.ID)
 		if err != nil {
 			expiryErrs = append(expiryErrs, fmt.Errorf("expire grant %s: %w", g.ID, err))
 			continue
 		}
-		expired++
+		if retired > 0 {
+			expired++
+		}
 	}
 	return expired, expiryErrs
 }
@@ -426,6 +411,13 @@ func (s *Service) Adjust(ctx context.Context, tenantID string, input AdjustInput
 	ctx = s.bindForCustomer(ctx, tenantID, input.CustomerID)
 	if input.AmountCents == 0 {
 		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot be zero")
+	}
+	// Positive adjustments are grant-shaped credit inflows (drainable
+	// blocks), so they carry Grant's $1M fat-finger cap. Negative
+	// adjustments are naturally bounded by the balance check in
+	// AdjustAtomic — no cap needed there.
+	if input.AmountCents > 100_000_000 {
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", "cannot exceed 1,000,000")
 	}
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
