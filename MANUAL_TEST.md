@@ -717,6 +717,7 @@ whole cents — only the RATE gains precision.
 ## FLOW B9: Customer price overrides
 
 - [ ] POST /v1/price-overrides → that customer's invoice uses override price.
+- [ ] **Usage view == invoice for an overridden customer (ADR-070/P10)** — `GET /v1/customers/{id}/usage` shows the negotiated amount for an overridden customer (and list price for others); a mid-period rule publish changes neither until the next period.
 - [ ] Other customers → default rule price.
 - [ ] **Override survives a rule publish (ADR-070)** — create a new version of the overridden rule (same `rule_key`), close the cycle → the invoice still bills the override price, not the new version's list price.
 - [ ] **Rate changes price from the NEXT period** — a version published (or an override created/edited) mid-period does not change the in-flight period's invoice; the following period bills the new rate.

@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,4 +380,43 @@ func TestBackfill(t *testing.T) {
 			t.Fatal("expected missing customer_id error")
 		}
 	})
+}
+
+// P10: quantity 0 meters PRESENCE — the old code silently coerced it to
+// 1, so an integrator emitting zero-usage heartbeats was billed one
+// unit per event on sum meters, invisible until the invoice.
+//
+// Mutation-verify: restore the `IsZero → 1` default — this fails.
+func TestIngest_ZeroQuantityStaysZero(t *testing.T) {
+	svc := NewService(newMemStore())
+	e, err := svc.Ingest(context.Background(), "t1", IngestInput{
+		CustomerID: "cus_1", MeterID: "mtr_1", // quantity absent = 0
+	})
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if !e.Quantity.IsZero() {
+		t.Errorf("quantity: got %s, want 0 (presence semantics — 1 is the silent-billing bug)", e.Quantity.String())
+	}
+}
+
+// P10: batch errors carry the row index so the caller can FIX the
+// failing event — a bare error string across a 500-event batch was
+// undebuggable from the response.
+func TestBatchIngest_ErrorsAreIndexed(t *testing.T) {
+	svc := NewService(newMemStore())
+	ingested, errs := svc.BatchIngest(context.Background(), "t1", []IngestInput{
+		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1)},
+		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(2)},
+		{CustomerID: "", MeterID: "mtr_1", Quantity: dec(3)}, // row 2 (0-based): invalid
+	})
+	if ingested != 2 {
+		t.Fatalf("ingested: got %d, want 2 (partial success)", ingested)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errors: got %d, want 1", len(errs))
+	}
+	if !strings.Contains(errs[0].Error(), "event[2]") {
+		t.Errorf("batch error not indexed: %q (want event[2] so the caller knows WHICH row)", errs[0].Error())
+	}
 }
