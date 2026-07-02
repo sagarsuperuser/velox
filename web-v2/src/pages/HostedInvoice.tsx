@@ -280,6 +280,26 @@ export default function HostedInvoicePage() {
         </div>
       )
     }
+    if (invoice.status === 'uncollectible') {
+      // Collection is closed on this invoice, so there is no Pay button —
+      // the dunning-escalation email links here, and without this banner
+      // the customer lands on a dead end with no explanation.
+      return (
+        <div
+          role="status"
+          className="rounded-lg bg-muted px-4 py-3 flex items-start gap-3"
+        >
+          <XCircle size={18} className="text-muted-foreground mt-0.5 shrink-0" aria-hidden="true" />
+          <div className="text-sm">
+            <p className="font-medium text-foreground">This invoice is closed</p>
+            <p className="text-muted-foreground">
+              Online payment is no longer available for this invoice. Please
+              contact support to settle it or restore service.
+            </p>
+          </div>
+        </div>
+      )
+    }
     if (paidSignal && invoice.status === 'finalized' && invoice.payment_status === 'failed') {
       // Authoritative failure from the backend: the charge did not go
       // through. Re-enabling Pay is safe — no successful charge exists.

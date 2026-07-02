@@ -770,47 +770,22 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build bill-to and company info for PDF
-	bt := BillToInfo{Name: inv.CustomerID}
-	if h.customers != nil {
-		if cust, custErr := h.customers.Get(r.Context(), tenantID, inv.CustomerID); custErr == nil {
-			bt.Name = cust.DisplayName
-			bt.Email = cust.Email
-		}
-		if bp, bpErr := h.customers.GetBillingProfile(r.Context(), tenantID, inv.CustomerID); bpErr == nil {
-			if bp.LegalName != "" {
-				bt.Name = bp.LegalName
-			}
-		}
-	}
+	// One shared context builder across emailed/downloaded/hosted PDFs —
+	// this path previously hand-rolled a THINNER context (no buyer
+	// address/tax id, no credit notes), so the emailed document diverged
+	// from the downloaded one.
+	bt, ci, cnInfos := BuildPDFContext(r.Context(), h.customers, h.settings, h.creditNotes, tenantID, &inv)
 
-	var ci CompanyInfo
-	if h.settings != nil {
-		if ts, tsErr := h.settings.Get(r.Context(), tenantID); tsErr == nil {
-			ci = CompanyInfo{
-				Name:         ts.CompanyName,
-				Email:        ts.CompanyEmail,
-				Phone:        ts.CompanyPhone,
-				AddressLine1: ts.CompanyAddressLine1,
-				AddressLine2: ts.CompanyAddressLine2,
-				City:         ts.CompanyCity,
-				State:        ts.CompanyState,
-				PostalCode:   ts.CompanyPostalCode,
-				Country:      ts.CompanyCountry,
-				BrandColor:   ts.BrandColor,
-				TaxID:        ts.TaxID,
-				TaxIDType:    SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
-			}
-		}
-	}
-
-	pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, nil, ci)
+	pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, cnInfos, ci)
 	if err != nil {
 		respond.InternalError(w, r)
 		return
 	}
 
-	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
+	// AmountDueCents, not Total: the email template labels this figure
+	// "Amount due", and credits/partial payments make the two differ —
+	// telling a customer they owe the pre-credit total is wrong.
+	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
 		// Sanitize at the boundary — SMTP errors / outbox-store errors
 		// would otherwise leak to the operator toast. ADR-026.
 		respond.FromError(w, r, err, "invoice_email")
@@ -1756,69 +1731,8 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build Bill To from customer + billing profile
-	bt := BillToInfo{Name: inv.CustomerID}
-	if h.customers != nil {
-		if cust, err := h.customers.Get(r.Context(), tenantID, inv.CustomerID); err == nil {
-			bt.Name = cust.DisplayName
-			bt.Email = cust.Email
-		}
-		if bp, err := h.customers.GetBillingProfile(r.Context(), tenantID, inv.CustomerID); err == nil {
-			if bp.LegalName != "" {
-				bt.Name = bp.LegalName
-			}
-			// bp.Email removed in migration 0100 — bill-to email on the
-			// PDF tracks customers.email (set above from cust.Email).
-			bt.AddressLine1 = bp.AddressLine1
-			bt.AddressLine2 = bp.AddressLine2
-			bt.City = bp.City
-			bt.State = bp.State
-			bt.PostalCode = bp.PostalCode
-			bt.Country = bp.Country
-		}
-	}
-
-	var ci CompanyInfo
-	if h.settings != nil {
-		if ts, err := h.settings.Get(r.Context(), tenantID); err == nil {
-			ci = CompanyInfo{
-				Name:         ts.CompanyName,
-				Email:        ts.CompanyEmail,
-				Phone:        ts.CompanyPhone,
-				AddressLine1: ts.CompanyAddressLine1,
-				AddressLine2: ts.CompanyAddressLine2,
-				City:         ts.CompanyCity,
-				State:        ts.CompanyState,
-				PostalCode:   ts.CompanyPostalCode,
-				Country:      ts.CompanyCountry,
-				BrandColor:   ts.BrandColor,
-				TaxID:        ts.TaxID,
-				TaxIDType:    SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
-			}
-		}
-	}
-
-	// Fetch credit notes for this invoice
-	var cnInfos []CreditNoteInfo
-	if h.creditNotes != nil {
-		if notes, err := h.creditNotes.List(r.Context(), tenantID, id); err == nil {
-			for _, cn := range notes {
-				if cn.Status == domain.CreditNoteIssued {
-					cnInfos = append(cnInfos, CreditNoteInfo{
-						Number:               cn.CreditNoteNumber,
-						Reason:               cn.Reason,
-						Amount:               cn.TotalCents,
-						RefundAmountCents:    cn.RefundAmountCents,
-						CreditAmountCents:    cn.CreditAmountCents,
-						OutOfBandAmountCents: cn.OutOfBandAmountCents,
-						TaxAmountCents:       cn.TaxAmountCents,
-						TaxTransactionID:     cn.TaxTransactionID,
-						RefundStatus:         string(cn.RefundStatus),
-					})
-				}
-			}
-		}
-	}
+	// One shared context builder across emailed/downloaded/hosted PDFs.
+	bt, ci, cnInfos := BuildPDFContext(r.Context(), h.customers, h.settings, h.creditNotes, tenantID, &inv)
 
 	pdfBytes, err := RenderPDF(r.Context(), inv, items, bt, cnInfos, ci)
 	if err != nil {

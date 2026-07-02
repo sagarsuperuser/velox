@@ -227,7 +227,7 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		if err != nil || email == "" {
 			slog.Warn("skip payment receipt email — cannot resolve customer email",
 				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, inv.TotalAmountCents, inv.Currency, inv.PublicToken); err != nil {
+		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, receiptAmountCents(capturedCents, fresh), inv.Currency, inv.PublicToken); err != nil {
 			slog.Error("failed to enqueue payment receipt email",
 				"invoice_id", inv.ID, "email", email, "error", err)
 		}
@@ -378,6 +378,21 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 // (operators — the load-bearing surface: with auto-refund deferred, the
 // operator IS the refund mechanism). Best-effort by design: detection must
 // never fail the settlement that triggered it.
+// receiptAmountCents is the figure the payment receipt calls "your
+// payment": the amount Stripe actually captured for THIS charge, or the
+// invoice's recorded amount_paid when the webhook predates captured-
+// amount threading. It was TotalAmountCents — wrong whenever credits or
+// partial payments made the charge smaller than the invoice total.
+func receiptAmountCents(capturedCents int64, fresh domain.Invoice) int64 {
+	if capturedCents > 0 {
+		return capturedCents
+	}
+	if fresh.AmountPaidCents > 0 {
+		return fresh.AmountPaidCents
+	}
+	return fresh.TotalAmountCents
+}
+
 func (s *Stripe) escalatePaymentAnomaly(ctx context.Context, tenantID string, inv domain.Invoice, eventType, incomingPI string, capturedCents int64, msg string) {
 	slog.ErrorContext(ctx, "payment anomaly: "+msg,
 		"event", eventType,
