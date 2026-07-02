@@ -2277,10 +2277,36 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// other error aborts this sub's cycle (billing blind here risks a
 	// double charge — feedback_no_silent_fallbacks).
 	var thresholdBilledThrough *time.Time
-	if end, thErr := e.invoices.LatestThresholdPeriodEnd(ctx, sub.TenantID, sub.ID, periodStart, periodEnd); thErr == nil {
+	var watermarkLines []domain.InvoiceLineItem
+	if wmInv, thErr := e.invoices.GetLatestThresholdInvoiceForCycle(ctx, sub.TenantID, sub.ID, periodStart, periodEnd); thErr == nil {
+		end := wmInv.BillingPeriodEnd
 		thresholdBilledThrough = &end
+		// The watermark invoice's LINES are the per-bucket ground truth for
+		// the non-additive clamp exemption below (ADR-066 §4): a max/last
+		// bucket with no line on the fire was deliberately deferred and must
+		// bill full-period here; a bucket WITH a line already billed its
+		// window on the fire. Keyed on the invoice, never the mutable
+		// reset_billing_cycle config — an operator PATCH between fire and
+		// close (or a pre-ADR-066 stranded reset) would otherwise resurrect
+		// the billed-by-nobody gap or a double-bill. Failure is loud: billing
+		// blind here risks exactly those two outcomes.
+		lines, lErr := e.invoices.ListLineItems(ctx, sub.TenantID, wmInv.ID)
+		if lErr != nil {
+			return false, fmt.Errorf("list watermark invoice lines: %w", lErr)
+		}
+		watermarkLines = lines
 	} else if !errors.Is(thErr, errs.ErrNotFound) {
 		return false, fmt.Errorf("lookup threshold invoice for cycle: %w", thErr)
+	}
+	// onWatermark reports whether the fire already billed this (meter, rating
+	// rule version) bucket.
+	onWatermark := func(meterID, ratingRuleVersionID string) bool {
+		for _, li := range watermarkLines {
+			if li.LineType == domain.LineTypeUsage && li.MeterID == meterID && li.RatingRuleVersionID == ratingRuleVersionID {
+				return true
+			}
+		}
+		return false
 	}
 
 	// Pull the per-item change log for this period — drives segment-
@@ -2530,17 +2556,28 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		}
 	}
 
-	// Build (meter, intervals) map from item segments + removed-item
+	// Build (meter, intervals) maps from item segments + removed-item
 	// segments. Each item × segment contributes [seg.start, seg.end]
 	// to every meter in its segment's plan.
+	//
+	// TWO maps (ADR-066 §4): meterIntervals carries the watermark-CLAMPED
+	// windows that additive (sum/count) buckets bill from — usage in
+	// [periodStart, thresholdBilledThrough) already landed on the mid-cycle
+	// threshold invoice. meterIntervalsFull carries the UNCLAMPED windows:
+	// non-additive (max/last) buckets that the fire deliberately deferred
+	// (no line on the watermark invoice) must aggregate over the full
+	// window — clamping a max to the residual window drops a pre-fire peak
+	// (partial-window mis-bill), and splitting it double-bills. With no
+	// watermark the two maps are identical and only the clamped one is used.
 	meterIntervals := map[string][]usageInterval{}
+	meterIntervalsFull := map[string][]usageInterval{}
 	addMeterInterval := func(mid string, start, end time.Time) {
-		// Clamp to the threshold watermark: usage in
-		// [periodStart, thresholdBilledThrough) already landed on the
-		// mid-cycle threshold invoice; the cycle close bills only the
-		// residual window. Intervals fully inside the billed window
-		// drop out entirely. Nil watermark = no threshold fire =
-		// full period, unchanged.
+		if thresholdBilledThrough != nil && end.After(start) {
+			meterIntervalsFull[mid] = append(meterIntervalsFull[mid], usageInterval{start, end})
+		}
+		// Clamp to the threshold watermark. Intervals fully inside the
+		// billed window drop out entirely. Nil watermark = no threshold
+		// fire = full period, unchanged.
 		if thresholdBilledThrough != nil && start.Before(*thresholdBilledThrough) {
 			start = *thresholdBilledThrough
 		}
@@ -2601,7 +2638,27 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	ruleAggCache := map[string][]domain.RuleAggregation{}
 	one := decimal.New(1, 0)
 
-	for meterID, ivs := range meterIntervals {
+	// Union of meters with billable windows. When a watermark exists, a
+	// meter whose clamped intervals vanished entirely (all usage inside the
+	// fire's window) can still owe a full-window bill for a deferred
+	// non-additive bucket — so iterate the full map's keys too.
+	meterIDSet := make(map[string]struct{}, len(meterIntervals))
+	for mid := range meterIntervals {
+		meterIDSet[mid] = struct{}{}
+	}
+	for mid := range meterIntervalsFull {
+		meterIDSet[mid] = struct{}{}
+	}
+	// A meterWindow is one aggregation pass: the clamped pass
+	// (nonAdditiveOnly=false) bills every bucket EXCEPT deferred
+	// non-additive ones; the full pass (nonAdditiveOnly=true, only when a
+	// watermark exists) bills ONLY deferred non-additive buckets over the
+	// unclamped window.
+	type meterWindow struct {
+		iv              usageInterval
+		nonAdditiveOnly bool
+	}
+	for meterID := range meterIDSet {
 		meter, err := e.pricing.GetMeter(ctx, sub.TenantID, meterID)
 		if err != nil {
 			return false, fmt.Errorf("get meter %s: %w", meterID, err)
@@ -2625,8 +2682,17 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			rulesByID[r.ID] = r
 		}
 
-		merged := mergeUsageIntervals(ivs)
-		for _, iv := range merged {
+		windows := make([]meterWindow, 0, 4)
+		for _, iv := range mergeUsageIntervals(meterIntervals[meterID]) {
+			windows = append(windows, meterWindow{iv: iv})
+		}
+		if thresholdBilledThrough != nil {
+			for _, iv := range mergeUsageIntervals(meterIntervalsFull[meterID]) {
+				windows = append(windows, meterWindow{iv: iv, nonAdditiveOnly: true})
+			}
+		}
+		for _, w := range windows {
+			iv := w.iv
 			ivStart := iv.start
 			ivEnd := iv.end
 			fullPeriod := iv.start.Equal(periodStart) && iv.end.Equal(periodEnd)
@@ -2669,6 +2735,21 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 							"subscription_id", sub.ID)
 						continue
 					}
+					// ADR-066 §4 pass routing, per RULE BUCKET: a deferred
+					// non-additive bucket (max/last with NO line on the
+					// watermark fire) bills ONLY on the full-window pass —
+					// billing it from the clamped window drops pre-fire peaks,
+					// and billing it on both passes double-bills. Every other
+					// bucket (additive, or non-additive that already rode the
+					// fire — the accepted partial-window degradation) bills
+					// ONLY on the clamped pass. No watermark ⇒ deferred is
+					// always false and no full pass exists: unchanged.
+					deferredBucket := thresholdBilledThrough != nil &&
+						nonAdditiveMode(agg.AggregationMode) &&
+						!onWatermark(meterID, ratingRuleID)
+					if deferredBucket != w.nonAdditiveOnly {
+						continue
+					}
 					rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, ratingRuleID)
 					if err != nil {
 						return false, fmt.Errorf("get rating rule %s for meter %s: %w", ratingRuleID, meterID, err)
@@ -2702,6 +2783,15 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			}
 
 			// ---- Single-rule path (pre-multi-dim meters). ----
+			// Same ADR-066 §4 pass routing as the multi-dim branch, at meter
+			// granularity (a single-rule meter has exactly one bucket, whose
+			// mode is the meter's own aggregation).
+			singleDeferred := thresholdBilledThrough != nil &&
+				nonAdditiveMode(mapMeterAggregation(meter.Aggregation)) &&
+				!onWatermark(meterID, meter.RatingRuleVersionID)
+			if singleDeferred != w.nonAdditiveOnly {
+				continue
+			}
 			var quantity decimal.Decimal
 			if fullPeriod {
 				quantity = usageTotals[meterID]

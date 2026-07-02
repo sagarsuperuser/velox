@@ -952,3 +952,194 @@ func TestThresholdFire_ResetProratesBase_RealStore(t *testing.T) {
 		t.Errorf("period_start %v != invoice period_end %v (atomic re-anchor)", *sub.CurrentBillingPeriodStart, inv.BillingPeriodEnd)
 	}
 }
+
+// TestThresholdCycle_DeferredMax_FullWindowOnce is the ADR-066 §4 money lock
+// on real Postgres: a reset=false fire (crossed by sum usage + the max
+// bucket's committed spend) DROPS the max line; at cycle close the max meter
+// must bill over the FULL window — its peak predates the fire, so the
+// watermark-clamped residual window contains no peak at all. Pre-fix the
+// clamp applied per meter: the deferred max bucket billed from the empty
+// residual → billed by NOBODY. The second subscription flips its threshold
+// config OFF between fire and close: the exemption must key on the watermark
+// invoice's lines (ground truth), not the mutable config.
+func TestThresholdCycle_DeferredMax_FullWindowOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Deferred Max")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 120*time.Second)
+	defer cancel()
+
+	// A max-aggregated meter alongside the fixture's sum meter, on one plan.
+	rrvMax, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
+		RuleKey: "gpu_peak", Name: "GPU Peak",
+		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(100),
+	})
+	if err != nil {
+		t.Fatalf("create max rrv: %v", err)
+	}
+	maxMeter, err := f.pricingSvc.CreateMeter(ctx, f.tenantID, pricing.CreateMeterInput{
+		Key: "gpu", Name: "GPU Concurrency", Unit: "gpus",
+		Aggregation: "max", RatingRuleVersionID: rrvMax.ID,
+	})
+	if err != nil {
+		t.Fatalf("create max meter: %v", err)
+	}
+	plan, err := f.pricingSvc.CreatePlan(ctx, f.tenantID, pricing.CreatePlanInput{
+		Code: "pln_mixed", Name: "Mixed Plan",
+		Currency: "USD", BillingInterval: domain.BillingMonthly,
+		BaseAmountCents: 0, MeterIDs: []string{f.meterID, maxMeter.ID},
+	})
+	if err != nil {
+		t.Fatalf("create mixed plan: %v", err)
+	}
+
+	// Two isolated customer+sub pairs (usage is customer-scoped; sharing a
+	// customer would double-claim events across subs). Sub B flips its
+	// threshold config off between fire and close.
+	custStore := customer.NewPostgresStore(f.db)
+	custSvc := customer.NewService(custStore)
+	type pair struct{ custID, subID string }
+	pairs := make([]pair, 0, 2)
+	now := time.Now().UTC()
+	for i := 0; i < 2; i++ {
+		cust, err := custSvc.Create(ctx, f.tenantID, customer.CreateInput{
+			ExternalID:  fmt.Sprintf("cus_dmax_%d", i),
+			DisplayName: fmt.Sprintf("Deferred Max %d", i),
+			Email:       fmt.Sprintf("dmax%d@example.test", i),
+		})
+		if err != nil {
+			t.Fatalf("create customer %d: %v", i, err)
+		}
+		subID := fmt.Sprintf("vlx_sub_dmax_%d", i)
+		tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscriptions (
+				id, tenant_id, code, display_name, customer_id, status, billing_time,
+				current_billing_period_start, current_billing_period_end, next_billing_at,
+				billing_threshold_amount_gte, billing_threshold_reset_cycle,
+				created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, 'active', 'anniversary', $6, $7, $7, 500, FALSE, $8, $8)
+		`, subID, f.tenantID, "code-"+subID, "Deferred Max "+subID, cust.ID, f.cycleStart, f.cycleEnd, now); err != nil {
+			t.Fatalf("insert sub %d: %v", i, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscription_items (id, tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 1, '{}'::jsonb, $5, $5)
+		`, fmt.Sprintf("vlx_si_dmax_%d", i), f.tenantID, subID, plan.ID, now); err != nil {
+			t.Fatalf("insert item %d: %v", i, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+		// Sum usage crossing the cap (1000 calls @1c = 1000c ≥ 500) + the max
+		// peak (100 GPUs, one event EARLY in the cycle — before the fire).
+		peakTS := f.cycleStart.Add(30 * time.Minute)
+		if _, err := f.usageSvc.Ingest(ctx, f.tenantID, usage.IngestInput{
+			CustomerID: cust.ID, MeterID: maxMeter.ID,
+			Quantity: decimal.NewFromInt(100), Timestamp: &peakTS,
+		}); err != nil {
+			t.Fatalf("ingest peak %d: %v", i, err)
+		}
+		for j := 0; j < 10; j++ {
+			ts := f.cycleStart.Add(time.Duration(j+1) * time.Minute)
+			if _, err := f.usageSvc.Ingest(ctx, f.tenantID, usage.IngestInput{
+				CustomerID: cust.ID, MeterID: f.meterID,
+				Quantity: decimal.NewFromInt(100), Timestamp: &ts,
+			}); err != nil {
+				t.Fatalf("ingest sum %d/%d: %v", i, j, err)
+			}
+		}
+		pairs = append(pairs, pair{cust.ID, subID})
+	}
+
+	// Fire: both subs cross (sum 1000c + max committed 10000c ≥ 500).
+	// reset=false ⇒ the max line is DROPPED from both threshold invoices.
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 2 {
+		t.Fatalf("fired = %d, want 2", fired)
+	}
+
+	// Sub B: operator clears the threshold config between fire and close —
+	// the close-side exemption must not care.
+	txB, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin flip: %v", err)
+	}
+	if _, err := txB.ExecContext(ctx, `UPDATE subscriptions SET billing_threshold_amount_gte = NULL WHERE id = $1`, pairs[1].subID); err != nil {
+		t.Fatalf("clear thresholds: %v", err)
+	}
+	if err := txB.Commit(); err != nil {
+		t.Fatalf("commit flip: %v", err)
+	}
+
+	// Rewind both periods so the cycle closes now. The fire billed through
+	// wall-now, PAST the rewound period end — the clamped residual window is
+	// EMPTY, so pre-fix the deferred max billed from nothing at all.
+	pastEnd := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Microsecond)
+	txR, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin rewind: %v", err)
+	}
+	if _, err := txR.ExecContext(ctx, `
+		UPDATE subscriptions SET current_billing_period_end = $1, next_billing_at = $1 WHERE id = $2 OR id = $3
+	`, pastEnd, pairs[0].subID, pairs[1].subID); err != nil {
+		t.Fatalf("rewind: %v", err)
+	}
+	if err := txR.Commit(); err != nil {
+		t.Fatalf("commit rewind: %v", err)
+	}
+
+	generated, failures := f.engine.RunCycleForTenant(ctx, f.tenantID, 50)
+	if len(failures) > 0 {
+		t.Fatalf("cycle failures: %v", failures)
+	}
+	if generated != 2 {
+		t.Fatalf("generated = %d, want 2 (one close per sub — 0 means the deferred max billed by NOBODY)", generated)
+	}
+
+	for i, p := range pairs {
+		invs := f.listInvoices(t, ctx)
+		var fire, cycle *domain.Invoice
+		for k := range invs {
+			if invs[k].SubscriptionID != p.subID {
+				continue
+			}
+			if invs[k].BillingReason == domain.BillingReasonThreshold {
+				fire = &invs[k]
+			} else {
+				cycle = &invs[k]
+			}
+		}
+		if fire == nil || cycle == nil {
+			t.Fatalf("sub %d: missing fire or cycle invoice", i)
+		}
+		// Fire billed the sum only (max dropped).
+		if fire.SubtotalCents != 1000 {
+			t.Errorf("sub %d fire subtotal = %d, want 1000 (sum only; dropped max must not be charged)", i, fire.SubtotalCents)
+		}
+		// Close bills the max at its FULL-window peak — exactly once, exactly
+		// 100 GPUs — and re-bills none of the sum.
+		lines, err := f.invStore.ListLineItems(ctx, f.tenantID, cycle.ID)
+		if err != nil {
+			t.Fatalf("sub %d cycle lines: %v", i, err)
+		}
+		if len(lines) != 1 {
+			t.Fatalf("sub %d cycle invoice lines = %d, want 1 (max only; sum already billed through the fire)", i, len(lines))
+		}
+		li := lines[0]
+		if li.MeterID != maxMeter.ID {
+			t.Errorf("sub %d cycle line meter = %s, want the max meter", i, li.MeterID)
+		}
+		if li.QuantityDecimal.IntPart() != 100 || li.AmountCents != 10000 {
+			t.Errorf("sub %d max line qty/amount = %d/%d, want 100/10000 (full-window peak — the clamped residual holds no peak)",
+				i, li.QuantityDecimal.IntPart(), li.AmountCents)
+		}
+	}
+}

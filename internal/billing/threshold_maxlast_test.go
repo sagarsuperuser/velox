@@ -180,3 +180,95 @@ func TestScanThresholds_PureMaxCrossing_SkipsWithOneArtifact(t *testing.T) {
 		t.Errorf("deferral consumed %d invoice numbers, want 0 (guard must sit before NextInvoiceNumber)", ms.next)
 	}
 }
+
+// TestNonAdditiveMode_Classification pins the non-additive set (ADR-066 §4):
+// max + BOTH last variants (the original plan forgot last_ever, which
+// ignores window bounds entirely). sum/count stay additive.
+func TestNonAdditiveMode_Classification(t *testing.T) {
+	for mode, want := range map[domain.AggregationMode]bool{
+		domain.AggMax:              true,
+		domain.AggLastDuringPeriod: true,
+		domain.AggLastEver:         true,
+		domain.AggSum:              false,
+		domain.AggCount:            false,
+		domain.AggregationMode(""): false,
+	} {
+		if got := nonAdditiveMode(mode); got != want {
+			t.Errorf("nonAdditiveMode(%q) = %v, want %v", mode, got, want)
+		}
+	}
+}
+
+// TestBillOnePeriod_DeferredMaxBucket_BilledExactlyOnceAtClose locks the
+// close-side pass routing (ADR-066 §4): with a threshold watermark whose
+// invoice carries the SUM bucket's line but not the MAX bucket's (the fire
+// deferred it), the cycle close bills each bucket EXACTLY once — sum from the
+// clamped pass, max from the full-window pass — and the routing keys on the
+// watermark invoice's LINES (ground truth), not the sub's threshold config
+// (which this test leaves entirely unset, as if the operator cleared it
+// between fire and close). Mutation seam: drop the pass filter and each
+// bucket bills twice.
+func TestBillOnePeriod_DeferredMaxBucket_BilledExactlyOnceAtClose(t *testing.T) {
+	// No thresholds on the sub config — ground truth must come from the
+	// watermark invoice alone.
+	engine, _, invoices := setupMaxLastEngine(nil)
+	engine.clock = clock.NewFake(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)) // due
+	// billOnePeriod's multi-dim branch requires meter pricing rules.
+	mp := engine.pricing.(*mockPricing)
+	mp.meterPricingRules = map[string][]domain.MeterPricingRule{
+		"mtr_api": {
+			{ID: "mpr_sum", MeterID: "mtr_api", RatingRuleVersionID: "rrv_api", AggregationMode: domain.AggSum},
+			{ID: "mpr_max", MeterID: "mtr_api", RatingRuleVersionID: "rrv_max", AggregationMode: domain.AggMax},
+		},
+	}
+
+	// Watermark: a reset=false threshold fire billed the sum bucket through
+	// Apr 10; the max bucket was deferred (no line).
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	fireAt := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+	invoices.invoices = append(invoices.invoices, domain.Invoice{
+		ID: "vlx_inv_fire", SubscriptionID: "sub_1", TenantID: "t1",
+		Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
+		TaxStatus:          domain.InvoiceTaxOK,
+		BillingReason:      domain.BillingReasonThreshold,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   fireAt,
+	})
+	invoices.lineItems = append(invoices.lineItems, domain.InvoiceLineItem{
+		InvoiceID: "vlx_inv_fire", LineType: domain.LineTypeUsage,
+		MeterID: "mtr_api", RatingRuleVersionID: "rrv_api", AmountCents: 40000,
+	})
+
+	generated, failures := engine.RunCycleForTenant(context.Background(), "t1", 50)
+	if len(failures) != 0 {
+		t.Fatalf("cycle failures: %v", failures)
+	}
+	if generated != 1 {
+		t.Fatalf("generated = %d, want 1", generated)
+	}
+
+	var sumLines, maxLines int
+	var cycleInvoiceID string
+	for _, inv := range invoices.invoices {
+		if inv.BillingReason != domain.BillingReasonThreshold {
+			cycleInvoiceID = inv.ID
+		}
+	}
+	for _, li := range invoices.lineItems {
+		if li.InvoiceID != cycleInvoiceID || li.LineType != domain.LineTypeUsage {
+			continue
+		}
+		switch li.RatingRuleVersionID {
+		case "rrv_api":
+			sumLines++
+		case "rrv_max":
+			maxLines++
+		}
+	}
+	if sumLines != 1 {
+		t.Errorf("sum bucket lines on cycle invoice = %d, want exactly 1 (clamped pass)", sumLines)
+	}
+	if maxLines != 1 {
+		t.Errorf("deferred max bucket lines on cycle invoice = %d, want exactly 1 (full-window pass; 0 = billed by NOBODY, 2 = double-billed)", maxLines)
+	}
+}
