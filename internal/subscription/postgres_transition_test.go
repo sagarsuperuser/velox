@@ -452,7 +452,7 @@ func TestScheduleAndFireCancellation_Roundtrip(t *testing.T) {
 	cancelAt := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Microsecond)
 
 	// 1. Schedule with timestamp + flag both set so we exercise both columns.
-	scheduled, err := store.ScheduleCancellation(ctx, tenantID, subID, &cancelAt, true)
+	scheduled, err := store.ScheduleCancellation(ctx, tenantID, subID, &cancelAt, true, domain.SubscriptionActive)
 	if err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestScheduleAndFireCancellation_Roundtrip(t *testing.T) {
 	}
 
 	// 3. Re-schedule and fire.
-	if _, err := store.ScheduleCancellation(ctx, tenantID, subID, nil, true); err != nil {
+	if _, err := store.ScheduleCancellation(ctx, tenantID, subID, nil, true, domain.SubscriptionActive); err != nil {
 		t.Fatalf("re-schedule: %v", err)
 	}
 	fireAt := time.Now().UTC().Truncate(time.Microsecond)

@@ -677,6 +677,10 @@ export interface Subscription {
   usage_cap_units?: number | null
   overage_action?: string
   cancel_at_period_end?: boolean
+  // Derived, read-only: the backend's authoritative "when does it actually
+  // cancel" (trialing+flag → trial end; active+flag → period end; explicit
+  // cancel_at otherwise). Consumers must not re-derive from the flag.
+  cancel_effective_at?: string
   cancel_at?: string
   canceled_at?: string
   pause_collection?: {

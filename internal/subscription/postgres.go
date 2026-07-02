@@ -353,17 +353,21 @@ func (s *PostgresStore) CancelAtomicWithBill(ctx context.Context, tenantID, id s
 	return canceled, nil
 }
 
-// ScheduleCancellation persists the soft-cancel intent. Either field (or
-// both) may be set; the row stores them and the billing cycle scan applies
-// whichever boundary fires first. Returns the updated subscription with
-// hydrated items so the handler can echo the same shape it returns
-// elsewhere.
+// ScheduleCancellation persists the soft-cancel intent. The schedule fires
+// through TWO consumers (ADR-069): the billing cycle scan at period
+// boundaries for ACTIVE subs, and the trial-end guard/CancelAtTrialEnd for
+// TRIALING subs (a free, no-invoice cancel at trial_end_at). Returns the
+// updated subscription with hydrated items so the handler can echo the
+// same shape it returns elsewhere.
 //
-// The UPDATE is unconditional on status because callers can legitimately
-// schedule a cancel against a paused subscription (Stripe allows the same).
-// Only canceled/archived subs are rejected — there's nothing to schedule
-// once the sub has already terminated.
-func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error) {
+// The UPDATE CAS-es on observedStatus — the status the caller validated the
+// intent under — because the flag's MEANING is status-polymorphic: landing
+// a "free at trial end" intent on a sub an activation writer just flipped
+// would silently turn it into a paid-period cancel. Status drift returns
+// InvalidState (409, re-read). Paused subs remain schedulable (Stripe
+// parity); canceled/archived are rejected — nothing to schedule once
+// terminated.
+func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool, observedStatus domain.SubscriptionStatus) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Subscription{}, err
@@ -372,12 +376,18 @@ func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id s
 
 	now := clock.Now(ctx)
 	var sub domain.Subscription
+	// CAS on the status the caller VALIDATED the intent under (ADR-069): the
+	// schedule flag is status-polymorphic — on a trialing sub AtPeriodEnd
+	// means "cancel free at trial end", on an active sub it means "cancel at
+	// paid-period end, charged". Landing the flag on a sub an activation
+	// writer just flipped would silently invert the promise the operator was
+	// shown. Zero rows with a live row = state changed → 409, re-read.
 	err = scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
 		SET cancel_at = $1, cancel_at_period_end = $2, updated_at = $3
-		WHERE id = $4 AND status NOT IN ('canceled','archived')
+		WHERE id = $4 AND status = $5 AND status NOT IN ('canceled','archived')
 		RETURNING `+subCols,
-		postgres.NullableTime(cancelAt), cancelAtPeriodEnd, now, id,
+		postgres.NullableTime(cancelAt), cancelAtPeriodEnd, now, id, observedStatus,
 	), &sub)
 	if err == sql.ErrNoRows {
 		var currentStatus string
@@ -387,6 +397,11 @@ func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id s
 		}
 		if err2 != nil {
 			return domain.Subscription{}, err2
+		}
+		if currentStatus != string(observedStatus) {
+			return domain.Subscription{}, errs.InvalidState(fmt.Sprintf(
+				"subscription changed from %s to %s while scheduling — re-read and retry (the cancel's meaning depends on status)",
+				observedStatus, currentStatus))
 		}
 		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot schedule cancellation on %s subscription", currentStatus))
 	}
@@ -625,25 +640,23 @@ func (s *PostgresStore) ActivateAfterTrialWithBill(ctx context.Context, tenantID
 
 func (s *PostgresStore) activateAfterTrialInTx(ctx context.Context, tx *sql.Tx, id string, at time.Time) (domain.Subscription, error) {
 	var sub domain.Subscription
+	// The schedule-empty predicate is the ADR-069 TOCTOU killer: a
+	// cancel-at-trial-end committing between a scan's snapshot and this
+	// UPDATE must WIN — activating (and billing) a customer who canceled is
+	// the audit bug this arc exists to fix. Callers route the typed
+	// ErrTrialCancelDue to the dedicated cancel transition.
 	err := scanSubRow(tx.QueryRowContext(ctx, `
 		UPDATE subscriptions
 		SET status = 'active',
 		    activated_at = COALESCE(activated_at, $1),
 		    updated_at = $1
 		WHERE id = $2 AND status = 'trialing'
+		  AND cancel_at IS NULL AND cancel_at_period_end = false
 		RETURNING `+subCols,
 		at, id,
 	), &sub)
 	if err == sql.ErrNoRows {
-		var currentStatus string
-		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
-		if err2 == sql.ErrNoRows {
-			return domain.Subscription{}, errs.ErrNotFound
-		}
-		if err2 != nil {
-			return domain.Subscription{}, err2
-		}
-		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", currentStatus))
+		return domain.Subscription{}, s.classifyActivationConflict(ctx, tx, id)
 	}
 	if err != nil {
 		return domain.Subscription{}, err
@@ -652,6 +665,28 @@ func (s *PostgresStore) activateAfterTrialInTx(ctx context.Context, tx *sql.Tx, 
 		return domain.Subscription{}, err
 	}
 	return sub, nil
+}
+
+// classifyActivationConflict names WHY a trialing→active UPDATE matched no
+// row: gone, already non-trialing, or blocked by a pending cancel schedule
+// (ErrTrialCancelDue — the caller routes to CancelAtTrialEnd).
+func (s *PostgresStore) classifyActivationConflict(ctx context.Context, tx *sql.Tx, id string) error {
+	var currentStatus string
+	var cancelAt sql.NullTime
+	var cancelAtPeriodEnd bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT status, cancel_at, cancel_at_period_end FROM subscriptions WHERE id = $1`, id,
+	).Scan(&currentStatus, &cancelAt, &cancelAtPeriodEnd)
+	if err == sql.ErrNoRows {
+		return errs.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if currentStatus == "trialing" && (cancelAt.Valid || cancelAtPeriodEnd) {
+		return ErrTrialCancelDue
+	}
+	return errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", currentStatus))
 }
 
 // EndTrialEarly atomically flips status 'trialing' → 'active', stamps
@@ -705,19 +740,18 @@ func (s *PostgresStore) endTrialEarlyInTx(ctx context.Context, tx *sql.Tx, id st
 		    billing_anchor_day = $5,
 		    updated_at = $1
 		WHERE id = $6 AND status = 'trialing'
+		  AND cancel_at IS NULL AND cancel_at_period_end = false
 		RETURNING `+subCols,
 		at, periodStart, periodEnd, nextBilling, anchorDay, id,
 	), &sub)
 	if err == sql.ErrNoRows {
-		var currentStatus string
-		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
-		if err2 == sql.ErrNoRows {
-			return domain.Subscription{}, errs.ErrNotFound
-		}
-		if err2 != nil {
-			return domain.Subscription{}, err2
-		}
-		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", currentStatus))
+		// A pending schedule blocks the early end IN SQL (ADR-069): the
+		// service-level 409 alone is a snapshot check that loses the exact
+		// race it exists to prevent (ScheduleCancel committing in the gap →
+		// active + day-1 invoice + a schedule that now means paid-period
+		// cancel). classifyActivationConflict maps it to ErrTrialCancelDue;
+		// EndTrial translates that to the operator 409.
+		return domain.Subscription{}, s.classifyActivationConflict(ctx, tx, id)
 	}
 	if err != nil {
 		return domain.Subscription{}, err
@@ -753,17 +787,28 @@ func (s *PostgresStore) ExtendTrial(ctx context.Context, tenantID, id string, ne
 		    billing_anchor_day = $5,
 		    updated_at = $6
 		WHERE id = $7 AND status = 'trialing'
+		  AND cancel_at IS NULL
 		RETURNING `+subCols,
 		newTrialEnd, periodStart, periodEnd, nextBilling, anchorDay, now, id,
 	), &sub)
 	if err == sql.ErrNoRows {
+		// A pending EXPLICIT cancel_at blocks the extension in SQL (ADR-069):
+		// extending past a pinned timestamp strands it — nothing fires inside
+		// a running trial, so the sub would silently outlive the operator's
+		// echoed-in-GET cancel date. Flag-only schedules
+		// (cancel_at_period_end) pass through: they MOVE with the trial by
+		// design. Same two-layer shape as the EndTrial guard.
 		var currentStatus string
-		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		var cancelAt sql.NullTime
+		err2 := tx.QueryRowContext(ctx, `SELECT status, cancel_at FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus, &cancelAt)
 		if err2 == sql.ErrNoRows {
 			return domain.Subscription{}, errs.ErrNotFound
 		}
 		if err2 != nil {
 			return domain.Subscription{}, err2
+		}
+		if currentStatus == "trialing" && cancelAt.Valid {
+			return domain.Subscription{}, errs.InvalidState("subscription has a scheduled cancellation with an explicit date — clear the scheduled cancel first, then extend the trial")
 		}
 		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot extend trial on %s subscription", currentStatus))
 	}
@@ -2063,6 +2108,10 @@ func scanSubRow(row rowScanner, sub *domain.Subscription) error {
 			ItemThresholds:    []domain.SubscriptionItemThreshold{},
 		}
 	}
+	// ADR-069: derive the read-only cancel_effective_at at THE scan choke
+	// point so every read path (Get/List/scans/API) agrees on when the sub
+	// actually cancels.
+	sub.DeriveCancelEffectiveAt()
 	return nil
 }
 
@@ -2297,3 +2346,57 @@ func (s *PostgresStore) ListItemChangesInPeriod(ctx context.Context, tenantID, s
 // exchange via JSON. pgx returns bytea for JSONB by default; store/consume
 // raw bytes on the Metadata field so the caller owns the encoding policy.
 var _ = sql.ErrNoRows // retain import
+
+// ErrTrialCancelDue / ErrTrialCancelConflict live in domain (the billing
+// engine routes on them without a peer import); aliased here for the
+// package's own callers.
+var (
+	ErrTrialCancelDue      = domain.ErrTrialCancelDue
+	ErrTrialCancelConflict = domain.ErrTrialCancelConflict
+)
+
+// CancelAtTrialEnd is the dedicated trialing→canceled transition (ADR-069):
+// trials are free, so it emits NO invoice, stamps canceled_at = trial_end_at
+// (never the observing site's `now` — the engine path fires up to a full
+// interval late), and clears the schedule fields. The CAS predicates on the
+// exact state that justified the cancel — observed trial_end_at (an
+// ExtendTrial in the gap must win) and a schedule actually due at trial end
+// (a ClearScheduledCancel in the gap must win) — so a customer who rescinded
+// or was extended is never terminated by a stale snapshot.
+func (s *PostgresStore) CancelAtTrialEnd(ctx context.Context, tenantID, id string, observedTrialEnd time.Time) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := clock.Now(ctx)
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'canceled',
+		    canceled_at = trial_end_at,
+		    cancel_at = NULL,
+		    cancel_at_period_end = false,
+		    updated_at = $1
+		WHERE id = $2
+		  AND status = 'trialing'
+		  AND trial_end_at = $3
+		  AND (cancel_at_period_end = true OR (cancel_at IS NOT NULL AND cancel_at <= trial_end_at))
+		RETURNING `+subCols,
+		now, id, observedTrialEnd,
+	), &sub)
+	if err == sql.ErrNoRows {
+		return domain.Subscription{}, ErrTrialCancelConflict
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}

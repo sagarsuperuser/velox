@@ -1556,22 +1556,33 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 }
 
 // ScheduleCancelInput carries the soft-cancel intent. Exactly one of
-// AtPeriodEnd or CancelAt must be set on a single call. AtPeriodEnd defers
-// the cancel to current_billing_period_end; CancelAt is an explicit
-// timestamp the cycle scan compares against effectiveNow. The mutually-
-// exclusive split forces unambiguous caller intent — Stripe's update
-// endpoint accepts both fields together but the resulting precedence is
-// surprising; rejecting the combination here keeps the API obvious.
+// AtPeriodEnd or CancelAt must be set on a single call. AtPeriodEnd is
+// STATUS-POLYMORPHIC (ADR-069, Stripe semantics): on an ACTIVE sub it
+// defers the cancel to current_billing_period_end; on a TRIALING sub it
+// means cancel FREE at trial_end_at — the trial scans and the engine route
+// it through the dedicated no-invoice transition, and ExtendTrial moves it
+// with the trial (the reason it stays a flag rather than eagerly converting
+// to a pinned cancel_at). CancelAt is an explicit timestamp the cycle scan
+// compares against effectiveNow. The mutually-exclusive split forces
+// unambiguous caller intent — Stripe's update endpoint accepts both fields
+// together but the resulting precedence is surprising; rejecting the
+// combination here keeps the API obvious. The derived read-only
+// cancel_effective_at on the subscription answers "when does it actually
+// cancel" for consumers.
 type ScheduleCancelInput struct {
 	AtPeriodEnd bool       `json:"at_period_end,omitempty"`
 	CancelAt    *time.Time `json:"cancel_at,omitempty"`
 }
 
-// ScheduleCancel persists the soft-cancel intent. v1 only accepts
-// CancelAt values >= current_billing_period_end so the active period
-// bills normally and the cancel lands on a clean cycle boundary; the
-// shorten-current-period + proration variant is a follow-up that needs
-// the proration generator wired into the engine cancel path.
+// ScheduleCancel persists the soft-cancel intent. For ACTIVE subs,
+// CancelAt must be >= current_billing_period_end so the period bills
+// normally and the cancel lands on a clean cycle boundary (the
+// shorten-current-period + proration variant needs the proration generator
+// wired into the engine cancel path). For TRIALING subs (ADR-069), exactly
+// two CancelAt values are honorable: == trial_end_at (free cancel via the
+// trial-end guard) or >= current_billing_period_end (activate, bill period
+// 1, cancel at its close); the open interval between them is rejected —
+// no machinery honors it.
 //
 // Re-scheduling is idempotent: a second call with the same intent leaves
 // the row unchanged but for updated_at. Toggling between modes (e.g.
@@ -1602,15 +1613,29 @@ func (s *Service) ScheduleCancel(ctx context.Context, tenantID, id string, input
 		if !ts.After(now) {
 			return domain.Subscription{}, errs.Invalid("cancel_at", "must be in the future")
 		}
-		// v1 constraint — see function comment.
-		if sub.CurrentBillingPeriodEnd != nil && ts.Before(*sub.CurrentBillingPeriodEnd) {
+		// Boundary constraint (ADR-069). For a TRIALING sub exactly two
+		// values are honorable: trial_end_at (free cancel — the trial-end
+		// guard fires) or on/after current_billing_period_end (activate,
+		// bill period 1, cancel at its close). The open interval between
+		// them is accepted by no machinery — the guard wouldn't fire and
+		// the cycle only cancels at boundaries — so a customer would prepay
+		// a FULL period against an echoed-in-GET date nothing honors.
+		// Active subs keep the existing on-or-after-period-end rule.
+		if sub.Status == domain.SubscriptionTrialing && sub.TrialEndAt != nil && ts.Equal(*sub.TrialEndAt) {
+			// Free cancel at trial end — allowed.
+		} else if sub.CurrentBillingPeriodEnd != nil && ts.Before(*sub.CurrentBillingPeriodEnd) {
+			if sub.Status == domain.SubscriptionTrialing && sub.TrialEndAt != nil {
+				return domain.Subscription{}, errs.Invalid("cancel_at", fmt.Sprintf(
+					"for a trialing subscription cancel_at must be the trial end (%s) or on/after current_billing_period_end (%s) — dates in between are honored by neither boundary",
+					sub.TrialEndAt.UTC().Format(time.RFC3339), sub.CurrentBillingPeriodEnd.UTC().Format(time.RFC3339)))
+			}
 			return domain.Subscription{}, errs.Invalid("cancel_at",
 				"must be on or after current_billing_period_end (mid-period cancel with proration is not yet supported)")
 		}
 		cancelAt = &ts
 	}
 
-	return s.store.ScheduleCancellation(ctx, tenantID, id, cancelAt, input.AtPeriodEnd)
+	return s.store.ScheduleCancellation(ctx, tenantID, id, cancelAt, input.AtPeriodEnd, sub.Status)
 }
 
 // ClearScheduledCancel undoes any prior schedule. Idempotent — a row
@@ -1745,6 +1770,15 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 	if sub.Status != domain.SubscriptionTrialing {
 		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("cannot end trial on %s subscription", sub.Status))
 	}
+	// A pending cancel schedule blocks the early end (ADR-069, no silent
+	// precedence): ending the trial would activate + bill period 1 while the
+	// schedule silently mutates into a paid-period cancel — the customer
+	// pays a full period despite having canceled first. This service check
+	// is the fast operator feedback; the store UPDATE's schedule-empty
+	// predicate is the atomic backstop for a schedule racing this read.
+	if sub.CancelAtPeriodEnd || sub.CancelAt != nil {
+		return domain.Subscription{}, errs.InvalidState("subscription has a scheduled cancellation — clear the scheduled cancel first, then end the trial")
+	}
 
 	loc := s.tenantLocation(ctx, tenantID)
 	interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
@@ -1771,6 +1805,11 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrTrialCancelDue) {
+			// The SQL backstop caught a schedule that raced past the check
+			// above — same operator answer.
+			return domain.Subscription{}, errs.InvalidState("subscription has a scheduled cancellation — clear the scheduled cancel first, then end the trial")
+		}
 		return domain.Subscription{}, err
 	}
 	if haveInv {
@@ -1796,6 +1835,68 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 // Subscriptions matched by the scan but already-EndTrial'd by an
 // operator race will land in ActivateAfterTrial's InvalidState
 // branch — treated as a no-op (already correct state).
+// trialCancelDue reports whether the sub's schedule means "cancel at trial
+// end" (ADR-069): the flag on a trialing sub, or an explicit cancel_at at or
+// before trial_end.
+func trialCancelDue(sub domain.Subscription) bool {
+	if sub.TrialEndAt == nil {
+		return false
+	}
+	return sub.CancelAtPeriodEnd || (sub.CancelAt != nil && !sub.CancelAt.After(*sub.TrialEndAt))
+}
+
+// cancelTrialAtEnd routes one expired trialing sub with a due schedule
+// through the dedicated free cancel transition and fires the terminal
+// emissions EXACTLY ONCE — from the CAS winner (ADR-069). All service-side
+// activation writers share THIS helper so the emissions cannot drift
+// (single-writer convention); the engine's trial branch is the one other
+// writer and reuses its scheduled-cancel vocabulary.
+//
+// Deliberately NO subscription.trial_ended (consumers read that as "billing
+// begins" — provisioning a canceled sub), NO invoice (trials are free), and
+// canceled_at = trial_end_at (stamped in the store transition, never the
+// observing site's possibly-late now). A CAS conflict (rescinded schedule /
+// extended trial / already canceled) is a silent no-op: the sub is NOT
+// handled this pass and the next scan re-routes whatever state it finds.
+// Returns handled=true only when THIS call performed the cancel.
+func (s *Service) cancelTrialAtEnd(ctx context.Context, tenantID string, sub domain.Subscription, clockID string) (bool, error) {
+	if sub.TrialEndAt == nil {
+		return false, nil
+	}
+	canceled, err := s.store.CancelAtTrialEnd(ctx, tenantID, sub.ID, *sub.TrialEndAt)
+	if errors.Is(err, ErrTrialCancelConflict) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	meta := map[string]any{
+		"action":       "trial_end_cancel",
+		"customer_id":  canceled.CustomerID,
+		"triggered_by": "schedule",
+		"canceled_at":  canceled.CanceledAt.UTC().Format(time.RFC3339),
+	}
+	if clockID != "" {
+		meta["test_clock_id"] = clockID
+		meta["sim_effective_at"] = sub.TrialEndAt.UTC().Format(time.RFC3339)
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(ctx, tenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, meta)
+	}
+	if s.events != nil {
+		s.dispatchEvent(ctx, tenantID, domain.EventSubscriptionCanceled, map[string]any{
+			"subscription_id": canceled.ID,
+			"customer_id":     canceled.CustomerID,
+			"canceled_at":     canceled.CanceledAt.UTC(),
+			"canceled_by":     "schedule",
+			"reason":          "trial_end_cancel",
+		})
+	}
+	slog.Info("trial ended with a due cancel schedule — canceled free of charge",
+		"subscription_id", canceled.ID, "tenant_id", tenantID)
+	return true, nil
+}
+
 func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, clockID string, frozen time.Time) (int, []error) {
 	expired, err := s.store.ListExpiredTrialsForClock(ctx, tenantID, clockID, frozen, 100)
 	if err != nil {
@@ -1812,8 +1913,49 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 		}
 		trialEndAt := *sub.TrialEndAt
 		bound := s.bindForSub(ctx, tenantID, sub.ID)
-		activated, err := s.store.ActivateAfterTrial(bound, tenantID, sub.ID, trialEndAt)
+		// ADR-069 routing: a due cancel schedule means CANCEL FREE, never
+		// activate-and-bill. The SQL guard on the activation UPDATE is the
+		// atomic backstop for a schedule landing after this snapshot.
+		if trialCancelDue(sub) {
+			handled, cErr := s.cancelTrialAtEnd(bound, tenantID, sub, clockID)
+			if cErr != nil {
+				batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
+			} else if handled {
+				processed++
+			}
+			continue
+		}
+		// ADR-056 alignment (panel finding): the day-1 in_advance invoice now
+		// rides the SAME tx as the flip on this path too — the old post-flip
+		// BillOnCreate's "will be deferred" WARN was false (the cycle
+		// scheduler skips the just-elapsed segment; the fee was simply lost).
+		var firstInv domain.Invoice
+		var haveInv bool
+		activated, err := s.store.ActivateAfterTrialWithBill(bound, tenantID, sub.ID, trialEndAt, func(tx *sql.Tx, a domain.Subscription) error {
+			if s.biller == nil {
+				return nil
+			}
+			inv, ok, billErr := s.biller.BillOnCreateTx(bound, tx, a)
+			if billErr != nil {
+				return fmt.Errorf("first-invoice-on-trial-expiry: %w", billErr)
+			}
+			firstInv, haveInv = inv, ok
+			return nil
+		})
 		if err != nil {
+			if errors.Is(err, ErrTrialCancelDue) {
+				// A cancel schedule committed between the snapshot and the
+				// flip — the SQL guard blocked the activation. Route it.
+				fresh, gErr := s.store.Get(bound, tenantID, sub.ID)
+				if gErr == nil {
+					if handled, cErr := s.cancelTrialAtEnd(bound, tenantID, fresh, clockID); cErr != nil {
+						batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
+					} else if handled {
+						processed++
+					}
+				}
+				continue
+			}
 			// Operator-EndTrial race: the row already left 'trialing'
 			// between the scan SELECT and the UPDATE. Not an error —
 			// just a no-op for this pass.
@@ -1838,19 +1980,11 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 			})
 		}
 
-		// Cover the first paid period for in_advance items at the
-		// activation instant (Bug #6 carry-through). No-op when no
-		// item is in_advance. Idempotent via the invoice UNIQUE
-		// constraint — a re-run on the same sub doesn't double-bill.
-		// Failure logs but doesn't roll back the activation — same
-		// shape as Service.EndTrial.
-		if s.biller != nil {
-			if _, err := s.biller.BillOnCreate(bound, activated); err != nil {
-				slog.Warn("trial-expiry first-invoice failed; in_advance base fee will be deferred",
-					"subscription_id", activated.ID,
-					"tenant_id", tenantID,
-					"error", err)
-			}
+		// Post-commit external finalize for the day-1 invoice (tax commit +
+		// auto-charge) — Stripe calls never ride a DB tx; the invoice is
+		// already durable + atomic with the activation.
+		if haveInv {
+			s.biller.FinalizeOnCreateInvoice(bound, activated, firstInv)
 		}
 		// Fire subscription.trial_ended webhook to match the engine
 		// auto-flip path. triggered_by="schedule" signals it was the
@@ -1902,6 +2036,18 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			continue
 		}
 		trialEndAt := *sub.TrialEndAt
+		// ADR-069 routing: a due cancel schedule cancels FREE — see the
+		// clock-path twin for the rationale; the activation UPDATE's SQL
+		// guard is the atomic backstop.
+		if trialCancelDue(sub) {
+			handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, sub, "")
+			if cErr != nil {
+				batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
+			} else if handled {
+				processed++
+			}
+			continue
+		}
 		// ADR-056: build the day-1 in_advance invoice IN THE SAME tx as the
 		// trialing→active flip, so a billing failure rolls the activation back
 		// (the sub stays trialing and is retried next tick) rather than leaving
@@ -1921,6 +2067,19 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, ErrTrialCancelDue) {
+				// Schedule committed after the snapshot — the SQL guard
+				// blocked the activation. Route to the free cancel.
+				fresh, gErr := s.store.Get(ctx, sub.TenantID, sub.ID)
+				if gErr == nil {
+					if handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, fresh, ""); cErr != nil {
+						batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
+					} else if handled {
+						processed++
+					}
+				}
+				continue
+			}
 			if errors.Is(err, errs.ErrInvalidState) {
 				// Operator-EndTrial race (or already-active by some
 				// other path) — desired state reached, skip.
@@ -2080,6 +2239,16 @@ func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrial
 	}
 	if current.TrialEndAt != nil && !newTrialEnd.After(*current.TrialEndAt) {
 		return domain.Subscription{}, errs.Invalid("trial_end", "must be after the current trial_end_at — use end-trial to shorten")
+	}
+	// A pending EXPLICIT cancel_at blocks the extension (ADR-069): extending
+	// past the pinned timestamp strands it — nothing fires inside a running
+	// trial, so the sub silently outlives the operator's echoed cancel date.
+	// Flag-only schedules pass through: cancel-at-trial-end MOVES with the
+	// trial by design (the very reason the flag is kept as a flag). Fast
+	// feedback here; the store UPDATE's cancel_at IS NULL predicate is the
+	// atomic backstop.
+	if current.CancelAt != nil {
+		return domain.Subscription{}, errs.InvalidState("subscription has a scheduled cancellation with an explicit date — clear the scheduled cancel first, then extend the trial")
 	}
 
 	// Re-anchor the first chargeable cycle on the new trial_end. Without
