@@ -1029,7 +1029,7 @@ func TestThresholdCycle_DeferredMax_FullWindowOnce(t *testing.T) {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO subscription_items (id, tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, 1, '{}'::jsonb, $5, $5)
-		`, fmt.Sprintf("vlx_si_dmax_%d", i), f.tenantID, subID, plan.ID, now); err != nil {
+		`, fmt.Sprintf("vlx_si_dmax_%d", i), f.tenantID, subID, plan.ID, f.cycleStart); err != nil {
 			t.Fatalf("insert item %d: %v", i, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -1141,5 +1141,164 @@ func TestThresholdCycle_DeferredMax_FullWindowOnce(t *testing.T) {
 			t.Errorf("sub %d max line qty/amount = %d/%d, want 100/10000 (full-window peak — the clamped residual holds no peak)",
 				i, li.QuantityDecimal.IntPart(), li.AmountCents)
 		}
+	}
+}
+
+// TestImmediateCancel_AfterThresholdFire_NoDoubleBill is the ADR-066 §5
+// site-set fix on real Postgres: the immediate cancel is the period's SECOND
+// closer, and pre-fix it ignored the threshold watermark entirely — after a
+// reset=false fire it re-billed the pre-fire sum usage AND the full
+// in_arrears base (both already on the fire invoice). The final cancel
+// invoice must bill only the post-fire residual sum, zero base, and the
+// deferred max bucket over the FULL window.
+func TestImmediateCancel_AfterThresholdFire_NoDoubleBill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Cancel Double")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 120*time.Second)
+	defer cancel()
+
+	// Max meter + base-fee plan alongside the fixture's sum meter.
+	rrvMax, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
+		RuleKey: "gpu_peak_c", Name: "GPU Peak C",
+		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(100),
+	})
+	if err != nil {
+		t.Fatalf("create max rrv: %v", err)
+	}
+	maxMeter, err := f.pricingSvc.CreateMeter(ctx, f.tenantID, pricing.CreateMeterInput{
+		Key: "gpu_c", Name: "GPU C", Unit: "gpus",
+		Aggregation: "max", RatingRuleVersionID: rrvMax.ID,
+	})
+	if err != nil {
+		t.Fatalf("create max meter: %v", err)
+	}
+	plan, err := f.pricingSvc.CreatePlan(ctx, f.tenantID, pricing.CreatePlanInput{
+		Code: "pln_cancel_mixed", Name: "Cancel Mixed Plan",
+		Currency: "USD", BillingInterval: domain.BillingMonthly,
+		BaseAmountCents: 3000, MeterIDs: []string{f.meterID, maxMeter.ID},
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	cust, err := customer.NewService(customer.NewPostgresStore(f.db)).Create(ctx, f.tenantID, customer.CreateInput{
+		ExternalID: "cus_cancel_fire", DisplayName: "Cancel Fire", Email: "cf@example.test",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	subID := "vlx_sub_cancel_fire"
+	now := time.Now().UTC()
+	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO subscriptions (
+			id, tenant_id, code, display_name, customer_id, status, billing_time,
+			current_billing_period_start, current_billing_period_end, next_billing_at,
+			billing_threshold_amount_gte, billing_threshold_reset_cycle,
+			created_at, updated_at
+		) VALUES ($1, $2, 'code-cf', 'Cancel Fire Sub', $3, 'active', 'anniversary', $4, $5, $5, 500, FALSE, $6, $6)
+	`, subID, f.tenantID, cust.ID, f.cycleStart, f.cycleEnd, now); err != nil {
+		t.Fatalf("insert sub: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO subscription_items (id, tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
+		VALUES ('vlx_si_cancel_fire', $1, $2, $3, 1, '{}'::jsonb, $4, $4)
+	`, f.tenantID, subID, plan.ID, f.cycleStart); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Pre-fire usage: 1000c of sum calls + a 100-GPU peak.
+	peakTS := f.cycleStart.Add(30 * time.Minute)
+	if _, err := f.usageSvc.Ingest(ctx, f.tenantID, usage.IngestInput{
+		CustomerID: cust.ID, MeterID: maxMeter.ID,
+		Quantity: decimal.NewFromInt(100), Timestamp: &peakTS,
+	}); err != nil {
+		t.Fatalf("ingest peak: %v", err)
+	}
+	for j := 0; j < 10; j++ {
+		ts := f.cycleStart.Add(time.Duration(j+1) * time.Minute)
+		if _, err := f.usageSvc.Ingest(ctx, f.tenantID, usage.IngestInput{
+			CustomerID: cust.ID, MeterID: f.meterID,
+			Quantity: decimal.NewFromInt(100), Timestamp: &ts,
+		}); err != nil {
+			t.Fatalf("ingest sum: %v", err)
+		}
+	}
+
+	// Fire (reset=false): full base 3000 + sum 1000 ride the invoice; max
+	// dropped (deferred).
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want 1", fired)
+	}
+
+	// Immediate cancel mid-period, after the fire.
+	canceledAt := time.Now().UTC().Truncate(time.Microsecond)
+	txC, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin cancel: %v", err)
+	}
+	if _, err := txC.ExecContext(ctx, `
+		UPDATE subscriptions SET status = 'canceled', canceled_at = $1 WHERE id = $2
+	`, canceledAt, subID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := txC.Commit(); err != nil {
+		t.Fatalf("commit cancel: %v", err)
+	}
+	sub, err := f.subStore.Get(ctx, f.tenantID, subID)
+	if err != nil {
+		t.Fatalf("get sub: %v", err)
+	}
+
+	finalInv, err := f.engine.BillFinalOnImmediateCancel(ctx, sub)
+	if err != nil {
+		t.Fatalf("bill final on cancel: %v", err)
+	}
+	if finalInv.ID == "" {
+		t.Fatal("expected a final cancel invoice (the deferred max bucket must bill somewhere)")
+	}
+
+	lines, err := f.invStore.ListLineItems(ctx, f.tenantID, finalInv.ID)
+	if err != nil {
+		t.Fatalf("final lines: %v", err)
+	}
+	var maxLines, sumLines, baseLines int
+	for _, li := range lines {
+		switch {
+		case li.LineType == domain.LineTypeBaseFee:
+			baseLines++
+		case li.MeterID == maxMeter.ID:
+			maxLines++
+			if li.QuantityDecimal.IntPart() != 100 || li.AmountCents != 10000 {
+				t.Errorf("max line qty/amount = %d/%d, want 100/10000 (full-window peak)", li.QuantityDecimal.IntPart(), li.AmountCents)
+			}
+		case li.MeterID == f.meterID:
+			sumLines++
+		}
+	}
+	// The fire billed base + pre-fire sum; the cancel bills NEITHER again.
+	if baseLines != 0 {
+		t.Errorf("final cancel invoice re-billed %d base line(s) — the fire already carried the full base", baseLines)
+	}
+	if sumLines != 0 {
+		t.Errorf("final cancel invoice re-billed %d sum line(s) — pre-fire usage already on the fire invoice, and no post-fire usage exists", sumLines)
+	}
+	if maxLines != 1 {
+		t.Errorf("deferred max lines on final invoice = %d, want exactly 1", maxLines)
+	}
+	if finalInv.SubtotalCents != 10000 {
+		t.Errorf("final invoice subtotal = %d, want 10000 (deferred max only)", finalInv.SubtotalCents)
 	}
 }

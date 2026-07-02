@@ -296,6 +296,67 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	return e.fireThreshold(ctx, sub, eval, periodStart, now)
 }
 
+// thresholdWatermark is one close window's threshold-fire ground truth
+// (ADR-066 §4) — shared by BOTH period-closers (billOnePeriod and
+// billFinalOnImmediateCancelImpl) so the protocol cannot drift between them:
+//
+//   - billedThrough: usage before this instant (and the in_arrears base)
+//     already billed on the mid-cycle threshold invoice; additive buckets
+//     bill only the residual window.
+//   - lines: the fire invoice's persisted line items — the per-bucket
+//     ground-truth for the non-additive clamp exemption. A max/last bucket
+//     with NO line was deliberately deferred by the fire and must bill
+//     full-window at close; one WITH a line already billed its window.
+//     Keyed on the invoice, never the mutable reset_billing_cycle config —
+//     an operator PATCH between fire and close would otherwise resurrect
+//     the billed-by-nobody gap or a double-bill.
+//
+// A zero watermark (no fire this window) makes every method a no-op:
+// exists() false, deferredBucket() false — closers behave exactly as before.
+type thresholdWatermark struct {
+	billedThrough *time.Time
+	lines         []domain.InvoiceLineItem
+}
+
+// loadThresholdWatermark fetches the window's fire invoice + lines.
+// ErrNotFound = no fire = zero watermark, nil error. Any other failure is
+// loud: closing blind risks a double charge (feedback_no_silent_fallbacks).
+func (e *Engine) loadThresholdWatermark(ctx context.Context, tenantID, subID string, periodStart, periodEnd time.Time) (thresholdWatermark, error) {
+	wmInv, err := e.invoices.GetLatestThresholdInvoiceForCycle(ctx, tenantID, subID, periodStart, periodEnd)
+	if errors.Is(err, errs.ErrNotFound) {
+		return thresholdWatermark{}, nil
+	}
+	if err != nil {
+		return thresholdWatermark{}, fmt.Errorf("lookup threshold invoice for cycle: %w", err)
+	}
+	lines, err := e.invoices.ListLineItems(ctx, tenantID, wmInv.ID)
+	if err != nil {
+		return thresholdWatermark{}, fmt.Errorf("list watermark invoice lines: %w", err)
+	}
+	end := wmInv.BillingPeriodEnd
+	return thresholdWatermark{billedThrough: &end, lines: lines}, nil
+}
+
+func (w thresholdWatermark) exists() bool { return w.billedThrough != nil }
+
+// bucketOnFire reports whether the fire billed this (meter, rating rule
+// version) bucket.
+func (w thresholdWatermark) bucketOnFire(meterID, ratingRuleVersionID string) bool {
+	for _, li := range w.lines {
+		if li.LineType == domain.LineTypeUsage && li.MeterID == meterID && li.RatingRuleVersionID == ratingRuleVersionID {
+			return true
+		}
+	}
+	return false
+}
+
+// deferredBucket reports whether the fire deliberately DEFERRED this
+// non-additive bucket (dropped its line under reset=false) — the close must
+// bill it over the FULL window, exactly once.
+func (w thresholdWatermark) deferredBucket(mode domain.AggregationMode, meterID, ratingRuleVersionID string) bool {
+	return w.exists() && nonAdditiveMode(mode) && !w.bucketOnFire(meterID, ratingRuleVersionID)
+}
+
 // noteThresholdDeferred emits the loudness floor for a crossed-but-deferred
 // cap (ADR-066 §4b): one audit/timeline row + one WARN per (sub, period) —
 // not tick-spam (the scan re-evaluates a pure-max/last crossed sub every tick
