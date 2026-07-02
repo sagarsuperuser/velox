@@ -66,12 +66,12 @@ func (a *subStoreAdapter) ActivateAfterTrial(ctx context.Context, tenantID, id s
 	return a.store.ActivateAfterTrial(ctx, tenantID, id, at)
 }
 
-func (a *subStoreAdapter) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
-	return a.store.ListWithThresholds(ctx, livemode, limit)
+func (a *subStoreAdapter) ListWithThresholds(ctx context.Context, livemode bool, afterID string, limit int) ([]domain.Subscription, error) {
+	return a.store.ListWithThresholds(ctx, livemode, afterID, limit)
 }
 
-func (a *subStoreAdapter) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
-	return a.store.ListWithThresholdsForClock(ctx, tenantID, clockID, limit)
+func (a *subStoreAdapter) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID, afterID string, limit int) ([]domain.Subscription, error) {
+	return a.store.ListWithThresholdsForClock(ctx, tenantID, clockID, afterID, limit)
 }
 
 func (a *subStoreAdapter) ListItemChangesInPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {

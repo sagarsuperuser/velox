@@ -645,7 +645,7 @@ func (m *memStore) ClearBillingThresholds(ctx context.Context, tenantID, id stri
 // tests don't exercise per-clock threshold scans; the per-clock SQL
 // is verified in postgres integration tests. No-op satisfies the
 // interface contract.
-func (m *memStore) ListWithThresholdsForClock(ctx context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
+func (m *memStore) ListWithThresholdsForClock(ctx context.Context, _, _, _ string, _ int) ([]domain.Subscription, error) {
 	return nil, nil
 }
 
@@ -669,7 +669,7 @@ func (m *memStore) ListItemChangesInPeriod(_ context.Context, tenantID, subscrip
 	return out, nil
 }
 
-func (m *memStore) ListWithThresholds(ctx context.Context, _ bool, _ int) ([]domain.Subscription, error) {
+func (m *memStore) ListWithThresholds(ctx context.Context, _ bool, _ string, _ int) ([]domain.Subscription, error) {
 	var out []domain.Subscription
 	for _, s := range m.subs {
 		if s.BillingThresholds == nil {
