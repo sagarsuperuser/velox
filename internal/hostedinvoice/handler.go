@@ -394,73 +394,11 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bt := invoice.BillToInfo{Name: inv.CustomerID}
-	if h.customers != nil {
-		if cust, err := h.customers.Get(r.Context(), inv.TenantID, inv.CustomerID); err == nil {
-			bt.Name = cust.DisplayName
-			bt.Email = cust.Email
-		}
-		if bp, err := h.customers.GetBillingProfile(r.Context(), inv.TenantID, inv.CustomerID); err == nil {
-			if bp.LegalName != "" {
-				bt.Name = bp.LegalName
-			}
-			// bp.Email removed in migration 0100 — bill-to email tracks
-			// customers.email (set above).
-			bt.AddressLine1 = bp.AddressLine1
-			bt.AddressLine2 = bp.AddressLine2
-			bt.City = bp.City
-			bt.State = bp.State
-			bt.PostalCode = bp.PostalCode
-			bt.Country = bp.Country
-		}
-	}
-
-	var ci invoice.CompanyInfo
-	if h.settings != nil {
-		if ts, err := h.settings.Get(r.Context(), inv.TenantID); err == nil {
-			ci = invoice.CompanyInfo{
-				Name:         ts.CompanyName,
-				Email:        ts.CompanyEmail,
-				Phone:        ts.CompanyPhone,
-				AddressLine1: ts.CompanyAddressLine1,
-				AddressLine2: ts.CompanyAddressLine2,
-				City:         ts.CompanyCity,
-				State:        ts.CompanyState,
-				PostalCode:   ts.CompanyPostalCode,
-				Country:      ts.CompanyCountry,
-				BrandColor:   ts.BrandColor,
-				TaxID:        ts.TaxID,
-				TaxIDType:    invoice.SupplierTaxIDTypeFromCountry(ts.CompanyCountry),
-			}
-			// Inclusive-last-day period string (ADR-058 follow-up): the hosted
-			// path fetches via GetByPublicToken, bypassing the service read
-			// decorator that sets it, so author it here from the same domain
-			// helper + tenant TZ the dashboard uses.
-			inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(inv.BillingPeriodStart, inv.BillingPeriodEnd, domain.LoadLocationOrUTC(ts.Timezone))
-		}
-	}
-
-	var cnInfos []invoice.CreditNoteInfo
-	if h.creditNotes != nil {
-		if notes, err := h.creditNotes.List(r.Context(), inv.TenantID, inv.ID); err == nil {
-			for _, cn := range notes {
-				if cn.Status != domain.CreditNoteIssued {
-					continue
-				}
-				cnInfos = append(cnInfos, invoice.CreditNoteInfo{
-					Number:               cn.CreditNoteNumber,
-					Reason:               cn.Reason,
-					Amount:               cn.TotalCents,
-					RefundAmountCents:    cn.RefundAmountCents,
-					CreditAmountCents:    cn.CreditAmountCents,
-					OutOfBandAmountCents: cn.OutOfBandAmountCents,
-					TaxAmountCents:       cn.TaxAmountCents,
-					TaxTransactionID:     cn.TaxTransactionID,
-					RefundStatus:         string(cn.RefundStatus),
-				})
-			}
-		}
-	}
+	// One shared context builder across emailed/downloaded/hosted PDFs
+	// (invoice.BuildPDFContext) — it also stamps BillingPeriodDisplay,
+	// which this path needs because GetByPublicToken bypasses the
+	// service read decorator that normally sets it.
+	bt, ci, cnInfos := invoice.BuildPDFContext(r.Context(), h.customers, h.settings, h.creditNotes, inv.TenantID, &inv)
 
 	pdfBytes, err := invoice.RenderPDF(r.Context(), inv, items, bt, cnInfos, ci)
 	if err != nil {

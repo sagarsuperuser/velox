@@ -1022,6 +1022,9 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 
 - [ ] Invoice detail → Email → outbox row → PDF attached → Mailpit shows delivery.
 - [ ] Preview PDF → renders in overlay; close via X / backdrop.
+- [ ] **Emailed PDF == downloaded PDF == hosted PDF** — for a customer with a billing profile (address + tax ID) and an issued credit note, all three PDFs carry the buyer's address, `Tax ID:` line, and the credit-note block (the emailed one used to omit all three).
+- [ ] **Emailed amount = amount due** — on an invoice with credits applied, the email's "Amount due" card shows the post-credit residual, not the total. The payment receipt states the amount actually charged.
+- [ ] **Uncollectible invoice's hosted page is honest** — a `mark_uncollectible` dunning outcome's "Resolve invoice" email link lands on a "This invoice is closed" banner with contact-support copy and no Pay button.
 
 ### Branded HTML body
 

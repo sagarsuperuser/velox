@@ -200,6 +200,11 @@ type BillToInfo struct {
 	State        string
 	PostalCode   string
 	Country      string
+	// TaxID is the buyer's VAT/GSTIN/ABN registration. Required on
+	// legally compliant B2B invoices (EU VAT Directive Art. 226, India
+	// GST) — the credit-note PDF already carried it; invoices drifted
+	// without it.
+	TaxID string
 }
 
 // Currency symbol map
@@ -211,17 +216,28 @@ var currencySymbols = map[string]string{
 	"THB": "฿", "MYR": "RM ", "IDR": "Rp ", "PHP": "₱", "VND": "₫",
 }
 
-var pdfCurrencySymbol = "$"
+// currencySymbolFor maps an ISO currency to its display symbol,
+// falling back to "CUR " prefixing for unmapped codes.
+func currencySymbolFor(currency string) string {
+	if sym, ok := currencySymbols[strings.ToUpper(currency)]; ok {
+		return sym
+	}
+	if currency != "" {
+		return currency + " "
+	}
+	return "$"
+}
 
 func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.InvoiceLineItem, billTo BillToInfo, creditNotes []CreditNoteInfo, company ...CompanyInfo) ([]byte, error) {
-	// Set currency symbol
-	if sym, ok := currencySymbols[strings.ToUpper(inv.Currency)]; ok {
-		pdfCurrencySymbol = sym
-	} else if inv.Currency != "" {
-		pdfCurrencySymbol = inv.Currency + " "
-	} else {
-		pdfCurrencySymbol = "$"
-	}
+	// Currency symbol is LOCAL to this render. It was a package-level
+	// var mutated at the top of every call — two concurrent renders
+	// (email + download, two operators, hosted + dashboard) with
+	// different currencies raced, and an invoice could print with the
+	// OTHER render's symbol on every money field. The shadowing
+	// closures below keep the 19 call sites unchanged.
+	symbol := currencySymbolFor(inv.Currency)
+	formatCents := func(c int64) string { return formatCentsIn(symbol, c) }
+	formatRate := func(d decimal.Decimal) string { return formatRateIn(symbol, d) }
 
 	pdf := &gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
@@ -423,6 +439,13 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 	}
 	if billTo.Country != "" {
 		textAt(rightX, by, billTo.Country)
+		by += 12
+	}
+	if billTo.TaxID != "" {
+		// Buyer registration — same plain label the credit-note PDF
+		// uses (the buyer supplies the id; guessing a jurisdiction
+		// label from their country risks mislabeling it).
+		textAt(rightX, by, "Tax ID: "+billTo.TaxID)
 		by += 12
 	}
 	if billTo.Email != "" {
@@ -797,13 +820,14 @@ func formatTaxRate(rate float64) string {
 	return strings.TrimRight(s, ".")
 }
 
-// formatRate renders a per-unit price carried as DECIMAL CENTS at full
+// formatRateIn renders a per-unit price carried as DECIMAL CENTS at full
 // precision (e.g. 0.3 cents → "$0.003"), the Stripe unit_amount_decimal model
-// — mirrors web-v2 formatRate. Unlike formatCents (whole cents) it never
+// — mirrors web-v2 formatRate. Unlike formatCentsIn (whole cents) it never
 // collapses a sub-cent rate to "$0.00"; it keeps a minimum of 2 fractional
 // digits and trims trailing zeros beyond that. Only the per-unit column uses
-// this; line amounts/totals stay whole cents (formatCents). ADR-054.
-func formatRate(cents decimal.Decimal) string {
+// this; line amounts/totals stay whole cents (formatCentsIn). ADR-054.
+// The symbol is threaded per render (see RenderPDF) — never global state.
+func formatRateIn(symbol string, cents decimal.Decimal) string {
 	dollars := cents.Shift(-2) // ÷100 exactly, no rounding
 	neg := dollars.Sign() < 0
 	abs := dollars.Abs()
@@ -821,12 +845,12 @@ func formatRate(cents decimal.Decimal) string {
 	if neg && !abs.IsZero() {
 		sign = "-"
 	}
-	return fmt.Sprintf("%s%s%s.%s", sign, pdfCurrencySymbol, formatNumber(intPart.IntPart()), fracStr)
+	return fmt.Sprintf("%s%s%s.%s", sign, symbol, formatNumber(intPart.IntPart()), fracStr)
 }
 
-func formatCents(cents int64) string {
+func formatCentsIn(symbol string, cents int64) string {
 	if cents == 0 {
-		return pdfCurrencySymbol + "0.00"
+		return symbol + "0.00"
 	}
 	sign := ""
 	if cents < 0 {
@@ -835,7 +859,7 @@ func formatCents(cents int64) string {
 	}
 	dollars := cents / 100
 	remainder := cents % 100
-	return fmt.Sprintf("%s%s%s.%02d", sign, pdfCurrencySymbol, formatNumber(dollars), remainder)
+	return fmt.Sprintf("%s%s%s.%02d", sign, symbol, formatNumber(dollars), remainder)
 }
 
 func formatQuantity(item domain.InvoiceLineItem) string {

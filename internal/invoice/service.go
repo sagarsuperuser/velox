@@ -1087,8 +1087,22 @@ func buildLineItem(input AddLineItemInput, currency string) (domain.InvoiceLineI
 		// fallback would have been rejected by Postgres on insert.
 		lineType = string(domain.LineTypeAddOn)
 	}
+	switch domain.InvoiceLineItemType(lineType) {
+	case domain.LineTypeBaseFee, domain.LineTypeUsage, domain.LineTypeAddOn, domain.LineTypeDiscount, domain.LineTypeTax:
+		// Matches the DB CHECK — an unknown value used to sail through
+		// here and surface as a raw constraint violation (500).
+	default:
+		return domain.InvoiceLineItem{}, errs.Invalid("line_type", "must be one of: base_fee, usage, add_on, discount, tax")
+	}
 
 	amountCents := input.Quantity * input.UnitAmountCents
+	// int64 overflow guard: quantity and unit price are individually
+	// valid (> 0), but their product can wrap negative and PERSIST as a
+	// negative line/total — a silently corrupted money document.
+	// Quantity > 0 was enforced above, so the division is safe.
+	if amountCents/input.Quantity != input.UnitAmountCents {
+		return domain.InvoiceLineItem{}, errs.Invalid("amount", "quantity × unit_amount_cents overflows — split the charge across multiple line items")
+	}
 
 	return domain.InvoiceLineItem{
 		LineType:         domain.InvoiceLineItemType(lineType),
