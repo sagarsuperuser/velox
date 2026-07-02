@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // AttentionSeverity is the urgency of an Attention surface. Operators
 // sort/filter on this and the dashboard renders one colour per level.
@@ -72,6 +75,17 @@ const (
 	// operators benefit from a quiet "the system has it" signal rather
 	// than silence.
 	AttentionReasonPaymentUnconfirmed AttentionReason = "payment_unconfirmed"
+
+	// AttentionReasonPaymentAnomaly: the settle path detected money that
+	// does not reconcile — a second different PaymentIntent succeeded on an
+	// already-paid invoice (double charge), the captured amount differs
+	// from the booked amount, or a payment landed on a voided invoice
+	// (ADR-068). Critical, and deliberately surfaced EVEN ON TERMINAL
+	// invoices: with auto-refund deferred the operator is the refund
+	// mechanism, and the anomaly usually fires on an invoice that is
+	// already paid. Attention.Code carries the anomaly kind; Message names
+	// both PaymentIntents and the captured amount.
+	AttentionReasonPaymentAnomaly AttentionReason = "payment_anomaly"
 
 	// AttentionReasonOverdue: invoice is past its due_at and remains
 	// unpaid. Mirrors Lago's `payment_overdue` boolean and Stripe's
@@ -343,6 +357,14 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	// already acknowledged "we're not collecting this." Surfacing a
 	// payment_failed attention banner on top of that contradicts the
 	// operator's decision.
+	// Payment anomalies pierce the terminal early-return below (ADR-068):
+	// the double-charge / amount-mismatch / paid-a-voided-invoice marker
+	// fires almost exclusively on invoices that are ALREADY paid or voided —
+	// exactly the rows the early-return hides. The operator must see it to
+	// refund it.
+	if inv.PaymentAnomalyKind != "" {
+		return classifyPaymentAnomaly(inv)
+	}
 	if inv.Status == InvoicePaid || inv.Status == InvoiceVoided || inv.Status == InvoiceUncollectible {
 		return nil
 	}
@@ -700,4 +722,39 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// classifyPaymentAnomaly renders the ADR-068 durable marker: Critical, both
+// PaymentIntents in the message, deep-linkable PI id in Meta. The action is
+// manual reconciliation (refund the duplicate / adjust the books), so the
+// message says exactly what was detected.
+func classifyPaymentAnomaly(inv Invoice) *Attention {
+	msg := ""
+	switch inv.PaymentAnomalyKind {
+	case EventPaymentDuplicateCharge:
+		msg = fmt.Sprintf("A second payment (%s) succeeded on this invoice after it was already paid%s. The extra charge exists only in Stripe — review and refund it.",
+			inv.PaymentAnomalyPaymentIntentID, recordedPISuffix(inv))
+	case EventPaymentAmountMismatch:
+		msg = fmt.Sprintf("Stripe captured %d (minor units) for payment %s but this invoice booked %d. Reconcile the difference — the recorded paid amount drives refund limits.",
+			inv.PaymentAnomalyCapturedCents, inv.PaymentAnomalyPaymentIntentID, inv.AmountPaidCents)
+	case EventPaymentReceivedOnVoidedInvoice:
+		msg = fmt.Sprintf("Payment %s succeeded against this voided invoice. The customer paid money that is not owed — refund it in Stripe.",
+			inv.PaymentAnomalyPaymentIntentID)
+	default:
+		msg = fmt.Sprintf("A payment anomaly (%s) was detected on this invoice — review payment %s in Stripe.",
+			inv.PaymentAnomalyKind, inv.PaymentAnomalyPaymentIntentID)
+	}
+	return &Attention{
+		Reason:   AttentionReasonPaymentAnomaly,
+		Severity: AttentionSeverityCritical,
+		Code:     inv.PaymentAnomalyKind,
+		Message:  msg,
+	}
+}
+
+func recordedPISuffix(inv Invoice) string {
+	if inv.StripePaymentIntentID == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (original payment %s)", inv.StripePaymentIntentID)
 }

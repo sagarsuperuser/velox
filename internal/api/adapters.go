@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -928,6 +929,10 @@ type stripeCustomerEnsurer interface {
 type hostedInvoiceStripeAdapter struct {
 	clients *payment.StripeClients
 	ensurer stripeCustomerEnsurer
+	// sessions is the checkout-claim ledger (ADR-068): claim-first dedup
+	// with a claim-derived Stripe idempotency key, so one invoice can never
+	// hold two live payable sessions.
+	sessions *payment.CheckoutSessionStore
 }
 
 func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
@@ -935,6 +940,11 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 ) (string, error) {
 	if a == nil || a.clients == nil {
 		return "", fmt.Errorf("stripe not configured")
+	}
+	if a.sessions == nil {
+		// Fail loud: minting without the claim ledger recreates the
+		// double-charge bug this adapter exists to prevent (ADR-068).
+		return "", fmt.Errorf("hosted invoice: checkout session store not wired")
 	}
 	// Livemode comes from ctx, pinned by resolveInvoice off the
 	// public_token lookup. Previous version did a raw db.Pool query
@@ -953,7 +963,81 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	if err != nil {
 		return "", fmt.Errorf("ensure stripe customer: %w", err)
 	}
-	currency := strings.ToLower(inv.Currency)
+
+	// ---- Claim protocol (ADR-068) ----
+	// Reuse an existing open claim when its session is still live and its
+	// amount still matches; supersede on time-expiry or amount drift; the
+	// concurrent-double-POST loser converges on the winner's session via the
+	// claim-derived idempotency key.
+	claim, err := a.sessions.GetOpenForInvoice(ctx, tenantID, inv.ID)
+	switch {
+	case err == nil:
+		expired := claim.ExpiresAt != nil && time.Now().After(claim.ExpiresAt.Add(-time.Minute))
+		drifted := claim.AmountCents != inv.AmountDueCents
+		if !expired && !drifted && claim.URL != "" {
+			// Straight reuse: both devices get the SAME session.
+			return claim.URL, nil
+		}
+		if !expired && !drifted && claim.URL == "" {
+			// Pending claim (a crash between insert and create, or a racing
+			// winner mid-create): re-drive the create with the claim's own
+			// idempotency key — Stripe returns the SAME session either way.
+			return a.mintForClaim(ctx, sc, claim, stripeCustomerID, inv, successURL, cancelURL)
+		}
+		if drifted && !expired && claim.StripeSessionID != "" {
+			// Amount drift with a live session: the customer may be PAYING it
+			// right now. Branch on the Stripe-side truth before minting a
+			// second charge vehicle (panel: expiring a COMPLETED session
+			// fails — minting anyway double-charges).
+			if perr := a.expireStripeSession(ctx, sc, claim.StripeSessionID); perr != nil {
+				if errors.Is(perr, payment.ErrSessionCompleted) {
+					// Payment already happened at the old amount; the webhook
+					// will settle + escalate the amount mismatch. Never mint.
+					return "", payment.ErrChargeInFlight
+				}
+				// Network failure: accepted ≤1h residual (Stripe-side
+				// ExpiresAt bounds the orphan); proceed to supersede + remint.
+				slog.WarnContext(ctx, "checkout: best-effort expire of drifted session failed",
+					"invoice_id", inv.ID, "claim_id", claim.ID, "error", perr)
+			}
+		}
+		// Supersede via CAS — exactly one concurrent caller wins the remint.
+		if won, sErr := a.sessions.Supersede(ctx, tenantID, claim.ID); sErr != nil {
+			return "", fmt.Errorf("supersede stale claim: %w", sErr)
+		} else if !won {
+			// Another racer superseded and is reminting; fall through to
+			// ClaimOpen which returns THEIR fresh claim (loser protocol).
+			_ = won
+		}
+	case errors.Is(err, errs.ErrNotFound):
+		// No open claim — claim fresh below.
+	default:
+		return "", fmt.Errorf("read open checkout claim: %w", err)
+	}
+
+	freshClaim, _, err := a.sessions.ClaimOpen(ctx, tenantID, inv.ID, inv.AmountDueCents, inv.Currency, livemode)
+	if err != nil {
+		// ErrInvoiceNotPayable / ErrChargeInFlight propagate typed — the
+		// handler maps them to honest 409s.
+		return "", err
+	}
+	if freshClaim.URL != "" {
+		// Loser protocol fast path: the winner already filled the session.
+		return freshClaim.URL, nil
+	}
+	return a.mintForClaim(ctx, sc, freshClaim, stripeCustomerID, inv, successURL, cancelURL)
+}
+
+// mintForClaim creates (or idempotently re-drives) the Stripe Checkout
+// session for one claim and fills the row. The idempotency key IS the claim
+// id: a crash before the fill, a concurrent loser, or a retry all receive
+// the same session from Stripe — one invoice can never grow two live
+// payable sessions.
+func (a *hostedInvoiceStripeAdapter) mintForClaim(
+	ctx context.Context, sc *stripe.Client, claim payment.CheckoutClaim,
+	stripeCustomerID string, inv domain.Invoice, successURL, cancelURL string,
+) (string, error) {
+	currency := strings.ToLower(claim.Currency)
 	productName := "Invoice " + inv.InvoiceNumber
 	// Duplicate the metadata on BOTH the session and the PaymentIntent.
 	// Session-level metadata only lives on the checkout_session object;
@@ -965,7 +1049,7 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 	// inspecting a checkout session directly in Stripe dashboard.
 	meta := map[string]string{
 		"velox_invoice_id":  inv.ID,
-		"velox_tenant_id":   tenantID,
+		"velox_tenant_id":   claim.TenantID,
 		"velox_customer_id": inv.CustomerID,
 		"velox_purpose":     "hosted_invoice_pay",
 	}
@@ -984,7 +1068,7 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 				Quantity: stripe.Int64(1),
 				PriceData: &stripe.CheckoutSessionCreateLineItemPriceDataParams{
 					Currency:   stripe.String(currency),
-					UnitAmount: stripe.Int64(inv.AmountDueCents),
+					UnitAmount: stripe.Int64(claim.AmountCents),
 					ProductData: &stripe.CheckoutSessionCreateLineItemPriceDataProductDataParams{
 						Name: stripe.String(productName),
 					},
@@ -999,14 +1083,53 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 			Description:      stripe.String(productName),
 			SetupFutureUsage: stripe.String("off_session"),
 		},
+		// 1h Stripe-side expiry (min 30m, default 24h): the DB TTL alone
+		// would leave a ~23h invisible payable session (ADR-068).
+		ExpiresAt: stripe.Int64(time.Now().Add(time.Hour).Unix()),
 		Params: stripe.Params{
 			Metadata: meta,
+			// The claim id: every re-drive for this claim converges on the
+			// SAME Stripe session.
+			IdempotencyKey: stripe.String(claim.ID),
 		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("checkout session: %w", err)
 	}
+	// Persist Stripe's ACTUAL expiry (it clamps requests) via CAS; losing the
+	// CAS to a concurrent re-drive is fine — same session, same values.
+	expiresAt := time.Unix(sess.ExpiresAt, 0).UTC()
+	if fErr := a.sessions.FillSession(ctx, claim.TenantID, claim.ID, sess.ID, sess.URL, expiresAt); fErr != nil {
+		// The session exists at Stripe and the claim row will be re-driven to
+		// the same session on the next POST (idempotency key) — log, don't
+		// fail the customer.
+		slog.WarnContext(ctx, "checkout: fill claim row failed (recoverable via idempotent re-drive)",
+			"claim_id", claim.ID, "error", fErr)
+	}
 	return sess.URL, nil
+}
+
+// expireStripeSession best-effort expires a live session, classifying the
+// failure: a COMPLETED session returns payment.ErrSessionCompleted (caller
+// must NOT mint), an already-expired session is success.
+func (a *hostedInvoiceStripeAdapter) expireStripeSession(ctx context.Context, sc *stripe.Client, sessionID string) error {
+	_, err := sc.V1CheckoutSessions.Expire(ctx, sessionID, &stripe.CheckoutSessionExpireParams{})
+	if err == nil {
+		return nil
+	}
+	// Classify against the session's live status — the expire error text is
+	// not a contract.
+	sess, rErr := sc.V1CheckoutSessions.Retrieve(ctx, sessionID, &stripe.CheckoutSessionRetrieveParams{})
+	if rErr != nil {
+		return err // original failure; caller treats as network residual
+	}
+	switch sess.Status {
+	case stripe.CheckoutSessionStatusComplete:
+		return payment.ErrSessionCompleted
+	case stripe.CheckoutSessionStatusExpired:
+		return nil // already expired = the outcome we wanted
+	}
+	return err
 }
 
 // subscriptionCheckerAdapter implements customer.SubscriptionChecker over the

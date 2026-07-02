@@ -101,6 +101,30 @@ type Stripe struct {
 	customerResolver   CustomerByStripeIDResolver // optional; resolves SetupIntent.customer → velox id
 	refundUpdater      RefundStatusUpdater        // optional; applies async refund-webhook status to a CN
 	resolver           clock.Resolver             // optional; binds effective-now from invoice
+	anomalies          PaymentAnomalyRecorder     // optional; durable marker for the attention banner (ADR-068)
+	checkoutSessions   *CheckoutSessionStore      // optional; claim-ledger truth-sync + settle-time expire (ADR-068)
+	sessionClients     *StripeClients             // optional; raw mode-keyed clients for session expire calls
+}
+
+// PaymentAnomalyRecorder persists the durable payment-anomaly marker the
+// dashboard attention classifier reads (ADR-068). Implemented by
+// *invoice.PostgresStore; wired via SetAnomalyRecorder in router.go.
+type PaymentAnomalyRecorder interface {
+	RecordPaymentAnomaly(ctx context.Context, tenantID, invoiceID, kind, paymentIntentID string, capturedCents int64) error
+}
+
+// SetAnomalyRecorder wires the durable anomaly marker store.
+func (s *Stripe) SetAnomalyRecorder(r PaymentAnomalyRecorder) {
+	s.anomalies = r
+}
+
+// SetCheckoutSessionStore wires the claim ledger for webhook truth-sync and
+// the settle-time best-effort Stripe expire (ADR-068). clients resolves the
+// mode-keyed raw Stripe client for the expire calls (the narrow
+// StripeClient interface deliberately has no session surface).
+func (s *Stripe) SetCheckoutSessionStore(cs *CheckoutSessionStore, clients *StripeClients) {
+	s.checkoutSessions = cs
+	s.sessionClients = clients
 }
 
 // SetResolver wires the unified clock.Resolver. Webhook handlers fire
@@ -579,7 +603,7 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// requires_action / requires_confirmation / requires_capture — delayed
 	// methods, or rare off-session SCA) stay `processing` and await the webhook.
 	if result.Status == "succeeded" {
-		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, SourceChargeResponse); serr != nil {
+		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, inv.AmountDueCents, SourceChargeResponse); serr != nil {
 			return domain.Invoice{}, fmt.Errorf("settle succeeded inline: %w", serr)
 		}
 		// Return the freshly-settled row so callers (dunning retrier, portal,
@@ -983,7 +1007,11 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	// settlement primitive so the side-effects (mark paid, card stamp,
 	// payment.succeeded event, receipt email) are identical to every other
 	// settler.
-	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, SourceWebhook)
+	var captured int64
+	if event.AmountCents != nil {
+		captured = *event.AmountCents
+	}
+	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, captured, SourceWebhook)
 }
 
 func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
@@ -1048,10 +1076,12 @@ func piPurposeFromPayload(payload map[string]any) string {
 func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {
 	// Extract velox_customer_id from metadata (set during checkout session creation)
 	customerID := ""
+	sessionID := ""
 	if payload, ok := event.Payload["raw"]; ok {
 		var raw struct {
 			Data struct {
 				Object struct {
+					ID       string            `json:"id"`
 					Customer string            `json:"customer"`
 					Metadata map[string]string `json:"metadata"`
 				} `json:"object"`
@@ -1059,9 +1089,19 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		}
 		if err := json.Unmarshal([]byte(payload.(string)), &raw); err == nil {
 			customerID = raw.Data.Object.Metadata["velox_customer_id"]
+			sessionID = raw.Data.Object.ID
 			if event.CustomerExternalID == "" {
 				event.CustomerExternalID = raw.Data.Object.Customer
 			}
+		}
+	}
+	// Truth-sync the claim ledger (ADR-068): the session finished at Stripe.
+	// Without this, a dropped payment_intent.succeeded past Stripe's retry
+	// horizon leaves the row 'open' and the reuse path serves a completed
+	// session's URL (fail-safe but dead) until the TTL. Best-effort.
+	if sessionID != "" && s.checkoutSessions != nil {
+		if err := s.checkoutSessions.MarkCompleted(ctx, sessionID); err != nil {
+			slog.WarnContext(ctx, "checkout claim truth-sync failed", "session_id", sessionID, "error", err)
 		}
 	}
 

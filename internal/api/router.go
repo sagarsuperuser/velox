@@ -314,6 +314,15 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, paymentSetupStore, dunningSvc)
 	stripeAdapter.SetCardFetcher(stripeClient)
 	stripeAdapter.SetEventDispatcher(eventDispatcher)
+	// Durable payment-anomaly marker (ADR-068): the settle path stamps
+	// duplicate-charge / amount-mismatch / paid-voided anomalies onto the
+	// invoice row; the dashboard attention banner reads them (Critical,
+	// pierces the terminal-state early-return).
+	stripeAdapter.SetAnomalyRecorder(invoiceStore)
+	// Claim-ledger truth-sync (checkout.session.completed) + settle-time
+	// best-effort Stripe expire of still-live sessions (ADR-068).
+	checkoutSessionStore := payment.NewCheckoutSessionStore(db)
+	stripeAdapter.SetCheckoutSessionStore(checkoutSessionStore, stripeClients)
 	stripeAdapter.SetBreaker(stripeBreaker)
 	// Reconcile async refund outcomes (pending→succeeded/failed) from refund
 	// webhooks onto the credit note — the create-call only sees the initial state.
@@ -431,7 +440,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe},
+		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: checkoutSessionStore},
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 

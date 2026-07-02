@@ -2,10 +2,14 @@ package payment
 
 import (
 	"context"
+	"errors"
+
 	"fmt"
+	"github.com/stripe/stripe-go/v82"
 	"log/slog"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
@@ -36,7 +40,17 @@ const (
 // This is the consolidated implementation of what handlePaymentSucceeded did
 // inline (ADR-049 Phase 1); the webhook handler now resolves the invoice and
 // delegates here.
-func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, source SettlementSource) error {
+// capturedCents is the amount Stripe actually captured (0 = unknown/legacy
+// caller): the settle compares it against the transitioned row's
+// amount_paid and escalates payment.amount_mismatch on drift — a Checkout
+// session can legally pay an amount a credit note has since changed
+// (ADR-068); silent wrong books would corrupt the refund cap.
+//
+// The fast-path duplicate check compares against the CALLER's inv snapshot —
+// the webhook and reconciler both pass freshly-read rows (documented
+// contract); the post-transition check below uses the row RETURNED by the
+// FOR-UPDATE transition and needs no such trust.
+func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, capturedCents int64, source SettlementSource) error {
 	// Idempotency guard, symmetric with SettleFailed's out-of-order guard:
 	// skip if the invoice is already settled paid. The webhook path resolves a
 	// `processing` invoice (guard passes), but a non-webhook source — the
@@ -45,6 +59,18 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// itself is a no-op on a paid invoice; this guard additionally suppresses
 	// the duplicate side-effects.
 	if inv.Status == domain.InvoicePaid || inv.PaymentStatus == domain.PaymentSucceeded {
+		if paymentIntentID != "" && inv.StripePaymentIntentID != paymentIntentID {
+			// A SECOND, different PaymentIntent succeeded against an
+			// already-paid invoice (two devices; a stale-but-live Checkout
+			// session): money was captured twice and exists only in Stripe.
+			// Escalate loudly — the operator IS the refund mechanism
+			// (auto-refund deferred, ADR-068). An empty recorded PI counts:
+			// the invoice settled via credits/offline and a card charge
+			// still landed.
+			s.escalatePaymentAnomaly(ctx, tenantID, inv, domain.EventPaymentDuplicateCharge, paymentIntentID, capturedCents,
+				"second successful charge on an already-paid invoice")
+			return nil
+		}
 		slog.Info("payment already settled; skipping duplicate success settlement",
 			"invoice_id", inv.ID,
 			"payment_intent_id", paymentIntentID,
@@ -70,15 +96,52 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// SELECT … FOR UPDATE serializes those two, and exactly one gets
 	// transitioned=true — the once-only gate for both the in-tx events and the
 	// post-commit best-effort side-effects below (receipt email, card stamp).
-	_, transitioned, err := s.invoices.MarkPaidCardSettlementTransition(ctx, tenantID, inv.ID, paymentIntentID, now)
+	fresh, transitioned, err := s.invoices.MarkPaidCardSettlementTransition(ctx, tenantID, inv.ID, paymentIntentID, now)
 	if err != nil {
+		if errors.Is(err, errs.ErrInvalidState) {
+			// Non-payable target (voided; the void's session-expire leg
+			// failed and the customer paid inside the residual). Retrying the
+			// webhook forever is wrong — the transition will never succeed.
+			// Escalate the per-cause event (the money is owed BACK, distinct
+			// from duplicate_charge) and absorb.
+			s.escalatePaymentAnomaly(ctx, tenantID, inv, domain.EventPaymentReceivedOnVoidedInvoice, paymentIntentID, capturedCents,
+				"payment succeeded against a non-payable invoice")
+			return nil
+		}
 		return fmt.Errorf("mark invoice paid: %w", err)
 	}
 	if !transitioned {
+		// Compare against the row the FOR-UPDATE transition RETURNED — the
+		// post-race truth — never the caller's stale snapshot (a checkout
+		// invoice records its PI only at settle, so the stale comparison
+		// would false-alarm on every routine concurrent same-PI redelivery).
+		if paymentIntentID != "" && fresh.StripePaymentIntentID != paymentIntentID {
+			s.escalatePaymentAnomaly(ctx, tenantID, fresh, domain.EventPaymentDuplicateCharge, paymentIntentID, capturedCents,
+				"second successful charge lost the settle race to a different PaymentIntent")
+			return nil
+		}
 		slog.Info("payment already settled by a concurrent settler; skipping duplicate side-effects",
 			"invoice_id", inv.ID, "payment_intent_id", paymentIntentID, "source", source)
 		return nil
 	}
+	// Amount truth-check (ADR-068): the captured amount must equal what the
+	// transition booked (amount_paid = amount_due at settle). A drifted
+	// Checkout session (credit note changed the due inside the session's
+	// window) settles the invoice but books the WRONG figure — detect it,
+	// never silently absorb it.
+	if capturedCents > 0 && capturedCents != fresh.AmountPaidCents {
+		s.escalatePaymentAnomaly(ctx, tenantID, fresh, domain.EventPaymentAmountMismatch, paymentIntentID, capturedCents,
+			"captured amount differs from the amount booked at settle")
+	}
+
+	// Best-effort Stripe-side expire of any still-live checkout sessions for
+	// this invoice (ADR-068). The DB rows were already closed IN the settle
+	// tx (choke-point close in markPaidReportingTransition) so the reuse
+	// path cannot serve them; this network sweep shrinks the window in which
+	// a second device could pay a session that is dead in our books but live
+	// at Stripe. Gated on transitioned==true (once-only); each session's own
+	// ExpiresAt (<=1h) is the backstop when a call fails.
+	s.expireCheckoutSessionsBestEffort(ctx, tenantID, fresh)
 
 	slog.Info("payment succeeded",
 		"invoice_id", inv.ID,
@@ -305,4 +368,76 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 	}
 
 	return nil
+}
+
+// escalatePaymentAnomaly is the shared loud channel for money anomalies the
+// settle path DETECTS but must not absorb silently (ADR-068): a duplicate
+// charge, a captured-amount mismatch, a payment on a voided invoice. It
+// slog.Errors (ops), dispatches the per-cause outbound event (integrators),
+// and stamps the durable anomaly marker the dashboard attention banner reads
+// (operators — the load-bearing surface: with auto-refund deferred, the
+// operator IS the refund mechanism). Best-effort by design: detection must
+// never fail the settlement that triggered it.
+func (s *Stripe) escalatePaymentAnomaly(ctx context.Context, tenantID string, inv domain.Invoice, eventType, incomingPI string, capturedCents int64, msg string) {
+	slog.ErrorContext(ctx, "payment anomaly: "+msg,
+		"event", eventType,
+		"invoice_id", inv.ID,
+		"tenant_id", tenantID,
+		"recorded_payment_intent_id", inv.StripePaymentIntentID,
+		"incoming_payment_intent_id", incomingPI,
+		"captured_cents", capturedCents,
+		"amount_paid_cents", inv.AmountPaidCents,
+	)
+	if s.events != nil {
+		if err := s.events.Dispatch(ctx, tenantID, eventType, map[string]any{
+			"invoice_id":                 inv.ID,
+			"invoice_number":             inv.InvoiceNumber,
+			"customer_id":                inv.CustomerID,
+			"recorded_payment_intent_id": inv.StripePaymentIntentID,
+			"incoming_payment_intent_id": incomingPI,
+			"captured_cents":             capturedCents,
+			"amount_paid_cents":          inv.AmountPaidCents,
+			"currency":                   inv.Currency,
+		}); err != nil {
+			slog.ErrorContext(ctx, "payment anomaly: event dispatch failed", "event", eventType, "invoice_id", inv.ID, "error", err)
+		}
+	}
+	if s.anomalies != nil {
+		if err := s.anomalies.RecordPaymentAnomaly(ctx, tenantID, inv.ID, eventType, incomingPI, capturedCents); err != nil {
+			slog.ErrorContext(ctx, "payment anomaly: durable marker write failed", "event", eventType, "invoice_id", inv.ID, "error", err)
+		}
+	}
+}
+
+// expireCheckoutSessionsBestEffort expires, at Stripe, every session for the
+// invoice not yet confirmed terminal — including superseded rows whose
+// earlier expire call failed (their sessions stay payable at Stripe). Errors
+// classify idempotently: already-expired = success; completed = the webhook
+// escalation owns the money consequence; anything else = rely on ExpiresAt.
+func (s *Stripe) expireCheckoutSessionsBestEffort(ctx context.Context, tenantID string, inv domain.Invoice) {
+	if s.checkoutSessions == nil {
+		return
+	}
+	claims, err := s.checkoutSessions.ListUnresolvedForInvoice(ctx, tenantID, inv.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "settle: list checkout claims for expire failed", "invoice_id", inv.ID, "error", err)
+		return
+	}
+	if s.sessionClients == nil {
+		return
+	}
+	for _, c := range claims {
+		sc := s.sessionClients.For(ctx, tenantID, c.Livemode)
+		if sc == nil {
+			continue
+		}
+		if _, err := sc.V1CheckoutSessions.Expire(ctx, c.StripeSessionID, &stripe.CheckoutSessionExpireParams{}); err != nil {
+			slog.WarnContext(ctx, "settle: best-effort session expire failed (ExpiresAt backstop applies)",
+				"invoice_id", inv.ID, "claim_id", c.ID, "session_id", c.StripeSessionID, "error", err)
+			continue
+		}
+		if err := s.checkoutSessions.MarkExpired(ctx, tenantID, c.ID); err != nil {
+			slog.WarnContext(ctx, "settle: mark claim expired failed", "claim_id", c.ID, "error", err)
+		}
+	}
 }

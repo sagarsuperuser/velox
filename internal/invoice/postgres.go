@@ -179,7 +179,8 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
 	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,''),
-	is_simulated, tax_reversed_at`
+	is_simulated, tax_reversed_at,
+	COALESCE(payment_anomaly_kind,''), COALESCE(payment_anomaly_payment_intent_id,''), COALESCE(payment_anomaly_captured_cents,0)`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -537,6 +538,16 @@ func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id str
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	// Void / uncollectible exit the payable state: close open checkout claims
+	// in the SAME tx (ADR-068 choke-point rule — see markPaidReportingTransition).
+	if status == domain.InvoiceVoided || status == domain.InvoiceUncollectible {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE checkout_sessions SET status = 'invoice_settled', updated_at = now()
+			WHERE invoice_id = $1 AND status = 'open'
+		`, id); err != nil {
+			return domain.Invoice{}, fmt.Errorf("close checkout claims on %s: %w", status, err)
+		}
+	}
 	return inv, nil
 }
 
@@ -875,6 +886,18 @@ func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantI
 	if err != nil {
 		return domain.Invoice{}, false, err
 	}
+	// Close open checkout claims IN THIS TX (ADR-068): every MarkPaid variant
+	// converges here, so the DB-side close is a single choke point instead of
+	// 9+ hand-stitched post-commit hooks — and it atomically kills the "POST
+	// /checkout returns a stored open session for a just-settled invoice"
+	// race. The Stripe-side expire is the caller's post-commit best-effort;
+	// the session's own ExpiresAt is the backstop.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE checkout_sessions SET status = 'invoice_settled', updated_at = now()
+		WHERE invoice_id = $1 AND status = 'open'
+	`, id); err != nil {
+		return domain.Invoice{}, false, fmt.Errorf("close checkout claims on settle: %w", err)
+	}
 	// invoice.paid — enqueued in the SAME tx as the finalized/uncollectible →
 	// paid transition. The already-paid branch above returns before reaching
 	// here, so this fires EXACTLY ONCE, and it covers every settlement path
@@ -993,6 +1016,17 @@ func (s *PostgresStore) ApplyCreditNoteTx(ctx context.Context, tx *sql.Tx, tenan
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	// Any amount_due change invalidates an open checkout claim (its session
+	// was minted for the OLD amount): close it in the SAME tx so the next
+	// POST mints at the new amount and the post-commit helper can expire the
+	// stale-amount Stripe session (ADR-068; covers both partial credit and
+	// credit-to-zero — the latter also exits the payable state entirely).
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE checkout_sessions SET status = 'superseded', updated_at = now()
+		WHERE invoice_id = $1 AND status = 'open'
+	`, id); err != nil {
+		return domain.Invoice{}, fmt.Errorf("supersede checkout claims on credit apply: %w", err)
+	}
 	return inv, nil
 }
 
@@ -1021,6 +1055,17 @@ func (s *PostgresStore) ApplyCredits(ctx context.Context, tenantID, id string, a
 	}
 	if err != nil {
 		return domain.Invoice{}, err
+	}
+	// Any amount_due change invalidates an open checkout claim (its session
+	// was minted for the OLD amount): close it in the SAME tx so the next
+	// POST mints at the new amount and the post-commit helper can expire the
+	// stale-amount Stripe session (ADR-068; covers both partial credit and
+	// credit-to-zero — the latter also exits the payable state entirely).
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE checkout_sessions SET status = 'superseded', updated_at = now()
+		WHERE invoice_id = $1 AND status = 'open'
+	`, id); err != nil {
+		return domain.Invoice{}, fmt.Errorf("supersede checkout claims on credit apply: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err
@@ -2208,6 +2253,7 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
 		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 		&inv.IsSimulated, &inv.TaxReversedAt,
+		&inv.PaymentAnomalyKind, &inv.PaymentAnomalyPaymentIntentID, &inv.PaymentAnomalyCapturedCents,
 	}
 }
 
@@ -2656,4 +2702,27 @@ func buildInvWhere(f ListFilter) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// RecordPaymentAnomaly stamps the durable payment-anomaly marker (ADR-068)
+// the dashboard attention banner reads. Single-slot, last-wins — the audit
+// log carries the history; the banner needs "money is wrong on THIS
+// invoice + which PI".
+func (s *PostgresStore) RecordPaymentAnomaly(ctx context.Context, tenantID, invoiceID, kind, paymentIntentID string, capturedCents int64) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE invoices SET
+			payment_anomaly_kind = $1,
+			payment_anomaly_payment_intent_id = $2,
+			payment_anomaly_captured_cents = $3,
+			updated_at = now()
+		WHERE id = $4
+	`, kind, paymentIntentID, capturedCents, invoiceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
