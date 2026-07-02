@@ -187,13 +187,19 @@ func (m *memStore) CancelAtomicWithBill(ctx context.Context, tenantID, id string
 	return canceled, nil
 }
 
-func (m *memStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error) {
+func (m *memStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool, observedStatus domain.SubscriptionStatus) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {
 		return domain.Subscription{}, errs.ErrNotFound
 	}
 	if s.Status == domain.SubscriptionCanceled || s.Status == domain.SubscriptionArchived {
 		return domain.Subscription{}, fmt.Errorf("cannot schedule cancellation on %s subscription", s.Status)
+	}
+	// Mirror the store's ADR-069 status CAS.
+	if s.Status != observedStatus {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf(
+			"subscription changed from %s to %s while scheduling — re-read and retry (the cancel's meaning depends on status)",
+			observedStatus, s.Status))
 	}
 	s.CancelAt = cancelAt
 	s.CancelAtPeriodEnd = cancelAtPeriodEnd
@@ -3532,4 +3538,27 @@ func TestProcessExpiredPauseCollections(t *testing.T) {
 			t.Errorf("audit triggered_by: got %v, want schedule", e.metadata["triggered_by"])
 		}
 	})
+}
+
+// CancelAtTrialEnd mirrors the store's ADR-069 CAS: trialing + observed
+// trial_end + a due schedule, else ErrTrialCancelConflict. No invoice —
+// callers own emissions.
+func (m *memStore) CancelAtTrialEnd(ctx context.Context, tenantID, id string, observedTrialEnd time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	scheduleDue := s.CancelAtPeriodEnd || (s.CancelAt != nil && s.TrialEndAt != nil && !s.CancelAt.After(*s.TrialEndAt))
+	if s.Status != domain.SubscriptionTrialing || s.TrialEndAt == nil || !s.TrialEndAt.Equal(observedTrialEnd) || !scheduleDue {
+		return domain.Subscription{}, ErrTrialCancelConflict
+	}
+	s.Status = domain.SubscriptionCanceled
+	canceledAt := *s.TrialEndAt
+	s.CanceledAt = &canceledAt
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
+	s.UpdatedAt = clock.Now(ctx)
+	m.subs[id] = s
+	s.Items = m.hydrateItems(id)
+	return s, nil
 }

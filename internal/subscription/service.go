@@ -1610,7 +1610,7 @@ func (s *Service) ScheduleCancel(ctx context.Context, tenantID, id string, input
 		cancelAt = &ts
 	}
 
-	return s.store.ScheduleCancellation(ctx, tenantID, id, cancelAt, input.AtPeriodEnd)
+	return s.store.ScheduleCancellation(ctx, tenantID, id, cancelAt, input.AtPeriodEnd, sub.Status)
 }
 
 // ClearScheduledCancel undoes any prior schedule. Idempotent — a row

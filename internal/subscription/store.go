@@ -61,7 +61,17 @@ type Store interface {
 	// may be set in the same call (the boundary that fires first wins);
 	// the service layer rejects "schedule both at once" so callers don't
 	// pass them together in practice.
-	ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool) (domain.Subscription, error)
+	// ScheduleCancellation writes the cancel schedule, CAS-ing on the status
+	// the caller validated the intent under (ADR-069 — the flag's meaning is
+	// status-polymorphic; landing it on a just-activated sub would silently
+	// invert the operator's promise). Status-changed conflicts return
+	// InvalidState (409).
+	ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool, observedStatus domain.SubscriptionStatus) (domain.Subscription, error)
+	// CancelAtTrialEnd is the dedicated free trialing→canceled transition
+	// (ADR-069): NO invoice, canceled_at = trial_end_at, schedule cleared.
+	// CAS on observed trial_end + a due schedule; conflicts return
+	// ErrTrialCancelConflict (caller re-reads and routes).
+	CancelAtTrialEnd(ctx context.Context, tenantID, id string, observedTrialEnd time.Time) (domain.Subscription, error)
 
 	// ClearScheduledCancellation clears any cancel_at and cancel_at_period_end
 	// on the row. Idempotent.
