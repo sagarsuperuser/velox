@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -269,10 +270,10 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	// on the early-finalize invoice — doing so double-bills the prepaid base.
 	// previewWithWindow emits one base_fee line per item (in sub.Items order)
 	// whose plan has BaseAmountCents > 0; mirror that ordering to know each
-	// base_fee preview line's timing. Predicate matches billOnePeriod's base
-	// loop (engine.go base-segment skip). in_arrears base fees and all usage
-	// lines pass through unchanged.
-	inAdvanceBaseTiming := make([]bool, 0, len(sub.Items))
+	// base_fee preview line's plan. Predicate matches billOnePeriod's base
+	// loop (engine.go base-segment skip). Usage lines pass through unchanged.
+	basePlans := make([]domain.Plan, 0, len(sub.Items))
+	baseQtys := make([]int64, 0, len(sub.Items))
 	for _, it := range sub.Items {
 		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
 		if err != nil {
@@ -281,7 +282,8 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 		if plan.BaseAmountCents <= 0 {
 			continue
 		}
-		inAdvanceBaseTiming = append(inAdvanceBaseTiming, plan.BaseBillTiming == domain.BillInAdvance)
+		basePlans = append(basePlans, plan)
+		baseQtys = append(baseQtys, it.Quantity)
 	}
 
 	// Roll up the running subtotal across the previewed lines. Multi-currency
@@ -293,11 +295,40 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	lineItems := make([]domain.InvoiceLineItem, 0, len(preview.Lines))
 	for _, pl := range preview.Lines {
 		if pl.LineType == "base_fee" {
-			isInAdvance := baseFeeIdx < len(inAdvanceBaseTiming) && inAdvanceBaseTiming[baseFeeIdx]
+			idx := baseFeeIdx
 			baseFeeIdx++
-			if isInAdvance {
+			if idx < len(basePlans) && basePlans[idx].BaseBillTiming == domain.BillInAdvance {
 				// Already prepaid — skip from running total and line items.
 				continue
+			}
+			// reset_billing_cycle=true: the fire re-anchors the cycle, so the
+			// cycle close that would normally true-up the base never bills this
+			// window — the threshold invoice IS the window's base bill. Prorate
+			// it to the elapsed fraction; pre-fix the full month's base rode
+			// every fire, so a sub crossing 3x/month paid base 3x. The formula
+			// mirrors emitBaseSegmentLine EXACTLY: denominator = the plan's own
+			// FULL interval advanced from periodStart (domain/subscription.go
+			// invariant — never the current period length, which over-bills
+			// re-anchored stubs, mid-cycle-created periods, and cross-interval
+			// items, and can be zero for a sub-day stub). The whole line triple
+			// is rewritten (description/unit/amount) so qty × unit == amount on
+			// every render surface. reset=false is untouched: the cycle close
+			// bills only the post-fire residual and skips base when a threshold
+			// watermark exists, so the full base here stays correct.
+			if idx < len(basePlans) && sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle {
+				plan := basePlans[idx]
+				qty := baseQtys[idx]
+				loc := e.tenantLocation(ctx, sub.TenantID)
+				fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, loc, sub.BillingAnchorDay).Sub(periodStart))
+				segDays := roundDays(now.Sub(periodStart))
+				if fullCycleDays > 0 && segDays < fullCycleDays {
+					prorated := money.RoundHalfToEven(plan.BaseAmountCents*qty*int64(segDays), int64(fullCycleDays))
+					pl.AmountCents = prorated
+					pl.Description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, qty, segDays, fullCycleDays)
+					if qty > 0 {
+						pl.UnitAmountCents = money.RoundHalfToEven(prorated, qty)
+					}
+				}
 			}
 		}
 		running += pl.AmountCents
