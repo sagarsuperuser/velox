@@ -24,6 +24,13 @@ interface ComboboxProps {
   clearable?: boolean
   // Override the display in the trigger; defaults to selected option's label.
   renderSelected?: (opt: ComboboxOption | undefined) => React.ReactNode
+  // Server-side search mode: the parent owns filtering. cmdk's internal
+  // matcher is disabled (every option shown as-is) and each keystroke is
+  // reported so the parent can refetch. Without this, any picker backed
+  // by a paginated list can only ever match within the first page —
+  // rows past the page cap are unfindable no matter what the user types.
+  onSearchChange?: (search: string) => void
+  serverFiltered?: boolean
 }
 
 // Searchable dropdown built on cmdk. Matches the DatePicker positioning
@@ -40,6 +47,8 @@ export function Combobox({
   disabled,
   clearable,
   renderSelected,
+  onSearchChange,
+  serverFiltered,
 }: ComboboxProps) {
   const [open, setOpen] = React.useState(false)
   const [dropUp, setDropUp] = React.useState(false)
@@ -171,13 +180,14 @@ export function Combobox({
           )}
         >
           <Command
+            shouldFilter={!serverFiltered}
             filter={(val, search, keywords) => {
               const haystack = [val, ...(keywords ?? [])].join(' ').toLowerCase()
               return haystack.includes(search.toLowerCase()) ? 1 : 0
             }}
             className="flex flex-1 flex-col min-h-0"
           >
-            <CommandInput placeholder="Search..." autoFocus />
+            <CommandInput placeholder="Search..." autoFocus onValueChange={onSearchChange} />
             {/* CommandList scrolls within the remaining vertical space
                 after the search input. flex-1 + min-h-0 is the
                 standard pattern to let a flex child actually shrink

@@ -681,6 +681,8 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B6: Subscription lifecycle
 
+- [ ] **Create-subscription picker finds ANY customer (P11)** — with 51+ customers, typing the 51st customer's name (or email/external id) in the New Subscription dialog finds them; a customer with no prior subscription is selectable.
+
 - [ ] Trial 7 days → no charge during trial; status flips to active AT `trial_end_at` (Phase 0.5 / cron, ADR-037); first invoice fires at activation for in_advance items or at the post-trial cycle close for in_arrears. Full coverage in FLOW TC6.
 - [ ] Pause button on a `status=active` sub → opens **Pause collection** confirm dialog (the hard-pause radio option was removed in PR-6). Click through → cycle keeps drafting invoices, auto-charge is suppressed, no dunning fires on the resulting drafts. Resume collection → next cycle bills normally; drafts stay drafts unless operator finalizes them manually.
 - [ ] Pause Collection confirm dialog description includes the bolded line **"On resume, the full current period bills — paused days are not pro-rated. Issue a credit grant after resuming if you want to offset them."** (truth-in-labelling fix shipped 2026-05-18; pause_collection is about charging, not about cycle-skip — full month bills on resume).

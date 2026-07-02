@@ -439,7 +439,6 @@ export default function SubscriptionsPage() {
         open={showCreate}
         onOpenChange={setShowCreate}
         plans={plans}
-        customers={customers}
         clockNameMap={clockNameMap}
         onCreated={(created) => {
           queryClient.invalidateQueries({ queryKey: ['subscriptions'] })

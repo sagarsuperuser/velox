@@ -2,12 +2,13 @@ import { useEffect } from 'react'
 import { useForm, useFieldArray } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { api, type Customer, type Plan, type Subscription } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 
+import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -76,9 +77,8 @@ interface Props {
   plans: Plan[]
   // When set, the customer picker is hidden and customer_id is locked
   // to this customer (CustomerDetail entry point). When unset, the
-  // picker renders from `customers` (Subscriptions-page entry point).
+  // dialog renders its own server-searched picker.
   lockedCustomer?: Customer
-  customers?: Customer[]
   // Clock id → display name for the ADR-027 inherit hint. Both entry
   // points compute this; passing nothing just hides the hint.
   clockNameMap?: Record<string, string>
@@ -90,7 +90,6 @@ export function CreateSubscriptionDialog({
   onOpenChange,
   plans,
   lockedCustomer,
-  customers = [],
   clockNameMap = {},
   onCreated,
 }: Props) {
@@ -134,7 +133,16 @@ export function CreateSubscriptionDialog({
   const onSubmit = form.handleSubmit((data) => mutation.mutate(data))
 
   const watchedCustomerId = form.watch('customer_id')
-  const inheritCustomer = lockedCustomer ?? customers.find(c => c.id === watchedCustomerId) ?? null
+  // The clock-inherit hint needs the selected customer's test_clock_id.
+  // With the server-searched picker there is no local customers list, so
+  // fetch the picked customer directly (cheap ids= point read).
+  const { data: pickedCustomerData } = useQuery({
+    queryKey: ['create-sub-picked-customer', watchedCustomerId],
+    queryFn: () => api.listCustomers(`ids=${watchedCustomerId}&limit=1`),
+    enabled: !lockedCustomer && !!watchedCustomerId,
+    staleTime: 30_000,
+  })
+  const inheritCustomer = lockedCustomer ?? pickedCustomerData?.data?.[0] ?? null
   const inheritedClockName = inheritCustomer?.test_clock_id
     ? (clockNameMap[inheritCustomer.test_clock_id] || inheritCustomer.test_clock_id)
     : ''
@@ -188,16 +196,16 @@ export function CreateSubscriptionDialog({
                   <FormItem>
                     <FormLabel>Customer</FormLabel>
                     <FormControl>
-                      <select
+                      {/* Server-searched picker (P11): the old native select
+                          rendered from the page's display-ref customer list —
+                          customers with no existing subscription (or past the
+                          50-row page) were absent, so their FIRST subscription
+                          was uncreatable from the dashboard. */}
+                      <CustomerCombobox
                         value={field.value}
                         onChange={field.onChange}
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <option value="">Select customer...</option>
-                        {customers.map(c => (
-                          <option key={c.id} value={c.id}>{c.display_name}</option>
-                        ))}
-                      </select>
+                        placeholder="Search customers..."
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

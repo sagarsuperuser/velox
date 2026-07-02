@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { api, formatDateTime } from '@/lib/api'
+import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { Customer, Meter, UsageEvent, UsageEventsAggregate } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
@@ -71,11 +72,9 @@ export default function UsageEventsPage() {
   // only knows customers present on the loaded page — pre-fix the dropdown
   // was populated from it, so on first load (or after a narrowing filter)
   // it offered no options at all. Same pattern as Subscriptions/Invoices.
-  const { data: filterCustomersData } = useQuery({
-    queryKey: ['customers-ref'],
-    queryFn: () => api.listCustomers(),
-  })
-  const filterCustomers = filterCustomersData?.data ?? []
+  // (P11) The filter dropdown is a server-searched CustomerCombobox now —
+  // the old bare 50-row list made events from customers past the 50th
+  // unfilterable.
 
   const { data: metersData } = useQuery({
     queryKey: ['meters-ref'],
@@ -207,11 +206,15 @@ export default function UsageEventsPage() {
         if (batch.length < EXPORT_PAGE_SIZE) break
         offset += EXPORT_PAGE_SIZE
       }
-      // Resolve names from the FULL customer list (the per-page customerMap
-      // only knows the visible page; exported rows beyond it would fall back
-      // to raw IDs).
+      // Resolve names for exactly the exported rows via ids= (the old
+      // full-list fetch was itself capped at 50 — exported rows beyond
+      // it fell back to raw IDs anyway).
+      const exportIds = Array.from(new Set(all.map(ev => ev.customer_id).filter(Boolean)))
       const nameById: Record<string, string> = {}
-      filterCustomers.forEach(c => { nameById[c.id] = c.display_name })
+      if (exportIds.length > 0) {
+        const res = await api.listCustomers(`ids=${exportIds.join(',')}&limit=${exportIds.length}`)
+        res.data.forEach(c => { nameById[c.id] = c.display_name })
+      }
       const rows = all.slice(0, EXPORT_MAX_ROWS).map(ev => [
         formatDateTime(ev.timestamp),
         nameById[ev.customer_id] || customerMap[ev.customer_id]?.display_name || ev.customer_id,
@@ -262,16 +265,14 @@ export default function UsageEventsPage() {
 
       {/* Filter bar */}
       <div className="flex items-center gap-3 mt-6">
-        <select
-          value={filterCustomer}
-          onChange={(e) => setUrlState({ customer: e.target.value, page: '1' })}
-          className="flex h-9 w-52 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <option value="">All customers</option>
-          {filterCustomers.map(c => (
-            <option key={c.id} value={c.id}>{c.display_name}</option>
-          ))}
-        </select>
+        <div className="w-52">
+          <CustomerCombobox
+            value={filterCustomer}
+            onChange={(v) => setUrlState({ customer: v, page: '1' })}
+            placeholder="All customers"
+            clearable
+          />
+        </div>
         <select
           value={filterMeter}
           onChange={(e) => setUrlState({ meter: e.target.value, page: '1' })}
