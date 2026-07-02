@@ -615,6 +615,11 @@ func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 	if sub.CancelAt != nil {
 		extra["cancel_at"] = sub.CancelAt.UTC()
 	}
+	// ADR-069: the authoritative "when does it actually cancel" — consumers
+	// must not re-derive it from the status-polymorphic flag.
+	if sub.CancelEffectiveAt != nil {
+		extra["cancel_effective_at"] = sub.CancelEffectiveAt.UTC()
+	}
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelScheduled, sub, extra)
 
 	respond.JSON(w, r, http.StatusOK, sub)

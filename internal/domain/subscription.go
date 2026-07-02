@@ -386,6 +386,17 @@ type Subscription struct {
 	// transitions the sub to canceled and skips the next invoice. Setting
 	// false before the boundary fires undoes the schedule.
 	CancelAtPeriodEnd bool `json:"cancel_at_period_end"`
+	// CancelEffectiveAt is the DERIVED, read-only answer to "when does this
+	// subscription actually cancel?" (ADR-069). Velox's
+	// current_billing_period_end on a TRIALING sub is the end of the first
+	// PAID period (unlike Stripe, where period_end == trial_end while
+	// trialing), so every consumer re-deriving the date from the flag needs
+	// status-aware logic — and both existing UI surfaces got it wrong.
+	// Populated at scan time from one choke point; never persisted:
+	//   trialing + at_period_end → trial_end_at (free cancel)
+	//   otherwise  at_period_end → current_billing_period_end
+	//   explicit cancel_at       → cancel_at
+	CancelEffectiveAt *time.Time `json:"cancel_effective_at,omitempty"`
 	// PauseCollection holds the Stripe-parity collection-pause state. When
 	// non-nil, the cycle still advances but the engine generates the
 	// invoice as draft and skips finalize/charge/dunning. Distinct from
@@ -434,3 +445,22 @@ var ErrTrialCancelDue = errors.New("trial has a cancel schedule due — route to
 // schedule was cleared, the trial extended, or another site already
 // canceled. The caller treats the sub as NOT handled this pass.
 var ErrTrialCancelConflict = errors.New("trial-end cancel conflicted — re-read and route")
+
+
+// DeriveCancelEffectiveAt computes CancelEffectiveAt from the schedule
+// fields (ADR-069). Called from the subscription store's row scan — the one
+// choke point every read path flows through.
+func (s *Subscription) DeriveCancelEffectiveAt() {
+	s.CancelEffectiveAt = nil
+	switch {
+	case s.CancelAt != nil:
+		t := *s.CancelAt
+		s.CancelEffectiveAt = &t
+	case s.CancelAtPeriodEnd && s.Status == SubscriptionTrialing && s.TrialEndAt != nil:
+		t := *s.TrialEndAt
+		s.CancelEffectiveAt = &t
+	case s.CancelAtPeriodEnd && s.CurrentBillingPeriodEnd != nil:
+		t := *s.CurrentBillingPeriodEnd
+		s.CancelEffectiveAt = &t
+	}
+}

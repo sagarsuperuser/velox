@@ -337,7 +337,16 @@ export default function SubscriptionDetailPage() {
               }} disabled={acting}>
                 Extend trial
               </Button>
-              <Button variant="outline" className="border-primary text-primary hover:bg-primary/10" onClick={() => endTrialMutation.mutate()} disabled={acting}>
+              {/* Ending a trial with a pending cancel schedule 409s (the
+                  schedule would silently become a paid-period cancel) —
+                  surface the conflict BEFORE the click. */}
+              <Button
+                variant="outline"
+                className="border-primary text-primary hover:bg-primary/10"
+                onClick={() => endTrialMutation.mutate()}
+                disabled={acting || !!(sub.cancel_at_period_end || sub.cancel_at)}
+                title={sub.cancel_at_period_end || sub.cancel_at ? 'Clear the scheduled cancellation first' : undefined}
+              >
                 {endTrialMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Ending trial…</> : 'End trial now'}
               </Button>
               <Button variant="outline" className="border-destructive text-destructive hover:bg-destructive/10" onClick={() => setShowCancelChoice(true)} disabled={acting}>
@@ -367,12 +376,15 @@ export default function SubscriptionDetailPage() {
         <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between">
           <div className="text-sm text-amber-900">
             <span className="font-medium">Cancellation scheduled</span>
-            {sub.cancel_at_period_end && sub.current_billing_period_end && (
-              <> — at end of current period ({formatDate(sub.current_billing_period_end)})</>
-            )}
-            {sub.cancel_at && !sub.cancel_at_period_end && (
-              <> — on {formatDateTime(sub.cancel_at)}</>
-            )}
+            {/* cancel_effective_at is the backend's authoritative answer —
+                on a TRIALING sub the flag means trial end (free), NOT the
+                first paid period's end, so deriving the date client-side
+                showed the wrong day (ADR-069). */}
+            {sub.cancel_effective_at ? (
+              sub.status === 'trialing' && sub.cancel_at_period_end
+                ? <> — at trial end ({formatDateTime(sub.cancel_effective_at)}); the customer won't be charged</>
+                : <> — {sub.cancel_at_period_end ? 'at end of current period' : 'on'} {formatDateTime(sub.cancel_effective_at)}</>
+            ) : null}
           </div>
           <Button
             variant="outline"
@@ -1130,9 +1142,11 @@ export default function SubscriptionDetailPage() {
             <AlertDialogTitle>Cancel subscription</AlertDialogTitle>
             <AlertDialogDescription>
               Choose when this subscription should stop billing.
-              {sub.current_billing_period_end && (
-                <> The current period ends on {formatDate(sub.current_billing_period_end)}.</>
-              )}
+              {sub.status === 'trialing' && sub.trial_end_at
+                ? <> The trial ends on {formatDate(sub.trial_end_at)}.</>
+                : sub.current_billing_period_end && (
+                  <> The current period ends on {formatDate(sub.current_billing_period_end)}.</>
+                )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2 py-2" role="radiogroup" aria-label="Cancellation timing">
@@ -1140,11 +1154,16 @@ export default function SubscriptionDetailPage() {
               selected={cancelMode === 'period_end'}
               onClick={() => setCancelMode('period_end')}
               disabled={acting}
-              title="At period end"
+              title={sub.status === 'trialing' ? 'At trial end' : 'At period end'}
               description={
-                sub.current_billing_period_end
-                  ? `Customer keeps access until ${formatDate(sub.current_billing_period_end)}. Reversible until then.`
-                  : 'Customer keeps access until the current period ends. Reversible until then.'
+                // ADR-069: on a trialing sub the flag cancels FREE at trial
+                // end — say so; the old copy showed the first PAID period's
+                // end date, promising a month the customer would have paid for.
+                sub.status === 'trialing' && sub.trial_end_at
+                  ? `Trial runs until ${formatDate(sub.trial_end_at)}, then the subscription cancels — the customer won't be charged. Reversible until then.`
+                  : sub.current_billing_period_end
+                    ? `Customer keeps access until ${formatDate(sub.current_billing_period_end)}. Reversible until then.`
+                    : 'Customer keeps access until the current period ends. Reversible until then.'
               }
             />
             <RadioCard
