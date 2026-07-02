@@ -78,10 +78,23 @@ func (h *PublicPaymentHandler) Routes() chi.Router {
 }
 
 type tokenValidateResponse struct {
-	CustomerName   string `json:"customer_name"`
-	InvoiceNumber  string `json:"invoice_number"`
-	AmountDueCents int64  `json:"amount_due_cents"`
-	Currency       string `json:"currency"`
+	CustomerName   string               `json:"customer_name"`
+	InvoiceNumber  string               `json:"invoice_number"`
+	AmountDueCents int64                `json:"amount_due_cents"`
+	Currency       string               `json:"currency"`
+	Branding       publicUpdateBranding `json:"branding"`
+}
+
+// publicUpdateBranding mirrors the hosted-invoice page's safe branding
+// projection. The payment-update page is the RECOVERY funnel — a
+// failed-payment customer lands here from an email; a page branded
+// "Velox" instead of the company they actually pay reads as phishing
+// and kills the recovery (audit: fe-operator + fe-enduser dupe).
+type publicUpdateBranding struct {
+	CompanyName string `json:"company_name,omitempty"`
+	LogoURL     string `json:"logo_url,omitempty"`
+	BrandColor  string `json:"brand_color,omitempty"`
+	SupportURL  string `json:"support_url,omitempty"`
 }
 
 func (h *PublicPaymentHandler) validateToken(w http.ResponseWriter, r *http.Request) {
@@ -152,11 +165,21 @@ func (h *PublicPaymentHandler) validateToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Tenant branding for the page header — same safe projection the
+	// hosted invoice exposes. Best-effort: a missing settings row just
+	// renders the neutral fallback header.
+	var branding publicUpdateBranding
+	_ = tx.QueryRowContext(scopedCtx, `
+		SELECT COALESCE(company_name,''), COALESCE(logo_url,''), COALESCE(brand_color,''), COALESCE(support_url,'')
+		FROM tenant_settings WHERE tenant_id = $1
+	`, token.TenantID).Scan(&branding.CompanyName, &branding.LogoURL, &branding.BrandColor, &branding.SupportURL)
+
 	respond.JSON(w, r, http.StatusOK, tokenValidateResponse{
 		CustomerName:   cust.DisplayName,
 		InvoiceNumber:  invoiceNumber,
 		AmountDueCents: amountDueCents,
 		Currency:       currency,
+		Branding:       branding,
 	})
 }
 
@@ -283,11 +306,20 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	if err != nil {
 		slog.ErrorContext(r.Context(), "public payment: failed to create checkout session",
 			"customer_id", token.CustomerID, "error", err)
+		// The token was consumed above (the CAS is what makes two
+		// concurrent clicks yield ONE session) — but the side effect it
+		// was consumed FOR just failed. Restore it so a transient Stripe
+		// error doesn't permanently kill the customer's emailed link;
+		// the recency guard inside Restore bounds this to the
+		// consume→create window of this request.
+		if restoreErr := h.tokens.Restore(scopedCtx, token.TenantID, rawToken); restoreErr != nil {
+			slog.ErrorContext(scopedCtx, "public payment: restore token after create failure", "error", restoreErr)
+		}
 		// Customer-facing endpoint — TIER 2 sanitization (ADR-026):
 		// even "Stripe SDK error" framing leaks operator context.
 		// End customers should see only neutral copy + reference ID.
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",
-			"We couldn't start the payment update right now. Please contact your billing administrator if the problem persists.")
+			"We couldn't start the payment update right now. Please try the link again in a few minutes, or contact support if the problem persists.")
 		return
 	}
 

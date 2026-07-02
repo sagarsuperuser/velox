@@ -211,16 +211,36 @@ func renderDunningWarningHTML(customerName, invoiceNumber string, attemptNumber,
 }
 
 func renderDunningEscalationHTML(customerName, invoiceNumber, action, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
-	subject = "Payment retries exhausted for invoice " + invoiceNumber
+	subject = "Action required for invoice " + invoiceNumber
 	var b strings.Builder
-	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">Payment retries exhausted</h1>`)
+	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">We couldn't collect payment</h1>`)
 	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(customerName) + `,</p>`)
-	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">All retry attempts for invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> have failed.</p>`)
-	b.WriteString(`<p style="margin:0 0 20px;color:#4b5563;">Action taken: <strong style="color:#111827;">` + escape(action) + `</strong></p>`)
-	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">To resume service, please settle the invoice using the link below or reach out to support.</p>`)
+	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">All payment attempts for invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> were unsuccessful.</p>`)
+
+	// The final action is an INTERNAL enum — rendering it raw showed the
+	// debtor "Action taken: mark_uncollectible" (P13). Map to customer
+	// copy, and only promise "settle via the link" when the invoice is
+	// actually still payable there: a mark_uncollectible invoice has no
+	// Pay button (locked P6 scoping) — its email points at support
+	// instead of a dead end.
+	stillPayable := true
+	switch action {
+	case "mark_uncollectible":
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This invoice has been closed for online payment. Please contact support to arrange payment and restore service.</p>`)
+		stillPayable = false
+	case "cancel_subscription":
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription has been canceled. The outstanding balance remains due — you can settle it using the link below.</p>`)
+	case "pause":
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription is paused until the balance is settled. Pay the invoice below to resume service.</p>`)
+	default: // manual_review and any future action: neutral, still payable.
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">To resume service, please settle the invoice using the link below or reach out to support.</p>`)
+	}
 	if hostedURL != "" {
 		ctaURL = hostedURL
-		ctaLabel = "Resolve invoice"
+		ctaLabel = "Pay invoice"
+		if !stillPayable {
+			ctaLabel = "View invoice"
+		}
 	}
 	return subject, b.String(), ctaURL, ctaLabel
 }

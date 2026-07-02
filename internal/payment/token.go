@@ -153,6 +153,32 @@ func (s *TokenService) Consume(ctx context.Context, tenantID, rawToken string) (
 	return n == 1, nil
 }
 
+// Restore un-consumes a token whose side effect FAILED moments after
+// Consume. The consume-then-create ordering in createCheckoutSession is
+// the exactly-once CAS; but when the Stripe create itself errors, the
+// customer's emailed link would stay permanently dead over a transient
+// upstream failure. The recency guard bounds resurrection to the
+// consume-create window of THIS request — a token consumed by a
+// successful session create minutes ago cannot be revived by a replay.
+func (s *TokenService) Restore(ctx context.Context, tenantID, rawToken string) error {
+	hash := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE payment_update_tokens SET used_at = NULL
+		WHERE token_hash = $1 AND used_at IS NOT NULL AND used_at > NOW() - INTERVAL '1 minute'
+	`, tokenHash); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // Cleanup deletes expired tokens older than 7 days across all tenants. Runs
 // cross-tenant by design (a background scheduler, not a per-request path),
 // so it uses TxBypass.

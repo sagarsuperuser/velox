@@ -46,7 +46,9 @@ export default function PaymentMethodAddedPage() {
                 <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground" />
                 <h1 className="text-xl font-semibold text-foreground">Setup canceled</h1>
                 <p className="text-sm text-muted-foreground">
-                  Your payment method was not added. You can use the original link to try again, or contact support if you need a new link.
+                  Your payment method was not added. Payment-update links can
+                  only be used once, so this link is no longer active — please
+                  contact support or your billing contact to request a new one.
                 </p>
               </>
             ) : (
