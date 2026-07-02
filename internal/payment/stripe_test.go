@@ -57,6 +57,7 @@ func (m *mockStripeClient) GetPaymentIntent(_ context.Context, piID string) (Pay
 }
 
 type mockInvoiceUpdater struct {
+	markPaidErr error // injected: MarkPaid*Transition returns this (voided-target shape)
 	invoices    map[string]domain.Invoice
 	byPI        map[string]string // PI ID -> invoice ID
 	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
@@ -126,6 +127,9 @@ func (m *mockInvoiceUpdater) MarkPaid(ctx context.Context, tenantID, id string, 
 }
 
 func (m *mockInvoiceUpdater) MarkPaidReportingTransition(_ context.Context, _, id string, stripePI string, paidAt time.Time) (domain.Invoice, bool, error) {
+	if m.markPaidErr != nil {
+		return domain.Invoice{}, false, m.markPaidErr
+	}
 	inv, ok := m.invoices[id]
 	if !ok {
 		return domain.Invoice{}, false, errs.ErrNotFound
@@ -139,6 +143,7 @@ func (m *mockInvoiceUpdater) MarkPaidReportingTransition(_ context.Context, _, i
 	inv.PaymentStatus = domain.PaymentSucceeded
 	inv.StripePaymentIntentID = stripePI
 	inv.PaidAt = &paidAt
+	inv.AmountPaidCents = inv.AmountDueCents // mirror the store: booked = due at settle
 	inv.AmountDueCents = 0
 	m.invoices[id] = inv
 	return inv, true, nil

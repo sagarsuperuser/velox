@@ -109,15 +109,27 @@ func (s *CheckoutSessionStore) ClaimOpen(ctx context.Context, tenantID, invoiceI
 	`, claim.ID, tenantID, invoiceID, livemode, amountCents, currency)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			// Loser protocol: fetch the winner's open claim in this same tx.
-			existing, gErr := scanOpenClaim(ctx, tx, invoiceID)
-			if gErr != nil {
-				return CheckoutClaim{}, false, fmt.Errorf("fetch winning claim after unique violation: %w", gErr)
+			// Loser protocol. The violation ABORTED this tx (25P02 — no
+			// further statements run on it), so the winner's row must be
+			// read on a FRESH tx. If the winner's claim vanished in the gap
+			// (settled/superseded already), retry the whole claim — bounded,
+			// because each retry either wins the insert or finds a row.
+			postgres.Rollback(tx)
+			for attempt := 0; attempt < 3; attempt++ {
+				existing, gErr := s.GetOpenForInvoice(ctx, tenantID, invoiceID)
+				if gErr == nil {
+					return existing, false, nil
+				}
+				if !errors.Is(gErr, errs.ErrNotFound) {
+					return CheckoutClaim{}, false, fmt.Errorf("fetch winning claim after unique violation: %w", gErr)
+				}
+				// Winner's claim already closed — re-attempt the claim.
+				c, w, rErr := s.ClaimOpen(ctx, tenantID, invoiceID, amountCents, currency, livemode)
+				if rErr == nil || !postgres.IsUniqueViolation(rErr) {
+					return c, w, rErr
+				}
 			}
-			if cErr := tx.Commit(); cErr != nil {
-				return CheckoutClaim{}, false, cErr
-			}
-			return existing, false, nil
+			return CheckoutClaim{}, false, fmt.Errorf("claim contention did not converge for invoice %s", invoiceID)
 		}
 		return CheckoutClaim{}, false, fmt.Errorf("insert claim: %w", err)
 	}
