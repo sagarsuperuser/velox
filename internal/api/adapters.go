@@ -25,6 +25,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 )
 
@@ -1006,4 +1007,50 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		return "", fmt.Errorf("checkout session: %w", err)
 	}
 	return sess.URL, nil
+}
+
+// subscriptionCheckerAdapter implements customer.SubscriptionChecker over the
+// subscription store + pricing service (ADR-067 archive/currency guards).
+// Non-terminal = active or trialing; an active sub with a scheduled cancel
+// still bills until the boundary and is deliberately included.
+type subscriptionCheckerAdapter struct {
+	subs  *subscription.PostgresStore
+	plans *pricing.Service
+}
+
+func (a *subscriptionCheckerAdapter) NonTerminalForCustomer(ctx context.Context, tenantID, customerID string) ([]customer.NonTerminalSubscription, error) {
+	var out []customer.NonTerminalSubscription
+	for _, status := range []string{string(domain.SubscriptionActive), string(domain.SubscriptionTrialing)} {
+		subs, _, err := a.subs.List(ctx, subscription.ListFilter{
+			TenantID:   tenantID,
+			CustomerID: customerID,
+			Status:     status,
+			Limit:      100,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, sub := range subs {
+			ref := customer.NonTerminalSubscription{ID: sub.ID, Status: string(sub.Status)}
+			seen := map[string]struct{}{}
+			for _, it := range sub.Items {
+				plan, perr := a.plans.GetPlan(ctx, tenantID, it.PlanID)
+				if perr != nil {
+					// Fail loud: the currency guard cannot decide safely on a
+					// half-resolved plan set.
+					return nil, fmt.Errorf("resolve plan %s for guard: %w", it.PlanID, perr)
+				}
+				if plan.Currency == "" {
+					continue
+				}
+				if _, dup := seen[plan.Currency]; dup {
+					continue
+				}
+				seen[plan.Currency] = struct{}{}
+				ref.PlanCurrencies = append(ref.PlanCurrencies, plan.Currency)
+			}
+			out = append(out, ref)
+		}
+	}
+	return out, nil
 }
