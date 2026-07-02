@@ -88,6 +88,10 @@ func NewDispatcher(outbox *OutboxStore, sender EmailDeliverer, cfg DispatcherCon
 	return &Dispatcher{outbox: outbox, sender: sender, cfg: cfg}
 }
 
+// Config exposes the resolved (defaulted) dispatcher configuration —
+// the lease-invariant test asserts the constants relation against it.
+func (d *Dispatcher) Config() DispatcherConfig { return d.cfg }
+
 // SetLocker enables leader gating on the dispatcher tick.
 func (d *Dispatcher) SetLocker(locker DispatchLocker) {
 	d.locker = locker

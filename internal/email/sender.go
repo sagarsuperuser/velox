@@ -142,6 +142,19 @@ func NewSender() *Sender {
 	}
 }
 
+// NewTestSender builds a Sender with explicit transport parameters —
+// test-only constructor (production always goes through NewSender's
+// env resolution) used to exercise deliver()'s strict-STARTTLS and
+// prod-none refusals against local fake servers.
+func NewTestSender(host, port, tlsMode string, prodEnv bool) *Sender {
+	return &Sender{host: host, port: port, from: "test@velox.dev", tlsMode: tlsMode, prodEnv: prodEnv}
+}
+
+// DeliverForTest exposes deliver() to tests in this module.
+func (s *Sender) DeliverForTest(ctx context.Context, to string, body []byte) error {
+	return s.deliver(ctx, to, body)
+}
+
 func (s *Sender) IsConfigured() bool { return s.host != "" }
 
 // SMTPHost returns the configured SMTP relay host (no port) for
