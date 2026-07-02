@@ -788,6 +788,50 @@ func (m *mockInvoices) LatestThresholdPeriodEnd(_ context.Context, _, subscripti
 	return latest, nil
 }
 
+// GetLatestThresholdInvoiceForCycle mirrors the postgres semantics: the
+// newest (by billing_period_end) non-voided threshold invoice whose
+// billing_period_start is inside [periodStart, periodEnd).
+func (m *mockInvoices) GetLatestThresholdInvoiceForCycle(_ context.Context, _, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	var latest domain.Invoice
+	found := false
+	for _, inv := range m.invoices {
+		if inv.SubscriptionID != subscriptionID || inv.BillingReason != domain.BillingReasonThreshold {
+			continue
+		}
+		if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
+			continue
+		}
+		if inv.BillingPeriodStart.Before(periodStart) || !inv.BillingPeriodStart.Before(periodEnd) {
+			continue
+		}
+		if !found || inv.BillingPeriodEnd.After(latest.BillingPeriodEnd) {
+			latest = inv
+			found = true
+		}
+	}
+	if !found {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return latest, nil
+}
+
+// GetInvoiceForPeriod mirrors the postgres semantics: newest non-voided
+// invoice keyed on (subscription, period_start, period_end) — the
+// billing-idempotency tuple.
+func (m *mockInvoices) GetInvoiceForPeriod(_ context.Context, _, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	for i := len(m.invoices) - 1; i >= 0; i-- {
+		inv := m.invoices[i]
+		if inv.SubscriptionID != subscriptionID || inv.Status == domain.InvoiceVoided {
+			continue
+		}
+		if !inv.BillingPeriodStart.Equal(periodStart) || !inv.BillingPeriodEnd.Equal(periodEnd) {
+			continue
+		}
+		return inv, nil
+	}
+	return domain.Invoice{}, errs.ErrNotFound
+}
+
 func (m *mockInvoices) ListAutoChargePending(_ context.Context, limit int) ([]domain.Invoice, error) {
 	var result []domain.Invoice
 	for _, inv := range m.invoices {

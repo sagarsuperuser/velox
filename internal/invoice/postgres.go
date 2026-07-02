@@ -2474,6 +2474,69 @@ func (s *PostgresStore) LatestThresholdPeriodEnd(ctx context.Context, tenantID, 
 	return end.Time, nil
 }
 
+// GetLatestThresholdInvoiceForCycle returns the newest non-voided
+// threshold-fired invoice for the cycle window — the same predicate as
+// LatestThresholdPeriodEnd but the full row. The billing engine's fire-once
+// probe uses it so a probe hit can also HEAL a crash between invoice-create
+// and the $0/credited MarkPaid (ADR-066): the probe needs the invoice's
+// status, payment_status and amount_due, not just the watermark instant.
+func (s *PostgresStore) GetLatestThresholdInvoiceForCycle(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	if subscriptionID == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.subscription_id = $1
+		  AND i.billing_reason = 'threshold'
+		  AND i.status NOT IN ('voided', 'uncollectible')
+		  AND i.billing_period_start >= $2
+		  AND i.billing_period_start < $3
+		ORDER BY i.billing_period_end DESC
+		LIMIT 1
+	`, subscriptionID, periodStart, periodEnd).Scan(s.scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, err
+}
+
+// GetInvoiceForPeriod returns the newest non-voided invoice keyed exactly
+// like idx_invoices_billing_idempotency (subscription_id, period_start,
+// period_end). billOnePeriod's ErrAlreadyExists re-entry path fetches the
+// blocking row through this to heal the $0-MarkPaid crash window (ADR-066).
+func (s *PostgresStore) GetInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	if subscriptionID == "" {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var inv domain.Invoice
+	err = tx.QueryRowContext(ctx, `
+		SELECT `+invCols+` FROM invoices i
+		WHERE i.subscription_id = $1
+		  AND i.billing_period_start = $2
+		  AND i.billing_period_end = $3
+		  AND i.status != 'voided'
+		ORDER BY i.created_at DESC
+		LIMIT 1
+	`, subscriptionID, periodStart, periodEnd).Scan(s.scanInvDest(&inv)...)
+	if err == sql.ErrNoRows {
+		return domain.Invoice{}, errs.ErrNotFound
+	}
+	return inv, err
+}
+
 // invoiceOrderBy returns the ORDER BY clause for the invoice list,
 // validating sort + dir against a closed set. Anything outside the
 // allow-list silently falls back to the default — never interpolate

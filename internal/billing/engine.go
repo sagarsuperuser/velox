@@ -517,6 +517,18 @@ type InvoiceWriter interface {
 	// billOnePeriod treats it as the cycle's "already billed through"
 	// watermark. errs.ErrNotFound when no threshold invoice exists.
 	LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error)
+	// GetLatestThresholdInvoiceForCycle returns the newest non-voided
+	// threshold-fired invoice whose billing_period_start falls inside
+	// [periodStart, periodEnd) — the same predicate as
+	// LatestThresholdPeriodEnd but the full row, so the fire-once probe can
+	// also HEAL a crash between invoice-create and the $0/credited MarkPaid
+	// (ADR-066). errs.ErrNotFound when the cycle has no threshold invoice.
+	GetLatestThresholdInvoiceForCycle(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error)
+	// GetInvoiceForPeriod returns the newest non-voided invoice keyed exactly
+	// like idx_invoices_billing_idempotency (subscription, period_start,
+	// period_end) — the row billOnePeriod's ErrAlreadyExists re-entry path
+	// heals ($0 MarkPaid crash window, ADR-066).
+	GetInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error)
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
@@ -2918,10 +2930,25 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"period_start", periodStart,
 				"period_end", periodEnd,
 			)
-			// The invoice already exists, so the only state that can still be
-			// missing is the cycle advance (e.g. a prior tick crashed between
-			// the invoice commit and the watermark update — create-then-advance
-			// is two separate store writes). Heal it, and surface a failure
+			// The invoice already exists, so two pieces of state can still be
+			// missing (a prior tick crashed mid-flow — create-then-mark and
+			// create-then-advance are separate store writes):
+			//
+			// 1. A zero-due MarkPaid (ADR-066): an invoice born $0 or fully
+			//    credited whose MarkPaid never ran. Best-effort — a MarkPaid
+			//    failure WARNs and the invoice stays visible in the attention
+			//    queue (operator backstop) rather than blocking the advance
+			//    below: stalling all future billing over a $0 paid-mark would
+			//    be the worse trade. Runs before the advance so the one
+			//    re-entry this sub gets still attempts it. ErrNotFound
+			//    (blocking row voided since) skips the heal; other fetch
+			//    errors stay loud.
+			if existing, gErr := e.invoices.GetInvoiceForPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd); gErr == nil {
+				e.healStrandedZeroDue(ctx, sub.TenantID, existing, now)
+			} else if !errors.Is(gErr, errs.ErrNotFound) {
+				return false, fmt.Errorf("fetch existing invoice (heal path): %w", gErr)
+			}
+			// 2. The cycle advance. Heal it, and surface a failure
 			// LOUDLY, matching the happy-path advance below. A swallowed error
 			// here strands the watermark: the sub stays due, every subsequent
 			// tick re-hits this skip, and nothing ever alerts. The benign
@@ -3009,7 +3036,14 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// to paid. The customer was charged subtotal-only (tax_amount=0)
 	// and tax retry blocked forever (retry requires status='draft',
 	// but status was 'paid'). Customer DEMO-000906 demonstrated.
-	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
+	//
+	// ADR-066: no `totalWithTax > 0` conjunct. A cycle invoice born $0
+	// (zero-priced usage lines are emitted per the zero-amount line
+	// convention) was stranded payment_pending forever — never charged
+	// (amount_due=0 skips the charge arm), never paid, permanently
+	// "awaiting payment" in the attention queue. Stripe parity:
+	// zero-amount invoices auto-mark paid with no payment attempt.
+	if creditApplyOK && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			// Reuse the sub-scoped `now` so fully-credit-paid invoices on a

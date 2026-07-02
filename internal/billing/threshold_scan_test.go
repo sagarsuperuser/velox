@@ -752,3 +752,90 @@ func TestScanOneThreshold_BoundarySkip(t *testing.T) {
 		t.Fatalf("boundary tick created %d invoices; want 0 (defer to natural cycle)", len(invoices.invoices))
 	}
 }
+
+// TestFireThreshold_ZeroTotal_AutoPaid is T12 for the threshold writer: a
+// usage_gte item cap crossed by zero-priced usage (free-rated lines) produces
+// a $0 finalized invoice, which must be auto-marked paid — never charged
+// (amount_due=0 skips the charge arm), never dunned. Pre-fix the gate's
+// `totalWithTax > 0` conjunct stranded it payment_pending forever, polluting
+// the attention queue as permanently overdue. Mutation seam: restore the
+// conjunct and this fails.
+func TestFireThreshold_ZeroTotal_AutoPaid(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		ResetBillingCycle: false,
+		ItemThresholds: []domain.SubscriptionItemThreshold{
+			{SubscriptionItemID: "subitem_1", UsageGTE: decimal.NewFromInt(1000)},
+		},
+	}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1500)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	// Free-rate the plan: $0 base + $0/call — the cap is quantity-based, so
+	// it crosses with a $0 running total.
+	mp := engine.pricing.(*mockPricing)
+	pln := mp.plans["pln_1"]
+	pln.BaseAmountCents = 0
+	mp.plans["pln_1"] = pln
+	rule := mp.rules["rrv_api"]
+	rule.FlatAmountCents = decimal.Zero
+	// The fixture's currency normally rides the base line (plan.Currency);
+	// with base gone the $0 usage line must carry it.
+	rule.Currency = "USD"
+	mp.rules["rrv_api"] = rule
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want 1 (quantity cap crossed)", fired)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("invoices = %d, want 1", len(invoices.invoices))
+	}
+	inv := invoices.invoices[0]
+	if inv.TotalAmountCents != 0 {
+		t.Fatalf("total = %d, want 0", inv.TotalAmountCents)
+	}
+	if inv.Status != domain.InvoicePaid || inv.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("$0 threshold invoice stranded: status=%q payment=%q, want paid/succeeded (Stripe parity: zero-amount invoices auto-mark paid)",
+			inv.Status, inv.PaymentStatus)
+	}
+}
+
+// TestScanThresholds_ProbeHealsStrandedZeroDue: a crash between the invoice
+// create and its $0/credited MarkPaid re-enters ONLY through the fire-once
+// probe — so the probe must repair the stranded payment_pending row
+// (ADR-066 heal-on-re-entry). Mutation seam: drop the healStrandedZeroDue
+// call from the probe hit and this fails.
+func TestScanThresholds_ProbeHealsStrandedZeroDue(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: false}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+
+	// Seed the stranded state: threshold invoice committed finalized with
+	// nothing due, MarkPaid never ran (process died).
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	fireAt := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+	invoices.invoices = append(invoices.invoices, domain.Invoice{
+		ID: "vlx_inv_stranded", SubscriptionID: "sub_1", TenantID: "t1",
+		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentPending,
+		TaxStatus:          domain.InvoiceTaxOK,
+		AmountDueCents:     0,
+		BillingReason:      domain.BillingReasonThreshold,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   fireAt,
+	})
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 0 {
+		t.Fatalf("fired = %d, want 0 (probe hit)", fired)
+	}
+	healed := invoices.invoices[len(invoices.invoices)-1]
+	if healed.Status != domain.InvoicePaid || healed.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("stranded $0 invoice not healed on probe re-entry: status=%q payment=%q", healed.Status, healed.PaymentStatus)
+	}
+}

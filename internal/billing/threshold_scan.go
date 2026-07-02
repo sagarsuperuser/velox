@@ -236,7 +236,14 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	// index (idx_invoices_threshold_unique_per_cycle, 0056: one threshold
 	// invoice per sub+period_start) remains the correctness seam — the loser
 	// lands on errs.ErrAlreadyExists and short-circuits, exactly as before.
-	if _, err := e.invoices.LatestThresholdPeriodEnd(ctx, sub.TenantID, sub.ID, periodStart, *sub.CurrentBillingPeriodEnd); err == nil {
+	//
+	// The probe fetches the full row (not just the watermark instant) so a
+	// hit can heal the $0/credited MarkPaid crash window: a crash between
+	// invoice-create and MarkPaid re-enters HERE on every later tick — the
+	// only re-entry this sub gets — so this is where the stranded
+	// payment_pending row is repaired (ADR-066).
+	if existing, err := e.invoices.GetLatestThresholdInvoiceForCycle(ctx, sub.TenantID, sub.ID, periodStart, *sub.CurrentBillingPeriodEnd); err == nil {
+		e.healStrandedZeroDue(ctx, sub.TenantID, existing, now)
 		return false, nil // already fired this cycle
 	} else if !errors.Is(err, errs.ErrNotFound) {
 		// Scanning blind risks the exact re-fire burn the probe exists to stop —
@@ -253,6 +260,31 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	}
 
 	return e.fireThreshold(ctx, sub, eval, periodStart, now)
+}
+
+// healStrandedZeroDue repairs the ADR-066 crash window: an invoice committed
+// as finalized with nothing owed (born $0, or fully credited) whose MarkPaid
+// never ran because the process died between the create and the mark. Both
+// re-entry paths call it — the threshold fire-once probe and billOnePeriod's
+// ErrAlreadyExists branch — since neither ever reaches the normal MarkPaid
+// gate again. Idempotent by construction (the gate re-checks live state;
+// MarkPaid's already-paid branch is a no-op) and best-effort at the probe
+// call site: a failure WARNs and the same probe re-enters next tick.
+// The paidAt argument is the caller's effective now (test-clock aware) so a
+// healed simulated invoice's paid_at stays in the simulation's time domain.
+func (e *Engine) healStrandedZeroDue(ctx context.Context, tenantID string, inv domain.Invoice, paidAt time.Time) {
+	if inv.Status != domain.InvoiceFinalized ||
+		inv.PaymentStatus != domain.PaymentPending ||
+		inv.AmountDueCents > 0 {
+		return
+	}
+	if _, err := e.invoices.MarkPaid(ctx, tenantID, inv.ID, "", paidAt); err != nil {
+		slog.Warn("heal stranded zero-due invoice: mark paid failed (will retry on next re-entry)",
+			"invoice_id", inv.ID, "tenant_id", tenantID, "error", err)
+		return
+	}
+	slog.Info("healed stranded zero-due invoice (crash between create and mark-paid)",
+		"invoice_id", inv.ID, "tenant_id", tenantID)
 }
 
 // evaluateThresholds computes the partial-cycle running totals for a sub and
@@ -648,16 +680,19 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		}
 	}
 
-	// If credits covered 100%, mark as paid immediately — BUT only on
-	// invoices that landed as finalized at create time. Draft invoices
-	// (tax pending / pause-collection) stay draft with credits applied.
-	// A tax-pending draft auto-finalizes later via the tax-retry chain; a
-	// pause-collection draft stays draft until the operator finalizes it
-	// (resume clears the pause and the next cycle generates finalized
-	// invoices, but the accrued drafts are NOT auto-finalized — there is no
-	// pause-resume auto-finalize chain). Mirrors the same gate added to
-	// billOnePeriod's equivalent block (2026-05-22 fix — invoice DEMO-000906).
-	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
+	// If nothing is owed — credits covered 100%, OR the invoice was born $0
+	// (zero-priced usage lines crossing a usage_gte cap) — mark paid
+	// immediately, BUT only on invoices that landed as finalized at create
+	// time. Draft invoices (tax pending / pause-collection) stay draft with
+	// credits applied. A tax-pending draft auto-finalizes later via the
+	// tax-retry chain; a pause-collection draft stays draft until the operator
+	// finalizes it. Mirrors billOnePeriod's gate (2026-05-22 fix — DEMO-000906).
+	// The old `totalWithTax > 0` conjunct stranded $0 finalized invoices
+	// payment_pending FOREVER — never charged (amount_due=0 skips the charge
+	// arm), never paid, polluting the attention queue as overdue (ADR-066;
+	// Stripe parity: zero-amount invoices are auto-marked paid, no payment
+	// attempt).
+	if creditApplyOK && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
