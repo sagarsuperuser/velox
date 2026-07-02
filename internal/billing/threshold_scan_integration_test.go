@@ -2,7 +2,10 @@ package billing_test
 
 import (
 	"context"
+	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,14 +30,15 @@ import (
 // index, ListWithThresholds candidate query, and CreateInvoiceWithLineItems
 // are all exercised end-to-end.
 type thresholdFixture struct {
-	db       *postgres.DB
-	tenantID string
-	subStore *subscription.PostgresStore
-	subSvc   *subscription.Service
-	usageSvc *usage.Service
-	invStore *invoice.PostgresStore
-	settings *tenant.SettingsStore
-	engine   *billing.Engine
+	db         *postgres.DB
+	tenantID   string
+	subStore   *subscription.PostgresStore
+	subSvc     *subscription.Service
+	usageSvc   *usage.Service
+	invStore   *invoice.PostgresStore
+	settings   *tenant.SettingsStore
+	pricingSvc *pricing.Service
+	engine     *billing.Engine
 
 	// Seed-by-default test data
 	customerID string
@@ -155,6 +159,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 		usageSvc:   usageSvc,
 		invStore:   invoiceStore,
 		settings:   settingsStore,
+		pricingSvc: pricingSvc,
 		engine:     engine,
 		customerID: cust.ID,
 		planID:     plan.ID,
@@ -494,5 +499,277 @@ func TestThresholdScan_ResetCycleFalse(t *testing.T) {
 	if !updated.CurrentBillingPeriodStart.Equal(f.cycleStart) {
 		t.Errorf("period_start should remain %v with reset=false, got %v",
 			f.cycleStart, *updated.CurrentBillingPeriodStart)
+	}
+}
+
+// TestThresholdScan_BoundaryDefersToCycle is the T2 money assertion for the
+// boundary skip, on real stores: a crossing whose first observation lands
+// on/after period_end (scheduler dead across the boundary) must NOT fire a
+// threshold invoice — the natural cycle close bills the whole elapsed period,
+// exactly once, through the full-fidelity path. Pre-fix the threshold fired a
+// [period_start, now) window spilling past period_end; the next cycle's close
+// would then bill the spilled usage again. Mutation seam: delete the
+// `!now.Before(periodEnd)` guard in scanOneThreshold and the scan fires
+// (fired=1) — the zero-threshold-invoice assertion below fails.
+func TestThresholdScan_BoundaryDefersToCycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Boundary Cycle")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+
+	// 100 events x qty 10 @ 1c = 1000c, all inside the first hour of the cycle.
+	f.ingestUsage(t, ctx, 100, 10)
+	resetFalse := false
+	if _, err := f.subSvc.SetBillingThresholds(ctx, f.tenantID, f.subID, subscription.BillingThresholdsInput{
+		AmountGTE:         500,
+		ResetBillingCycle: &resetFalse,
+	}); err != nil {
+		t.Fatalf("set threshold: %v", err)
+	}
+
+	// Rewind the period so wall-clock `now` is past period_end: the crossing is
+	// first observed on the far side of the boundary. Usage (first hour of
+	// cycleStart = now-72h) stays inside the shortened window.
+	pastEnd := time.Now().UTC().Add(-1 * time.Hour)
+	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin rewind tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions SET current_billing_period_end = $1, next_billing_at = $1 WHERE id = $2
+	`, pastEnd, f.subID); err != nil {
+		t.Fatalf("rewind period: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit rewind: %v", err)
+	}
+
+	// Threshold tick on the closed window: must skip.
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 0 {
+		t.Fatalf("threshold fired across the boundary: fired=%d, want 0 (defer to cycle close)", fired)
+	}
+
+	// Same-tick cycle close bills the whole elapsed period once.
+	generated, failures := f.engine.RunCycleForTenant(ctx, f.tenantID, 50)
+	if len(failures) > 0 {
+		t.Fatalf("cycle failures: %v", failures)
+	}
+	if generated != 1 {
+		t.Fatalf("cycle generated = %d, want 1", generated)
+	}
+
+	invoices := f.listInvoices(t, ctx)
+	if len(invoices) != 1 {
+		t.Fatalf("expected exactly 1 invoice (cycle only), got %d", len(invoices))
+	}
+	inv := invoices[0]
+	if inv.BillingReason == domain.BillingReasonThreshold {
+		t.Fatalf("the single invoice is a threshold invoice — boundary skip did not defer to the cycle")
+	}
+	if inv.SubtotalCents != 1000 {
+		t.Errorf("cycle invoice subtotal = %d, want 1000 (all usage billed exactly once)", inv.SubtotalCents)
+	}
+	if !inv.BillingPeriodEnd.Equal(pastEnd) {
+		t.Errorf("cycle invoice period_end = %v, want %v (no spill past the boundary)", inv.BillingPeriodEnd, pastEnd)
+	}
+}
+
+// seedThresholdFleet inserts n active subscriptions on a shared base-fee-only
+// plan (no meters, so they cross on the in_arrears base alone — no per-sub
+// usage ingestion needed) with an amount threshold configured directly on the
+// row. IDs are zero-padded so the drain cursor (ORDER BY id, id > afterID)
+// pages deterministically.
+func (f *thresholdFixture) seedThresholdFleet(t *testing.T, ctx context.Context, n int) []string {
+	t.Helper()
+	plan, err := f.pricingSvc.CreatePlan(ctx, f.tenantID, pricing.CreatePlanInput{
+		Code: "pln_fleet_base", Name: "Fleet Base Plan",
+		Currency: "USD", BillingInterval: domain.BillingMonthly,
+		BaseAmountCents: 4900,
+	})
+	if err != nil {
+		t.Fatalf("create fleet plan: %v", err)
+	}
+
+	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin fleet tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		subID := fmt.Sprintf("vlx_sub_fleet_%04d", i)
+		itemID := fmt.Sprintf("vlx_si_fleet_%04d", i)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscriptions (
+				id, tenant_id, code, display_name, customer_id, status, billing_time,
+				current_billing_period_start, current_billing_period_end, next_billing_at,
+				billing_threshold_amount_gte, billing_threshold_reset_cycle,
+				created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, 'active', 'anniversary', $6, $7, $7, 100, FALSE, $8, $8)
+		`, subID, f.tenantID, "code-fleet-"+subID, "Fleet Sub "+subID, f.customerID, f.cycleStart, f.cycleEnd, now); err != nil {
+			t.Fatalf("insert fleet sub %d: %v", i, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscription_items (id, tenant_id, subscription_id, plan_id, quantity, metadata, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 1, '{}'::jsonb, $5, $5)
+		`, itemID, f.tenantID, subID, plan.ID, now); err != nil {
+			t.Fatalf("insert fleet item %d: %v", i, err)
+		}
+		ids = append(ids, subID)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit fleet: %v", err)
+	}
+	return ids
+}
+
+// TestThresholdScan_DrainsWholeFleet_RealStore is T9+T10 on real Postgres:
+// 60 crossed subscriptions with batchSize 50 must ALL fire in a single tick
+// (pre-fix, the scan fetched one page and subs #51+ were never scanned —
+// spend caps silently disabled past the batch size), and a full re-scan of
+// the drained set must burn zero invoice numbers (the fire-once probe skips
+// every fired sub with one indexed lookup each). Also EXPLAIN-verifies the
+// cursored candidate query is index-servable (subscriptions_pkey provides
+// the `id > cursor ORDER BY id` contract without a sort).
+func TestThresholdScan_DrainsWholeFleet_RealStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Fleet Drain")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 120*time.Second)
+	defer cancel()
+
+	// The fixture's seeded sub has no thresholds configured, so the fleet of 60
+	// is the entire candidate set.
+	f.seedThresholdFleet(t, ctx, 60)
+
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 60 {
+		t.Fatalf("drain incomplete on real store: fired=%d, want 60 (subs past the first batch must scan same tick)", fired)
+	}
+
+	// T10 — re-scan the drained set: zero fires, zero burned numbers.
+	nextBefore, err := f.settings.NextInvoiceNumber(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("number probe: %v", err)
+	}
+	fired2, errs2 := f.engine.ScanThresholds(ctx, 50)
+	if len(errs2) > 0 {
+		t.Fatalf("re-scan errors: %v", errs2)
+	}
+	if fired2 != 0 {
+		t.Fatalf("re-scan fired=%d, want 0", fired2)
+	}
+	nextAfter, err := f.settings.NextInvoiceNumber(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("number probe (after): %v", err)
+	}
+	if seqOf(t, nextAfter) != seqOf(t, nextBefore)+1 {
+		t.Fatalf("re-scan of 60 fired subs burned invoice numbers: %q then %q (want consecutive)", nextBefore, nextAfter)
+	}
+
+	// EXPLAIN: with seq scans disabled, the cursored fetch must plan as an
+	// index scan over subscriptions_pkey — i.e. an index-served drain exists
+	// and the cursor predicate isn't forcing a full-table sort per page.
+	tx, err := f.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		t.Fatalf("begin explain tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		EXPLAIN SELECT s.id FROM subscriptions s
+		WHERE s.status IN ('active', 'trialing')
+		  AND s.livemode = FALSE
+		  AND s.test_clock_id IS NULL
+		  AND s.id > ''
+		  AND (s.billing_threshold_amount_gte IS NOT NULL
+		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
+		ORDER BY s.id ASC
+		LIMIT 50
+	`)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan plan line: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteString("\n")
+	}
+	if !strings.Contains(plan.String(), "subscriptions_pkey") {
+		t.Errorf("cursored threshold fetch is not index-served; plan:\n%s", plan.String())
+	}
+}
+
+// TestThresholdScan_ConcurrentDoubleFire_IndexHolds is T11: two scans racing
+// over the same crossed subscription. Both can pass the fire-once probe
+// (check-then-act — the probe is an optimization, not the exactly-once
+// mechanism); the partial unique index idx_invoices_threshold_unique_per_cycle
+// must hold at-most-one invoice, with the loser absorbing ErrAlreadyExists as
+// a silent skip, not an error.
+func TestThresholdScan_ConcurrentDoubleFire_IndexHolds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Concurrent Fire")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+
+	f.ingestUsage(t, ctx, 100, 10)
+	resetFalse := false
+	if _, err := f.subSvc.SetBillingThresholds(ctx, f.tenantID, f.subID, subscription.BillingThresholdsInput{
+		AmountGTE:         500,
+		ResetBillingCycle: &resetFalse,
+	}); err != nil {
+		t.Fatalf("set threshold: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make([]int, 2)
+	errLists := make([][]error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			<-start
+			fired, errs := f.engine.ScanThresholds(ctx, 50)
+			results[slot] = fired
+			errLists[slot] = errs
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, errs := range errLists {
+		if len(errs) > 0 {
+			t.Fatalf("scan %d errors (loser must absorb ErrAlreadyExists silently): %v", i, errs)
+		}
+	}
+	if results[0]+results[1] != 1 {
+		t.Fatalf("combined fired = %d+%d, want exactly 1 across both racers", results[0], results[1])
+	}
+	invoices := f.listInvoices(t, ctx)
+	if len(invoices) != 1 {
+		t.Fatalf("unique index failed to hold: %d invoices, want 1", len(invoices))
 	}
 }
