@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ type thresholdFixture struct {
 	invStore   *invoice.PostgresStore
 	settings   *tenant.SettingsStore
 	pricingSvc *pricing.Service
+	subAdapter *failableSubAdapter
 	engine     *billing.Engine
 
 	// Seed-by-default test data
@@ -69,8 +71,9 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 	invoiceStore := invoice.NewPostgresStore(db)
 	settingsStore := tenant.NewSettingsStore(db)
 
+	subAdapter := &failableSubAdapter{subStoreAdapter: &subStoreAdapter{subStore}}
 	engine := billing.NewEngine(
-		&subStoreAdapter{subStore},
+		subAdapter,
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
@@ -80,6 +83,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 	// one (no silent zero-tax fallback). NoneProvider is the
 	// minimal wiring for tests that don't exercise tax behavior.
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetTxRunner(db)
 
 	ctx := postgres.WithLivemode(context.Background(), false)
 
@@ -160,6 +164,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 		invStore:   invoiceStore,
 		settings:   settingsStore,
 		pricingSvc: pricingSvc,
+		subAdapter: subAdapter,
 		engine:     engine,
 		customerID: cust.ID,
 		planID:     plan.ID,
@@ -773,5 +778,93 @@ func TestThresholdScan_ConcurrentDoubleFire_IndexHolds(t *testing.T) {
 	invoices := f.listInvoices(t, ctx)
 	if len(invoices) != 1 {
 		t.Fatalf("unique index failed to hold: %d invoices, want 1", len(invoices))
+	}
+}
+
+// failableSubAdapter wraps subStoreAdapter with an injectable
+// UpdateBillingCycleTx failure — the fault-injection point for the
+// fire→reset atomicity test (crash between invoice insert and cycle
+// re-anchor, simulated as the second write failing inside the tx).
+type failableSubAdapter struct {
+	*subStoreAdapter
+	updateCycleTxErr error
+}
+
+func (a *failableSubAdapter) UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, start, end, next time.Time, anchorDay int) error {
+	if a.updateCycleTxErr != nil {
+		return a.updateCycleTxErr
+	}
+	return a.subStoreAdapter.UpdateBillingCycleTx(ctx, tx, tenantID, id, start, end, next, anchorDay)
+}
+
+// TestThresholdFire_ResetAtomic_RollsBackOnAdvanceFailure is the ADR-066
+// crash-point test on real Postgres: a reset=true fire whose cycle re-anchor
+// fails must leave NO invoice behind (single-tx rollback), so the next tick
+// retries the whole fire cleanly. The pre-fix two-write shape left the
+// invoice committed with the reset stranded forever — the fire-once probe
+// blocked every retry, and under base proration (fix 4) the customer's base
+// was permanently under-billed.
+func TestThresholdFire_ResetAtomic_RollsBackOnAdvanceFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Atomic Reset")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+
+	f.ingestUsage(t, ctx, 100, 10)
+	resetTrue := true
+	if _, err := f.subSvc.SetBillingThresholds(ctx, f.tenantID, f.subID, subscription.BillingThresholdsInput{
+		AmountGTE:         500,
+		ResetBillingCycle: &resetTrue,
+	}); err != nil {
+		t.Fatalf("set threshold: %v", err)
+	}
+
+	// Fault-inject the re-anchor inside the coordinator tx.
+	f.subAdapter.updateCycleTxErr = fmt.Errorf("injected: advance failed inside tx")
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if fired != 0 {
+		t.Fatalf("fired = %d, want 0 on a failed reset fire", fired)
+	}
+	if len(errs) == 0 {
+		t.Fatal("scan swallowed the advance failure — want a loud, retryable error")
+	}
+	if got := len(f.listInvoices(t, ctx)); got != 0 {
+		t.Fatalf("invoice survived the rollback: %d invoices, want 0 (the pre-fix stranded-reset shape)", got)
+	}
+	// The sub's cycle must be untouched.
+	sub, err := f.subStore.Get(ctx, f.tenantID, f.subID)
+	if err != nil {
+		t.Fatalf("get sub: %v", err)
+	}
+	if !sub.CurrentBillingPeriodStart.Equal(f.cycleStart) {
+		t.Fatalf("cycle re-anchored despite rollback: period_start %v, want %v", *sub.CurrentBillingPeriodStart, f.cycleStart)
+	}
+
+	// Clear the fault: the next tick retries the WHOLE fire cleanly — invoice
+	// lands and the cycle re-anchors, atomically.
+	f.subAdapter.updateCycleTxErr = nil
+	fired2, errs2 := f.engine.ScanThresholds(ctx, 50)
+	if len(errs2) > 0 {
+		t.Fatalf("retry scan errors: %v", errs2)
+	}
+	if fired2 != 1 {
+		t.Fatalf("retry fired = %d, want 1 (rollback made the failure retryable)", fired2)
+	}
+	invoices := f.listInvoices(t, ctx)
+	if len(invoices) != 1 {
+		t.Fatalf("expected exactly 1 invoice after clean retry, got %d", len(invoices))
+	}
+	sub, err = f.subStore.Get(ctx, f.tenantID, f.subID)
+	if err != nil {
+		t.Fatalf("get sub after retry: %v", err)
+	}
+	if sub.CurrentBillingPeriodStart.Equal(f.cycleStart) {
+		t.Fatal("cycle did not re-anchor on the successful retry")
+	}
+	if !sub.CurrentBillingPeriodStart.Equal(invoices[0].BillingPeriodEnd) {
+		t.Errorf("new period_start %v != threshold invoice period_end %v (re-anchor must align with the fire window)",
+			*sub.CurrentBillingPeriodStart, invoices[0].BillingPeriodEnd)
 	}
 }

@@ -109,6 +109,7 @@ func setupThresholdEngine(thresholds *domain.BillingThresholds, usageQty int64) 
 	invoices := &mockInvoices{}
 
 	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
+	engine.SetTxRunner(&fakeTxRunner{})
 	return engine, subs, invoices
 }
 
@@ -379,6 +380,45 @@ func TestEvaluateThresholds_ResetProration_CrossIntervalDenominator(t *testing.T
 	want := int64(900) // RoundHalfToEven(36500×9, 365)
 	if base.AmountCents != want {
 		t.Errorf("cross-interval prorated base = %d, want %d (denominator = the LINE plan's own interval)", base.AmountCents, want)
+	}
+}
+
+// TestScanThresholds_ResetAdvanceFailure_IsLoud locks the ADR-066 error
+// contract: a reset=true fire whose cycle re-anchor fails must surface an
+// ERROR from the scan (the whole tx rolls back and the next tick retries).
+// Pre-fix the failure arm logged and returned (fired=true, nil) — and because
+// the invoice had already committed, the fire-once probe blocked every retry,
+// stranding the reset forever.
+func TestScanThresholds_ResetAdvanceFailure_IsLoud(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: true}
+	engine, subs, _ := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	subs.updateBillingCycleErr = fmt.Errorf("injected advance failure")
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if fired != 0 {
+		t.Errorf("fired = %d, want 0 (a failed reset fire must not count)", fired)
+	}
+	if len(errs) == 0 {
+		t.Fatal("scan swallowed the cycle-advance failure; want a loud per-sub error (retryable next tick)")
+	}
+}
+
+// TestScanThresholds_ResetWithoutTxRunner_FailsLoud: the engine must refuse a
+// reset=true fire when the coordinator-tx seam is missing rather than degrade
+// to the non-atomic two-write shape (no silent fallbacks).
+func TestScanThresholds_ResetWithoutTxRunner_FailsLoud(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: true}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	engine.txRunner = nil
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if fired != 0 || len(errs) == 0 {
+		t.Fatalf("fired=%d errs=%v; want 0 fired + a loud tx-runner-required error", fired, errs)
+	}
+	if len(invoices.invoices) != 0 {
+		t.Fatalf("invoice created without the atomic seam: %d", len(invoices.invoices))
 	}
 }
 

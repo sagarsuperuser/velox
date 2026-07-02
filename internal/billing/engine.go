@@ -74,6 +74,22 @@ type Engine struct {
 	dunningStarter     DunningStarter
 	dunningResolver    DunningResolver
 	auditLogger        AuditWriter
+	txRunner           TxRunner
+}
+
+// TxRunner runs fn inside one tenant-scoped transaction — the coordinator-tx
+// seam for engine writes that must commit across two domain stores atomically
+// (threshold fire + cycle re-anchor). Production wires *postgres.DB (which
+// satisfies this directly) via SetTxRunner; paths that need atomicity FAIL
+// LOUDLY when it is nil rather than degrading to sequential writes.
+type TxRunner interface {
+	WithTenantTx(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error
+}
+
+// SetTxRunner wires the coordinator-transaction seam (production: the
+// *postgres.DB pool, in router.go).
+func (e *Engine) SetTxRunner(r TxRunner) {
+	e.txRunner = r
 }
 
 // AuditWriter is the narrow audit surface the engine needs. Defined
@@ -376,6 +392,11 @@ type SubscriptionReader interface {
 	GetDueBillingForTenant(ctx context.Context, tenantID string, before time.Time, limit int) ([]domain.Subscription, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
+	// UpdateBillingCycleTx is the in-tx variant — used by fireThreshold's
+	// reset=true arm so the threshold invoice insert and the cycle re-anchor
+	// commit atomically (ADR-066): a crash between the two otherwise strands
+	// the reset forever, because the fire-once probe blocks every retry.
+	UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
 	// ApplyDuePendingItemPlansAtomic swaps plan_id ← pending_plan_id for every
 	// item on the subscription whose pending_plan_effective_at <= now, in one
 	// statement. Returns the refreshed items (including any that weren't due,

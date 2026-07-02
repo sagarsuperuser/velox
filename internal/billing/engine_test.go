@@ -378,6 +378,29 @@ func (m *mockSubs) UpdateBillingCycle(_ context.Context, _, id string, start, en
 	return nil
 }
 
+// UpdateBillingCycleTx delegates to the plain variant — atomicity is the real
+// store's concern; the mock preserves observable behavior. The tx handle is
+// the fakeTxRunner's nil.
+func (m *mockSubs) UpdateBillingCycleTx(ctx context.Context, _ *sql.Tx, tenantID, id string, start, end, next time.Time, anchorDay int) error {
+	return m.UpdateBillingCycle(ctx, tenantID, id, start, end, next, anchorDay)
+}
+
+// fakeTxRunner satisfies billing.TxRunner for unit fixtures: runs fn with a
+// nil tx (the mocks' Tx variants ignore the handle). commitErr, when set, is
+// returned INSTEAD of committing — simulating a tx that fails at the
+// UpdateBillingCycleTx/commit boundary so the atomic-rollback contract can be
+// asserted without Postgres.
+type fakeTxRunner struct {
+	fnErr error // injected: fn's own error passthrough is default behavior
+}
+
+func (r *fakeTxRunner) WithTenantTx(_ context.Context, _ string, fn func(tx *sql.Tx) error) error {
+	if err := fn(nil); err != nil {
+		return err
+	}
+	return r.fnErr
+}
+
 func (m *mockSubs) FireScheduledCancellation(_ context.Context, _, id string, at time.Time) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok {

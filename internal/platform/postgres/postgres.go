@@ -196,6 +196,25 @@ func Rollback(tx *sql.Tx) {
 	}
 }
 
+// WithTenantTx runs fn inside one tenant-scoped (TxTenant) transaction:
+// commit when fn returns nil, rollback otherwise. It exists as the seam for
+// cross-store coordinator transactions — a caller that must commit writes in
+// two domain stores atomically (e.g. the billing engine's threshold
+// fire + cycle re-anchor) passes the same *sql.Tx to each store's Tx
+// variant. Unit tests fake the interface this satisfies with a runner that
+// calls fn(nil); the store mocks ignore the tx handle.
+func (db *DB) WithTenantTx(ctx context.Context, tenantID string, fn func(tx *sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // NewID generates a prefixed, time-sortable ID (e.g., vlx_cus_cv2q6ktjml6ng3v2q0tg).
 // Uses xid: globally unique, 20-char, URL-safe, naturally ordered by creation time.
 func NewID(prefix string) string {

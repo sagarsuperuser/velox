@@ -809,3 +809,7 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 		}
 	})
 }
+
+func (a *subStoreAdapter) UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, start, end, next time.Time, anchorDay int) error {
+	return a.store.UpdateBillingCycleTx(ctx, tx, tenantID, id, start, end, next, anchorDay)
+}
