@@ -2014,10 +2014,11 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 			t.Errorf("activated_at: got %v, want %v (= trial_end_at)", out.ActivatedAt, sub.TrialEndAt)
 		}
 
-		// BillOnCreate fires for in_advance coverage (no-op for in_arrears
-		// in the mem store stub but verified via fb.calls).
-		if fb.calls != 1 {
-			t.Errorf("BillOnCreate calls: got %d, want 1 (covers in_advance first paid period)", fb.calls)
+		// ADR-069 alignment: the day-1 invoice now rides the SAME tx as the
+		// flip on the clock path too (BillOnCreateTx via WithBill) — the old
+		// post-flip BillOnCreate's "deferred" WARN was a revenue leak.
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx calls: got %d, want 1 (in-tx day-1 coverage)", fb.createTxCalls)
 		}
 
 		// Audit row: the auto-flip must leave the same trial_ended trace the
