@@ -1,0 +1,103 @@
+# ADR-068: Checkout session dedup — claim-first ledger, choke-point closes, loud anomaly settlement
+
+**Date:** 2026-07-02
+**Status:** Accepted (shipped in P2b-a; two build-time adversarial panels — 3 lenses each — amended the plan's sketch, see plan §4.2)
+
+## Context
+
+`POST /v1/public/invoices/{token}/checkout` minted a **fresh** Stripe
+Checkout session on every call: no idempotency key, no `ExpiresAt`
+(Stripe default = 24h), no expiry on settle. A customer paying on two
+devices — or re-opening a dunning email — was charged twice, the second
+charge visible only in Stripe; the settle path silently dropped the
+duplicate success (audit HIGH #5).
+
+## Decision
+
+### Claim-first ledger (`checkout_sessions`, migration 0125)
+
+A POST **claims before it mints**: an `open` row is inserted in a
+transaction that re-verifies the invoice payable under `FOR SHARE`
+(serializes against the settle's `FOR UPDATE` paid-flip — a session can
+no longer be minted after expire-on-settle already ran), rejects
+in-flight charges (`payment_in_progress` 409 — dunning auto-retry racing
+the Pay click), and re-anchors the amount on the locked row. The Stripe
+create runs post-commit with an **idempotency key derived from the claim
+id**: a crash before the row is filled, a concurrent loser, or any retry
+re-drives the create and receives the **same session**. The partial
+unique index (one open row per invoice) is the concurrent-double-POST
+guard; the loser reads the winner's claim **on a fresh tx** (the unique
+violation aborts the claiming tx — found by test) and returns the same
+URL. `ExpiresAt=1h` is set **on the Stripe create params** (a DB-only
+TTL leaves a ~23h invisible payable session); Stripe's clamped actual
+expiry is persisted, and the reuse read refuses rows at/past it
+(CAS-supersede, exactly one racer remints).
+
+**Amount drift** (a credit note legally changes `amount_due` while a
+session is open — "open" is not "in flight", so ADR-059's CN guard does
+not apply): the POST branches on the Stripe-side truth before minting —
+a **completed** session means the customer just paid the old amount, so
+no new session is minted (409; the webhook settle + escalation own it);
+already-expired proceeds; a network failure is the accepted ≤1h residual.
+
+### Exits from payable close claims at store choke points, in-tx
+
+The panel counted 9+ scattered "exit from payable" writers vs the
+sketch's four categories. Instead of per-call-site hooks, the claim rows
+close **inside the exiting transaction** at the three store choke points
+everything converges on: `markPaidReportingTransition` (every MarkPaid
+variant), the void/uncollectible status transition, and **both**
+`amount_due` reducers (`ApplyCreditNoteTx`, `ApplyCredits` — any
+reduction supersedes the claim; its minted amount is stale). The
+Stripe-side network expire is post-commit best-effort (settle-time sweep
+over every unresolved session for the invoice, including previously
+superseded ones); per-session `ExpiresAt` is the backstop.
+`checkout.session.completed` truth-syncs the row.
+
+### Loud anomaly settlement
+
+`SettleSucceeded` now takes the **captured amount** (the webhook parses
+it; previously discarded) and escalates three per-cause anomalies via
+one channel — `slog.Error` + outbound event + a **durable marker** on the
+invoice (migration 0126) that drives a **Critical attention banner which
+pierces the classifier's terminal-state early-return** (a duplicate
+charge fires on an invoice that is already *paid*; with auto-refund
+deferred, the operator is the refund mechanism):
+
+- `payment.duplicate_charge` — a second, *different* PI succeeded on a
+  paid invoice. The `transitioned=false` skip point compares against the
+  row **returned by the FOR-UPDATE transition**, never the caller's
+  stale snapshot (checkout invoices record their PI only at settle — the
+  stale comparison would false-alarm every routine concurrent same-PI
+  redelivery). An empty recorded PI escalates (credits/offline-settled
+  invoice hit by a live card charge).
+- `payment.amount_mismatch` — captured ≠ booked at settle (the drift
+  residual must be *detected*, never silently booked: `amount_paid`
+  drives the refund cap).
+- `payment.received_on_voided_invoice` — the transition's InvalidState
+  on a voided target now escalates its own cause and **absorbs** (the
+  webhook no longer retries a terminal invoice forever). The money is
+  owed back — distinct from a double-collect.
+
+## Accepted residuals (do not re-litigate)
+
+≤1h drift/orphan windows bounded by Stripe-side ExpiresAt when a network
+expire fails; pre-deploy sessions are outside the ledger (expire ≤24h —
+upgrade note in CHANGELOG); Stripe-account rotation mid-session (expire
+404s on the old account) — bounded by the same 1h; no auto-refund — the
+attention banner + per-cause events are the operator's refund trigger; a
+full session-sweeping reconciler stays deferred (the
+`checkout.session.completed` truth-sync covers the common dropped-webhook
+shape).
+
+## Test locks (mutation/fault-verified)
+
+`TestClaimOpen_ConcurrentDoublePOST_OneWinner` (real PG),
+`TestClaimOpen_PayableRecheck`, `TestSupersede_CASExactlyOnce`,
+`TestChokePointCloses` (MarkPaid/void/credit; strip a choke statement →
+fail), the four `TestSettleSucceeded_*` escalation seams (incl. the
+stale-snapshot false-alarm mutation), and the attention-pierce test.
+Stripe-interaction legs (idempotency-key convergence, ExpiresAt params,
+drift branching) are covered by the MANUAL_TEST flow — no HTTP-level
+Stripe stub harness exists in-repo yet; building one is named follow-up
+work, not silently skipped.

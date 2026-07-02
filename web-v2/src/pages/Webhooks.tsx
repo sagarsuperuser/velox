@@ -343,6 +343,9 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
     events: [
       { type: 'payment.succeeded', description: 'Payment collected successfully' },
       { type: 'payment.failed', description: 'Payment attempt failed' },
+      { type: 'payment.duplicate_charge', description: 'A second charge succeeded on an already-paid invoice — review and refund' },
+      { type: 'payment.amount_mismatch', description: 'A charge settled for a different amount than the invoice was owed' },
+      { type: 'payment.received_on_voided_invoice', description: 'A payment landed on a voided invoice — the customer is owed a refund' },
     ],
   },
   {

@@ -1064,6 +1064,10 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW I10: Hosted invoice page
 
+- [ ] **One live payment link per invoice (ADR-068):** click Pay twice quickly (or from two browsers) → both land on the SAME Stripe session URL; pay it once → the invoice settles once. `checkout_sessions` shows one open row flipping to `invoice_settled` on payment.
+- [ ] **Stale session dies on settle/void/credit:** open the Pay page (don't pay), then mark the invoice paid offline (or void it, or apply covering credits) → the claim row closes in the same operation, a new POST /checkout 409s (`not_payable`), and the old Stripe session is expired (or dies within 1h).
+- [ ] **Drifted amount never mints blind:** open a session, apply a partial credit note (amount_due drops), click Pay again → a NEW session at the new amount (old superseded). If the customer had already completed the old session, Pay 409s `payment_in_progress` and the settle raises `payment.amount_mismatch` with a Critical banner on the invoice.
+- [ ] **Duplicate charge is loud:** simulate a second different-PI success on a paid invoice (Stripe CLI resend with a new PI) → invoice shows the Critical "second payment succeeded" banner naming both PIs; `payment.duplicate_charge` fires; same-PI redeliveries stay silent.
 - [ ] **Post-payment settle poll (ADR-067 companion):** pay via the hosted page → on the `?paid=1` redirect the page shows "Processing your payment…" with NO Pay button, then flips to Paid within a few seconds without a manual refresh. Simulate a failed charge → red "Payment didn't complete — your card was not charged" banner and Pay returns. Stall the webhook >3 min → amber "taking longer than usual — you will not be charged twice" copy, Pay still hidden.
 
 - [ ] Draft invoice has no `public_token`. Finalize → token minted (`vlx_pinv_` + 64 hex).
