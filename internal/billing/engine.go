@@ -2106,12 +2106,21 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		if sub.CancelAtPeriodEnd || (sub.CancelAt != nil && sub.TrialEndAt != nil && !sub.CancelAt.After(*sub.TrialEndAt)) {
 			return false, e.cancelTrialAtEndFromEngine(ctx, sub)
 		}
+		var firstInv domain.Invoice
+		var haveFirstInv bool
 		updated, err := e.subs.ActivateAfterTrialWithBill(ctx, sub.TenantID, sub.ID, now, func(tx *sql.Tx, activated domain.Subscription) error {
 			// Day-1 in_advance coverage rides the activation tx (ADR-056
 			// alignment — the old post-flip BillOnCreate lost the fee on
-			// failure while WARNing it was "deferred").
-			_, _, billErr := e.BillOnCreateTx(ctx, tx, activated)
-			return billErr
+			// failure while WARNing it was "deferred"). The invoice is
+			// CAPTURED for the post-commit finalize below — discarding it
+			// left day-1 invoices durable but never tax-committed, audited,
+			// or auto-charged (spec-verifier catch, ADR-069 item 8).
+			inv, ok, billErr := e.BillOnCreateTx(ctx, tx, activated)
+			if billErr != nil {
+				return billErr
+			}
+			firstInv, haveFirstInv = inv, ok
+			return nil
 		})
 		if err != nil {
 			if errors.Is(err, domain.ErrTrialCancelDue) {
@@ -2147,6 +2156,13 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			}
 		} else {
 			sub = updated
+			// Post-commit external finalize for the day-1 invoice (audit row,
+			// tax commit, auto-charge / retry enrollment) — Stripe calls never
+			// ride a DB tx; same contract as the three service-side
+			// activation writers.
+			if haveFirstInv {
+				e.FinalizeOnCreateInvoice(ctx, updated, firstInv)
+			}
 			slog.Info("trial ended, transitioned to active",
 				"subscription_id", sub.ID,
 				"tenant_id", sub.TenantID,

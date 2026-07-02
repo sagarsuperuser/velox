@@ -110,3 +110,44 @@ func TestBillFinalOnImmediateCancel_TrialWriteOff(t *testing.T) {
 		t.Fatal("activated sub's mid-period cancel must still bill the final invoice")
 	}
 }
+
+// TestEngineTrialBranch_Day1InvoiceFinalized locks the spec-verifier catch
+// (ADR-069 item 8, engine half): the day-1 in_advance invoice created inside
+// the activation tx must get its post-commit finalize (audit row, tax
+// commit, auto-charge enrollment). Pre-fix the engine discarded the invoice
+// from BillOnCreateTx — durable but never charged. The AuditActionFinalize
+// row is the observable. Mutation seam: discard the invoice again (drop the
+// FinalizeOnCreateInvoice call) and this fails.
+func TestEngineTrialBranch_Day1InvoiceFinalized(t *testing.T) {
+	engine, subs, _, _ := trialEngineFixture(false)
+	// in_advance base so BillOnCreateTx actually emits a day-1 invoice.
+	mp := engine.pricing.(*mockPricing)
+	pln := mp.plans["pln_1"]
+	pln.BaseBillTiming = domain.BillInAdvance
+	mp.plans["pln_1"] = pln
+	audit := &recordingAudit{}
+	engine.SetAuditLogger(audit)
+
+	_, failures := engine.RunCycleForTenant(context.Background(), "t1", 50)
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	if subs.subs["sub_1"].Status != domain.SubscriptionActive {
+		t.Fatalf("status = %s, want active", subs.subs["sub_1"].Status)
+	}
+	// The CYCLE invoice billed right after activation also emits a finalize
+	// row — scope the assertion to the DAY-1 invoice via its billing_reason,
+	// or the test passes tautologically (caught by mutation).
+	day1Finalized := 0
+	for i, a := range audit.rows {
+		if a != string(domain.AuditActionFinalize) {
+			continue
+		}
+		if audit.metas[i]["triggered_by"] == string(domain.BillingReasonSubscriptionCreate) {
+			day1Finalized++
+		}
+	}
+	if day1Finalized == 0 {
+		t.Fatalf("day-1 in_advance invoice was never finalized post-commit — durable but never tax-committed or charged (audit rows: %v)", audit.rows)
+	}
+}

@@ -167,7 +167,17 @@ export default function SubscriptionDetailPage() {
 
   const scheduleCancelMutation = useMutation({
     mutationFn: () => api.scheduleSubscriptionCancel(id!, { at_period_end: true }),
-    onSuccess: () => { invalidateAll(); toast.success('Cancellation scheduled at period end'); setShowCancelChoice(false) },
+    onSuccess: (updated) => {
+      invalidateAll()
+      // ADR-069: on a trialing sub the flag cancels FREE at trial end — the
+      // old hardcoded 'at period end' toast promised the wrong date.
+      toast.success(
+        updated?.status === 'trialing' && updated?.cancel_effective_at
+          ? `Cancellation scheduled at trial end (${formatDate(updated.cancel_effective_at)}) — the customer won't be charged`
+          : 'Cancellation scheduled at period end',
+      )
+      setShowCancelChoice(false)
+    },
     onError: (err) => showApiError(err, 'Failed to schedule cancellation'),
   })
 
@@ -473,6 +483,25 @@ export default function SubscriptionDetailPage() {
               isPast: firstCharge <= now,
             })
           }
+        } else if (
+          // A trial canceled at trial end never billed its "first paid
+          // period" — the bar shows the trial instead of phantom period
+          // dates (ADR-069).
+          sub.status === 'canceled' && sub.trial_end_at && sub.canceled_at &&
+          new Date(sub.canceled_at) <= new Date(sub.trial_end_at)
+        ) {
+          if (sub.trial_start_at) {
+            timelinePoints.push({
+              label: 'Trial start',
+              date: formatDate(sub.trial_start_at),
+              isPast: true,
+            })
+          }
+          timelinePoints.push({
+            label: 'Canceled at trial end',
+            date: formatDate(sub.canceled_at),
+            isPast: true,
+          })
         } else {
           if (sub.current_billing_period_start) {
             const periodStart = new Date(sub.current_billing_period_start)
@@ -499,7 +528,10 @@ export default function SubscriptionDetailPage() {
             // A scheduled cancel replaces "Next Billing" — billing the
             // next period is exactly what won't happen. The bar reads
             // Period Start → Period End → Cancels.
-            const cancelAt = sub.cancel_at || sub.current_billing_period_end
+            // cancel_effective_at is the backend's authoritative answer
+            // (ADR-069); re-deriving from the flag shows the wrong date on
+            // trialing subs.
+            const cancelAt = sub.cancel_effective_at || sub.cancel_at || sub.current_billing_period_end
             if (cancelAt) {
               timelinePoints.push({
                 label: 'Cancels',
@@ -857,20 +889,32 @@ export default function SubscriptionDetailPage() {
                 </span>
               </div>
             )}
-            {sub.status !== 'trialing' && sub.current_billing_period_end && (
+            {sub.status !== 'trialing' && sub.status !== 'canceled' && sub.current_billing_period_end && (
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-sm text-muted-foreground w-40 shrink-0">Renews on</span>
                 <span className="text-sm text-foreground">{formatDate(sub.current_billing_period_end)}</span>
               </div>
             )}
-            <div className="flex items-center justify-between px-6 py-3">
-              <span className="text-sm text-muted-foreground w-40 shrink-0">
-                {sub.status === 'trialing' ? 'First billing period' : 'Current period'}
-              </span>
-              <span className="text-sm text-foreground">
-                {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end) || '\u2014'}
-              </span>
-            </div>
+            {/* A trial canceled at trial end never billed its "first paid
+                period" — showing those dates reads as a period that existed.
+                Render the trial range instead (ADR-069). */}
+            {sub.status === 'canceled' && sub.trial_end_at && sub.canceled_at && new Date(sub.canceled_at) <= new Date(sub.trial_end_at) ? (
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground w-40 shrink-0">Trial</span>
+                <span className="text-sm text-foreground">
+                  {formatCivilPeriod(sub.trial_start_at, sub.trial_end_at) || '\u2014'} — canceled at trial end
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between px-6 py-3">
+                <span className="text-sm text-muted-foreground w-40 shrink-0">
+                  {sub.status === 'trialing' ? 'First billing period' : 'Current period'}
+                </span>
+                <span className="text-sm text-foreground">
+                  {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end) || '\u2014'}
+                </span>
+              </div>
+            )}
             {sub.usage_cap_units != null && (
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-sm text-muted-foreground w-40 shrink-0">Usage Cap</span>

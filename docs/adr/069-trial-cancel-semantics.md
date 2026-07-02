@@ -79,6 +79,15 @@ bug, re-armed on a timer.
 
 ## Accepted residuals
 
+The spec's "one shared helper across all four sites" is implemented as one
+service helper + one engine helper with verified-identical vocabulary — the
+zero-peer-import rule forbids the engine importing the subscription service;
+drift risk is future-facing and covered by the winner-once tests. OpenAPI
+documentation for schedule-cancel / end-trial remains fully outstanding —
+`api/openapi.yaml` documents neither endpoint today; it belongs to the
+pre-existing OpenAPI-backfill deferral, not this change.
+
+
 The UI-time race (dialog open while the trial expires) is inherent; the
 handler surfaces the real post-write state and the status-CAS closes the
 API-side window. A crash between the CAS commit and the post-commit webhook

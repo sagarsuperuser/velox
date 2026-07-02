@@ -14,11 +14,13 @@ import (
 // recordingAudit captures engine audit rows so the once-per-cycle loudness
 // floor can be asserted.
 type recordingAudit struct {
-	rows []string // action names, in order
+	rows  []string         // action names, in order
+	metas []map[string]any // parallel metadata, for reason-scoped assertions
 }
 
-func (r *recordingAudit) Log(_ context.Context, _, action, _, _, _ string, _ map[string]any) error {
+func (r *recordingAudit) Log(_ context.Context, _, action, _, _, _ string, meta map[string]any) error {
 	r.rows = append(r.rows, action)
+	r.metas = append(r.metas, meta)
 	return nil
 }
 
