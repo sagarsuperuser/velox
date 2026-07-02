@@ -39,6 +39,17 @@ type Store interface {
 	GetByCreditNoteSource(ctx context.Context, tenantID, creditNoteID string) (domain.CreditLedgerEntry, error)
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
+
+	// ExpireGrantAtomic retires one expired grant — flips its
+	// consumed_cents to amount_cents and appends the -remaining expiry
+	// entry in a SINGLE transaction, recomputing `remaining` under the
+	// same row lock the apply/adjust paths hold. Returns the expired
+	// cents; 0 with nil error when the grant was already fully consumed
+	// or retired by the time the lock was acquired (clean no-op — the
+	// caller's candidate snapshot is expected to go stale). The
+	// consumed_cents flip is the exactly-once gate: replayed and
+	// concurrent sweeps converge on one expiry entry per grant.
+	ExpireGrantAtomic(ctx context.Context, tenantID, customerID, grantID string) (int64, error)
 	ListExpiredGrants(ctx context.Context) ([]domain.CreditLedgerEntry, error)
 
 	// ListExpiredGrantsForClock is the catchup-path counterpart to

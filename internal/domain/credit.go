@@ -23,13 +23,17 @@ type CreditLedgerEntry struct {
 	ExpiresAt    *time.Time      `json:"expires_at,omitempty"`
 	Metadata     map[string]any  `json:"metadata,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
-	// ConsumedCents tracks how much of a grant's amount has been
-	// drained by FIFO-attributed usage entries (Orb's credit-block
-	// model). Meaningful only for entry_type='grant'; 0 for usage /
-	// expiry / adjustment. Grant remaining = amount_cents -
-	// consumed_cents. Expiry deducts only the remaining (un-drained)
-	// portion — never the original amount — so an already-consumed
-	// grant expiring is a no-op rather than a balance underflow.
+	// ConsumedCents tracks how much of a positive block's amount has
+	// been RETIRED — drained by FIFO-attributed usage/clawback entries
+	// plus the portion written off by expiry (Orb's credit-block
+	// model). Meaningful only for positive blocks (grants, positive
+	// adjustments, reversals); 0 for usage / expiry rows themselves.
+	// Block remaining = amount_cents - consumed_cents; consumed_cents
+	// == amount_cents means the block is exhausted or expired and is
+	// structurally excluded from draining and from the expiry sweep.
+	// Expiry flips consumed_cents to amount_cents atomically with its
+	// -remaining ledger entry (ExpireGrantAtomic, ADR-071), so a
+	// backdated apply can never re-drain a retired grant.
 	ConsumedCents int64 `json:"consumed_cents,omitempty"`
 
 	// SourceSubscriptionID + SourceSubscriptionItemID + SourcePlanChangedAt +

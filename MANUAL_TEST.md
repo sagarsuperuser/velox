@@ -566,6 +566,7 @@ The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 ve
 - [ ] Customer credit balance = $50; ledger entry `entry_type=grant`.
 - [ ] Advance clock past `expires_at` → catchup Phase 4 fires → new ledger entry `entry_type=expiry`, `amount_cents=-5000`, `created_at` in frozen-time. Balance back to $0.
 - [ ] Customer detail page Credits tab shows both grant and expiry entries with frozen-time dates.
+- [ ] **Expired grant is retired, not just journaled (ADR-071)** — after the expiry fires, a new invoice applied to this customer consumes **$0** from the expired grant (Credits Applied stays $0; the invoice's amount due is unchanged).
 - [ ] Non-expiring grants (`expires_at IS NULL`) survive arbitrary advances — only expirable grants get expired.
 
 ---

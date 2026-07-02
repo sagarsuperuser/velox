@@ -134,6 +134,40 @@ func (m *memStore) ListBalances(_ context.Context, _ string) ([]domain.CreditBal
 	return result, nil
 }
 
+// ExpireGrantAtomic mirrors the real store's semantics: re-read the
+// grant from current state (not the caller's snapshot), no-op when
+// fully consumed, flip consumed_cents and append the expiry entry
+// together. In-memory there is no tx, but the re-read-then-gate shape
+// is what the service-level tests exercise.
+func (m *memStore) ExpireGrantAtomic(ctx context.Context, tenantID, customerID, grantID string) (int64, error) {
+	for i := range m.entries {
+		e := &m.entries[i]
+		if e.TenantID != tenantID || e.CustomerID != customerID || e.ID != grantID || e.EntryType != domain.CreditGrant {
+			continue
+		}
+		remaining := e.AmountCents - e.ConsumedCents
+		if remaining <= 0 {
+			return 0, nil
+		}
+		if e.ExpiresAt == nil {
+			return 0, fmt.Errorf("expire grant %s: grant has no expires_at", grantID)
+		}
+		expiredAt := *e.ExpiresAt
+		e.ConsumedCents = e.AmountCents
+		if _, err := m.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+			CustomerID:  customerID,
+			EntryType:   domain.CreditExpiry,
+			AmountCents: -remaining,
+			Description: fmt.Sprintf("Expired grant %s", grantID),
+			CreatedAt:   expiredAt,
+		}); err != nil {
+			return 0, err
+		}
+		return remaining, nil
+	}
+	return 0, errs.ErrNotFound
+}
+
 func (m *memStore) ListExpiredGrants(_ context.Context) ([]domain.CreditLedgerEntry, error) {
 	// Stub: no test exercises ExpireCredits against memStore; integration
 	// coverage of expiry lives against PostgresStore. Present only to
@@ -369,22 +403,31 @@ func TestApplyToInvoice(t *testing.T) {
 // $50 grant fully consumed by a usage entry would then get expired
 // for -$50, taking balance from $0 to -$50.
 func TestProcessExpiry_SkipsFullyConsumed(t *testing.T) {
-	svc := NewService(newMemStore())
+	store := newMemStore()
+	svc := NewService(store)
 	ctx := context.Background()
 
-	// Synthesize the candidate list directly — same shape
-	// ListExpiredGrantsForClock would return, but with consumed_cents
-	// already set to the full amount (i.e., grant drained by usage).
+	// Seed the grant into the store fully consumed, then hand
+	// processExpiry a STALE candidate snapshot claiming it still has
+	// headroom — the shape a backdated apply landing between the
+	// candidate list and the retirement produces. ExpireGrantAtomic
+	// must re-read current state and no-op, never trust the snapshot.
 	expiresAt := time.Date(2027, 7, 21, 18, 30, 0, 0, time.UTC)
-	grants := []domain.CreditLedgerEntry{{
-		ID:            "vlx_ccl_drained",
-		TenantID:      "t1",
-		CustomerID:    "cus_1",
-		EntryType:     domain.CreditGrant,
-		AmountCents:   5000,
-		ConsumedCents: 5000, // fully drained by prior usage
-		ExpiresAt:     &expiresAt,
-	}}
+	seeded, err := store.AppendEntry(ctx, "t1", domain.CreditLedgerEntry{
+		CustomerID:  "cus_1",
+		EntryType:   domain.CreditGrant,
+		AmountCents: 5000,
+		Description: "seed",
+		ExpiresAt:   &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("seed grant: %v", err)
+	}
+	store.entries[0].ConsumedCents = 5000 // fully drained by prior usage
+
+	staleSnapshot := seeded
+	staleSnapshot.ConsumedCents = 0
+	grants := []domain.CreditLedgerEntry{staleSnapshot}
 
 	expired, errs := svc.processExpiry(ctx, grants)
 	if len(errs) != 0 {
@@ -412,15 +455,19 @@ func TestProcessExpiry_DeductRemaining(t *testing.T) {
 	ctx := context.Background()
 
 	expiresAt := time.Date(2027, 7, 21, 18, 30, 0, 0, time.UTC)
-	grants := []domain.CreditLedgerEntry{{
-		ID:            "vlx_ccl_partial",
-		TenantID:      "t1",
-		CustomerID:    "cus_1",
-		EntryType:     domain.CreditGrant,
-		AmountCents:   5000,
-		ConsumedCents: 3000, // partially drained
-		ExpiresAt:     &expiresAt,
-	}}
+	seeded, err := store.AppendEntry(ctx, "t1", domain.CreditLedgerEntry{
+		CustomerID:  "cus_1",
+		EntryType:   domain.CreditGrant,
+		AmountCents: 5000,
+		Description: "seed",
+		ExpiresAt:   &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("seed grant: %v", err)
+	}
+	store.entries[0].ConsumedCents = 3000 // partially drained
+	seeded.ConsumedCents = 3000
+	grants := []domain.CreditLedgerEntry{seeded}
 
 	expired, errs := svc.processExpiry(ctx, grants)
 	if len(errs) != 0 {

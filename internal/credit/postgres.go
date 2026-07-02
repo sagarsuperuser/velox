@@ -50,13 +50,19 @@ func (s *PostgresStore) AppendEntryTx(ctx context.Context, tx *sql.Tx, tenantID 
 // appendEntryInTx is the shared body. AppendEntry opens+commits its
 // own tx; AppendEntryTx delegates to the caller.
 func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
-	// Serialize concurrent writes for this customer so two grants can't compute
-	// the same balance_after off a stale snapshot. A `SELECT ... FOR UPDATE`
-	// over customer_credit_ledger only locks EXISTING rows — for a customer
-	// with an empty ledger (the very first grant) it matches zero rows and
-	// acquires no lock, so the first concurrent appends raced. A per-customer
-	// transaction advisory lock always serializes, regardless of ledger state;
-	// it releases automatically on commit/rollback.
+	// Serialize concurrent AppendEntry-path writers for this customer so two
+	// grants can't compute the same balance_after off a stale snapshot. A
+	// `SELECT ... FOR UPDATE` over customer_credit_ledger only locks EXISTING
+	// rows — for a customer with an empty ledger (the very first grant) it
+	// matches zero rows and acquires no lock, so the first concurrent appends
+	// raced. A per-customer transaction advisory lock always serializes,
+	// regardless of ledger state; it releases automatically on commit/rollback.
+	//
+	// Scope caveat: ApplyToInvoiceAtomic and AdjustAtomic do NOT take this
+	// lock — they serialize on FOR UPDATE row locks instead. Cross-discipline
+	// mutual exclusion (expiry vs apply/adjust) comes from ExpireGrantAtomic
+	// holding BOTH; grant-vs-apply races only skew the stored balance_after
+	// snapshot, which ListEntries recomputes chronologically anyway.
 	//
 	// tenant_id is folded into the lock key as defense-in-depth (RLS already
 	// scopes the tx to this tenant).
@@ -157,6 +163,119 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 	return entry, nil
 }
 
+// ExpireGrantAtomic retires one expired grant: it flips the grant's
+// consumed_cents to amount_cents AND appends the -remaining expiry entry in a
+// SINGLE transaction. Returns the retired (expired) amount in cents; 0 when
+// the grant was already fully consumed or retired by the time the lock was
+// held (clean no-op — nothing written).
+//
+// Why one tx, and why the locks (P14, plan §4.4):
+//
+//   - The caller's candidate snapshot (ListExpiredGrants*) is stale by
+//     construction — it was read on a different, already-closed tx. A
+//     backdated ApplyToInvoiceAtomic (at < expires_at passes the eligibility
+//     filter on a not-yet-retired grant) can drain the grant between the
+//     list read and this call. `remaining` is therefore recomputed HERE,
+//     under the same FOR UPDATE row lock the apply/adjust paths take —
+//     that row lock is the ONLY mutual exclusion between expiry and
+//     apply/adjust (the customer advisory lock below serializes only
+//     AppendEntry-path writers; apply/adjust never acquire it).
+//   - The consumed_cents flip and the expiry entry must commit together.
+//     Entry-then-flip split: a crash in between leaves phantom headroom on
+//     a grant the candidate queries no longer re-list — the backdated-apply
+//     hole persists forever for that grant. Flip-then-entry split: the
+//     remainder is excluded from draining but never deducted from the
+//     balance — permanently inflated, unspendable, undrainable.
+//   - The flip's `consumed_cents < amount_cents` predicate is the
+//     exactly-once gate for the expiry entry: duplicate/overlapping sweeps
+//     serialize on the row lock, the loser re-reads remaining == 0 and
+//     no-ops. No description-matching dedup needed (the old LIKE filter was
+//     operator-visible display copy doubling as an idempotency key).
+//
+// Lock order is advisory → ledger rows, matching every other writer;
+// pg_advisory_xact_lock is reentrant within the tx, so appendEntryInTx
+// re-acquiring it below is a no-op.
+func (s *PostgresStore) ExpireGrantAtomic(ctx context.Context, tenantID, customerID, grantID string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+customerID,
+	); err != nil {
+		return 0, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`SELECT 1 FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2 FOR UPDATE`,
+		tenantID, customerID,
+	); err != nil {
+		return 0, fmt.Errorf("lock credit ledger: %w", err)
+	}
+
+	var amount, consumed int64
+	var expiresAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT amount_cents, consumed_cents, expires_at
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND customer_id = $2 AND id = $3 AND entry_type = 'grant'
+	`, tenantID, customerID, grantID).Scan(&amount, &consumed, &expiresAt)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("expire grant %s: %w", grantID, errs.ErrNotFound)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("re-read grant %s under lock: %w", grantID, err)
+	}
+	remaining := amount - consumed
+	if remaining <= 0 {
+		// Drained or retired between the candidate snapshot and our lock —
+		// nothing left to expire. No entry, no error.
+		return 0, nil
+	}
+	if !expiresAt.Valid {
+		// Candidate queries require expires_at IS NOT NULL and nothing
+		// un-sets it; reaching here means the caller passed a non-expiring
+		// grant. Fail loud rather than fabricate an expiry timestamp.
+		return 0, fmt.Errorf("expire grant %s: grant has no expires_at", grantID)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customer_credit_ledger
+		SET consumed_cents = amount_cents
+		WHERE tenant_id = $1 AND id = $2 AND consumed_cents < amount_cents
+	`, tenantID, grantID)
+	if err != nil {
+		return 0, fmt.Errorf("retire grant %s: %w", grantID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("retire grant %s: rows affected: %w", grantID, err)
+	} else if n == 0 {
+		// Unreachable after the locked re-read above; kept as the structural
+		// exactly-once gate so the entry below can never double-append.
+		return 0, nil
+	}
+
+	// Stamp the expiry entry at the grant's own expires_at — the simulated
+	// (or wall-clock) instant it actually expired — so the customer's
+	// Credits timeline shows per-fact chronology, not the sweep tick time.
+	if _, err := s.appendEntryInTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  customerID,
+		EntryType:   domain.CreditExpiry,
+		AmountCents: -remaining,
+		Description: fmt.Sprintf("Expired grant %s", grantID),
+		CreatedAt:   expiresAt.Time,
+	}); err != nil {
+		return 0, fmt.Errorf("append expiry entry for grant %s: %w", grantID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit expiry of grant %s: %w", grantID, err)
+	}
+	return remaining, nil
+}
+
 // AdjustAtomic inserts a manual adjustment entry while holding a row lock on
 // the customer's ledger, so the balance check and the insert observe the same
 // snapshot. Without the lock, two concurrent deductions can each read the
@@ -206,12 +325,23 @@ func (s *PostgresStore) AdjustAtomic(
 	now := clock.Now(ctx)
 
 	// Negative adjustment: FIFO-drain positive blocks so each block's
-	// consumed_cents stays consistent with the ledger sum. Balance
-	// check above guarantees enough drainable; the return value is
-	// the actual drained amount and equals -amountCents.
+	// consumed_cents stays consistent with the ledger sum. The raw-SUM
+	// balance check above is NOT sufficient on its own: it counts
+	// expired-but-unswept grant headroom that drainPositiveBlocks
+	// rightly refuses to drain (expires_at <= now). Booking the full
+	// deduction against blocks that only partially absorbed it would
+	// drive SUM(amount_cents) below the blocks' remaining capacity —
+	// the exact negative-ledger drift the attribution model exists to
+	// prevent. Fail loud on the shortfall instead (P14, plan §4.4).
 	if amountCents < 0 {
-		if _, _, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now); err != nil {
+		drained, _, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now)
+		if err != nil {
 			return domain.CreditLedgerEntry{}, fmt.Errorf("attribute clawback: %w", err)
+		}
+		if drained != -amountCents {
+			return domain.CreditLedgerEntry{}, fmt.Errorf(
+				"insufficient drainable balance: active credit blocks cover %.2f of the %.2f deduction — the rest of the balance is expired credit pending the expiry sweep",
+				float64(drained)/100, float64(-amountCents)/100)
 		}
 	}
 
@@ -590,15 +720,15 @@ func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditL
 	}
 	defer postgres.Rollback(tx)
 
-	// expires_at + consumed_cents fetched so processExpiry can:
-	//   (a) stamp the expiry row's created_at at the grant's actual
-	//       expires_at (the simulated/wall-clock moment it expired)
-	//       instead of falling back to clock.Now() which would land
-	//       at the CRON tick time — making the customer's Credits
-	//       timeline lie about when each grant actually expired.
-	//   (b) skip grants that are already fully consumed (amount ==
-	//       consumed_cents) — expiring them would double-deduct the
-	//       balance since the usage entries already drained them.
+	// This is candidate DISCOVERY only — ExpireGrantAtomic re-reads and
+	// gates under the row lock, so a stale row here is harmless (it
+	// no-ops). `consumed_cents < amount_cents` is the single exclusion:
+	// retirement flips consumed_cents to amount_cents, which both
+	// removes the grant from this list AND from drainPositiveBlocks
+	// (migration 0127 retro-retired grants expired before the flip
+	// existed). The pre-0127 description-LIKE NOT EXISTS dedup is gone —
+	// it was operator-visible display copy doubling as an idempotency
+	// key, and it was check-then-act across transactions anyway.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT g.id, g.tenant_id, g.customer_id, g.amount_cents, g.consumed_cents, g.expires_at
 		FROM customer_credit_ledger g
@@ -611,12 +741,6 @@ func (s *PostgresStore) ListExpiredGrants(ctx context.Context) ([]domain.CreditL
 		    SELECT 1 FROM customers c
 		    WHERE c.id = g.customer_id
 		      AND c.test_clock_id IS NOT NULL
-		  )
-		  AND NOT EXISTS (
-		    SELECT 1 FROM customer_credit_ledger e2
-		    WHERE e2.customer_id = g.customer_id
-		      AND e2.entry_type = 'expiry'
-		      AND e2.description LIKE 'Expired grant %' || g.id || '%'
 		  )
 	`, postgres.Livemode(ctx))
 	if err != nil {
@@ -647,10 +771,9 @@ func (s *PostgresStore) ListExpiredGrantsForClock(ctx context.Context, tenantID,
 	}
 	defer postgres.Rollback(tx)
 
-	// expires_at + consumed_cents fetched (see ListExpiredGrants
-	// rationale): processExpiry stamps the expiry row at the grant's
-	// expires_at (correct timeline) and skips fully-consumed grants
-	// (no double-deduct).
+	// Candidate discovery only (see ListExpiredGrants rationale):
+	// ExpireGrantAtomic re-reads under the row lock; `consumed_cents <
+	// amount_cents` is the single retirement exclusion.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT g.id, g.tenant_id, g.customer_id, g.amount_cents, g.consumed_cents, g.expires_at
 		FROM customer_credit_ledger g
@@ -661,12 +784,6 @@ func (s *PostgresStore) ListExpiredGrantsForClock(ctx context.Context, tenantID,
 		  AND g.tenant_id = $1
 		  AND c.test_clock_id = $2
 		  AND g.consumed_cents < g.amount_cents
-		  AND NOT EXISTS (
-		    SELECT 1 FROM customer_credit_ledger e2
-		    WHERE e2.customer_id = g.customer_id
-		      AND e2.entry_type = 'expiry'
-		      AND e2.description LIKE 'Expired grant %' || g.id || '%'
-		  )
 	`, tenantID, clockID, frozenTime)
 	if err != nil {
 		return nil, err
