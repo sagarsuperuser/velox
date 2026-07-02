@@ -52,8 +52,10 @@ WHERE o.id = r.id AND r.rn > 1;
 ALTER TABLE customer_price_overrides ALTER COLUMN rule_key SET NOT NULL;
 
 -- One ACTIVE override per (tenant, customer, rule_key). Partial so
--- demoted/deactivated rows persist for audit. CreateOverride's upsert
--- infers this index via ON CONFLICT ... WHERE active.
+-- demoted/deactivated rows persist for audit. CreateOverride writes as
+-- deactivate-prior-window + insert; this index turns a concurrent
+-- double-write into a clean unique violation the service surfaces as a
+-- retryable conflict.
 CREATE UNIQUE INDEX idx_price_overrides_active_rule_key
     ON customer_price_overrides (tenant_id, customer_id, rule_key)
     WHERE active;

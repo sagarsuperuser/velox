@@ -1676,6 +1676,36 @@ func TestRunCycle_OverrideLookupTransientError_Aborts(t *testing.T) {
 	}
 }
 
+// TestPreview_OverrideLookupTransientError_Aborts locks the fix for the
+// verifier-caught under-bill: previewWithWindow used to degrade a
+// previewMeter ERROR into a warning and drop that meter's lines — and
+// the threshold scan PERSISTS preview lines as a fire invoice, after
+// which the cycle close clamps every meter to the fire watermark and
+// the dropped meter's pre-fire usage is billed by nobody. The preview
+// must ABORT on infrastructure failure; the threshold eval propagates
+// the error and retries next tick.
+//
+// Mutation-verify: restore the warning-degradation loop in
+// previewWithWindow — this test fails (preview succeeds with the meter
+// silently missing).
+func TestPreview_OverrideLookupTransientError_Aborts(t *testing.T) {
+	engine, subs, _, pricing, _ := setupEngine()
+	pricing.overrideErr = fmt.Errorf("connection reset by peer")
+
+	if _, err := engine.Preview(context.Background(), subs.subs["sub_1"]); err == nil {
+		t.Fatal("preview succeeded despite override-lookup failure; want abort (a partial preview persisted by a threshold fire under-bills permanently)")
+	}
+
+	pricing.overrideErr = nil
+	preview, err := engine.Preview(context.Background(), subs.subs["sub_1"])
+	if err != nil {
+		t.Fatalf("healed preview: %v", err)
+	}
+	if len(preview.Lines) == 0 {
+		t.Fatal("healed preview has no lines")
+	}
+}
+
 func TestRunCycle_WithPriceOverride(t *testing.T) {
 	engine, _, _, pricing, invoices := setupEngine()
 

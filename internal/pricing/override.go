@@ -33,7 +33,9 @@ func (s *PostgresStore) CreateOverride(ctx context.Context, tenantID string, o d
 	tiersJSON, _ := json.Marshal(o.GraduatedTiers)
 
 	// Append-only effectivity rows (ADR-070): re-issuing a key closes
-	// the prior row's window (deactivated_at) and inserts a fresh one.
+	// the prior row's window (deactivated_at) and inserts a fresh one —
+	// the one-active-row partial unique index (0128) turns a concurrent
+	// double-write into a clean retryable conflict below.
 	// [created_at, deactivated_at) is what the as-of lookup resolves —
 	// a mid-period edit therefore prices from the NEXT period open; the
 	// period in flight keeps the row that was live when it opened.
@@ -103,9 +105,15 @@ func (s *PostgresStore) GetOverrideByKeyAsOf(ctx context.Context, tenantID, cust
 
 	var o domain.CustomerPriceOverride
 	var tiersJSON []byte
-	// Effectivity window: [created_at, deactivated_at). At most one row
-	// can span any instant (windows are closed by the writer that opens
-	// the successor), but ORDER BY guards deterministically anyway.
+	// Effectivity window: [created_at, deactivated_at). Post-0128,
+	// windows never overlap (each writer closes the prior window in the
+	// same tx), so at most one row spans any instant. The one exception
+	// is the 0128 collapse itself: pre-migration duplicates all had
+	// open-ended windows closed at the SAME migration instant, so for
+	// an asOf inside that legacy span both winner and demoted rows
+	// match — `active DESC` prefers the collapse winner there and is
+	// inert everywhere else (an active row's created_at bounds it out
+	// of any earlier window).
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, customer_id, rule_key, rating_rule_version_id, mode,
 			flat_amount_cents, graduated_tiers, package_size, package_amount_cents,
@@ -114,7 +122,7 @@ func (s *PostgresStore) GetOverrideByKeyAsOf(ctx context.Context, tenantID, cust
 		WHERE customer_id = $1 AND rule_key = $2
 		  AND created_at <= $3
 		  AND (deactivated_at IS NULL OR deactivated_at > $3)
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY active DESC, created_at DESC LIMIT 1
 	`, customerID, ruleKey, asOf).Scan(&o.ID, &o.TenantID, &o.CustomerID, &o.RuleKey, &o.RatingRuleVersionID,
 		&o.Mode, &o.FlatAmountCents, &tiersJSON, &o.PackageSize, &o.PackageAmountCents,
 		&o.OverageUnitAmountCents, &o.Reason, &o.Active, &o.CreatedAt, &o.UpdatedAt)
