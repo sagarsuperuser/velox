@@ -13,6 +13,11 @@ state machine: every writer, every effect-firer, every gated reader, every crash
 point. This playbook makes that enumeration a checklist instead of a four-round
 discovery.
 
+When the design or review stage runs as a multi-agent panel/workflow, prompt
+the agents per [agent-prompting-standards.md](agent-prompting-standards.md)
+(grounded claims, reason-with-request, effort routing, the optional mid-build
+spec-conformance verifier).
+
 Pre-launch posture: **guard the money invariants, don't gold-plate.** Every rule
 below is anchored to real Velox code — copy the pattern, don't reinvent it.
 
