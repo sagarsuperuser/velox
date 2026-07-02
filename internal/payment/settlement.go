@@ -3,7 +3,9 @@ package payment
 import (
 	"context"
 	"errors"
+
 	"fmt"
+	"github.com/stripe/stripe-go/v82"
 	"log/slog"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -131,6 +133,15 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		s.escalatePaymentAnomaly(ctx, tenantID, fresh, domain.EventPaymentAmountMismatch, paymentIntentID, capturedCents,
 			"captured amount differs from the amount booked at settle")
 	}
+
+	// Best-effort Stripe-side expire of any still-live checkout sessions for
+	// this invoice (ADR-068). The DB rows were already closed IN the settle
+	// tx (choke-point close in markPaidReportingTransition) so the reuse
+	// path cannot serve them; this network sweep shrinks the window in which
+	// a second device could pay a session that is dead in our books but live
+	// at Stripe. Gated on transitioned==true (once-only); each session's own
+	// ExpiresAt (<=1h) is the backstop when a call fails.
+	s.expireCheckoutSessionsBestEffort(ctx, tenantID, fresh)
 
 	slog.Info("payment succeeded",
 		"invoice_id", inv.ID,
@@ -394,6 +405,39 @@ func (s *Stripe) escalatePaymentAnomaly(ctx context.Context, tenantID string, in
 	if s.anomalies != nil {
 		if err := s.anomalies.RecordPaymentAnomaly(ctx, tenantID, inv.ID, eventType, incomingPI, capturedCents); err != nil {
 			slog.ErrorContext(ctx, "payment anomaly: durable marker write failed", "event", eventType, "invoice_id", inv.ID, "error", err)
+		}
+	}
+}
+
+// expireCheckoutSessionsBestEffort expires, at Stripe, every session for the
+// invoice not yet confirmed terminal — including superseded rows whose
+// earlier expire call failed (their sessions stay payable at Stripe). Errors
+// classify idempotently: already-expired = success; completed = the webhook
+// escalation owns the money consequence; anything else = rely on ExpiresAt.
+func (s *Stripe) expireCheckoutSessionsBestEffort(ctx context.Context, tenantID string, inv domain.Invoice) {
+	if s.checkoutSessions == nil {
+		return
+	}
+	claims, err := s.checkoutSessions.ListUnresolvedForInvoice(ctx, tenantID, inv.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "settle: list checkout claims for expire failed", "invoice_id", inv.ID, "error", err)
+		return
+	}
+	if s.sessionClients == nil {
+		return
+	}
+	for _, c := range claims {
+		sc := s.sessionClients.For(ctx, tenantID, c.Livemode)
+		if sc == nil {
+			continue
+		}
+		if _, err := sc.V1CheckoutSessions.Expire(ctx, c.StripeSessionID, &stripe.CheckoutSessionExpireParams{}); err != nil {
+			slog.WarnContext(ctx, "settle: best-effort session expire failed (ExpiresAt backstop applies)",
+				"invoice_id", inv.ID, "claim_id", c.ID, "session_id", c.StripeSessionID, "error", err)
+			continue
+		}
+		if err := s.checkoutSessions.MarkExpired(ctx, tenantID, c.ID); err != nil {
+			slog.WarnContext(ctx, "settle: mark claim expired failed", "claim_id", c.ID, "error", err)
 		}
 	}
 }
