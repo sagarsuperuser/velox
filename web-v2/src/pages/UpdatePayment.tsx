@@ -14,6 +14,18 @@ interface TokenData {
   invoice_number: string
   amount_due_cents: number
   currency: string
+  branding?: {
+    company_name?: string
+    logo_url?: string
+    brand_color?: string
+    support_url?: string
+  }
+}
+
+// Server-validated on save; re-checked before inline styles (same
+// defence-in-depth as HostedInvoice).
+function isHexColor(c: string | undefined): c is string {
+  return !!c && /^#[0-9a-f]{6}$/i.test(c)
 }
 
 export default function UpdatePaymentPage() {
@@ -92,10 +104,29 @@ export default function UpdatePaymentPage() {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        {/* Brand header */}
+        {/* Brand header — the TENANT's identity, not Velox: this is the
+            payment-recovery funnel, and a customer arriving from a
+            failed-payment email who sees an unknown brand treats the
+            page as phishing (audit P13). Falls back to a neutral header
+            when the tenant hasn't configured branding. */}
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-foreground">Velox</h1>
-          <p className="text-sm text-muted-foreground mt-1">Secure Payment Update</p>
+          {data?.branding?.logo_url ? (
+            <img
+              src={data.branding.logo_url}
+              alt={data.branding.company_name || 'Company logo'}
+              className="h-10 mx-auto mb-2 object-contain"
+            />
+          ) : (
+            <h1
+              className="text-2xl font-bold text-foreground"
+              style={isHexColor(data?.branding?.brand_color) ? { color: data!.branding!.brand_color } : undefined}
+            >
+              {data?.branding?.company_name || 'Secure payment update'}
+            </h1>
+          )}
+          <p className="text-sm text-muted-foreground mt-1">
+            {data?.branding?.company_name ? 'Secure payment update' : 'Update your payment method'}
+          </p>
         </div>
 
         <Card className="overflow-hidden">
