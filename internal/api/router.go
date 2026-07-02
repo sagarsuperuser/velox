@@ -1099,6 +1099,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Bootstrap — one-time setup (no auth, only works when no tenants exist)
 	bootstrapH := tenant.NewBootstrapHandler(db)
 	r.Group(func(r chi.Router) {
+		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/v1/bootstrap", bootstrapH.Routes())
 	})
@@ -1118,9 +1119,14 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/v1/webhooks", webhookH.Routes())
 	})
 
-	// Public payment update — no auth (validated by token)
+	// Public payment update — no auth (validated by token). Same tight
+	// per-IP bucket as the hosted-invoice surface: both are
+	// unauthenticated payment endpoints, and this one previously had NO
+	// rate limit at all — free token brute-force + Stripe API
+	// amplification.
 	if publicPaymentH != nil {
 		r.Group(func(r chi.Router) {
+			r.Use(hostedInvoiceRL.Middleware())
 			r.Use(middleware.Timeout(30 * time.Second))
 			r.Mount("/v1/public/payment-updates", publicPaymentH.Routes())
 		})
@@ -1169,6 +1175,29 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
 		r.With(auth.Require(auth.PermAPIKeyRead)).Get("/", webhookOutH.StreamHandler())
+	})
+
+	// Streaming CSV exports — mounted as a sibling of the /v1 block
+	// (same pattern as the SSE stream above) so they get a FIVE-minute
+	// timeout instead of the general 30s CRUD cap: a full usage-events
+	// export legitimately streams longer than 30s, and the old cap
+	// killed it mid-file — which, pre-P12, produced a silently
+	// truncated CSV (see exportAbort). Same auth chain + audit log as
+	// /v1; idempotency skipped (GET-only). Each endpoint requires the
+	// corresponding *Read permission, so a publishable key restricted
+	// to one resource can only export what it can list.
+	r.Route("/v1/exports", func(r chi.Router) {
+		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
+		r.Use(rateLimiter.Middleware())
+		r.Use(mw.AuditLog(db, settingsStore))
+		r.Use(middleware.Timeout(5 * time.Minute))
+		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
+		r.Mount("/", exportsH.Routes(
+			auth.Require(auth.PermCustomerRead),
+			auth.Require(auth.PermInvoiceRead),
+			auth.Require(auth.PermSubscriptionRead),
+			auth.Require(auth.PermUsageRead),
+		))
 	})
 
 	// Tenant-scoped routes — accept either an httpOnly session cookie
@@ -1305,17 +1334,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		))
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
-		// Streaming CSV exports — one per resource. Each endpoint
-		// requires the corresponding *Read permission, so a
-		// publishable key restricted to one resource can only export
-		// what it can list. Sprint 2 of the DP-readiness plan.
-		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
-		r.Mount("/exports", exportsH.Routes(
-			auth.Require(auth.PermCustomerRead),
-			auth.Require(auth.PermInvoiceRead),
-			auth.Require(auth.PermSubscriptionRead),
-			auth.Require(auth.PermUsageRead),
-		))
 		if checkoutH != nil {
 			r.With(auth.Require(auth.PermCustomerWrite)).Mount("/checkout", checkoutH.Routes())
 		}
@@ -1398,9 +1416,37 @@ func requestLogger(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 		slog.Info("request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", loggablePath(r),
 			"status", ww.Status(),
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// loggablePath returns the request path with capability tokens removed.
+// The public surfaces carry bearer-equivalent secrets IN the path
+// (/v1/public/invoices/{256-bit token}, /v1/public/payment-updates/
+// {single-use token}) — logging the raw path writes live payment
+// credentials into every log sink. Prefer chi's matched route pattern
+// ("/v1/public/invoices/{token}"); when no pattern matched (404s),
+// redact the segment after any known public token prefix instead —
+// unmatched probes against those prefixes still contain candidate
+// secrets.
+func loggablePath(r *http.Request) string {
+	if rctx := chi.RouteContext(r.Context()); rctx != nil {
+		if pat := rctx.RoutePattern(); pat != "" {
+			return pat
+		}
+	}
+	path := r.URL.Path
+	for _, prefix := range []string{"/v1/public/invoices/", "/v1/public/payment-updates/"} {
+		if rest, ok := strings.CutPrefix(path, prefix); ok && rest != "" {
+			// Keep any sub-path (e.g. /pdf, /checkout) after the token.
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return prefix + "[redacted]" + rest[i:]
+			}
+			return prefix + "[redacted]"
+		}
+	}
+	return path
 }
