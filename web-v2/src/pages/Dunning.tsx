@@ -144,20 +144,33 @@ function RunsTab() {
 
   const { data: runsData, isLoading: loading, error: loadError, refetch: loadRuns } = useQuery({
     queryKey: ['dunning-runs', page, filterStatus],
-    queryFn: () => Promise.all([
-      api.listDunningRuns(queryParams),
-      api.listInvoices().catch(() => ({ data: [] as Invoice[], total: 0 })),
-      api.listCustomers().catch(() => ({ data: [] as Customer[], total: 0 })),
-      api.listSubscriptions().catch(() => ({ data: [], total: 0 })),
-    ]).then(([runsRes, invoicesRes, custRes, subsRes]) => {
+    queryFn: async () => {
+      // Runs first, then resolve EXACTLY the referenced invoices and
+      // customers via ids= — the old bare list fetches were capped at
+      // one 50-row page, so any run referencing an invoice/customer
+      // past it rendered raw ids (P11). The subscriptions fetch stays
+      // page-bounded: it only feeds the cosmetic test-clock badge.
+      const runsRes = await api.listDunningRuns(queryParams)
+      const runs = runsRes.data || []
+      const invoiceIds = Array.from(new Set(runs.map(r => r.invoice_id).filter(Boolean)))
+      const customerIds = Array.from(new Set(runs.map(r => r.customer_id).filter(Boolean)))
+      const [invoicesRes, custRes, subsRes] = await Promise.all([
+        invoiceIds.length > 0
+          ? api.listInvoices(`ids=${invoiceIds.join(',')}&limit=${invoiceIds.length}`).catch(() => ({ data: [] as Invoice[], total: 0 }))
+          : Promise.resolve({ data: [] as Invoice[], total: 0 }),
+        customerIds.length > 0
+          ? api.listCustomers(`ids=${customerIds.join(',')}&limit=${customerIds.length}`).catch(() => ({ data: [] as Customer[], total: 0 }))
+          : Promise.resolve({ data: [] as Customer[], total: 0 }),
+        api.listSubscriptions().catch(() => ({ data: [], total: 0 })),
+      ])
       const iMap: Record<string, Invoice> = {}
       invoicesRes.data.forEach(inv => { iMap[inv.id] = inv })
       const cMap: Record<string, Customer> = {}
       custRes.data.forEach(c => { cMap[c.id] = c })
       const sMap: Record<string, string> = {}
       subsRes.data.forEach(s => { if (s.test_clock_id) sMap[s.id] = s.test_clock_id })
-      return { runs: runsRes.data || [], total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap, subTestClockMap: sMap }
-    }),
+      return { runs, total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap, subTestClockMap: sMap }
+    },
   })
 
   // Aggregate stats for the dashboard cards. Comes from a backend

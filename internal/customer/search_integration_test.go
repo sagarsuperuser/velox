@@ -2,6 +2,7 @@ package customer_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -222,5 +223,41 @@ func TestPostgresStore_ListSortByEncryptedColumn(t *testing.T) {
 	}
 	if len(got) != 5 || got[0].DisplayName != "Zebra Systems" {
 		t.Fatalf("created_at asc first row = %q, want the first-seeded Zebra Systems", got[0].DisplayName)
+	}
+}
+
+// P11 DoD: the picker's server search finds customers BEYOND the
+// default 50-row page — the property that makes the create-subscription
+// picker (and every other server-searched picker) able to select any
+// customer. Seeds 60, searches for the 57th.
+func TestPostgresStore_SearchBeyondFirstPage(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	store := customer.NewPostgresStore(db)
+	enc, err := crypto.NewEncryptor(strings.Repeat("ab", 32))
+	if err != nil {
+		t.Fatalf("encryptor: %v", err)
+	}
+	store.SetEncryptor(enc)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Search Beyond 50")
+
+	for i := 0; i < 60; i++ {
+		if _, err := store.Create(ctx, tenantID, domain.Customer{
+			ExternalID:  fmt.Sprintf("ext-%03d", i),
+			DisplayName: fmt.Sprintf("Padding Corp %03d", i),
+			Email:       fmt.Sprintf("pad%03d@example.test", i),
+		}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	// Default page misses row 57 by construction (50-row cap, name order
+	// irrelevant — the point is the picker can't rely on one page).
+	res, _, err := store.List(ctx, customer.ListFilter{TenantID: tenantID, Search: "Padding Corp 057", Limit: 20})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res) != 1 || res[0].DisplayName != "Padding Corp 057" {
+		t.Fatalf("search beyond page: got %d rows (%v), want exactly Padding Corp 057", len(res), res)
 	}
 }

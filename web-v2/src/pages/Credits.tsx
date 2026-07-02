@@ -8,6 +8,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
+import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { endOfDayInTZ } from '@/lib/dates'
 import type { Customer, CreditBalance } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
@@ -158,9 +159,22 @@ export default function CreditsPage() {
     queryKey: ['credits', 'balances'],
     queryFn: () => api.listBalances(),
   })
+  // Fetch ONLY the customers referenced by balances (ids=): the old
+  // bare 50-row page meant a customer with credits past the 50th row
+  // vanished from this table entirely — outstanding balance invisible.
+  const balanceCustomerIds = useMemo(
+    () => Array.from(new Set((balancesQuery.data?.data ?? []).map(b => b.customer_id))),
+    [balancesQuery.data],
+  )
   const customersQuery = useQuery({
-    queryKey: ['credits', 'customers'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['credits', 'customers', balanceCustomerIds],
+    queryFn: () =>
+      api.listCustomers(
+        balanceCustomerIds.length > 0
+          ? `ids=${balanceCustomerIds.join(',')}&limit=${balanceCustomerIds.length}`
+          : '',
+      ),
+    enabled: !balancesQuery.isLoading,
   })
   const balances = balancesQuery.data?.data ?? []
   const customers = customersQuery.data?.data ?? []
@@ -556,7 +570,18 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
   const [idemKey] = useState(() => crypto.randomUUID())
 
   const effectiveCustomerId = selectedCustomer || customerId
-  const effectiveCustomerName = customers?.find(c => c.id === effectiveCustomerId)?.display_name || customerName
+  // The confirm step names the customer; with the server-searched picker
+  // there's no local list to look it up in, so fetch the picked one.
+  const { data: pickedData } = useQuery({
+    queryKey: ['credit-dialog-picked', effectiveCustomerId],
+    queryFn: () => api.listCustomers(`ids=${effectiveCustomerId}&limit=1`),
+    enabled: !!effectiveCustomerId && !customerName,
+    staleTime: 30_000,
+  })
+  const effectiveCustomerName =
+    customers?.find(c => c.id === effectiveCustomerId)?.display_name ||
+    pickedData?.data?.[0]?.display_name ||
+    customerName
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -616,19 +641,18 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
           </DialogHeader>
           <Form {...form}>
             <form onSubmit={onFormSubmit} noValidate className="space-y-4">
-              {!customerId && customers && (
+              {!customerId && (
                 <div>
                   <Label className="text-sm font-medium">Customer</Label>
-                  <select
-                    value={selectedCustomer}
-                    onChange={(e) => { setSelectedCustomer(e.target.value); setCustomerError('') }}
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring mt-2"
-                  >
-                    <option value="">Select customer...</option>
-                    {customers.map(c => (
-                      <option key={c.id} value={c.id}>{c.display_name} ({c.external_id})</option>
-                    ))}
-                  </select>
+                  {/* Server-searched (P11): the old select listed only the
+                      first 50 customers — credits ungrantable to the rest. */}
+                  <div className="mt-2">
+                    <CustomerCombobox
+                      value={selectedCustomer}
+                      onChange={(v) => { setSelectedCustomer(v); setCustomerError('') }}
+                      placeholder="Search customers..."
+                    />
+                  </div>
                   {customerError && <p className="text-destructive text-sm mt-1">{customerError}</p>}
                 </div>
               )}

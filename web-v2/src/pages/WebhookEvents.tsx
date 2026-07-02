@@ -45,11 +45,18 @@ export default function WebhookEventsPage() {
   // the snapshot path can race with the first live frame; collapsing in
   // place is what keeps the row from flickering or duplicating.
   const [frames, setFrames] = useState<WebhookEventStreamFrame[]>([])
-  // Resolve customer ids to display names for the tail rows. Bounded
-  // fetch — ids beyond the first page fall back to the raw id (titled).
+  // Resolve customer ids to display names for exactly the frames on
+  // screen (ids=). The old limit=100 page meant any event from a
+  // customer past the 100th rendered a raw id forever (P11).
+  const frameCustomerIds = useMemo(
+    () => Array.from(new Set(frames.map(f => f.customer_id).filter((id): id is string => !!id))),
+    [frames],
+  )
   const { data: customersData } = useQuery({
-    queryKey: ['we-customers'],
-    queryFn: () => api.listCustomers('limit=100'),
+    queryKey: ['we-customers', frameCustomerIds],
+    queryFn: () => api.listCustomers(`ids=${frameCustomerIds.join(',')}&limit=${frameCustomerIds.length}`),
+    enabled: frameCustomerIds.length > 0,
+    staleTime: 60_000,
   })
   const customerName = useMemo(() => {
     const m: Record<string, string> = {}

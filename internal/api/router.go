@@ -25,7 +25,6 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
-	"github.com/sagarsuperuser/velox/internal/feature"
 	"github.com/sagarsuperuser/velox/internal/hostedinvoice"
 	"github.com/sagarsuperuser/velox/internal/integrations/litellm"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -559,10 +558,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// invoice.payment_recorded event.
 	invoiceSvc.SetAuditLogger(auditLogger)
 	invoiceSvc.SetEventDispatcher(eventDispatcher)
-
-	// Feature flags (created before billing engine to gate Stripe Tax)
-	featureSvc := feature.NewService(feature.NewPostgresStore(db))
-	featureH := feature.NewHandler(featureSvc)
 
 	// Test clocks (FEAT-8 P5) — test-mode-only frozen-time simulator.
 	// Constructed before the billing engine so the engine can read clock
@@ -1321,17 +1316,6 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings", settingsH.Routes())
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/settings/stripe", tenantStripeH.Routes())
 		r.With(auth.Require(auth.PermInvoiceRead)).Mount("/analytics", analyticsH.Routes())
-		// Per-route gating: listing + per-tenant overrides are tenant-scoped
-		// (PermAPIKeyRead / PermAPIKeyWrite, held by secret + session keys);
-		// the global on/off switch flips behavior for every tenant, so it's
-		// platform-only (PermTenantWrite). A blanket mount permission can't
-		// express this — the two writes are held by disjoint key types — so
-		// the guards are passed down and applied per route.
-		r.Mount("/feature-flags", featureH.Routes(
-			auth.Require(auth.PermAPIKeyRead),
-			auth.Require(auth.PermTenantWrite),
-			auth.Require(auth.PermAPIKeyWrite),
-		))
 		r.With(auth.Require(auth.PermTestClockWrite)).Mount("/test-clocks", testClockH.Routes())
 		r.With(auth.Require(auth.PermUsageRead)).Mount("/usage-summary", usageH.SummaryRoutes())
 		if checkoutH != nil {

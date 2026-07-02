@@ -88,9 +88,21 @@ export default function PlanDetailPage() {
     enabled: !!id,
   })
 
+  // ids= of the subscribers actually shown — the old bare 50-row page
+  // rendered raw customer ids for anyone past the 50th (P11).
+  const planSubCustomerIds = useMemo(
+    () => Array.from(new Set((Array.isArray(subsData) ? subsData : []).map(s => s.customer_id).filter(Boolean))),
+    [subsData],
+  )
   const { data: customersData } = useQuery({
-    queryKey: ['customers-map'],
-    queryFn: () => api.listCustomers(),
+    queryKey: ['customers-map', planSubCustomerIds],
+    queryFn: () =>
+      api.listCustomers(
+        planSubCustomerIds.length > 0
+          ? `ids=${planSubCustomerIds.join(',')}&limit=${planSubCustomerIds.length}`
+          : '',
+      ),
+    enabled: planSubCustomerIds.length > 0,
   })
   const customerMap = useMemo(() => {
     const map: Record<string, Customer> = {}
