@@ -429,7 +429,11 @@ func (m *mockSubs) ClearPauseCollection(_ context.Context, _, id string) (domain
 	return s, nil
 }
 
-func (m *mockSubs) ActivateAfterTrial(_ context.Context, _, id string, at time.Time) (domain.Subscription, error) {
+// ActivateAfterTrialWithBill mirrors the store's ADR-069 shape: the
+// schedule-empty predicate blocks activation with ErrTrialCancelDue, the
+// bill callback runs "in-tx" (nil tx — atomicity is the real store's
+// concern), and already-non-trialing rows return InvalidState.
+func (m *mockSubs) ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok {
 		return domain.Subscription{}, errs.ErrNotFound
@@ -437,11 +441,38 @@ func (m *mockSubs) ActivateAfterTrial(_ context.Context, _, id string, at time.T
 	if s.Status != domain.SubscriptionTrialing {
 		return domain.Subscription{}, errs.InvalidState("not trialing")
 	}
+	if s.CancelAtPeriodEnd || s.CancelAt != nil {
+		return domain.Subscription{}, domain.ErrTrialCancelDue
+	}
 	s.Status = domain.SubscriptionActive
 	if s.ActivatedAt == nil {
 		t := at
 		s.ActivatedAt = &t
 	}
+	m.subs[id] = s
+	if billFn != nil {
+		if err := billFn(nil, s); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+	return s, nil
+}
+
+// CancelAtTrialEnd mirrors the store's ADR-069 CAS.
+func (m *mockSubs) CancelAtTrialEnd(_ context.Context, _, id string, observedTrialEnd time.Time) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	scheduleDue := s.CancelAtPeriodEnd || (s.CancelAt != nil && s.TrialEndAt != nil && !s.CancelAt.After(*s.TrialEndAt))
+	if s.Status != domain.SubscriptionTrialing || s.TrialEndAt == nil || !s.TrialEndAt.Equal(observedTrialEnd) || !scheduleDue {
+		return domain.Subscription{}, domain.ErrTrialCancelConflict
+	}
+	s.Status = domain.SubscriptionCanceled
+	canceledAt := *s.TrialEndAt
+	s.CanceledAt = &canceledAt
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
 	m.subs[id] = s
 	return s, nil
 }

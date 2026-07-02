@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -420,3 +421,16 @@ type Subscription struct {
 	// iterate this. A subscription without items is not a valid state.
 	Items []SubscriptionItem `json:"items,omitempty"`
 }
+
+// ErrTrialCancelDue: a trialing→active store transition was blocked because
+// a cancel schedule is due at trial end (ADR-069). Every activation writer
+// (subscription service scans, EndTrial, the billing engine's trial branch)
+// routes this to the dedicated free CancelAtTrialEnd transition instead of
+// activating and billing a customer who canceled. Lives in domain so the
+// billing engine can route on it without a peer import.
+var ErrTrialCancelDue = errors.New("trial has a cancel schedule due — route to CancelAtTrialEnd")
+
+// ErrTrialCancelConflict: CancelAtTrialEnd's CAS matched no row — the
+// schedule was cleared, the trial extended, or another site already
+// canceled. The caller treats the sub as NOT handled this pass.
+var ErrTrialCancelConflict = errors.New("trial-end cancel conflicted — re-read and route")

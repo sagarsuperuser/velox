@@ -821,3 +821,11 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 func (a *subStoreAdapter) UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, start, end, next time.Time, anchorDay int) error {
 	return a.store.UpdateBillingCycleTx(ctx, tx, tenantID, id, start, end, next, anchorDay)
 }
+
+func (a *subStoreAdapter) ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
+	return a.store.ActivateAfterTrialWithBill(ctx, tenantID, id, at, billFn)
+}
+
+func (a *subStoreAdapter) CancelAtTrialEnd(ctx context.Context, tenantID, id string, observedTrialEnd time.Time) (domain.Subscription, error) {
+	return a.store.CancelAtTrialEnd(ctx, tenantID, id, observedTrialEnd)
+}

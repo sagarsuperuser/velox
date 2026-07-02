@@ -3,7 +3,6 @@ package subscription
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -2340,16 +2339,13 @@ func (s *PostgresStore) ListItemChangesInPeriod(ctx context.Context, tenantID, s
 // raw bytes on the Metadata field so the caller owns the encoding policy.
 var _ = sql.ErrNoRows // retain import
 
-// ErrTrialCancelDue: a trialing→active transition was blocked because a
-// cancel schedule is due at trial end (ADR-069). Callers route to
-// CancelAtTrialEnd instead of billing.
-var ErrTrialCancelDue = errors.New("trial has a cancel schedule due — route to CancelAtTrialEnd")
-
-// ErrTrialCancelConflict: CancelAtTrialEnd's CAS matched no row — the
-// schedule was cleared, the trial extended, or another site already
-// canceled. The caller re-reads and routes; it must NOT treat the sub as
-// handled.
-var ErrTrialCancelConflict = errors.New("trial-end cancel conflicted — re-read and route")
+// ErrTrialCancelDue / ErrTrialCancelConflict live in domain (the billing
+// engine routes on them without a peer import); aliased here for the
+// package's own callers.
+var (
+	ErrTrialCancelDue      = domain.ErrTrialCancelDue
+	ErrTrialCancelConflict = domain.ErrTrialCancelConflict
+)
 
 // CancelAtTrialEnd is the dedicated trialing→canceled transition (ADR-069):
 // trials are free, so it emits NO invoice, stamps canceled_at = trial_end_at
