@@ -51,7 +51,47 @@ type fakePricingReader struct {
 	plans      map[string]domain.Plan
 	meters     map[string]domain.Meter
 	rules      map[string]domain.RatingRuleVersion
-	pricingMap map[string][]domain.MeterPricingRule // by meter id
+	pricingMap map[string][]domain.MeterPricingRule    // by meter id
+	overrides  map[string]domain.CustomerPriceOverride // key: customerID+":"+ruleKey
+}
+
+// GetRuleByKeyAsOf mirrors the store's ADR-070 resolution against the
+// fake's rules map: highest active version created at or before asOf,
+// else the earliest active version. Fixture rules with zero CreatedAt
+// are "always in force".
+func (f *fakePricingReader) GetRuleByKeyAsOf(_ context.Context, _, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	var best, earliest domain.RatingRuleVersion
+	foundBest, foundAny := false, false
+	for _, r := range f.rules {
+		if r.RuleKey != ruleKey {
+			continue
+		}
+		if r.LifecycleState != "" && r.LifecycleState != domain.RatingRuleActive {
+			continue
+		}
+		if !foundAny || r.Version < earliest.Version {
+			earliest = r
+			foundAny = true
+		}
+		if !r.CreatedAt.After(asOf) && (!foundBest || r.Version > best.Version) {
+			best = r
+			foundBest = true
+		}
+	}
+	if foundBest {
+		return best, nil
+	}
+	if foundAny {
+		return earliest, nil
+	}
+	return domain.RatingRuleVersion{}, errs.ErrNotFound
+}
+
+func (f *fakePricingReader) GetOverrideByKeyAsOf(_ context.Context, _, customerID, ruleKey string, _ time.Time) (domain.CustomerPriceOverride, error) {
+	if o, ok := f.overrides[customerID+":"+ruleKey]; ok {
+		return o, nil
+	}
+	return domain.CustomerPriceOverride{}, errs.ErrNotFound
 }
 
 func (f *fakePricingReader) GetPlan(_ context.Context, _, id string) (domain.Plan, error) {
@@ -513,4 +553,81 @@ func TestCustomerUsageResult_EmptyArraysOnWire(t *testing.T) {
 func containsField(res CustomerUsageResult, needle string) bool {
 	b, _ := json.Marshal(res)
 	return strings.Contains(string(b), needle)
+}
+
+// P10 (ADR-070 slice): the usage view must price with the SAME rule the
+// invoice will bill. Pre-fix rateMeter priced the pinned version with
+// NO override lookup — a negotiated customer's running-spend read list
+// price, wrong for exactly the customers the spend-cap wedge targets.
+//
+// Mutation-verify: skip the override lookup in rateMeter — the
+// overridden assertions fail.
+func TestCustomerUsageService_Get_HonorsOverridesAndPeriodPin(t *testing.T) {
+	apr1 := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	may1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	mkSub := func(cust string) domain.Subscription {
+		return domain.Subscription{
+			ID: "sub_" + cust, TenantID: "t1", CustomerID: cust,
+			Status:                    domain.SubscriptionActive,
+			CurrentBillingPeriodStart: &apr1,
+			CurrentBillingPeriodEnd:   &may1,
+			Items:                     []domain.SubscriptionItem{{ID: "itm_" + cust, PlanID: "pln_1", Quantity: 1}},
+		}
+	}
+	customers := &fakeCustomerLookup{customers: map[string]domain.Customer{
+		"t1/cus_neg":  {ID: "cus_neg", TenantID: "t1"},
+		"t1/cus_list": {ID: "cus_list", TenantID: "t1"},
+	}}
+	pricing := &fakePricingReader{
+		plans: map[string]domain.Plan{
+			"pln_1": {ID: "pln_1", Name: "Pro", Currency: "USD", MeterIDs: []string{"mtr_1"}},
+		},
+		meters: map[string]domain.Meter{
+			"mtr_1": {ID: "mtr_1", Key: "tokens", Name: "Tokens", Unit: "tokens", Aggregation: "sum", RatingRuleVersionID: "rrv_1"},
+		},
+		rules: map[string]domain.RatingRuleVersion{
+			// v1 in force at period open (list 1c); v2 published MID-period
+			// (5c) must NOT price this window (pin-at-period-open).
+			"rrv_1": {ID: "rrv_1", RuleKey: "tokens_flat", Version: 1, LifecycleState: domain.RatingRuleActive,
+				Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
+				CreatedAt: apr1.Add(-24 * time.Hour)},
+			"rrv_2": {ID: "rrv_2", RuleKey: "tokens_flat", Version: 2, LifecycleState: domain.RatingRuleActive,
+				Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(5),
+				CreatedAt: apr1.Add(10 * 24 * time.Hour)},
+		},
+		overrides: map[string]domain.CustomerPriceOverride{
+			// Negotiated 3c/token for cus_neg only.
+			"cus_neg:tokens_flat": {ID: "cpo_1", CustomerID: "cus_neg", RuleKey: "tokens_flat",
+				Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(3), Active: true},
+		},
+		pricingMap: map[string][]domain.MeterPricingRule{},
+	}
+	store := newAggStore()
+	store.aggs["mtr_1"] = []domain.RuleAggregation{
+		{RuleID: "", RatingRuleVersionID: "rrv_1", AggregationMode: domain.AggSum, Quantity: decimal.NewFromInt(1000)},
+	}
+	usageSvc := NewService(store)
+
+	// Negotiated customer: 1000 × 3c override — not 1c list (v1), not 5c (v2).
+	subs := &fakeSubLister{subs: []domain.Subscription{mkSub("cus_neg")}}
+	svc := NewCustomerUsageService(usageSvc, customers, subs, pricing)
+	res, err := svc.Get(context.Background(), "t1", "cus_neg", CustomerUsagePeriod{})
+	if err != nil {
+		t.Fatalf("negotiated: %v", err)
+	}
+	if res.Meters[0].TotalAmountCents != 3000 {
+		t.Errorf("negotiated customer amount: got %d, want 3000 (override; 1000 = list v1 leak, 5000 = mid-period v2 leak)", res.Meters[0].TotalAmountCents)
+	}
+
+	// Non-overridden customer: v1 list price — the PERIOD-OPEN version,
+	// never the mid-period v2.
+	subs2 := &fakeSubLister{subs: []domain.Subscription{mkSub("cus_list")}}
+	svc2 := NewCustomerUsageService(usageSvc, customers, subs2, pricing)
+	res2, err := svc2.Get(context.Background(), "t1", "cus_list", CustomerUsagePeriod{})
+	if err != nil {
+		t.Fatalf("list-price: %v", err)
+	}
+	if res2.Meters[0].TotalAmountCents != 1000 {
+		t.Errorf("list customer amount: got %d, want 1000 (v1 at period open; 5000 means the mid-period publish repriced the window)", res2.Meters[0].TotalAmountCents)
+	}
 }

@@ -150,11 +150,15 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	if err := validateDimensions(input.Dimensions); err != nil {
 		return domain.UsageEvent{}, err
 	}
-	if input.Quantity.IsZero() {
-		// Default quantity to 1 (count-based meters) when not explicitly provided.
-		// Negative values are allowed as usage corrections.
-		input.Quantity = decimal.NewFromInt(1)
-	}
+	// quantity == 0 (absent or explicit) stays 0 — PRESENCE semantics.
+	// The old code silently coerced it to 1: an integrator emitting
+	// zero-usage heartbeats ("request happened, zero tokens billed") was
+	// billed one unit per event on sum-aggregated meters — a money bug
+	// invisible until the invoice. Count meters count the event row
+	// regardless of quantity, so they are unaffected; sum/max meters now
+	// honestly contribute nothing. (Stripe parity: meter events carry an
+	// explicit value; there is no silent default.) Negative values remain
+	// allowed as usage corrections.
 	// The quantity column is NUMERIC(38,12): at most 26 integer digits. A value
 	// with |q| ≥ 10^26 overflows the column and Postgres rejects the INSERT,
 	// surfacing as an HTTP 500. Reject it here as a clean 422 instead. (Excess
@@ -225,10 +229,13 @@ func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []Ing
 	var batchErrs []error
 	ingested := 0
 
-	for _, input := range events {
+	for i, input := range events {
 		_, err := s.Ingest(ctx, tenantID, input)
 		if err != nil {
-			batchErrs = append(batchErrs, err)
+			// Index the row so the caller can FIX the failing event —
+			// a bare "quantity too large" across a 500-event batch was
+			// undebuggable from the response.
+			batchErrs = append(batchErrs, fmt.Errorf("event[%d]: %w", i, err))
 			continue
 		}
 		ingested++

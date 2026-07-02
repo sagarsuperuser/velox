@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,13 @@ type PricingReader interface {
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
 	GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error)
+	// GetRuleByKeyAsOf + GetOverrideByKeyAsOf: the ADR-070 resolution
+	// pair. The customer-usage view must price with the SAME rule the
+	// cycle close will bill — version and override in force at the
+	// period open — or the running-spend number is wrong for exactly
+	// the negotiated-rate customers the spend-cap wedge targets.
+	GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error)
+	GetOverrideByKeyAsOf(ctx context.Context, tenantID, customerID, ruleKey string, asOf time.Time) (domain.CustomerPriceOverride, error)
 	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
 }
 
@@ -398,9 +406,30 @@ func (s *CustomerUsageService) rateMeter(ctx context.Context, tenantID, customer
 			continue
 		}
 
-		ratingRule, err := s.pricing.GetRatingRule(ctx, tenantID, ratingRuleID)
+		// ADR-070 resolution — mirrors billing's resolveRatedRule so
+		// this view matches the invoice: the pinned binding supplies the
+		// rule_key; the version in force at the period open prices the
+		// window; the customer's override in force at the same instant
+		// patches on top. ErrNotFound on the override = list price; any
+		// other failure is loud (a silently-list-priced negotiated
+		// customer is the audit finding this closes).
+		linked, err := s.pricing.GetRatingRule(ctx, tenantID, ratingRuleID)
 		if err != nil {
 			return CustomerUsageMeter{}, nil, fmt.Errorf("get rating rule %q: %w", ratingRuleID, err)
+		}
+		ratingRule, err := s.pricing.GetRuleByKeyAsOf(ctx, tenantID, linked.RuleKey, from)
+		if err != nil {
+			if !errors.Is(err, errs.ErrNotFound) {
+				return CustomerUsageMeter{}, nil, fmt.Errorf("resolve rule %q as of period open: %w", linked.RuleKey, err)
+			}
+			// Key has no active versions (all archived) but the binding
+			// still points at one — same fallback the engine applies.
+			ratingRule = linked
+		}
+		if override, oerr := s.pricing.GetOverrideByKeyAsOf(ctx, tenantID, customerID, ratingRule.RuleKey, from); oerr == nil {
+			ratingRule = override.ApplyTo(ratingRule)
+		} else if !errors.Is(oerr, errs.ErrNotFound) {
+			return CustomerUsageMeter{}, nil, fmt.Errorf("resolve override for rule %q: %w", ratingRule.RuleKey, oerr)
 		}
 
 		cents, err := domain.ComputeAmountCents(ratingRule, agg.Quantity)
