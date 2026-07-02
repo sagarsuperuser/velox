@@ -96,6 +96,23 @@ const (
 	EventInvoicePaymentRecorded             = "invoice.payment_recorded"
 	EventPaymentSucceeded                   = "payment.succeeded"
 	EventPaymentFailed                      = "payment.failed"
+	// EventPaymentDuplicateCharge fires when a SECOND, different
+	// PaymentIntent succeeds against an already-paid invoice (two devices,
+	// a stale-but-live Checkout session): money was captured twice and
+	// exists only in Stripe until the operator refunds. Per-cause event
+	// (webhook_events_per_cause) — no auto-refund (ADR-068).
+	EventPaymentDuplicateCharge = "payment.duplicate_charge"
+	// EventPaymentAmountMismatch fires when a charge settles for an amount
+	// different from the invoice's amount_due at settle time (a Checkout
+	// session paid after a credit note changed the due — the accepted ≤1h
+	// drift residual). Detection-only: books show the delta, operator
+	// reconciles. ADR-068.
+	EventPaymentAmountMismatch = "payment.amount_mismatch"
+	// EventPaymentReceivedOnVoidedInvoice fires when a payment lands on a
+	// voided (or otherwise non-payable) invoice — the void's session-expire
+	// leg failed and the customer paid inside the residual. Distinct cause
+	// from duplicate_charge: the money is owed BACK, not double-collected.
+	EventPaymentReceivedOnVoidedInvoice = "payment.received_on_voided_invoice"
 	EventSubscriptionCreated                = "subscription.created"
 	EventSubscriptionActivated              = "subscription.activated"
 	EventSubscriptionCanceled               = "subscription.canceled"

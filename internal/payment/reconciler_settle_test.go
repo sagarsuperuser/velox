@@ -25,7 +25,7 @@ type settledCall struct {
 	suppressEmail bool
 }
 
-func (r *recordingSettler) SettleSucceeded(_ context.Context, _ string, inv domain.Invoice, piID string, _ SettlementSource) error {
+func (r *recordingSettler) SettleSucceeded(_ context.Context, _ string, inv domain.Invoice, piID string, _ int64, _ SettlementSource) error {
 	r.succeeded = append(r.succeeded, settledCall{invoiceID: inv.ID, piID: piID})
 	return nil
 }

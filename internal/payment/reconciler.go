@@ -45,7 +45,7 @@ type ReconcileInvoiceStore interface {
 // MarkPaid / UpdatePayment writes (no dunning/event/email). The fallback exists
 // solely so status-discovery tests need not construct a full Stripe adapter.
 type Settler interface {
-	SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, source SettlementSource) error
+	SettleSucceeded(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID string, capturedCents int64, source SettlementSource) error
 	SettleFailed(ctx context.Context, tenantID string, inv domain.Invoice, paymentIntentID, failureMsg string, suppressCustomerEmail bool, source SettlementSource) error
 }
 
@@ -268,7 +268,7 @@ func (r *Reconciler) settle(ctx context.Context, inv domain.Invoice, piID string
 	if r.settler != nil {
 		switch kind {
 		case terminalSucceeded:
-			if err := r.settler.SettleSucceeded(ctx, inv.TenantID, fresh, piID, SourceReconciler); err != nil {
+			if err := r.settler.SettleSucceeded(ctx, inv.TenantID, fresh, piID, 0, SourceReconciler); err != nil {
 				return false, fmt.Errorf("settle succeeded: %w", err)
 			}
 		default:

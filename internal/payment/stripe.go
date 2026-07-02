@@ -101,6 +101,19 @@ type Stripe struct {
 	customerResolver   CustomerByStripeIDResolver // optional; resolves SetupIntent.customer → velox id
 	refundUpdater      RefundStatusUpdater        // optional; applies async refund-webhook status to a CN
 	resolver           clock.Resolver             // optional; binds effective-now from invoice
+	anomalies          PaymentAnomalyRecorder     // optional; durable marker for the attention banner (ADR-068)
+}
+
+// PaymentAnomalyRecorder persists the durable payment-anomaly marker the
+// dashboard attention classifier reads (ADR-068). Implemented by
+// *invoice.PostgresStore; wired via SetAnomalyRecorder in router.go.
+type PaymentAnomalyRecorder interface {
+	RecordPaymentAnomaly(ctx context.Context, tenantID, invoiceID, kind, paymentIntentID string, capturedCents int64) error
+}
+
+// SetAnomalyRecorder wires the durable anomaly marker store.
+func (s *Stripe) SetAnomalyRecorder(r PaymentAnomalyRecorder) {
+	s.anomalies = r
 }
 
 // SetResolver wires the unified clock.Resolver. Webhook handlers fire
@@ -579,7 +592,7 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// requires_action / requires_confirmation / requires_capture — delayed
 	// methods, or rare off-session SCA) stay `processing` and await the webhook.
 	if result.Status == "succeeded" {
-		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, SourceChargeResponse); serr != nil {
+		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, inv.AmountDueCents, SourceChargeResponse); serr != nil {
 			return domain.Invoice{}, fmt.Errorf("settle succeeded inline: %w", serr)
 		}
 		// Return the freshly-settled row so callers (dunning retrier, portal,
@@ -983,7 +996,11 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	// settlement primitive so the side-effects (mark paid, card stamp,
 	// payment.succeeded event, receipt email) are identical to every other
 	// settler.
-	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, SourceWebhook)
+	var captured int64
+	if event.AmountCents != nil {
+		captured = *event.AmountCents
+	}
+	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, captured, SourceWebhook)
 }
 
 func (s *Stripe) handlePaymentFailed(ctx context.Context, tenantID string, event domain.StripeWebhookEvent) error {

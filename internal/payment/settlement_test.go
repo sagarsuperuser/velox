@@ -41,7 +41,7 @@ func TestSettleSucceeded_ResolvesDunningRun(t *testing.T) {
 	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
 	s.SetDunningResolver(resolver)
 
-	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", SourceWebhook); err != nil {
+	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", 0, SourceWebhook); err != nil {
 		t.Fatalf("SettleSucceeded: %v", err)
 	}
 	if len(resolver.calls) != 1 {
@@ -69,7 +69,7 @@ func TestSettleSucceeded_ResolverErrorDoesNotFailSettle(t *testing.T) {
 	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
 	s.SetDunningResolver(resolver)
 
-	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", SourceWebhook); err != nil {
+	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", 0, SourceWebhook); err != nil {
 		t.Fatalf("SettleSucceeded must succeed even when the resolver errors (best-effort): %v", err)
 	}
 	if invoices.invoices["inv_1"].Status != domain.InvoicePaid {
@@ -147,7 +147,7 @@ func TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) 
 	// transition gate (MarkPaidReportingTransition) is what de-dupes them.
 	stale := invoices.invoices["inv_1"]
 	for i := 0; i < 2; i++ {
-		if err := s.SettleSucceeded(context.Background(), "t1", stale, "pi_abc", SourceWebhook); err != nil {
+		if err := s.SettleSucceeded(context.Background(), "t1", stale, "pi_abc", 0, SourceWebhook); err != nil {
 			t.Fatalf("settle attempt %d: %v", i+1, err)
 		}
 	}
@@ -180,7 +180,7 @@ func TestSettleSucceeded_MarksPaidFromAnySource(t *testing.T) {
 	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
 
 	// Call as the reconciler would (not via the webhook).
-	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", SourceReconciler); err != nil {
+	if err := s.SettleSucceeded(context.Background(), "t1", invoices.invoices["inv_1"], "pi_abc", 0, SourceReconciler); err != nil {
 		t.Fatalf("SettleSucceeded: %v", err)
 	}
 
