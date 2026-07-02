@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -16,6 +17,7 @@ type memStore struct {
 	meters     map[string]domain.Meter
 	plans      map[string]domain.Plan
 	meterRules map[string]domain.MeterPricingRule
+	overrides  map[string]domain.CustomerPriceOverride
 }
 
 func newMemStore() *memStore {
@@ -28,15 +30,50 @@ func newMemStore() *memStore {
 }
 
 func (m *memStore) CreateRatingRule(_ context.Context, tenantID string, r domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
+	// Mirror the store's SQL allocation: version = MAX+1 per (tenant,
+	// rule_key); the caller's Version field is ignored.
+	next := 1
 	for _, existing := range m.rules {
-		if existing.TenantID == tenantID && existing.RuleKey == r.RuleKey && existing.Version == r.Version {
-			return domain.RatingRuleVersion{}, fmt.Errorf("%w: rule_key %q version %d", errs.ErrAlreadyExists, r.RuleKey, r.Version)
+		if existing.TenantID == tenantID && existing.RuleKey == r.RuleKey && existing.Version >= next {
+			next = existing.Version + 1
 		}
 	}
+	r.Version = next
 	r.ID = fmt.Sprintf("vlx_rrv_%d", len(m.rules)+1)
 	r.TenantID = tenantID
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now().UTC()
+	}
 	m.rules[r.ID] = r
 	return r, nil
+}
+
+// GetRuleByKeyAsOf mirrors PostgresStore's ADR-070 resolution: highest
+// active version created at or before asOf, else the key's earliest
+// active version (key born mid-period).
+func (m *memStore) GetRuleByKeyAsOf(_ context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	var best, earliest domain.RatingRuleVersion
+	foundBest, foundAny := false, false
+	for _, r := range m.rules {
+		if r.TenantID != tenantID || r.RuleKey != ruleKey || r.LifecycleState != domain.RatingRuleActive {
+			continue
+		}
+		if !foundAny || r.Version < earliest.Version {
+			earliest = r
+			foundAny = true
+		}
+		if !r.CreatedAt.After(asOf) && (!foundBest || r.Version > best.Version) {
+			best = r
+			foundBest = true
+		}
+	}
+	if foundBest {
+		return best, nil
+	}
+	if foundAny {
+		return earliest, nil
+	}
+	return domain.RatingRuleVersion{}, errs.ErrNotFound
 }
 
 func (m *memStore) GetRatingRule(_ context.Context, tenantID, id string) (domain.RatingRuleVersion, error) {
@@ -152,14 +189,51 @@ func (m *memStore) UpdatePlan(_ context.Context, tenantID string, p domain.Plan)
 }
 
 func (m *memStore) CreateOverride(_ context.Context, tenantID string, o domain.CustomerPriceOverride) (domain.CustomerPriceOverride, error) {
-	o.ID = fmt.Sprintf("vlx_cpo_%d", len(m.rules)+1)
+	if m.overrides == nil {
+		m.overrides = make(map[string]domain.CustomerPriceOverride)
+	}
+	// Mirror the append-only store: close the prior active row's window,
+	// insert a fresh active row.
+	for id, existing := range m.overrides {
+		if existing.TenantID == tenantID && existing.CustomerID == o.CustomerID && existing.RuleKey == o.RuleKey && existing.Active {
+			existing.Active = false
+			m.overrides[id] = existing
+		}
+	}
+	o.ID = fmt.Sprintf("vlx_cpo_%d", len(m.overrides)+1)
 	o.TenantID = tenantID
 	o.Active = true
+	m.overrides[o.ID] = o
 	return o, nil
 }
 
-func (m *memStore) GetOverride(_ context.Context, _, _, _ string) (domain.CustomerPriceOverride, error) {
+func (m *memStore) GetOverrideByKeyAsOf(_ context.Context, tenantID, customerID, ruleKey string, _ time.Time) (domain.CustomerPriceOverride, error) {
+	for _, o := range m.overrides {
+		if o.TenantID == tenantID && o.CustomerID == customerID && o.RuleKey == ruleKey && o.Active {
+			return o, nil
+		}
+	}
 	return domain.CustomerPriceOverride{}, errs.ErrNotFound
+}
+
+func (m *memStore) DeactivateOverride(_ context.Context, tenantID, id string) error {
+	o, ok := m.overrides[id]
+	if !ok || o.TenantID != tenantID || !o.Active {
+		return errs.ErrNotFound
+	}
+	o.Active = false
+	m.overrides[id] = o
+	return nil
+}
+
+func (m *memStore) CountActiveOverridesByRuleKey(_ context.Context, tenantID, ruleKey string) (int, error) {
+	n := 0
+	for _, o := range m.overrides {
+		if o.TenantID == tenantID && o.RuleKey == ruleKey && o.Active {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *memStore) ListOverrides(_ context.Context, _, _ string) ([]domain.CustomerPriceOverride, error) {

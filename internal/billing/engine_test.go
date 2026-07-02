@@ -615,7 +615,11 @@ type mockPricing struct {
 	plans     map[string]domain.Plan
 	meters    map[string]domain.Meter
 	rules     map[string]domain.RatingRuleVersion
-	overrides map[string]domain.CustomerPriceOverride // key: customerID+ruleID
+	overrides map[string]domain.CustomerPriceOverride // key: customerID+":"+ruleKey
+	// overrideErr, when set, is returned by GetOverrideByKeyAsOf —
+	// drives the fail-loud regression (a transient override-lookup
+	// failure must ABORT the close, never bill list price; ADR-070).
+	overrideErr error
 	// meterPricingRules drives the multi-dim fork (ADR-044): meters with
 	// entries here take the AggregateByPricingRules path. Keyed by meterID;
 	// nil/missing keeps the meter on the legacy single-rule path.
@@ -646,31 +650,45 @@ func (m *mockPricing) GetRatingRule(_ context.Context, _, id string) (domain.Rat
 	return r, nil
 }
 
-func (m *mockPricing) GetLatestRuleByKey(_ context.Context, _, ruleKey string) (domain.RatingRuleVersion, error) {
-	// Return the latest version with matching key
-	var latest domain.RatingRuleVersion
-	found := false
+// GetRuleByKeyAsOf mirrors the store's ADR-070 resolution: highest
+// active version created at or before asOf; a key born after asOf
+// resolves to its earliest active version. Mock rules usually leave
+// CreatedAt zero, which sorts before any asOf — i.e. "always in force".
+func (m *mockPricing) GetRuleByKeyAsOf(_ context.Context, _, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	var best, earliest domain.RatingRuleVersion
+	foundBest, foundAny := false, false
 	for _, r := range m.rules {
-		if r.RuleKey == ruleKey {
-			if !found || r.Version > latest.Version {
-				latest = r
-				found = true
-			}
+		if r.RuleKey != ruleKey {
+			continue
+		}
+		if r.LifecycleState != "" && r.LifecycleState != domain.RatingRuleActive {
+			continue
+		}
+		if !foundAny || r.Version < earliest.Version {
+			earliest = r
+			foundAny = true
+		}
+		if !r.CreatedAt.After(asOf) && (!foundBest || r.Version > best.Version) {
+			best = r
+			foundBest = true
 		}
 	}
-	if !found {
-		return domain.RatingRuleVersion{}, fmt.Errorf("rule not found for key %s", ruleKey)
+	if foundBest {
+		return best, nil
 	}
-	return latest, nil
+	if foundAny {
+		return earliest, nil
+	}
+	return domain.RatingRuleVersion{}, errs.ErrNotFound
 }
 
-func (m *mockPricing) GetOverride(_ context.Context, _, customerID, ruleID string) (domain.CustomerPriceOverride, error) {
-	if m.overrides == nil {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
+func (m *mockPricing) GetOverrideByKeyAsOf(_ context.Context, _, customerID, ruleKey string, asOf time.Time) (domain.CustomerPriceOverride, error) {
+	if m.overrideErr != nil {
+		return domain.CustomerPriceOverride{}, m.overrideErr
 	}
-	o, ok := m.overrides[customerID+":"+ruleID]
-	if !ok {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
+	o, ok := m.overrides[customerID+":"+ruleKey]
+	if !ok || o.CreatedAt.After(asOf) {
+		return domain.CustomerPriceOverride{}, errs.ErrNotFound
 	}
 	return o, nil
 }
@@ -1630,10 +1648,12 @@ func TestRunCycle_LineItemDetails(t *testing.T) {
 func TestRunCycle_WithPriceOverride(t *testing.T) {
 	engine, _, _, pricing, invoices := setupEngine()
 
-	// Set a per-customer override: API calls flat $50 instead of graduated
+	// Set a per-customer override: API calls flat $50 instead of graduated.
+	// Keyed by rule_key (ADR-070) — the override follows the rule across
+	// version publishes.
 	pricing.overrides = map[string]domain.CustomerPriceOverride{
-		"cus_1:rrv_api": {
-			ID: "cpo_1", CustomerID: "cus_1", RatingRuleVersionID: "rrv_api",
+		"cus_1:api_calls": {
+			ID: "cpo_1", CustomerID: "cus_1", RuleKey: "api_calls", RatingRuleVersionID: "rrv_api",
 			Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5000),
 			Active: true,
 		},

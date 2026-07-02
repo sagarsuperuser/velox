@@ -66,7 +66,27 @@ func (h *Handler) OverrideRoutes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.createOverride)
 	r.Get("/", h.listOverrides)
+	r.Delete("/{id}", h.deleteOverride)
 	return r
+}
+
+// deleteOverride soft-deactivates a negotiated price (ADR-070): the
+// customer returns to list price from the next billing period; the
+// period in flight keeps the price it opened with.
+func (h *Handler) deleteOverride(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if err := h.svc.DeleteOverride(r.Context(), tenantID, id); err != nil {
+		respond.FromError(w, r, err, "price_override")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionDelete, "price_override", id, "", nil)
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]any{"id": id, "active": false})
 }
 
 // MeterPricingRuleRoutes is the sub-router for

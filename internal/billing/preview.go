@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // PreviewLine is one line of an invoice preview. Mirrors the line shape the
@@ -235,19 +237,23 @@ func (e *Engine) previewMeter(ctx context.Context, tenantID, customerID, meterID
 			continue
 		}
 
-		ratingRule, err := e.pricing.GetRatingRule(ctx, tenantID, ratingRuleID)
+		// Same resolution rule as the cycle scan and cancel finalize
+		// (resolveRatedRule; ADR-070 pin-at-period-start): version and
+		// override in force at the window open — `from` IS the period
+		// start for both callers (operator preview and the threshold
+		// scan, which persists these lines as a real invoice). This is
+		// what makes preview == invoice hold across a mid-period
+		// publish, and a threshold fire agree with the later close.
+		ratingRule, err := e.resolveRatedRule(ctx, tenantID, customerID, ratingRuleID, from)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("meter %q rule %q: rating rule not found", meter.Key, ratingRuleID))
-			continue
-		}
-
-		// Honour customer price overrides — same precedent as the cycle
-		// scan and the existing Preview path. An override returns a
-		// patched RatingRuleVersion with the override's tier table /
-		// flat amount in place. e.pricing.GetOverride returns an error
-		// when no override exists; we silently fall through.
-		if override, overrideErr := e.pricing.GetOverride(ctx, tenantID, customerID, ratingRuleID); overrideErr == nil && override.Active {
-			ratingRule = override.ToRatingRule()
+			if errors.Is(err, errs.ErrNotFound) {
+				warnings = append(warnings, fmt.Sprintf("meter %q rule %q: rating rule not found", meter.Key, ratingRuleID))
+				continue
+			}
+			// Transient failure: abort rather than degrade — a
+			// threshold fire built from this preview would silently
+			// misprice (e.g. list price for a negotiated customer).
+			return nil, nil, fmt.Errorf("resolve pricing for meter %q rule %q: %w", meter.Key, ratingRuleID, err)
 		}
 
 		amount, err := domain.ComputeAmountCents(ratingRule, agg.Quantity)

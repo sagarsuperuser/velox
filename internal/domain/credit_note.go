@@ -95,8 +95,13 @@ type CreditNoteLineItem struct {
 }
 
 type CustomerPriceOverride struct {
-	ID                     string          `json:"id"`
-	TenantID               string          `json:"tenant_id,omitempty"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id,omitempty"`
+	// RuleKey is the override's identity (ADR-070): a negotiated price
+	// follows the RULE across version publishes. RatingRuleVersionID
+	// records which version the operator was looking at when the
+	// override was created — provenance, never a lookup key.
+	RuleKey                string          `json:"rule_key"`
 	CustomerID             string          `json:"customer_id"`
 	RatingRuleVersionID    string          `json:"rating_rule_version_id"`
 	Mode                   PricingMode     `json:"mode"`
@@ -111,15 +116,21 @@ type CustomerPriceOverride struct {
 	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
-// ToRatingRule converts a price override to a RatingRuleVersion for computation.
-func (o CustomerPriceOverride) ToRatingRule() RatingRuleVersion {
-	return RatingRuleVersion{
-		ID:                     o.RatingRuleVersionID,
-		Mode:                   o.Mode,
-		FlatAmountCents:        o.FlatAmountCents,
-		GraduatedTiers:         o.GraduatedTiers,
-		PackageSize:            o.PackageSize,
-		PackageAmountCents:     o.PackageAmountCents,
-		OverageUnitAmountCents: o.OverageUnitAmountCents,
-	}
+// ApplyTo patches the override's PRICE onto the resolved rating-rule
+// version: only Mode and the pricing fields are replaced; the base
+// rule's ID, RuleKey, Name, and — critically — Currency survive
+// (ADR-070: an override freezes price, not rule semantics). The old
+// replace-wholesale shape fabricated a rule with Currency == "" —
+// preview totals silently dropped every overridden line and threshold
+// fires hard-failed "no invoice currency resolved" on usage-only
+// all-override subscriptions.
+func (o CustomerPriceOverride) ApplyTo(base RatingRuleVersion) RatingRuleVersion {
+	patched := base
+	patched.Mode = o.Mode
+	patched.FlatAmountCents = o.FlatAmountCents
+	patched.GraduatedTiers = o.GraduatedTiers
+	patched.PackageSize = o.PackageSize
+	patched.PackageAmountCents = o.PackageAmountCents
+	patched.OverageUnitAmountCents = o.OverageUnitAmountCents
+	return patched
 }

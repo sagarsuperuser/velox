@@ -438,9 +438,13 @@ func (s *Service) Uninstall(ctx context.Context, tenantID, instanceID string) er
 }
 
 // ratingRuleFromRecipe maps the recipe's rating-rule shape to the
-// canonical domain.RatingRuleVersion. New recipes always produce
-// version=1, lifecycle=active rules — the recipe is the first-known
-// version of that key for the tenant.
+// canonical domain.RatingRuleVersion. The version number is allocated
+// by the store in SQL (MAX+1 per key) — on a fresh tenant the recipe's
+// rules land as version 1; on reinstall-after-uninstall (the instance
+// row is deleted but the operator keeps the created objects) they land
+// as the key's NEXT version instead of 409ing on a hardcoded 1
+// (ADR-070). Existing customer overrides keep applying — they follow
+// the rule_key.
 func ratingRuleFromRecipe(r domain.RecipeRatingRule) domain.RatingRuleVersion {
 	name := r.Name
 	if name == "" {
@@ -449,7 +453,6 @@ func ratingRuleFromRecipe(r domain.RecipeRatingRule) domain.RatingRuleVersion {
 	return domain.RatingRuleVersion{
 		RuleKey:                r.Key,
 		Name:                   name,
-		Version:                1,
 		LifecycleState:         domain.RatingRuleActive,
 		Mode:                   r.Mode,
 		Currency:               r.Currency,
