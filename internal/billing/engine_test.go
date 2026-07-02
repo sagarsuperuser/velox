@@ -323,6 +323,14 @@ func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int)
 	return result, nil
 }
 
+// GetDueBillingForTenant — mock mirror of the tenant-scoped manual-run query.
+// The mock doesn't model RLS, so it returns the same non-clock-pinned due subs
+// as GetDueBilling (all mock subs are one tenant); tenantID is accepted for
+// signature parity.
+func (m *mockSubs) GetDueBillingForTenant(ctx context.Context, _ string, before time.Time, limit int) ([]domain.Subscription, error) {
+	return m.GetDueBilling(ctx, before, limit)
+}
+
 // GetDueBillingForClock — mirror of GetDueBilling for the disjoint
 // catchup path (ADR-028). Returns ONLY subs pinned to the given
 // clock whose next_billing_at is on-or-before `before`. The mock

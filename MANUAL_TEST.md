@@ -195,7 +195,8 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
   curl -sS -X POST "$API/v1/usage-events/batch" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" --data-binary @/tmp/events.json | jq .
   ```
 - [ ] Advance the clock 31 days: `POST /v1/test-clocks/$CLK/advance` with `frozen_time = now+31d` (BSD `date -u -v+31d` / GNU `date -u -d '+31 days'`).
-- [ ] `curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY"` → 1 invoice generated.
+- [ ] `curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY"` → 1 invoice generated (bills only THIS tenant's due subs; the response `errors` carry only your own subscription ids, never another tenant's data or raw DB/Stripe text). *(auto: `TestGetDueBillingForTenant_ScopesToTenant`)*
+- [ ] Same call with a **platform** key (no tenant scope) → **403** (never triggers the global scheduler sweep). *(auto: `TestTriggerCycle_ForbidsUnscopedKey`)*
 - [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax.
 - [ ] Stripe CLI shows `payment_intent.succeeded`. Dashboard MRR > $0.
 

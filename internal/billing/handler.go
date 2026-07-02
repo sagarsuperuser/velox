@@ -30,15 +30,36 @@ func (h *Handler) Routes() chi.Router {
 }
 
 func (h *Handler) triggerCycle(w http.ResponseWriter, r *http.Request) {
-	generated, errs := h.engine.RunCycle(r.Context(), 50)
+	tenantID := auth.TenantID(r.Context())
+	if tenantID == "" {
+		// Platform keys carry no tenant scope. Fail closed — NEVER fall through
+		// to the unscoped, cross-tenant RunCycle (the pre-fix leak). RunCycle
+		// stays scheduler-only.
+		respond.Forbidden(w, r, "billing run requires a tenant-scoped secret key, not a platform key")
+		return
+	}
 
-	errStrings := make([]string, len(errs))
-	for i, e := range errs {
-		errStrings[i] = e.Error()
+	generated, failures := h.engine.RunCycleForTenant(r.Context(), tenantID, 50)
+
+	// Full detail (pq constraint names, Stripe internals) goes to the server log
+	// only; the API caller gets its own subscription ids + a generic class. Even
+	// a tenant's OWN raw errors leak DB/provider internals, so they are stripped.
+	errStrings := make([]string, 0, len(failures))
+	for _, f := range failures {
+		slog.ErrorContext(r.Context(), "billing run: subscription failed",
+			"tenant_id", tenantID,
+			"subscription_id", f.SubscriptionID,
+			"error", f.Err,
+		)
+		if f.SubscriptionID != "" {
+			errStrings = append(errStrings, "subscription "+f.SubscriptionID+": billing failed")
+		} else {
+			errStrings = append(errStrings, "billing run failed")
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if len(errs) > 0 {
+	if len(failures) > 0 {
 		w.WriteHeader(http.StatusPartialContent)
 	} else {
 		w.WriteHeader(http.StatusOK)

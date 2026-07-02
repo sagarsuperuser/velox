@@ -370,6 +370,10 @@ type SubscriptionReader interface {
 	// on-or-before that clock's frozen time. Called by RunCatchup
 	// after Advance flips status to 'advancing'.
 	GetDueBillingForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error)
+	// GetDueBillingForTenant: operator-triggered (POST /v1/billing/run)
+	// path, scoped to ONE tenant under RLS. Wall-clock-due, non-clock-
+	// pinned subs for the caller's tenant only — never cross-tenant.
+	GetDueBillingForTenant(ctx context.Context, tenantID string, before time.Time, limit int) ([]domain.Subscription, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
 	// ApplyDuePendingItemPlansAtomic swaps plan_id ← pending_plan_id for every
@@ -1543,6 +1547,103 @@ func (e *Engine) RunCycleForClock(ctx context.Context, tenantID, clockID string,
 		"errors", len(errs),
 	)
 	return generated, errs
+}
+
+// SubBillError pairs a subscription that failed to bill with its cause. The
+// cause is logged server-side in full; only the (caller-owned) subscription id
+// plus a generic class are surfaced to the API caller — raw pq constraint names
+// and Stripe error text must never enter the response body.
+type SubBillError struct {
+	SubscriptionID string
+	Err            error
+}
+
+func (e SubBillError) Error() string {
+	if e.SubscriptionID == "" {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("subscription %s: %v", e.SubscriptionID, e.Err)
+}
+func (e SubBillError) Unwrap() error { return e.Err }
+
+// RunCycleForTenant is the operator-triggered (POST /v1/billing/run) billing
+// pass, scoped to ONE tenant. Unlike the unscoped RunCycle (scheduler-only,
+// scheduler.go), it bills only the caller's own due subscriptions via
+// GetDueBillingForTenant (RLS-fenced) — the manual trigger can never sweep or
+// observe another tenant. It drains the tenant's due set across batches (a
+// single batchSize pass would silently under-bill a tenant with >batchSize due
+// subs), attempting each sub at most once per call: a sub that fails to bill
+// never advances next_billing_at and stays "due", so the no-progress guard
+// breaks instead of re-billing it forever — the same shape as RunCycleForClock.
+func (e *Engine) RunCycleForTenant(ctx context.Context, tenantID string, batchSize int) (int, []SubBillError) {
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.RunCycleForTenant",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.Int("batch_size", batchSize),
+		),
+	)
+	defer span.End()
+
+	// Anchor the whole run at one instant so a sub billed early can't re-qualify
+	// under a later "now" within the same call.
+	now := e.clock.Now(ctx)
+
+	generated := 0
+	var failures []SubBillError
+	failed := make(map[string]bool)
+	for {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, SubBillError{Err: fmt.Errorf("billing run ctx done: %w", err)})
+			break
+		}
+
+		due, err := e.subs.GetDueBillingForTenant(ctx, tenantID, now, batchSize)
+		if err != nil {
+			span.RecordError(err)
+			failures = append(failures, SubBillError{Err: fmt.Errorf("fetch due subscriptions: %w", err)})
+			break
+		}
+		if len(due) == 0 {
+			break
+		}
+
+		// No-progress break: if every due sub has already been attempted-and-
+		// failed this call, re-fetching returns the same stuck set forever.
+		progressable := false
+		for _, sub := range due {
+			if !failed[sub.ID] {
+				progressable = true
+				break
+			}
+		}
+		if !progressable {
+			break
+		}
+
+		for _, sub := range due {
+			if failed[sub.ID] {
+				continue
+			}
+			n, err := e.billSubscription(ctx, sub)
+			if err != nil {
+				slog.Error("bill subscription failed (manual run)",
+					"tenant_id", tenantID,
+					"subscription_id", sub.ID,
+					"invoices_before_error", n,
+					"error", err,
+				)
+				failed[sub.ID] = true
+				failures = append(failures, SubBillError{SubscriptionID: sub.ID, Err: err})
+			}
+			generated += n
+		}
+	}
+
+	span.SetAttributes(attribute.Int("generated", generated))
+	return generated, failures
 }
 
 func (e *Engine) RunCycle(ctx context.Context, batchSize int) (int, []error) {
