@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ type thresholdFixture struct {
 	subSvc   *subscription.Service
 	usageSvc *usage.Service
 	invStore *invoice.PostgresStore
+	settings *tenant.SettingsStore
 	engine   *billing.Engine
 
 	// Seed-by-default test data
@@ -152,6 +154,7 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 		subSvc:     subSvc,
 		usageSvc:   usageSvc,
 		invStore:   invoiceStore,
+		settings:   settingsStore,
 		engine:     engine,
 		customerID: cust.ID,
 		planID:     plan.ID,
@@ -258,10 +261,15 @@ func TestThresholdScan_AmountCrossFiresEarly(t *testing.T) {
 	}
 }
 
-// TestThresholdScan_Idempotent guards against double-finalize on retry.
-// A second ScanThresholds tick after the first fire must observe the same
-// underlying state but emit zero new invoices — the partial unique index
-// is the seam that catches a concurrent retry without losing the invoice.
+// TestThresholdScan_Idempotent guards against double-finalize on retry AND
+// against the re-fire burn. A second ScanThresholds tick over the same
+// reset=false cycle must emit zero new invoices — and, critically, do so
+// WITHOUT allocating an invoice number or a tax calculation. The fire-once
+// probe (LatestThresholdPeriodEnd) short-circuits before fireThreshold's
+// NextInvoiceNumber/ApplyTax; the partial unique index remains the correctness
+// backstop for a genuinely concurrent retry (two ticks both passing the probe).
+// Pre-probe, each re-tick allocated (and committed) a number in its own tx, then
+// bounced off the unique index — ~600 burned numbers + paid tax calls per cycle.
 func TestThresholdScan_Idempotent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: skipped in -short mode")
@@ -293,8 +301,17 @@ func TestThresholdScan_Idempotent(t *testing.T) {
 		t.Fatalf("first fired count: got %d, want 1", fired1)
 	}
 
-	// Second tick against the same cycle — must short-circuit on the
-	// partial unique index. No additional invoice, no error returned.
+	// Snapshot the invoice-number counter right after the first fire. The
+	// probe means the second tick must NOT advance it; pre-fix each re-tick
+	// committed a number in its own tx before the unique index rejected the
+	// insert — a permanent gap the operator sees in their invoice sequence.
+	nextBeforeRetick, err := f.settings.NextInvoiceNumber(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("allocate number probe: %v", err)
+	}
+
+	// Second tick against the same cycle — the fire-once probe short-circuits
+	// before evaluate/fire. No additional invoice, no error returned.
 	fired2, errs2 := f.engine.ScanThresholds(ctx, 50)
 	if len(errs2) > 0 {
 		t.Fatalf("second scan errors: %v", errs2)
@@ -307,6 +324,35 @@ func TestThresholdScan_Idempotent(t *testing.T) {
 	if len(invoices) != 1 {
 		t.Fatalf("expected exactly 1 invoice after re-tick, got %d", len(invoices))
 	}
+
+	// No-burn: the number the second tick would have allocated must be exactly
+	// the one immediately after our snapshot — i.e. the re-tick consumed none.
+	// Mutation seam: delete the probe in scanOneThreshold and fireThreshold
+	// commits a number on the doomed re-tick, so this allocation skips ahead.
+	nextAfterRetick, err := f.settings.NextInvoiceNumber(ctx, f.tenantID)
+	if err != nil {
+		t.Fatalf("allocate number probe (after): %v", err)
+	}
+	if seqOf(t, nextAfterRetick) != seqOf(t, nextBeforeRetick)+1 {
+		t.Fatalf("re-tick burned an invoice number: snapshot %q then %q (want consecutive) — fire-once probe leaked into fireThreshold",
+			nextBeforeRetick, nextAfterRetick)
+	}
+}
+
+// seqOf extracts the trailing numeric sequence from an invoice number like
+// "INV-0007" → 7 so consecutive allocations can be compared without coupling
+// to the tenant's prefix format.
+func seqOf(t *testing.T, invoiceNumber string) int {
+	t.Helper()
+	i := len(invoiceNumber)
+	for i > 0 && invoiceNumber[i-1] >= '0' && invoiceNumber[i-1] <= '9' {
+		i--
+	}
+	n, err := strconv.Atoi(invoiceNumber[i:])
+	if err != nil {
+		t.Fatalf("parse invoice number %q: %v", invoiceNumber, err)
+	}
+	return n
 }
 
 // TestThresholdScan_ItemUsageCross verifies the per-item path against real

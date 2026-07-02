@@ -466,11 +466,11 @@ func (m *mockSubs) ApplyDuePendingItemPlansAtomic(_ context.Context, _, id strin
 	return applied, nil
 }
 
-func (m *mockSubs) ListWithThresholdsForClock(_ context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
+func (m *mockSubs) ListWithThresholdsForClock(_ context.Context, _, _, _ string, _ int) ([]domain.Subscription, error) {
 	return nil, nil
 }
 
-func (m *mockSubs) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domain.Subscription, error) {
+func (m *mockSubs) ListWithThresholds(_ context.Context, _ bool, _ string, _ int) ([]domain.Subscription, error) {
 	// Engine unit tests focus on the natural cycle; the threshold scan path
 	// is exercised via threshold_scan_test.go (which uses its own mock that
 	// returns the configured candidate set). Returning empty here keeps

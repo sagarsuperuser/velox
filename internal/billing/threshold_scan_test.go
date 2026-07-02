@@ -2,12 +2,15 @@ package billing
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // thresholdMockSubs extends mockSubs with a candidate filter so the
@@ -18,15 +21,30 @@ type thresholdMockSubs struct {
 	candidates []domain.Subscription
 }
 
-func (m *thresholdMockSubs) ListWithThresholds(_ context.Context, _ bool, _ int) ([]domain.Subscription, error) {
-	return m.candidates, nil
+func (m *thresholdMockSubs) ListWithThresholds(_ context.Context, _ bool, afterID string, limit int) ([]domain.Subscription, error) {
+	// Page the candidate set by the id cursor, mirroring the store's drain
+	// contract (ORDER BY id ASC, id > afterID, LIMIT) so the ScanThresholds
+	// drain loop is exercised with real paging.
+	sorted := append([]domain.Subscription(nil), m.candidates...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	var out []domain.Subscription
+	for _, c := range sorted {
+		if c.ID <= afterID {
+			continue
+		}
+		out = append(out, c)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ListWithThresholdsForClock — ADR-029 Phase 3 stub. The threshold-
 // scan unit tests in this file exercise the cron path; the per-clock
 // path's behaviour is identical (same scan logic, different fetch
 // scope), so a no-op satisfies the interface for the cron-side tests.
-func (m *thresholdMockSubs) ListWithThresholdsForClock(_ context.Context, _, _ string, _ int) ([]domain.Subscription, error) {
+func (m *thresholdMockSubs) ListWithThresholdsForClock(_ context.Context, _, _, _ string, _ int) ([]domain.Subscription, error) {
 	return nil, nil
 }
 
@@ -439,5 +457,117 @@ func TestThresholdFire_ClockPinned_StampsIsSimulated(t *testing.T) {
 	}
 	if !sawUsage {
 		t.Fatal("expected at least one usage line on the threshold invoice")
+	}
+}
+
+// TestScanThresholds_FireOnceProbe_NoReEvaluate locks the fire-once probe. A
+// reset=false threshold that has already fired keeps its crossed running total
+// on the next tick (the cycle stays put), so without the LatestThresholdPeriodEnd
+// short-circuit the scan re-evaluates and re-fires every tick — burning an
+// invoice number + a paid tax calculation before the dedup index rejects it.
+// The mock invoice store has NO unique index, so the SECOND scan would create a
+// genuine duplicate here: that is the mutation seam. Delete the probe in
+// scanOneThreshold and the final assertion flips to 2 invoices.
+func TestScanThresholds_FireOnceProbe_NoReEvaluate(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: false}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1000)
+	// Anchor now mid-cycle. setupThresholdEngine's period is [2026-04, 2026-05],
+	// which is in the past under the real wall clock — the boundary-skip guard
+	// would fire and mask the probe. A fake clock inside the window isolates the
+	// probe as the sole thing under test.
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	ctx := context.Background()
+
+	fired1, errs1 := engine.ScanThresholds(ctx, 50)
+	if len(errs1) != 0 {
+		t.Fatalf("first scan errors: %v", errs1)
+	}
+	if fired1 != 1 {
+		t.Fatalf("first scan fired = %d, want 1", fired1)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("after first scan: %d invoices, want 1", len(invoices.invoices))
+	}
+
+	// Second tick over the same reset=false cycle — the probe must short-circuit
+	// before evaluate/fire.
+	fired2, errs2 := engine.ScanThresholds(ctx, 50)
+	if len(errs2) != 0 {
+		t.Fatalf("second scan errors: %v", errs2)
+	}
+	if fired2 != 0 {
+		t.Fatalf("second scan fired = %d, want 0 (fire-once probe)", fired2)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("re-scan created a duplicate threshold invoice: %d invoices, want 1", len(invoices.invoices))
+	}
+}
+
+// TestScanThresholds_DrainsPastBatchSize locks the cursor-drain. Pre-fix,
+// ScanThresholds fetched a single `ORDER BY id LIMIT batch` page and never
+// advanced a cursor, so with more crossed subs than the batch size the tail was
+// never scanned — spend caps silently disabled past `batchSize` subscriptions.
+// 60 crossed subs with batchSize 50 forces a second page. Mutation seam: revert
+// ScanThresholds to a single ListWithThresholds fetch and `fired` drops to 50.
+func TestScanThresholds_DrainsPastBatchSize(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: false}
+	engine, subs, invoices := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	nextBilling := periodEnd
+	many := make([]domain.Subscription, 0, 60)
+	for i := 1; i <= 60; i++ {
+		many = append(many, domain.Subscription{
+			// Zero-padded ids so the id cursor (id > afterID, ORDER BY id) pages
+			// deterministically — sub_0051 sorts after sub_0050, not before.
+			ID: fmt.Sprintf("sub_%04d", i), TenantID: "t1", CustomerID: "cus_1",
+			Items:                     []domain.SubscriptionItem{{ID: "subitem_1", PlanID: "pln_1", Quantity: 1}},
+			Status:                    domain.SubscriptionActive,
+			BillingTime:               domain.BillingTimeCalendar,
+			CurrentBillingPeriodStart: &periodStart,
+			CurrentBillingPeriodEnd:   &periodEnd,
+			NextBillingAt:             &nextBilling,
+			BillingThresholds:         thresholds,
+		})
+	}
+	subs.candidates = many
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 60 {
+		t.Fatalf("drain incomplete: fired = %d, want 60 (subs #51-60 past the first batch must scan)", fired)
+	}
+	if len(invoices.invoices) != 60 {
+		t.Fatalf("expected 60 threshold invoices, got %d", len(invoices.invoices))
+	}
+}
+
+// TestScanOneThreshold_BoundarySkip locks the boundary-skip. When `now` reaches
+// the period end (scheduler downtime, or a crossing first observed in the last
+// inter-tick window), firing would emit a [periodStart, now) window that spills
+// into the next period; the cycle-close watermark is scoped to THIS period's
+// threshold invoices, so the spilled usage bills again — double-billing across
+// the boundary. The scan must SKIP and let the same-tick natural cycle bill the
+// whole elapsed period through the full-fidelity path. Mutation seam: delete the
+// `!now.Before(periodEnd)` guard and this crossed sub fires.
+func TestScanOneThreshold_BoundarySkip(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: false}
+	engine, subs, invoices := setupThresholdEngine(thresholds, 1000)
+	// now == periodEnd: the window is closed.
+	engine.clock = clock.NewFake(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
+
+	didFire, err := engine.scanOneThreshold(context.Background(), subs.candidates[0])
+	if err != nil {
+		t.Fatalf("scanOneThreshold: %v", err)
+	}
+	if didFire {
+		t.Fatal("threshold fired on the boundary tick (now == period_end); want skip")
+	}
+	if len(invoices.invoices) != 0 {
+		t.Fatalf("boundary tick created %d invoices; want 0 (defer to natural cycle)", len(invoices.invoices))
 	}
 }

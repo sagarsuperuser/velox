@@ -1682,7 +1682,7 @@ func (s *PostgresStore) ClearBillingThresholds(ctx context.Context, tenantID, id
 // invoices on clock-pinned subs even though their running cycle
 // subtotals are accumulated against simulated time — same drip-bill
 // shape ADR-028 closed for period generation.
-func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error) {
+func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, afterID string, limit int) ([]domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
 		return nil, err
@@ -1693,16 +1693,21 @@ func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, l
 		limit = 100
 	}
 
+	// afterID is the scan's drain cursor: strictly-increasing over ORDER BY
+	// s.id, so the caller pages through the WHOLE candidate set (fired subs
+	// stay in the set — thresholds remain configured — hence the cursor, not
+	// an offset or a shrinking predicate). "" starts from the beginning.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.livemode = $1
 		  AND s.test_clock_id IS NULL
+		  AND s.id > $2
 		  AND (s.billing_threshold_amount_gte IS NOT NULL
 		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
 		ORDER BY s.id ASC
-		LIMIT $2
-	`, livemode, limit)
+		LIMIT $3
+	`, livemode, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1733,7 +1738,7 @@ func (s *PostgresStore) ListWithThresholds(ctx context.Context, livemode bool, l
 // subscriptions with billing thresholds configured that are pinned to
 // the given clock. Caller (Engine.ScanThresholdsForClock) evaluates
 // running-cycle subtotals against the clock's frozen_time.
-func (s *PostgresStore) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error) {
+func (s *PostgresStore) ListWithThresholdsForClock(ctx context.Context, tenantID, clockID, afterID string, limit int) ([]domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
 		return nil, err
@@ -1749,11 +1754,12 @@ func (s *PostgresStore) ListWithThresholdsForClock(ctx context.Context, tenantID
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.tenant_id = $1
 		  AND s.test_clock_id = $2
+		  AND s.id > $3
 		  AND (s.billing_threshold_amount_gte IS NOT NULL
 		       OR EXISTS (SELECT 1 FROM subscription_item_thresholds sit WHERE sit.subscription_id = s.id))
 		ORDER BY s.id ASC
-		LIMIT $3
-	`, tenantID, clockID, limit)
+		LIMIT $4
+	`, tenantID, clockID, afterID, limit)
 	if err != nil {
 		return nil, err
 	}

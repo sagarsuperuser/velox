@@ -412,11 +412,15 @@ type SubscriptionReader interface {
 	// rated against its current partial-cycle running totals to decide
 	// whether to fire an early finalize. Hydrated with Items and
 	// BillingThresholds so the scan doesn't issue per-sub follow-up reads.
-	ListWithThresholds(ctx context.Context, livemode bool, limit int) ([]domain.Subscription, error)
+	// afterID is the drain cursor: only subs with id > afterID are returned
+	// (ORDER BY id), "" starts from the beginning. ScanThresholds pages with
+	// it until a short batch so the WHOLE candidate set is scanned every tick
+	// — a plain LIMIT would silently disable spend caps past the first batch.
+	ListWithThresholds(ctx context.Context, livemode bool, afterID string, limit int) ([]domain.Subscription, error)
 	// ListWithThresholdsForClock is the catchup-path counterpart to
 	// ListWithThresholds — returns clock-pinned subs with thresholds
 	// configured. ADR-029 Phase 3.
-	ListWithThresholdsForClock(ctx context.Context, tenantID, clockID string, limit int) ([]domain.Subscription, error)
+	ListWithThresholdsForClock(ctx context.Context, tenantID, clockID, afterID string, limit int) ([]domain.Subscription, error)
 
 	// ListItemChangesInPeriod returns every subscription_item_changes row
 	// for the given subscription whose changed_at falls within

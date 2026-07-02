@@ -55,29 +55,52 @@ func (e *Engine) ScanThresholds(ctx context.Context, batchSize int) (int, []erro
 		batchSize = 50
 	}
 
-	candidates, err := e.subs.ListWithThresholds(ctx, postgres.Livemode(ctx), batchSize)
-	if err != nil {
-		return 0, []error{fmt.Errorf("list candidates: %w", err)}
-	}
-	if len(candidates) == 0 {
-		return 0, nil
-	}
-
+	// Cursor-drain the WHOLE candidate set. Pre-fix this fetched a single
+	// `ORDER BY s.id LIMIT batch` page per tick with no cursor: the candidate
+	// set never drains (a fired sub still has thresholds configured), so subs
+	// beyond the first batch were NEVER scanned — spend caps silently disabled
+	// past batchSize subscriptions. The strictly-increasing id cursor makes the
+	// loop terminate by construction (no max-pages belt-and-suspenders), and it
+	// advances past failing subs so one bad row can't wedge the scan or cause a
+	// re-evaluation within the same tick. The fire-once probe in
+	// scanOneThreshold is what keeps a full drain affordable — already-fired
+	// subs cost one indexed lookup, not a previewWithWindow aggregation.
 	fired := 0
 	var errsOut []error
-	for _, sub := range candidates {
-		didFire, err := e.scanOneThreshold(ctx, sub)
-		if err != nil {
-			slog.Error("threshold scan failed for subscription",
-				"subscription_id", sub.ID,
-				"tenant_id", sub.TenantID,
-				"error", err,
-			)
-			errsOut = append(errsOut, fmt.Errorf("subscription %s: %w", sub.ID, err))
-			continue
+	afterID := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("threshold scan ctx done: %w", err))
+			break
 		}
-		if didFire {
-			fired++
+		candidates, err := e.subs.ListWithThresholds(ctx, postgres.Livemode(ctx), afterID, batchSize)
+		if err != nil {
+			errsOut = append(errsOut, fmt.Errorf("list candidates: %w", err))
+			break
+		}
+		if len(candidates) == 0 {
+			break
+		}
+
+		for _, sub := range candidates {
+			didFire, err := e.scanOneThreshold(ctx, sub)
+			if err != nil {
+				slog.Error("threshold scan failed for subscription",
+					"subscription_id", sub.ID,
+					"tenant_id", sub.TenantID,
+					"error", err,
+				)
+				errsOut = append(errsOut, fmt.Errorf("subscription %s: %w", sub.ID, err))
+				continue
+			}
+			if didFire {
+				fired++
+			}
+		}
+
+		afterID = candidates[len(candidates)-1].ID
+		if len(candidates) < batchSize {
+			break // short page = set drained
 		}
 	}
 
@@ -100,29 +123,45 @@ func (e *Engine) ScanThresholdsForClock(ctx context.Context, tenantID, clockID s
 	if batchSize <= 0 {
 		batchSize = 50
 	}
-	candidates, err := e.subs.ListWithThresholdsForClock(ctx, tenantID, clockID, batchSize)
-	if err != nil {
-		return 0, []error{fmt.Errorf("list threshold candidates for clock %s: %w", clockID, err)}
-	}
-	if len(candidates) == 0 {
-		return 0, nil
-	}
+	// Same cursor-drain as ScanThresholds — a clock with more than batchSize
+	// threshold subs must scan all of them in one Advance.
 	fired := 0
 	var errsOut []error
-	for _, sub := range candidates {
-		didFire, err := e.scanOneThreshold(ctx, sub)
-		if err != nil {
-			slog.Error("threshold scan failed for clock-pinned subscription",
-				"subscription_id", sub.ID,
-				"tenant_id", sub.TenantID,
-				"clock_id", clockID,
-				"error", err,
-			)
-			errsOut = append(errsOut, fmt.Errorf("subscription %s: %w", sub.ID, err))
-			continue
+	afterID := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("threshold scan ctx done: %w", err))
+			break
 		}
-		if didFire {
-			fired++
+		candidates, err := e.subs.ListWithThresholdsForClock(ctx, tenantID, clockID, afterID, batchSize)
+		if err != nil {
+			errsOut = append(errsOut, fmt.Errorf("list threshold candidates for clock %s: %w", clockID, err))
+			break
+		}
+		if len(candidates) == 0 {
+			break
+		}
+
+		for _, sub := range candidates {
+			didFire, err := e.scanOneThreshold(ctx, sub)
+			if err != nil {
+				slog.Error("threshold scan failed for clock-pinned subscription",
+					"subscription_id", sub.ID,
+					"tenant_id", sub.TenantID,
+					"clock_id", clockID,
+					"error", err,
+				)
+				errsOut = append(errsOut, fmt.Errorf("subscription %s: %w", sub.ID, err))
+				continue
+			}
+			if didFire {
+				fired++
+			}
+		}
+
+		afterID = candidates[len(candidates)-1].ID
+		if len(candidates) < batchSize {
+			break
 		}
 	}
 	if fired > 0 {
@@ -138,16 +177,15 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	if sub.BillingThresholds == nil {
 		return false, nil
 	}
-	if sub.Status != domain.SubscriptionActive && sub.Status != domain.SubscriptionTrialing {
+	// Only ACTIVE subs fire thresholds. Trialing is skipped for the same reason
+	// the natural cycle skips it — there's nothing billable, so a threshold
+	// "cross" during trial would just emit a zero-amount draft; defer until the
+	// status flips. (ListWithThresholds returns active+trialing, hence the
+	// explicit gate here.)
+	if sub.Status != domain.SubscriptionActive {
 		return false, nil
 	}
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
-		return false, nil
-	}
-	// Trialing subs are skipped at the natural cycle level too — there's no
-	// invoice to fire, so a threshold "cross" during trial would just emit a
-	// zero-amount draft. Defer until status flips.
-	if sub.Status == domain.SubscriptionTrialing {
 		return false, nil
 	}
 	// pause_collection neuters the financial side; firing a threshold under
@@ -161,6 +199,47 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	periodStart := *sub.CurrentBillingPeriodStart
 	if !now.After(periodStart) {
 		return false, nil
+	}
+
+	// Boundary SKIP: once `now` reaches the period end, the threshold window is
+	// closed — do not fire. Pre-fix, a crossing first observed on/after the
+	// boundary tick (scheduler downtime, or the crossing landing in the last
+	// inter-tick window) fired with a [periodStart, now) window that spilled
+	// into the NEXT period; the cycle close's watermark is scoped to THIS
+	// period's threshold invoices, so the spilled usage was billed again —
+	// double-billing across the boundary. The same-tick natural cycle scan
+	// (scheduler step order: thresholds before cycle close, one goroutine)
+	// bills the whole elapsed period through the full-fidelity path instead
+	// (prorated segments, item changes, terminal-cancel handling — fireThreshold
+	// has none of those). We deliberately do NOT clamp-and-fire: money-correct,
+	// but it would bill exactly the mid-period-swap/scheduled-cancel subs
+	// through the crude path. Accepted semantic: no subscription.threshold_
+	// crossed event for a boundary-observed crossing — the cycle invoice is the
+	// operator-visible artifact (see ADR-065).
+	if !now.Before(*sub.CurrentBillingPeriodEnd) {
+		return false, nil
+	}
+
+	// Fire-once probe: if a threshold invoice already exists for this cycle,
+	// this sub is done until the period rolls (reset=false) or the cycle
+	// re-anchors (reset=true — which moves periodStart, emptying this window).
+	// Pre-fix the scan re-evaluated and re-fired every tick after a reset=false
+	// crossing: each re-fire burned an invoice number + a paid Stripe Tax
+	// calculation before the dedup index rejected it (~600/cycle). The probe
+	// also skips the expensive previewWithWindow aggregation for already-fired
+	// subs — what makes the drained scan affordable.
+	//
+	// This probe is a check-then-act OPTIMIZATION, not the exactly-once
+	// mechanism: two concurrent scans can both pass it, and the partial unique
+	// index (idx_invoices_threshold_unique_per_cycle, 0056: one threshold
+	// invoice per sub+period_start) remains the correctness seam — the loser
+	// lands on errs.ErrAlreadyExists and short-circuits, exactly as before.
+	if _, err := e.invoices.LatestThresholdPeriodEnd(ctx, sub.TenantID, sub.ID, periodStart, *sub.CurrentBillingPeriodEnd); err == nil {
+		return false, nil // already fired this cycle
+	} else if !errors.Is(err, errs.ErrNotFound) {
+		// Scanning blind risks the exact re-fire burn the probe exists to stop —
+		// fail loud, retry next tick (feedback_no_silent_fallbacks).
+		return false, fmt.Errorf("probe threshold invoice for cycle: %w", err)
 	}
 
 	eval, err := e.evaluateThresholds(ctx, sub, periodStart, now)
