@@ -57,7 +57,12 @@ func NewDispatcher(outbox *OutboxStore, svc *Service, cfg DispatcherConfig) *Dis
 		cfg.BatchSize = 25
 	}
 	if cfg.BatchTimeout <= 0 {
-		cfg.BatchTimeout = 30 * time.Second
+		// Invariant chain (ADR-072): BatchSize×outboxPerRowBudget ≤
+		// BatchTimeout < outboxClaimLease(BatchSize). The old 30s
+		// default violated it (25×10s=250s > 30s): under a degraded DB
+		// the budget gate tripped and the unattempted remainder burned
+		// a DLQ slot with zero attempts while staying leased.
+		cfg.BatchTimeout = time.Duration(cfg.BatchSize) * outboxPerRowBudget
 	}
 	return &Dispatcher{outbox: outbox, svc: svc, cfg: cfg}
 }
@@ -70,6 +75,9 @@ func (d *Dispatcher) SetLocker(locker DispatchLocker) {
 // Start runs the dispatcher loop until ctx is cancelled. Intended to be
 // launched as a goroutine from cmd/velox during boot, alongside the existing
 // webhook retry worker.
+// Config exposes the resolved configuration for the invariant test.
+func (d *Dispatcher) Config() DispatcherConfig { return d.cfg }
+
 func (d *Dispatcher) Start(ctx context.Context) {
 	slog.Info("webhook outbox dispatcher started",
 		"interval", d.cfg.Interval.String(),

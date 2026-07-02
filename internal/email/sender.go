@@ -842,9 +842,13 @@ func (s *Sender) deliver(ctx context.Context, to string, body []byte) error {
 	}
 	_ = conn.SetDeadline(deadline)
 
+	// Close the raw conn unconditionally: Quit's command fails on a
+	// dead/deadline-expired server BEFORE the transport closes, leaking
+	// one fd per stalled row per tick (verifier catch). Close after a
+	// clean Quit is an idempotent no-op error.
+	defer func() { _ = conn.Close() }()
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
-		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
 	defer func() { _ = c.Quit() }()

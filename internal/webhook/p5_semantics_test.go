@@ -25,6 +25,25 @@ func seedEndpoint(t *testing.T, db *postgres.DB, ctx context.Context, tenantID s
 	return ep
 }
 
+// TestP5_WebhookOutboxLeaseInvariant pins the webhook outbox's own
+// constants relation (the verifier caught the old 25×10s > 30s default
+// violating it): BatchSize×outboxPerRowBudget ≤ BatchTimeout <
+// outboxClaimLease(BatchSize).
+func TestP5_WebhookOutboxLeaseInvariant(t *testing.T) {
+	d := NewDispatcher(nil, nil, DispatcherConfig{})
+	cfg := d.Config()
+	if got := time.Duration(cfg.BatchSize) * outboxPerRowBudget; got > cfg.BatchTimeout {
+		t.Errorf("BatchSize×outboxPerRowBudget (%v) > BatchTimeout (%v)", got, cfg.BatchTimeout)
+	}
+	if lease := outboxClaimLease(cfg.BatchSize); lease <= cfg.BatchTimeout {
+		t.Errorf("outboxClaimLease (%v) ≤ BatchTimeout (%v) — live batch re-claimable under itself", lease, cfg.BatchTimeout)
+	}
+	// Retry-side relation: the claim lease must cover the claim batch.
+	if lease := retryClaimLease(10); lease <= 10*perRetryRowBudget {
+		t.Errorf("retryClaimLease(10) (%v) has no margin over 10×perRetryRowBudget (%v)", lease, 10*perRetryRowBudget)
+	}
+}
+
 // TestP5_EventAndDeliveriesOneTx_BornLeased: Dispatch's fan-out rows
 // commit WITH the event and are born leased — no window where an event
 // exists that no delivery row references, no NULL next_retry_at, and

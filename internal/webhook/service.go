@@ -57,9 +57,9 @@ const maxRetries = 5
 // ever delays a legitimately-scheduled retry; they only bound crash
 // recovery and cross-worker exclusion.
 const (
-	birthLeaseWindow    = 120 * time.Second
-	perRetryRowBudget   = 13 * time.Second
-	retryLeaseMargin    = 60 * time.Second
+	birthLeaseWindow  = 120 * time.Second
+	perRetryRowBudget = 13 * time.Second
+	retryLeaseMargin  = 60 * time.Second
 )
 
 func retryClaimLease(batch int) time.Duration {
@@ -679,12 +679,18 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 		// ListPendingDeliveries runs in TxBypass (cross-tenant), so we tag
 		// the per-delivery ctx with the row's livemode. Every downstream
 		// store call opens its own TxTenant and needs this to route the
-		// delivery back to the same mode partition.
-		dCtx := postgres.WithLivemode(ctx, d.Livemode)
+		// delivery back to the same mode partition. The per-row budget is
+		// ENFORCED, not estimated (verifier catch): the retryClaimLease
+		// arithmetic assumes ≤perRetryRowBudget per row, and the DB reads
+		// here were otherwise unbounded — a degraded DB would break the
+		// lease math and double-POST under a live worker.
+		rowCtx, rowCancel := context.WithTimeout(ctx, perRetryRowBudget)
+		dCtx := postgres.WithLivemode(rowCtx, d.Livemode)
 
 		ep, err := s.store.GetEndpoint(dCtx, d.TenantID, d.WebhookEndpointID)
 		if err != nil {
 			slog.Error("get endpoint for retry", "delivery_id", d.ID, "error", err)
+			rowCancel()
 			continue
 		}
 		if !ep.Active {
@@ -697,6 +703,7 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			if _, err := s.store.UpdateDelivery(dCtx, d.TenantID, d); err != nil {
 				slog.Warn("webhook: endpoint-disabled mark not applied", "delivery_id", d.ID, "error", err)
 			}
+			rowCancel()
 			continue
 		}
 
@@ -717,13 +724,16 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 					slog.Warn("webhook: event-missing mark not applied", "delivery_id", d.ID, "error", err)
 				}
 				slog.Error("event not found for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID)
+				rowCancel()
 				continue
 			}
 			slog.Error("get event for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID, "error", err)
+			rowCancel()
 			continue
 		}
 
 		s.attemptDelivery(dCtx, d, ep, event)
+		rowCancel()
 	}
 
 	return nil

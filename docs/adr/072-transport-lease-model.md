@@ -81,6 +81,14 @@ round-trips), then commit all marks together. Two consequences:
 
 ## Accepted residuals
 
+- **Deferred from P5's Closes list (recorded per the amend-decisions
+  rule): `outbox_sender.go` raw tokens at rest.** Password-reset and
+  member-invite emails store their single-use token URLs in
+  `email_outbox.payload` jsonb until dispatch (+30-day retention). The
+  fix is payload-field encryption (the customer-PII encryptor is the
+  natural tool) — deferred as a named backlog item rather than rushed
+  into this transport rewrite; mitigations today: tokens are single-use,
+  reset tokens expire in 1h, and DB access is already the crown jewels.
 - Pre-P5 pending webhook deliveries may carry NULL `next_retry_at`; the
   claim SQL's NULL branch is retained (with a legacy-rollout comment +
   regression test) until no such rows can exist.

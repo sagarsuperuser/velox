@@ -376,7 +376,12 @@ func (s *OutboxStore) markCAS(ctx context.Context, rowID, query string, args ...
 		slog.Error("email outbox: mark failed", "outbox_id", rowID, "error", err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, raErr := res.RowsAffected()
+	if raErr != nil {
+		slog.Error("email outbox: mark rows-affected", "outbox_id", rowID, "error", raErr)
+		return
+	}
+	if n == 0 {
 		slog.Warn("email outbox: stale mark dropped (row no longer pending)", "outbox_id", rowID)
 		return
 	}
@@ -524,9 +529,10 @@ func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID s
 	return out, rows.Err()
 }
 
-// FailedCount returns rows currently in the DLQ — used for alerting. If this
-// grows, SMTP is persistently broken or a producer is emitting malformed
-// payloads.
+// FailedCount returns rows currently in the DLQ — used for alerting. Growth
+// means SMTP persistently broken, a producer emitting malformed payloads, or
+// (post-P5) suppressed recipients being written to — permanent failures land
+// here immediately now.
 func (s *OutboxStore) FailedCount(ctx context.Context) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

@@ -265,7 +265,9 @@ func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler Out
 			SET status = 'dispatched', dispatched_at = now(), last_error = NULL
 			WHERE id = $1 AND status = 'pending'
 		`, row.ID)
-		_ = mtx.Commit()
+		if err := mtx.Commit(); err != nil {
+			slog.Error("webhook outbox: commit backstop mark", "outbox_id", row.ID, "error", err)
+		}
 		return
 	}
 
@@ -279,7 +281,10 @@ func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler Out
 			slog.Error("webhook outbox: DLQ mark failed", "outbox_id", row.ID, "error", err)
 			return
 		}
-		_ = mtx.Commit()
+		if err := mtx.Commit(); err != nil {
+			slog.Error("webhook outbox: commit DLQ mark", "outbox_id", row.ID, "error", err)
+			return
+		}
 		slog.Error("webhook outbox: row moved to DLQ after max attempts",
 			"outbox_id", row.ID,
 			"tenant_id", row.TenantID,
@@ -299,7 +304,9 @@ func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler Out
 		slog.Error("webhook outbox: retry mark failed", "outbox_id", row.ID, "error", err)
 		return
 	}
-	_ = mtx.Commit()
+	if err := mtx.Commit(); err != nil {
+		slog.Error("webhook outbox: commit retry mark", "outbox_id", row.ID, "error", err)
+	}
 }
 
 // TryDispatcherLock tries to acquire the cluster-wide advisory lock that
