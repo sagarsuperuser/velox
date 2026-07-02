@@ -22,13 +22,34 @@ import (
 // PerItemRunning are kept in the struct so the firing path can reuse the
 // already-computed lines instead of re-aggregating after the decision.
 type thresholdEval struct {
-	CrossedAny      bool
-	CrossedAmount   bool
-	CrossedItem     bool
-	CrossedItemID   string
+	CrossedAny    bool
+	CrossedAmount bool
+	CrossedItem   bool
+	CrossedItemID string
+	// RunningSubtotal is the amount_gte comparison figure — the customer's
+	// committed spend, including (iff reset=false) non-additive buckets that
+	// bill at cycle close instead of riding this invoice. Feeds the cap check
+	// and the threshold_crossed event payload ONLY.
 	RunningSubtotal int64
+	// BilledSubtotal is the sum of LineItems' amounts — what the invoice
+	// actually charges. Feeds tax + the invoice header. Diverges from
+	// RunningSubtotal exactly when a non-additive bucket is dropped or
+	// cap-excluded (ADR-066 §4).
+	BilledSubtotal  int64
 	LineItems       []domain.InvoiceLineItem
 	InvoiceCurrency string
+}
+
+// nonAdditiveMode reports whether a rule bucket's aggregation cannot be split
+// across a threshold fire and a cycle close (max[0,t1) + max[t1,end) ≥
+// max[0,end); last is a point-in-time read). last_ever additionally ignores
+// window bounds entirely. ADR-066 §4.
+func nonAdditiveMode(m domain.AggregationMode) bool {
+	switch m {
+	case domain.AggMax, domain.AggLastDuringPeriod, domain.AggLastEver:
+		return true
+	}
+	return false
 }
 
 // ScanThresholds finds every subscription with a billing threshold configured
@@ -259,7 +280,108 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 		return false, nil
 	}
 
+	// Empty billable set (ADR-066 §4b): the cap crossed but every billable
+	// line was a dropped non-additive bucket (pure-max/last sub under
+	// reset=false). There is nothing to invoice — the cycle close bills those
+	// buckets full-period. Skip BEFORE fireThreshold so no invoice number is
+	// minted and no paid tax calculation runs (the pre-fix currency bail sat
+	// after both, erroring every tick), with a once-per-(sub, period)
+	// operator artifact so the crossing isn't silent: the Spend-thresholds
+	// card says a cap exists; the timeline must say why no invoice appeared.
+	if len(eval.LineItems) == 0 {
+		e.noteThresholdDeferred(ctx, sub, eval, periodStart)
+		return false, nil
+	}
+
 	return e.fireThreshold(ctx, sub, eval, periodStart, now)
+}
+
+// thresholdWatermark is one close window's threshold-fire ground truth
+// (ADR-066 §4) — shared by BOTH period-closers (billOnePeriod and
+// billFinalOnImmediateCancelImpl) so the protocol cannot drift between them:
+//
+//   - billedThrough: usage before this instant (and the in_arrears base)
+//     already billed on the mid-cycle threshold invoice; additive buckets
+//     bill only the residual window.
+//   - lines: the fire invoice's persisted line items — the per-bucket
+//     ground-truth for the non-additive clamp exemption. A max/last bucket
+//     with NO line was deliberately deferred by the fire and must bill
+//     full-window at close; one WITH a line already billed its window.
+//     Keyed on the invoice, never the mutable reset_billing_cycle config —
+//     an operator PATCH between fire and close would otherwise resurrect
+//     the billed-by-nobody gap or a double-bill.
+//
+// A zero watermark (no fire this window) makes every method a no-op:
+// exists() false, deferredBucket() false — closers behave exactly as before.
+type thresholdWatermark struct {
+	billedThrough *time.Time
+	lines         []domain.InvoiceLineItem
+}
+
+// loadThresholdWatermark fetches the window's fire invoice + lines.
+// ErrNotFound = no fire = zero watermark, nil error. Any other failure is
+// loud: closing blind risks a double charge (feedback_no_silent_fallbacks).
+func (e *Engine) loadThresholdWatermark(ctx context.Context, tenantID, subID string, periodStart, periodEnd time.Time) (thresholdWatermark, error) {
+	wmInv, err := e.invoices.GetLatestThresholdInvoiceForCycle(ctx, tenantID, subID, periodStart, periodEnd)
+	if errors.Is(err, errs.ErrNotFound) {
+		return thresholdWatermark{}, nil
+	}
+	if err != nil {
+		return thresholdWatermark{}, fmt.Errorf("lookup threshold invoice for cycle: %w", err)
+	}
+	lines, err := e.invoices.ListLineItems(ctx, tenantID, wmInv.ID)
+	if err != nil {
+		return thresholdWatermark{}, fmt.Errorf("list watermark invoice lines: %w", err)
+	}
+	end := wmInv.BillingPeriodEnd
+	return thresholdWatermark{billedThrough: &end, lines: lines}, nil
+}
+
+func (w thresholdWatermark) exists() bool { return w.billedThrough != nil }
+
+// bucketOnFire reports whether the fire billed this (meter, rating rule
+// version) bucket.
+func (w thresholdWatermark) bucketOnFire(meterID, ratingRuleVersionID string) bool {
+	for _, li := range w.lines {
+		if li.LineType == domain.LineTypeUsage && li.MeterID == meterID && li.RatingRuleVersionID == ratingRuleVersionID {
+			return true
+		}
+	}
+	return false
+}
+
+// deferredBucket reports whether the fire deliberately DEFERRED this
+// non-additive bucket (dropped its line under reset=false) — the close must
+// bill it over the FULL window, exactly once.
+func (w thresholdWatermark) deferredBucket(mode domain.AggregationMode, meterID, ratingRuleVersionID string) bool {
+	return w.exists() && nonAdditiveMode(mode) && !w.bucketOnFire(meterID, ratingRuleVersionID)
+}
+
+// noteThresholdDeferred emits the loudness floor for a crossed-but-deferred
+// cap (ADR-066 §4b): one audit/timeline row + one WARN per (sub, period) —
+// not tick-spam (the scan re-evaluates a pure-max/last crossed sub every tick
+// for the rest of the cycle, since no invoice exists for the probe to find).
+// Dedup is in-memory: a process restart re-emits once per survivor, which is
+// acceptable for an operator-visibility artifact (a duplicate timeline row
+// beats a missed one; no new table for a dedup ledger).
+func (e *Engine) noteThresholdDeferred(ctx context.Context, sub domain.Subscription, eval thresholdEval, periodStart time.Time) {
+	key := sub.ID + "|" + periodStart.UTC().Format(time.RFC3339)
+	if _, already := e.deferredThresholdNotes.LoadOrStore(key, struct{}{}); already {
+		return
+	}
+	slog.Warn("threshold crossed but every billable line is a non-additive bucket — deferring to cycle close",
+		"subscription_id", sub.ID,
+		"tenant_id", sub.TenantID,
+		"running_subtotal", eval.RunningSubtotal,
+		"amount_gte", sub.BillingThresholds.AmountGTE,
+	)
+	if e.auditLogger != nil {
+		_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.threshold_deferred", "subscription", sub.ID, sub.Code, map[string]any{
+			"amount_gte":       sub.BillingThresholds.AmountGTE,
+			"running_subtotal": eval.RunningSubtotal,
+			"reason":           "max_last_meters_bill_at_cycle_close",
+		})
+	}
 }
 
 // healStrandedZeroDue repairs the ADR-066 crash window: an invoice committed
@@ -319,10 +441,17 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 		baseQtys = append(baseQtys, it.Quantity)
 	}
 
-	// Roll up the running subtotal across the previewed lines. Multi-currency
-	// sub already filtered upstream at PATCH time, so we sum across all lines
-	// regardless of per-line currency — there's only one.
-	var running int64
+	// Roll up TWO totals across the previewed lines (ADR-066 §4 subtotal
+	// split). capRunning is the amount_gte comparison + event payload — the
+	// customer's committed spend. billedSubtotal is the sum of lines that
+	// actually ride the invoice — it feeds tax and the invoice header. They
+	// diverge exactly when a non-additive bucket is dropped (reset=false) or
+	// cap-excluded (reset=true); collapsing them charged the customer for
+	// invisible lines (header > sum of rendered lines). Multi-currency subs
+	// already filtered upstream at PATCH time, so summing across lines is
+	// safe — there's only one currency.
+	var capRunning, billedSubtotal int64
+	reset := sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle
 	currency := ""
 	baseFeeIdx := 0
 	lineItems := make([]domain.InvoiceLineItem, 0, len(preview.Lines))
@@ -364,7 +493,35 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 				}
 			}
 		}
-		running += pl.AmountCents
+		// Non-additive buckets (max / last_during_period / last_ever) cannot be
+		// split across a threshold fire and a cycle close: max[0,t1) +
+		// max[t1,end) ≥ max[0,end). ADR-066 §4:
+		//
+		//   - reset=false: DROP the line from the invoice — the cycle close
+		//     bills the bucket full-period exactly once (the close-side clamp
+		//     exemption). The amount still counts toward the amount_gte cap
+		//     (committed spend — for max-metered GPU concurrency it can be
+		//     MOST of the spend; the fire-once probe bounds this to one fire
+		//     per cycle, so counting it cannot loop).
+		//   - reset=true: the line RIDES the invoice (the re-anchored stub
+		//     never gets a close for this window — dropping would bill it by
+		//     NOBODY), but the amount does NOT count toward the cap: a steady
+		//     peak re-materializes in every re-anchored window, so counting it
+		//     refires one invoice + card charge per scheduler tick.
+		//
+		// Classification is per RULE BUCKET (pl.AggregationMode rides from
+		// AggregateByPricingRules through previewMeter), never per meter — one
+		// meter can carry sum and max rules simultaneously.
+		if pl.LineType == "usage" && nonAdditiveMode(pl.AggregationMode) {
+			if !reset {
+				capRunning += pl.AmountCents
+				continue
+			}
+			billedSubtotal += pl.AmountCents
+		} else {
+			capRunning += pl.AmountCents
+			billedSubtotal += pl.AmountCents
+		}
 		if currency == "" {
 			currency = pl.Currency
 		}
@@ -403,14 +560,15 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	}
 
 	eval := thresholdEval{
-		RunningSubtotal: running,
+		RunningSubtotal: capRunning,
+		BilledSubtotal:  billedSubtotal,
 		LineItems:       lineItems,
 		InvoiceCurrency: currency,
 	}
 
-	// Amount cap: cycle subtotal in cents.
+	// Amount cap: committed running spend vs the configured cap.
 	bt := sub.BillingThresholds
-	if bt.AmountGTE > 0 && running >= bt.AmountGTE {
+	if bt.AmountGTE > 0 && capRunning >= bt.AmountGTE {
 		eval.CrossedAny = true
 		eval.CrossedAmount = true
 	}
@@ -517,7 +675,12 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 
 	// Coupons removed 2026-05-29 (Phase A1). Discount stays at zero;
 	// discount intent flows through the credit ledger.
-	subtotal := eval.RunningSubtotal
+	//
+	// BilledSubtotal, NOT RunningSubtotal: the invoice charges the sum of its
+	// rendered lines. RunningSubtotal may exceed it by dropped non-additive
+	// buckets (ADR-066 §4) — using it here charged the customer for invisible
+	// lines and double-billed them again at cycle close.
+	subtotal := eval.BilledSubtotal
 	var discountCents int64
 
 	// Propagate tax errors rather than discarding them: a swallowed error

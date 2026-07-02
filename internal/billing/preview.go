@@ -35,6 +35,12 @@ type PreviewLine struct {
 	UnitAmountCents     int64           `json:"unit_amount_cents"`
 	AmountCents         int64           `json:"amount_cents"`
 	PricingMode         string          `json:"pricing_mode,omitempty"`
+	// AggregationMode is the rule BUCKET's aggregation (sum/count/max/
+	// last_during_period/last_ever) — per pricing rule, not per meter, since
+	// one meter can carry mixed modes. Internal-only (json:"-"): the
+	// threshold scan classifies non-additive buckets with it (ADR-066 §4);
+	// the public create_preview wire is unchanged.
+	AggregationMode domain.AggregationMode `json:"-"`
 }
 
 // PreviewTotal is one currency's roll-up across the preview's lines. We
@@ -279,6 +285,7 @@ func (e *Engine) previewMeter(ctx context.Context, tenantID, customerID, meterID
 			UnitAmountCents:     unitAmount,
 			AmountCents:         amount,
 			PricingMode:         string(ratingRule.Mode),
+			AggregationMode:     agg.AggregationMode,
 		})
 	}
 

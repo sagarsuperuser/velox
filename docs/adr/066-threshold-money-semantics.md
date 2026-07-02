@@ -1,7 +1,7 @@
 # ADR-066: Threshold money semantics — prorated reset base, atomic fire→reset, $0 auto-pay, max/last deferral
 
 **Date:** 2026-07-02
-**Status:** Accepted (fixes 4/atomicity/6 shipped in P1b; fix 5 semantics decided here, implementation lands in P1c)
+**Status:** Accepted (fixes 4/atomicity/6 shipped in P1b #339; fix 5 + the immediate-cancel watermark shipped in P1c)
 
 ## Context
 
@@ -92,7 +92,7 @@ design: a heal failure WARNs and leaves the operator-visible pending row
 rather than blocking the cycle advance — stalling all future billing over a
 $0 paid-mark is the worse trade.
 
-### 4. max/last split-billing — semantics DECIDED, implementation in P1c
+### 4. max/last split-billing (shipped, P1c)
 
 Non-additive aggregations (`max`, `last_during_period`, `last_ever` — the
 original plan forgot `last_ever`) cannot be split across a threshold fire and
@@ -135,10 +135,10 @@ now so P1c implements against them without re-litigating:
 
 - **Immediate-cancel final bill ignores the threshold watermark** — a second
   period-closer the original design missed: after a reset=false fire, an
-  immediate cancel double-bills the pre-fire sum usage + base. Fix lands in
-  P1c by sharing the watermark protocol (base skip + additive clamp +
-  non-additive exemption) between `billOnePeriod` and the cancel path via
-  one helper.
+  immediate cancel double-billed the pre-fire sum usage + base. FIXED in
+  P1c: the watermark protocol (base skip + additive clamp + non-additive
+  exemption) lives in one shared helper (`thresholdWatermark`) consumed by
+  both `billOnePeriod` and the cancel path.
 - **`{in_advance base × reset=true}` under-bills** one base slice per fire
   on anniversary subs (the re-anchored period's pre-existing-prepaid window
   is never re-billed; calendar subs snap back and are unaffected).
