@@ -16,6 +16,11 @@ const (
 	LockKeyDunningScheduler int64 = 76540002
 	LockKeyOutboxDispatcher int64 = 76540003
 	LockKeyEmailDispatcher  int64 = 76540004
+	// LockKeyWebhookRetry gates the webhook delivery retry worker (P5):
+	// the claim lease is arithmetic-sized, but leader gating makes the
+	// sizing non-critical on multi-replica deploys — the same posture
+	// both outbox dispatchers already take.
+	LockKeyWebhookRetry int64 = 76540005
 )
 
 // AdvisoryLock is a held Postgres session-scoped advisory lock. Release MUST

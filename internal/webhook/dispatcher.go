@@ -117,5 +117,9 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // no intrinsic mode.
 func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	ctx = postgres.WithLivemode(ctx, row.Livemode)
-	return d.svc.Dispatch(ctx, row.TenantID, row.EventType, row.Payload)
+	// handler-owns-mark (P5): the outbox row's dispatched-mark commits
+	// inside the same tx as the event + delivery rows, so a crash
+	// between the two can no longer mint a duplicate event with a fresh
+	// id. ProcessBatch's own success mark becomes a CAS no-op backstop.
+	return d.svc.DispatchFromOutbox(ctx, row.ID, row.TenantID, row.EventType, row.Payload)
 }

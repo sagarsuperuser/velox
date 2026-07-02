@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -323,6 +324,125 @@ func (s *PostgresStore) CreateEvent(ctx context.Context, tenantID string, event 
 	return event, nil
 }
 
+// CreateEventWithDeliveries creates the event AND all its delivery rows
+// in ONE transaction (P5, CreateEndpointTx precedent) — the old shape
+// committed the event, then each fan-out goroutine inserted its own
+// delivery row: a crash in between minted an event no delivery row
+// referenced, so no endpoint ever received it and nothing retried.
+// Delivery rows are BORN LEASED (next_retry_at = now()+birthLease): the
+// in-process goroutine owns the first attempt inside the lease, and the
+// retry worker is the crash backstop that picks the row up at lease
+// expiry — never a NULL next_retry_at double-POST race.
+//
+// outboxRowID, when non-empty, marks the webhook_outbox row dispatched
+// INSIDE the same tx (handler-owns-mark): a crash after this commit but
+// before the old separate outbox mark used to re-run the handler and
+// mint a DUPLICATE event with a fresh id that receivers cannot dedupe.
+func (s *PostgresStore) CreateEventWithDeliveries(ctx context.Context, tenantID string, event domain.WebhookEvent, endpointIDs []string, birthLease time.Duration, outboxRowID string) (domain.WebhookEvent, []domain.WebhookDelivery, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.WebhookEvent{}, nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	id := postgres.NewID("vlx_whevt")
+	now := time.Now().UTC()
+	payloadJSON, _ := json.Marshal(event.Payload)
+
+	event.ID = id
+	event.TenantID = tenantID
+	event.CreatedAt = now
+
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO webhook_events (id, tenant_id, event_type, payload, created_at, replay_of_event_id)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		RETURNING livemode
+	`, id, tenantID, event.EventType, payloadJSON, now, postgres.NullableStringPtr(event.ReplayOfEventID)).Scan(&event.Livemode)
+	if err != nil {
+		return domain.WebhookEvent{}, nil, err
+	}
+
+	deliveries := make([]domain.WebhookDelivery, 0, len(endpointIDs))
+	lease := now.Add(birthLease)
+	for _, epID := range endpointIDs {
+		d := domain.WebhookDelivery{
+			ID:                postgres.NewID("vlx_whd"),
+			TenantID:          tenantID,
+			WebhookEndpointID: epID,
+			WebhookEventID:    id,
+			Status:            domain.DeliveryPending,
+			NextRetryAt:       &lease,
+			CreatedAt:         now,
+		}
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO webhook_deliveries (id, tenant_id, webhook_endpoint_id, webhook_event_id,
+				status, next_retry_at, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			RETURNING livemode
+		`, d.ID, tenantID, epID, id, d.Status, lease, now).Scan(&d.Livemode); err != nil {
+			return domain.WebhookEvent{}, nil, fmt.Errorf("create delivery for endpoint %s: %w", epID, err)
+		}
+		deliveries = append(deliveries, d)
+	}
+
+	if outboxRowID != "" {
+		// CAS: a replayed handler whose row was already resolved must
+		// not resurrect it.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE webhook_outbox
+			SET status = 'dispatched', dispatched_at = now(), last_error = NULL
+			WHERE id = $1 AND status = 'pending'
+		`, outboxRowID); err != nil {
+			return domain.WebhookEvent{}, nil, fmt.Errorf("mark outbox row %s: %w", outboxRowID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.WebhookEvent{}, nil, err
+	}
+	return event, deliveries, nil
+}
+
+// CreateDeliveriesForEvent batch-creates born-leased delivery rows for
+// an event that already exists (Replay: the clone event commits in
+// CreateReplayEvent first). One tx — a replay whose fan-out partially
+// failed would otherwise deliver to a subset with no record of the rest.
+func (s *PostgresStore) CreateDeliveriesForEvent(ctx context.Context, tenantID, eventID string, endpointIDs []string, birthLease time.Duration) ([]domain.WebhookDelivery, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	now := time.Now().UTC()
+	lease := now.Add(birthLease)
+	out := make([]domain.WebhookDelivery, 0, len(endpointIDs))
+	for _, epID := range endpointIDs {
+		d := domain.WebhookDelivery{
+			ID:                postgres.NewID("vlx_whd"),
+			TenantID:          tenantID,
+			WebhookEndpointID: epID,
+			WebhookEventID:    eventID,
+			Status:            domain.DeliveryPending,
+			NextRetryAt:       &lease,
+			CreatedAt:         now,
+		}
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO webhook_deliveries (id, tenant_id, webhook_endpoint_id, webhook_event_id,
+				status, next_retry_at, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			RETURNING livemode
+		`, d.ID, tenantID, epID, eventID, d.Status, lease, now).Scan(&d.Livemode); err != nil {
+			return nil, fmt.Errorf("create delivery for endpoint %s: %w", epID, err)
+		}
+		out = append(out, d)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateReplayEvent clones an existing event row into a new event whose
 // replay_of_event_id points at the original. The clone reuses the
 // original's event_type and payload byte-for-byte (so the diff viewer
@@ -492,16 +612,25 @@ func (s *PostgresStore) UpdateDelivery(ctx context.Context, tenantID string, d d
 	}
 	defer postgres.Rollback(tx)
 
-	_, err = tx.ExecContext(ctx, `
+	// CAS on status='pending' (P5): marks record the outcome of an
+	// attempt that STARTED while the row was pending. Without the guard,
+	// a slow worker whose lease expired could flip a row a sibling had
+	// already resolved back to pending — a third POST of a delivered
+	// webhook. A zero-row match means the mark is stale: dropped and
+	// surfaced, never applied.
+	res, err := tx.ExecContext(ctx, `
 		UPDATE webhook_deliveries SET status=$1, http_status_code=$2,
 			response_body=$3, error_message=$4, attempt_count=$5, completed_at=$6,
 			next_retry_at=$7
-		WHERE id=$8`,
+		WHERE id=$8 AND status='pending'`,
 		d.Status, d.HTTPStatusCode, postgres.NullableString(d.ResponseBody),
 		postgres.NullableString(d.ErrorMessage), d.AttemptCount, postgres.NullableTime(d.CompletedAt),
 		postgres.NullableTime(d.NextRetryAt), d.ID)
 	if err != nil {
 		return domain.WebhookDelivery{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.WebhookDelivery{}, ErrStaleDeliveryMark
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.WebhookDelivery{}, err
@@ -509,19 +638,33 @@ func (s *PostgresStore) UpdateDelivery(ctx context.Context, tenantID string, d d
 	return d, nil
 }
 
+// ErrStaleDeliveryMark is returned when a delivery mark matched no
+// pending row — the row was resolved by another worker after this
+// worker's lease expired. The stale writer drops its result.
+var ErrStaleDeliveryMark = errors.New("webhook: stale delivery mark (row no longer pending)")
+
 // ListPendingDeliveries atomically CLAIMS up to `limit` due deliveries and
 // returns them. It is not a pure read: each returned row is leased by pushing
-// next_retry_at retryLeaseWindow into the future, and rows already locked by a
+// next_retry_at one claim-lease into the future, and rows already locked by a
 // concurrent worker are skipped (FOR UPDATE SKIP LOCKED). This makes the retry
 // worker safe to run on multiple replicas — two workers never claim the same
 // delivery, so a webhook isn't delivered twice per due-tick. The lease also
 // provides crash recovery: if the claiming worker dies before overwriting the
-// row's status, the lease expires after retryLeaseWindow and another worker
+// row's status, the lease (retryClaimLease — sized to the claim batch, P5) expires and another worker
 // re-claims it. The window must exceed the per-attempt HTTP timeout (10s) by a
 // wide margin so an in-flight delivery is never re-claimed underneath itself.
+// TryRetryLock leader-gates the retry worker tick (LockKeyWebhookRetry).
+func (s *PostgresStore) TryRetryLock(ctx context.Context) (DispatchLock, bool, error) {
+	lock, ok, err := s.db.TryAdvisoryLock(ctx, postgres.LockKeyWebhookRetry)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return lock, true, nil
+}
+
 func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([]domain.WebhookDelivery, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = 10
 	}
 
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
@@ -547,7 +690,7 @@ func (s *PostgresStore) ListPendingDeliveries(ctx context.Context, limit int) ([
 		RETURNING id, tenant_id, livemode, webhook_endpoint_id, webhook_event_id, status,
 			COALESCE(http_status_code, 0), COALESCE(response_body,''), COALESCE(error_message,''),
 			attempt_count, next_retry_at, created_at, completed_at
-	`, int(retryLeaseWindow.Seconds()), limit)
+	`, int(retryClaimLease(limit).Seconds()), limit)
 	if err != nil {
 		return nil, err
 	}

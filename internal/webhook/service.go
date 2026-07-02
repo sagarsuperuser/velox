@@ -38,14 +38,33 @@ import (
 // ladder the 24h tail implies.
 const maxRetries = 5
 
-// retryLeaseWindow is how far ListPendingDeliveries pushes next_retry_at
-// forward when it claims a due delivery, so a concurrent retry worker on
-// another replica won't re-claim the same row while it's being delivered. Must
-// comfortably exceed the per-attempt HTTP timeout (10s); if a claiming worker
-// crashes mid-delivery, the lease expires after this window and the row becomes
-// eligible again. Far below the smallest real retry backoff (1m) so it never
-// delays a legitimate scheduled retry.
-const retryLeaseWindow = 1 * time.Minute
+// Two DIFFERENT leases protect two different intervals (P5 panel — one
+// shared constant cannot serve both):
+//
+//   - birthLeaseWindow leases a freshly-created delivery row to its
+//     in-process first-attempt goroutine: one HTTP attempt (10s client
+//     timeout) + endpoint/event reads + the mark, with generous
+//     headroom. The retry worker is the crash backstop — it picks the
+//     row up at lease expiry, so crash-recovery latency for a money
+//     webhook is bounded by this window plus one worker tick.
+//   - retryClaimLease covers a whole CLAIMED RETRY BATCH: per-row cost
+//     is the 10s HTTP timeout plus three per-row DB round-trips
+//     (~13s budgeted), times the batch, plus margin. Derived from the
+//     batch size, never hand-tuned — an undersized lease re-claims rows
+//     under a live worker and double-POSTs.
+//
+// A marked outcome always overwrites next_retry_at, so neither lease
+// ever delays a legitimately-scheduled retry; they only bound crash
+// recovery and cross-worker exclusion.
+const (
+	birthLeaseWindow    = 120 * time.Second
+	perRetryRowBudget   = 13 * time.Second
+	retryLeaseMargin    = 60 * time.Second
+)
+
+func retryClaimLease(batch int) time.Duration {
+	return time.Duration(batch)*perRetryRowBudget + retryLeaseMargin
+}
 
 // retryBackoffs is the delay before each retry: slot i is the wait after
 // the (i+1)-th attempt fails. All maxRetries slots are reachable — the
@@ -355,139 +374,75 @@ func (s *Service) DeleteEndpoint(ctx context.Context, tenantID, id string) error
 // into a live endpoint (and vice versa). Cross-mode delivery would leak
 // synthetic data into production monitoring.
 func (s *Service) Dispatch(ctx context.Context, tenantID, eventType string, payload map[string]any) error {
-	event, err := s.store.CreateEvent(ctx, tenantID, domain.WebhookEvent{
-		EventType: eventType,
-		Payload:   payload,
-	})
-	if err != nil {
-		return fmt.Errorf("create event: %w", err)
-	}
+	return s.DispatchFromOutbox(ctx, "", tenantID, eventType, payload)
+}
 
-	// Publish a "pending" frame to the SSE bus the moment the event row
-	// commits — the dashboard renders it immediately, then transitions
-	// to "succeeded"/"failed" when the deliver goroutine publishes a
-	// follow-up frame after the HTTP attempt completes.
-	if s.bus != nil {
-		s.bus.Publish(tenantID, FrameFromEvent(event, "pending", nil))
-	}
-
+// DispatchFromOutbox is Dispatch carrying the webhook_outbox row that
+// produced this event, so the row's dispatched-mark commits ATOMICALLY
+// with the event + delivery rows (handler-owns-mark, P5): the old
+// separate mark meant a crash between the event commit and the outbox
+// mark re-ran the handler next tick and minted a duplicate event with a
+// fresh id — receivers cannot dedupe those. Empty outboxRowID = direct
+// dispatch (no outbox row).
+//
+// The endpoint fan-out is resolved FIRST (the event's livemode is the
+// ctx's — the 0021 trigger stamps the row from the same session GUC)
+// and the event + every matching delivery row are created in ONE store
+// tx, rows born leased (birthLeaseWindow): the in-process goroutines
+// own the first attempt; a crash any time after the commit leaves rows
+// the retry worker picks up at lease expiry — never an event no
+// delivery row references, never a NULL next_retry_at.
+func (s *Service) DispatchFromOutbox(ctx context.Context, outboxRowID, tenantID, eventType string, payload map[string]any) error {
 	endpoints, err := s.store.ListEndpoints(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("list endpoints: %w", err)
 	}
-
+	evLivemode := postgres.Livemode(ctx)
+	var matched []domain.WebhookEndpoint
 	for _, ep := range endpoints {
-		if !ep.Active {
+		if !ep.Active || ep.Livemode != evLivemode || !matchesEvent(ep.Events, eventType) {
 			continue
 		}
-		if ep.Livemode != event.Livemode {
-			continue
-		}
-		if !matchesEvent(ep.Events, eventType) {
-			continue
-		}
-
-		// Pin the event's livemode on the per-delivery ctx so every
-		// downstream TxTenant read/write (CreateDelivery, payload
-		// builder, signing-secret lookup) lands on the right mode
-		// partition. Goroutine path uses a fresh ctx (request may
-		// have returned by the time delivery fires) — pinning
-		// preserves the event's mode regardless of the request
-		// context's lifetime. Sync path inherits the caller ctx but
-		// re-pins for the same reason — the caller might have a
-		// detached or non-livemode ctx (recipe instantiation, etc).
-		dCtx := postgres.WithLivemode(context.Background(), event.Livemode)
-		if s.syncDeliver {
-			dCtx = postgres.WithLivemode(ctx, event.Livemode)
-			s.deliver(dCtx, tenantID, ep, event)
-		} else {
-			go s.deliver(dCtx, tenantID, ep, event)
-		}
+		matched = append(matched, ep)
+	}
+	epIDs := make([]string, len(matched))
+	for i, ep := range matched {
+		epIDs[i] = ep.ID
 	}
 
+	event, deliveries, err := s.store.CreateEventWithDeliveries(ctx, tenantID, domain.WebhookEvent{
+		EventType: eventType,
+		Payload:   payload,
+	}, epIDs, birthLeaseWindow, outboxRowID)
+	if err != nil {
+		return fmt.Errorf("create event: %w", err)
+	}
+
+	// Publish a "pending" frame the moment the event commits — the
+	// dashboard renders it immediately, then flips when the attempt
+	// goroutine publishes the outcome frame.
+	if s.bus != nil {
+		s.bus.Publish(tenantID, FrameFromEvent(event, "pending", nil))
+	}
+
+	s.spawnAttempts(ctx, event, matched, deliveries)
 	return nil
 }
 
-func (s *Service) deliver(ctx context.Context, tenantID string, ep domain.WebhookEndpoint, event domain.WebhookEvent) {
-	delivery, err := s.store.CreateDelivery(ctx, tenantID, domain.WebhookDelivery{
-		WebhookEndpointID: ep.ID,
-		WebhookEventID:    event.ID,
-		Status:            domain.DeliveryPending,
-	})
-	if err != nil {
-		slog.Error("create delivery", "error", err)
-		return
+// spawnAttempts fires the first-attempt goroutines for freshly created
+// (born-leased) delivery rows. Goroutines run on a fresh ctx pinned to
+// the event's livemode (the producing request may return first); the
+// sync path (tests) re-pins the caller ctx for the same reason.
+func (s *Service) spawnAttempts(ctx context.Context, event domain.WebhookEvent, matched []domain.WebhookEndpoint, deliveries []domain.WebhookDelivery) {
+	for i := range matched {
+		ep, d := matched[i], deliveries[i]
+		if s.syncDeliver {
+			s.attemptDelivery(postgres.WithLivemode(ctx, event.Livemode), d, ep, event)
+			continue
+		}
+		dCtx := postgres.WithLivemode(context.Background(), event.Livemode)
+		go s.attemptDelivery(dCtx, d, ep, event)
 	}
-
-	// Build payload
-	body := map[string]any{
-		"id":         event.ID,
-		"event_type": event.EventType,
-		"created_at": event.CreatedAt.Format(time.RFC3339),
-		"data":       event.Payload,
-	}
-	bodyBytes, _ := json.Marshal(body)
-
-	// Sign with HMAC-SHA256. buildSignatureHeader folds in the grace-
-	// period secondary when rotation is in its 72h window.
-	now := time.Now().UTC()
-	timestamp := fmt.Sprintf("%d", now.Unix())
-	sigHeader := buildSignatureHeader(timestamp, bodyBytes, ep, now)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		s.scheduleRetryOrFail(ctx, tenantID, delivery, err.Error())
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Velox-Signature", sigHeader)
-	req.Header.Set("Velox-Event-Type", event.EventType)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		s.scheduleRetryOrFail(ctx, tenantID, delivery, err.Error())
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-
-	delivery.HTTPStatusCode = resp.StatusCode
-	delivery.ResponseBody = string(respBody)
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		now := time.Now().UTC()
-		// Count this attempt only on success. scheduleRetryOrFail is the
-		// single owner of the increment on the failure path — incrementing
-		// here too double-counted, burning a retry and skipping the first
-		// backoff interval (retryBackoffs[AttemptCount-1] indexed off the
-		// inflated count). Mirrors retryDeliver.
-		delivery.AttemptCount++
-		delivery.Status = domain.DeliverySucceeded
-		delivery.CompletedAt = &now
-		delivery.NextRetryAt = nil
-	} else {
-		s.scheduleRetryOrFail(ctx, tenantID, delivery, fmt.Sprintf("HTTP %d", resp.StatusCode))
-		return
-	}
-
-	_, _ = s.store.UpdateDelivery(ctx, tenantID, delivery)
-	mw.RecordWebhookDelivery("succeeded")
-
-	// Publish the post-attempt frame so the live tail flips the row
-	// from "pending" to "succeeded". The dashboard's table is keyed by
-	// event_id so the second frame replaces the first in-place.
-	if s.bus != nil {
-		now := time.Now().UTC()
-		s.bus.Publish(tenantID, FrameFromEvent(event, string(delivery.Status), &now))
-	}
-
-	slog.Info("webhook delivered",
-		"endpoint_id", ep.ID,
-		"event_type", event.EventType,
-		"status", delivery.Status,
-		"http_status", resp.StatusCode,
-	)
 }
 
 // scheduleRetryOrFail increments the attempt count and either schedules a retry
@@ -537,7 +492,9 @@ func (s *Service) scheduleRetryOrFail(ctx context.Context, tenantID string, d do
 		)
 	}
 
-	_, _ = s.store.UpdateDelivery(ctx, tenantID, d)
+	if _, err := s.store.UpdateDelivery(ctx, tenantID, d); err != nil {
+		slog.Warn("webhook: retry/fail mark not applied", "delivery_id", d.ID, "error", err)
+	}
 }
 
 func matchesEvent(subscribed []string, eventType string) bool {
@@ -668,26 +625,25 @@ func (s *Service) Replay(ctx context.Context, tenantID, eventID string) (ReplayR
 	if err != nil {
 		return ReplayResult{}, fmt.Errorf("list endpoints: %w", err)
 	}
-
+	var matched []domain.WebhookEndpoint
 	for _, ep := range endpoints {
 		if !ep.Active || ep.Livemode != clone.Livemode || !matchesEvent(ep.Events, clone.EventType) {
 			continue
 		}
-		// Pin the event's livemode on the delivery ctx, exactly as Dispatch
-		// does. The goroutine path starts from context.Background() (the
-		// replay request may have returned before delivery fires), and a
-		// bare ctx makes postgres.Livemode default to TRUE — so CreateDelivery
-		// / UpdateDelivery would write a test-mode replay's rows into the LIVE
-		// RLS partition (invisible in the test-mode dashboard, FK to a
-		// test-mode event broken). The sync path re-pins too: the caller ctx
-		// might carry the wrong mode. Mirrors Dispatch's pin above.
-		dCtx := postgres.WithLivemode(context.Background(), clone.Livemode)
-		if s.syncDeliver {
-			s.deliver(postgres.WithLivemode(ctx, clone.Livemode), tenantID, ep, clone)
-		} else {
-			go s.deliver(dCtx, tenantID, ep, clone)
-		}
+		matched = append(matched, ep)
 	}
+	epIDs := make([]string, len(matched))
+	for i, ep := range matched {
+		epIDs[i] = ep.ID
+	}
+	// Replay rows are born leased in one batch tx like Dispatch's (the
+	// clone event itself committed in CreateReplayEvent — an operator
+	// replay interrupted between the two just gets clicked again).
+	deliveries, err := s.store.CreateDeliveriesForEvent(postgres.WithLivemode(ctx, clone.Livemode), tenantID, clone.ID, epIDs, birthLeaseWindow)
+	if err != nil {
+		return ReplayResult{}, fmt.Errorf("create replay deliveries: %w", err)
+	}
+	s.spawnAttempts(ctx, clone, matched, deliveries)
 
 	slog.Info("webhook event replayed",
 		"event_id", clone.ID,
@@ -695,16 +651,20 @@ func (s *Service) Replay(ctx context.Context, tenantID, eventID string) (ReplayR
 		"event_type", clone.EventType,
 	)
 	_ = original // referenced for not-found semantics above
+	status := "queued"
+	if len(matched) == 0 {
+		status = "no_matching_endpoints"
+	}
 	return ReplayResult{
 		EventID:  clone.ID,
 		ReplayOf: rootID,
-		Status:   "queued",
+		Status:   status,
 	}, nil
 }
 
 // RetryPendingDeliveries picks up deliveries due for retry and re-attempts them.
 func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
-	deliveries, err := s.store.ListPendingDeliveries(ctx, 100)
+	deliveries, err := s.store.ListPendingDeliveries(ctx, 10)
 	if err != nil {
 		return fmt.Errorf("list pending deliveries: %w", err)
 	}
@@ -734,7 +694,9 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			d.ErrorMessage = "endpoint disabled"
 			d.CompletedAt = &now
 			d.NextRetryAt = nil
-			_, _ = s.store.UpdateDelivery(dCtx, d.TenantID, d)
+			if _, err := s.store.UpdateDelivery(dCtx, d.TenantID, d); err != nil {
+				slog.Warn("webhook: endpoint-disabled mark not applied", "delivery_id", d.ID, "error", err)
+			}
 			continue
 		}
 
@@ -751,7 +713,9 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 				d.ErrorMessage = "event not found"
 				d.CompletedAt = &now
 				d.NextRetryAt = nil
-				_, _ = s.store.UpdateDelivery(dCtx, d.TenantID, d)
+				if _, err := s.store.UpdateDelivery(dCtx, d.TenantID, d); err != nil {
+					slog.Warn("webhook: event-missing mark not applied", "delivery_id", d.ID, "error", err)
+				}
 				slog.Error("event not found for retry", "delivery_id", d.ID, "event_id", d.WebhookEventID)
 				continue
 			}
@@ -759,14 +723,18 @@ func (s *Service) RetryPendingDeliveries(ctx context.Context) error {
 			continue
 		}
 
-		s.retryDeliver(dCtx, d, ep, event)
+		s.attemptDelivery(dCtx, d, ep, event)
 	}
 
 	return nil
 }
 
-// retryDeliver re-attempts an existing delivery (does not create a new delivery row).
-func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep domain.WebhookEndpoint, event domain.WebhookEvent) {
+// attemptDelivery POSTs one existing delivery row (first attempt from
+// the Dispatch fan-out, or a claimed retry) and CAS-marks the outcome.
+// Publishes the outcome frame to the SSE bus so the dashboard's live
+// tail flips pending→succeeded/failed on BOTH paths (the retry path
+// previously never updated the tail).
+func (s *Service) attemptDelivery(ctx context.Context, d domain.WebhookDelivery, ep domain.WebhookEndpoint, event domain.WebhookEvent) {
 	body := map[string]any{
 		"id":         event.ID,
 		"event_type": event.EventType,
@@ -806,11 +774,25 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 		d.Status = domain.DeliverySucceeded
 		d.CompletedAt = &now
 		d.NextRetryAt = nil
-		_, _ = s.store.UpdateDelivery(ctx, d.TenantID, d)
-		slog.Info("webhook retry succeeded",
+		if _, err := s.store.UpdateDelivery(ctx, d.TenantID, d); err != nil {
+			// A stale mark (lease expired, a sibling already resolved the
+			// row) is dropped by the CAS — logged, never applied. Any
+			// other error is a real mark loss: the POST landed but the
+			// row stays pending, so the receiver will see one duplicate
+			// after the lease. Surfaced, not swallowed (P5).
+			slog.Warn("webhook: success mark not applied", "delivery_id", d.ID, "error", err)
+			return
+		}
+		mw.RecordWebhookDelivery("succeeded")
+		if s.bus != nil {
+			s.bus.Publish(d.TenantID, FrameFromEvent(event, string(domain.DeliverySucceeded), &now))
+		}
+		slog.Info("webhook delivered",
 			"delivery_id", d.ID,
 			"endpoint_id", ep.ID,
+			"event_type", event.EventType,
 			"attempt", d.AttemptCount,
+			"http_status", resp.StatusCode,
 		)
 	} else {
 		s.scheduleRetryOrFail(ctx, d.TenantID, d, fmt.Sprintf("HTTP %d", resp.StatusCode))
@@ -818,12 +800,34 @@ func (s *Service) retryDeliver(ctx context.Context, d domain.WebhookDelivery, ep
 }
 
 // StartRetryWorker runs a background loop that retries pending deliveries on
-// the given interval. It blocks until the context is cancelled.
+// the given interval. It blocks until the context is cancelled. When the
+// store exposes an advisory lock (production Postgres), each tick is
+// leader-gated — the claim lease alone is a correct multi-replica guard,
+// but gating makes its sizing non-critical (P5; same posture as both
+// outbox dispatchers).
 func (s *Service) StartRetryWorker(ctx context.Context, interval time.Duration) {
 	slog.Info("webhook retry worker started", "interval", interval.String())
+	locker, _ := s.store.(RetryLocker)
 	scheduler.Run(ctx, "webhook_retry", interval, func(ctx context.Context) {
+		if locker != nil {
+			lock, acquired, err := locker.TryRetryLock(ctx)
+			if err != nil {
+				slog.Error("webhook retry worker: lock acquire failed", "error", err)
+				return
+			}
+			if !acquired {
+				return
+			}
+			defer lock.Release()
+		}
 		if err := s.RetryPendingDeliveries(ctx); err != nil {
 			slog.Error("webhook retry worker error", "error", err)
 		}
 	})
+}
+
+// RetryLocker is the optional leader-gate the retry worker uses when the
+// store provides it (PostgresStore does; unit-test fakes usually don't).
+type RetryLocker interface {
+	TryRetryLock(ctx context.Context) (DispatchLock, bool, error)
 }

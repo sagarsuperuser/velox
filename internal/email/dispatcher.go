@@ -17,12 +17,14 @@ type DispatcherConfig struct {
 	// A little slower than webhooks (2s) because SMTP latency + provider rate
 	// limits make sub-second reactions pointless for email.
 	Interval time.Duration
-	// BatchSize bounds how many rows are claimed per tick. Default 10 if zero —
-	// kept small because each handler makes a real SMTP round-trip and we don't
-	// want one batch to monopolise a connection slot for a minute.
+	// BatchSize bounds how many rows are claimed per tick. Default 5 if
+	// zero — sized with the P5 lease arithmetic (see outbox.go
+	// PerRowBudget/ClaimLease): every claimed row must fit inside
+	// BatchTimeout, and the claim lease must exceed BatchTimeout.
 	BatchSize int
-	// BatchTimeout bounds how long a single batch is allowed to run before its
-	// tx is cancelled (releasing row locks). Default 60s if zero.
+	// BatchTimeout bounds how long a single tick may run. Defaults to
+	// BatchSize×PerRowBudget. Row locks are NOT held for the batch —
+	// the claim tx commits immediately; the lease owns exclusion.
 	BatchTimeout time.Duration
 }
 
@@ -74,10 +76,14 @@ func NewDispatcher(outbox *OutboxStore, sender EmailDeliverer, cfg DispatcherCon
 		cfg.Interval = 5 * time.Second
 	}
 	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 10
+		// 5 rows/tick: with PerRowBudget=60s the invariant chain
+		// BatchSize×PerRowBudget ≤ BatchTimeout < ClaimLease holds as
+		// 300s ≤ 300s < 360s (P5 panel lease arithmetic). Throughput 5
+		// per 5s tick = 60/min — ample at current scale.
+		cfg.BatchSize = 5
 	}
 	if cfg.BatchTimeout <= 0 {
-		cfg.BatchTimeout = 60 * time.Second
+		cfg.BatchTimeout = time.Duration(cfg.BatchSize) * PerRowBudget
 	}
 	return &Dispatcher{outbox: outbox, sender: sender, cfg: cfg}
 }
@@ -133,10 +139,10 @@ func (d *Dispatcher) tick(ctx context.Context) {
 func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	msg, err := decodeMessage(row.EmailType, row.Payload)
 	if err != nil {
-		// A payload-decode error is non-retryable — it will fail the same way on
-		// every attempt. Return the error so the row rides out the backoff ramp
-		// to DLQ where an operator can inspect and decide.
-		return fmt.Errorf("decode payload: %w", err)
+		// Non-retryable — identical failure on every attempt. The
+		// ErrPayloadDecode sentinel makes ProcessBatch DLQ it NOW
+		// instead of riding 15 no-op cycles over ~72h (P5 panel).
+		return fmt.Errorf("%w: %v", ErrPayloadDecode, err)
 	}
 
 	// Pin the row's livemode on the per-call ctx so the Sender's
@@ -173,7 +179,7 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	case TypeMemberInvite:
 		return d.sender.SendMemberInvite(ctx, row.TenantID, msg.To, msg.InviterEmail, msg.TenantName, msg.InviteURL)
 	default:
-		return fmt.Errorf("unknown email_type %q", row.EmailType)
+		return fmt.Errorf("%w: unknown email_type %q", ErrPayloadDecode, row.EmailType)
 	}
 }
 

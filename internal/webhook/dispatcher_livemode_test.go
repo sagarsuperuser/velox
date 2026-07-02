@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -18,10 +19,13 @@ type livemodeCapturingStore struct {
 	createCalled bool
 }
 
-func (s *livemodeCapturingStore) CreateEvent(ctx context.Context, tenantID string, e domain.WebhookEvent) (domain.WebhookEvent, error) {
+// The P5 dispatch path creates the event via CreateEventWithDeliveries
+// (one tx); Go embedding doesn't virtual-dispatch, so the override must
+// sit on the method Dispatch actually calls.
+func (s *livemodeCapturingStore) CreateEventWithDeliveries(ctx context.Context, tenantID string, e domain.WebhookEvent, endpointIDs []string, birthLease time.Duration, outboxRowID string) (domain.WebhookEvent, []domain.WebhookDelivery, error) {
 	s.captured = postgres.Livemode(ctx)
 	s.createCalled = true
-	return s.memStore.CreateEvent(ctx, tenantID, e)
+	return s.memStore.CreateEventWithDeliveries(ctx, tenantID, e, endpointIDs, birthLease, outboxRowID)
 }
 
 // TestDispatcher_Handle_PropagatesRowLivemodeIntoCtx pins the cross-mode-leak

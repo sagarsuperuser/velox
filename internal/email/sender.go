@@ -50,9 +50,11 @@ type Sender struct {
 	//   "implicit" — TLS-from-the-handshake (port 465). Required by
 	//                AWS SES port 465 and a few legacy providers.
 	//   "none"     — plain SMTP, no TLS. ONLY for local dev with a
-	//                tool like Mailtrap/MailHog. Rejects in prod via
-	//                a config check.
+	//                tool like Mailpit/MailHog. deliver() rejects this
+	//                mode when APP_ENV=production (fail-loud at send).
 	tlsMode string
+	// prodEnv gates the tlsMode=none rejection (APP_ENV=production).
+	prodEnv bool
 
 	// hostedInvoiceBaseURL controls where email CTAs point for the
 	// Stripe-parity hosted invoice page (T0-17). When unset, emails
@@ -122,6 +124,12 @@ func NewSender() *Sender {
 		slog.Warn("SMTP_TLS unrecognized, defaulting to starttls", "got", tlsMode)
 		tlsMode = "starttls"
 	}
+	prodEnv := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
+	// One line of boot-time truth about the transport mode: strict
+	// STARTTLS is the default, and a stale env pointing at a no-TLS
+	// sandbox will now fail loudly at send — this log is how the
+	// operator self-diagnoses that flip (P5 rollout rider).
+	slog.Info("smtp transport", "mode", tlsMode, "strict_starttls", tlsMode == "starttls", "prod", prodEnv)
 	return &Sender{
 		host:                 strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		port:                 envOr("SMTP_PORT", "587"),
@@ -129,6 +137,7 @@ func NewSender() *Sender {
 		password:             strings.TrimSpace(os.Getenv("SMTP_PASSWORD")),
 		from:                 envOr("SMTP_FROM", "billing@velox.dev"),
 		tlsMode:              tlsMode,
+		prodEnv:              prodEnv,
 		hostedInvoiceBaseURL: strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	}
 }
@@ -165,7 +174,11 @@ func (s *Sender) checkSuppression(ctx context.Context, tenantID, to string) erro
 	if s.suppression == nil || tenantID == "" || to == "" {
 		return nil
 	}
-	suppressed, reason, err := s.suppression.IsSuppressed(ctx, tenantID, to)
+	// Bounded: this DB lookup is part of the outbox per-row budget —
+	// unbounded it invalidated the whole lease arithmetic (P5 panel).
+	supCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	suppressed, reason, err := s.suppression.IsSuppressed(supCtx, tenantID, to)
 	if err != nil {
 		// Fail-open: log + proceed. A bouncing-recipient lookup that
 		// errors out shouldn't block legitimate sends to other addresses.
@@ -763,7 +776,7 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 		fmt.Fprintf(&body, "\r\n--%s--\r\n", mixedBoundary)
 	}
 
-	if err := s.deliver(msg.To, []byte(body.String())); err != nil {
+	if err := s.deliver(ctx, msg.To, []byte(body.String())); err != nil {
 		slog.Error("send email failed", "to", msg.To, "subject", msg.Subject, "error", err)
 		s.reportBounceIfPermanent(ctx, msg.TenantID, msg.To, err)
 		return fmt.Errorf("send email: %w", err)
@@ -772,41 +785,72 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 	return nil
 }
 
-// deliver dispatches the rendered RFC-5322 message via SMTP, picking
-// the transport based on s.tlsMode. STARTTLS (default, port 587) and
-// `none` rides through stdlib net/smtp.SendMail; implicit TLS (port
-// 465) requires tls.Dial first then a manual smtp.Client handshake.
-func (s *Sender) deliver(to string, body []byte) error {
+// deliver dispatches the rendered RFC-5322 message via SMTP. ONE code
+// path for all three transport modes (P5 — the previous split routed
+// starttls/none through smtp.SendMail, which had NO dial timeout, NO
+// exchange deadline, and — critically — upgraded to TLS only
+// OPPORTUNISTICALLY: a MITM stripping the STARTTLS advertisement
+// silently downgraded invoice traffic to plaintext):
+//
+//   - dial: DialContext with a 10s cap (honors ctx cancellation);
+//   - deadline: the whole SMTP exchange bounded by min(30s, ctx
+//     remaining) so a stalled server can't out-live the per-row budget;
+//   - starttls: STRICT — a server that doesn't advertise STARTTLS is a
+//     hard error (set SMTP_TLS=none explicitly for local sandboxes);
+//   - none: forbidden in production (fails loudly at send; the config
+//     comment used to CLAIM this check existed);
+//   - AUTH: only when credentials are configured AND the server
+//     advertises AUTH (Mailpit and friends advertise none — the old
+//     implicit path always authed and broke no-auth sandboxes).
+func (s *Sender) deliver(ctx context.Context, to string, body []byte) error {
+	if s.tlsMode == "none" && s.prodEnv {
+		return fmt.Errorf("SMTP_TLS=none is forbidden in production — use starttls or implicit")
+	}
 	addr := fmt.Sprintf("%s:%s", s.host, s.port)
-	auth := smtp.PlainAuth("", s.username, s.password, s.host)
 
-	if s.tlsMode != "implicit" {
-		// STARTTLS (default — net/smtp negotiates upgrade) or none
-		// (no TLS at all; only for local dev SMTP sandboxes). Both
-		// flow through SendMail.
-		return smtp.SendMail(addr, auth, s.from, []string{to}, body)
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	var conn net.Conn
+	var err error
+	if s.tlsMode == "implicit" {
+		// TLS-from-handshake (port 465 / SMTPS).
+		conn, err = (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{ServerName: s.host}}).DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
+	}
+	if err != nil {
+		return fmt.Errorf("smtp dial (%s): %w", s.tlsMode, err)
 	}
 
-	// Implicit TLS (port 465 / SMTPS): TLS-from-handshake. net/smtp's
-	// SendMail can't do this; manually dial + start the SMTP client
-	// over the TLS connection.
-	tlsConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{ServerName: s.host})
-	if err != nil {
-		return fmt.Errorf("tls dial: %w", err)
+	// Bound the whole exchange: 30s, clamped to the caller's remaining
+	// budget so the per-row ctx (outbox dispatcher) is authoritative.
+	deadline := time.Now().Add(30 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
 	}
-	// Bound the whole SMTP exchange so a server that connects but then stalls
-	// mid-dialog can't hang the sender — matters most on the background
-	// dunning-email path, which has no request deadline.
-	_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
-	c, err := smtp.NewClient(tlsConn, s.host)
+	_ = conn.SetDeadline(deadline)
+
+	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
-		_ = tlsConn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
 	defer func() { _ = c.Quit() }()
 
-	if err := c.Auth(auth); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+	if s.tlsMode == "starttls" {
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("smtp server %s does not advertise STARTTLS (strict mode) — for local no-TLS sandboxes set SMTP_TLS=none explicitly", s.host)
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: s.host}); err != nil {
+			return fmt.Errorf("smtp starttls: %w", err)
+		}
+	}
+
+	if s.username != "" || s.password != "" {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(smtp.PlainAuth("", s.username, s.password, s.host)); err != nil {
+				return fmt.Errorf("smtp auth: %w", err)
+			}
+		}
 	}
 	if err := c.Mail(s.from); err != nil {
 		return fmt.Errorf("smtp mail from: %w", err)
@@ -844,7 +888,7 @@ func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject,
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	msg.WriteString(body)
 
-	if err := s.deliver(to, []byte(msg.String())); err != nil {
+	if err := s.deliver(ctx, to, []byte(msg.String())); err != nil {
 		slog.Error("send email failed", "to", to, "subject", subject, "error", err)
 		s.reportBounceIfPermanent(ctx, tenantID, to, err)
 		return fmt.Errorf("send email: %w", err)

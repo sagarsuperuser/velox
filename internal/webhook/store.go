@@ -33,6 +33,14 @@ type Store interface {
 
 	// Events
 	CreateEvent(ctx context.Context, tenantID string, event domain.WebhookEvent) (domain.WebhookEvent, error)
+	// CreateEventWithDeliveries creates the event and every fan-out
+	// delivery row (born leased) in ONE tx; outboxRowID, when set, marks
+	// the producing webhook_outbox row dispatched in the same tx (P5
+	// handler-owns-mark — see PostgresStore for the crash analysis).
+	CreateEventWithDeliveries(ctx context.Context, tenantID string, event domain.WebhookEvent, endpointIDs []string, birthLease time.Duration, outboxRowID string) (domain.WebhookEvent, []domain.WebhookDelivery, error)
+	// CreateDeliveriesForEvent batch-creates born-leased delivery rows
+	// for an EXISTING event (the replay path — the clone commits first).
+	CreateDeliveriesForEvent(ctx context.Context, tenantID, eventID string, endpointIDs []string, birthLease time.Duration) ([]domain.WebhookDelivery, error)
 	ListEvents(ctx context.Context, tenantID string, limit int) ([]domain.WebhookEvent, error)
 	GetEvent(ctx context.Context, tenantID, id string) (domain.WebhookEvent, error)
 	// CreateReplayEvent clones an existing event into a fresh event row

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -40,6 +41,54 @@ const (
 // Same shape as webhook_outbox — backoff ramp (see outboxBackoff) totals
 // ~72h across 15 attempts, which covers most transient SMTP provider outages.
 const MaxOutboxAttempts = 15
+
+// Lease arithmetic (P5 panel — lease_arithmetic). The invariant chain the
+// dispatcher must satisfy is
+//
+//	BatchSize × PerRowBudget ≤ BatchTimeout < ClaimLease(BatchSize)
+//
+// with marks running on a context DETACHED from the batch deadline.
+// PerRowBudget is the worst-case cost of one row end-to-end: suppression
+// check 5s (bounded in checkSuppression) + branding 5s + dial 10s + SMTP
+// exchange 30s + bounce report 5s + mark tx ≈ 55s, rounded to 60s and
+// ENFORCED by a per-row ctx — the budget is a guarantee, not an estimate.
+// A row claimed but not attempted (budget exhausted) simply waits out its
+// lease and is re-claimed; a row attempted but whose mark is lost is
+// re-sent after the lease (at-least-once; the duplicate is one invoice
+// email, bounded to one per crash).
+const (
+	PerRowBudget = 60 * time.Second
+	// minRowStartBudget is the floor of remaining batch-ctx time below
+	// which no new row is started (see the gate in ProcessBatch).
+	minRowStartBudget = 10 * time.Second
+	// claimLeaseMargin absorbs claim-tx latency + clock skew between the
+	// claimer and a competing replica.
+	claimLeaseMargin = 60 * time.Second
+)
+
+// ClaimLease is how far a claim pushes next_attempt_at into the future —
+// the crash-recovery bound AND the double-send guard for a live-but-slow
+// worker. Derived, never hand-tuned.
+func ClaimLease(batchSize int) time.Duration {
+	return time.Duration(batchSize)*PerRowBudget + claimLeaseMargin
+}
+
+// IsPermanentSendError classifies handler failures that can NEVER succeed
+// on retry: riding the ~72h backoff ramp on these wastes 15 cycles before
+// an operator sees 'failed' (and a suppressed recipient would be
+// re-attempted against a known-dead inbox every slot). ProcessBatch DLQs
+// these immediately.
+func IsPermanentSendError(err error) bool {
+	if errors.Is(err, ErrRecipientSuppressed) || errors.Is(err, ErrPayloadDecode) {
+		return true
+	}
+	permanent, _ := isPermanentSMTPBounce(err)
+	return permanent
+}
+
+// ErrPayloadDecode marks a row whose payload cannot be decoded — it will
+// fail identically on every attempt.
+var ErrPayloadDecode = errors.New("email outbox: payload decode failed")
 
 // outboxBackoff returns the delay before the next attempt given the current
 // attempt count (1 = after the first failure). Ramp: 1s, 5s, 30s, 2m, 5m,
@@ -130,42 +179,99 @@ func (s *OutboxStore) EnqueueStandalone(ctx context.Context, tenantID, emailType
 
 // OutboxHandler is called once per claimed row by ProcessBatch. Returning nil
 // means the email was dispatched successfully; returning an error schedules a
-// retry (or DLQ once MaxOutboxAttempts is reached).
+// retry (or DLQ once MaxOutboxAttempts is reached; permanent errors per
+// IsPermanentSendError DLQ immediately).
 type OutboxHandler func(ctx context.Context, row OutboxRow) error
 
-// ProcessBatch locks up to `limit` due pending rows across all tenants,
-// hands them to `handler`, and marks each row based on the handler's result
-// — all within a single tx. Row locks held for the tx's duration prevent
-// concurrent dispatchers from double-delivering (FOR UPDATE SKIP LOCKED).
+// ProcessBatch drains up to `limit` due rows in the CLAIM-LEASE shape (P5):
 //
-// Returns the number of rows processed (attempted, regardless of outcome).
-// Callers should set a sensible query timeout on ctx so a stuck handler
-// can't hold locks indefinitely.
+//  1. CLAIM (one short tx): atomically bump attempts and push
+//     next_attempt_at to now()+ClaimLease — the claim IS the attempt
+//     counter (single increment site; a claim-then-crash row still
+//     advances toward DLQ instead of cycling forever) and the lease is
+//     both the crash-recovery bound and the double-send guard against a
+//     live-but-slow sibling. FOR UPDATE SKIP LOCKED keeps concurrent
+//     claimers disjoint; locks release at commit, NOT for the batch
+//     duration — the old whole-batch tx held locks across every SMTP
+//     round-trip, and its single commit LOST every mark when a later row
+//     stalled past the tick deadline: delivered invoices re-sent.
+//  2. SEND (per row): each row runs under its own PerRowBudget ctx; the
+//     loop stops starting new rows when the batch ctx has less than one
+//     budget remaining (unattempted rows just wait out their lease). A
+//     panicking row is recovered per-row so it cannot strand the rest of
+//     the batch.
+//  3. MARK (per row, short tx on a ctx DETACHED from the batch deadline):
+//     work already performed must always be recorded — a mark that dies
+//     with the tick deadline is exactly the delivered-email-re-sent bug
+//     this rewrite closes. Marks are CAS (WHERE status='pending') so a
+//     stale writer can never regress a terminal row.
+//
+// Returns the number of rows attempted.
 func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler OutboxHandler) (int, error) {
 	if limit <= 0 {
-		limit = 10
+		limit = 5
 	}
 	if handler == nil {
 		return 0, fmt.Errorf("email outbox: handler required")
 	}
 
+	batch, err := s.claimBatch(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	if len(batch) == 0 {
+		return 0, nil
+	}
+
+	attempted := 0
+	for _, row := range batch {
+		// Budget gate: don't start a row into a nearly-dead batch ctx —
+		// a send cancelled mid-DATA can be a delivered-but-errored
+		// duplicate. Marks are DETACHED, so no outcome is ever lost;
+		// this floor only shrinks the duplicate window. The floor is
+		// deliberately below PerRowBudget: the dispatcher's sizing
+		// (BatchSize×PerRowBudget ≤ BatchTimeout) means it never trips
+		// this except after pathologically slow rows, while callers
+		// with shorter ctxs (tests, ad-hoc drains) still make progress.
+		// Unattempted remainder stays leased (attempts already bumped
+		// at claim; one skipped cycle costs one backoff slot).
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < minRowStartBudget {
+			slog.Warn("email outbox: batch budget exhausted — leaving remaining rows leased",
+				"remaining", len(batch)-attempted)
+			break
+		}
+		attempted++
+		s.attemptRow(ctx, row, handler)
+	}
+	return attempted, nil
+}
+
+// claimBatch is phase 1: one short tx that selects due rows with
+// FOR UPDATE SKIP LOCKED and, in the same statement, bumps attempts and
+// leases them via next_attempt_at.
+func (s *OutboxStore) claimBatch(ctx context.Context, limit int) ([]OutboxRow, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {
-		return 0, fmt.Errorf("email outbox: begin tx: %w", err)
+		return nil, fmt.Errorf("email outbox: begin claim tx: %w", err)
 	}
 	defer postgres.Rollback(tx)
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, tenant_id, livemode, email_type, payload, status, attempts,
-		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
-		FROM email_outbox
-		WHERE status = 'pending' AND next_attempt_at <= now()
-		ORDER BY next_attempt_at
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED
-	`, limit)
+		UPDATE email_outbox
+		SET attempts = attempts + 1,
+		    next_attempt_at = now() + make_interval(secs => $1)
+		WHERE id IN (
+			SELECT id FROM email_outbox
+			WHERE status = 'pending' AND next_attempt_at <= now()
+			ORDER BY next_attempt_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, tenant_id, livemode, email_type, payload, status, attempts,
+		          next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
+	`, int(ClaimLease(limit).Seconds()), limit)
 	if err != nil {
-		return 0, fmt.Errorf("email outbox: select pending: %w", err)
+		return nil, fmt.Errorf("email outbox: claim: %w", err)
 	}
 
 	var batch []OutboxRow
@@ -176,7 +282,7 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 			&r.Status, &r.Attempts, &r.NextAttemptAt, &r.LastError,
 			&r.CreatedAt, &r.DispatchedAt); err != nil {
 			_ = rows.Close()
-			return 0, fmt.Errorf("email outbox: scan: %w", err)
+			return nil, fmt.Errorf("email outbox: scan: %w", err)
 		}
 		if len(payloadJSON) > 0 {
 			_ = json.Unmarshal(payloadJSON, &r.Payload)
@@ -184,70 +290,99 @@ func (s *OutboxStore) ProcessBatch(ctx context.Context, limit int, handler Outbo
 		batch = append(batch, r)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("email outbox: rows err: %w", err)
+		return nil, fmt.Errorf("email outbox: rows err: %w", err)
 	}
 	_ = rows.Close()
 
-	if len(batch) == 0 {
-		return 0, tx.Commit()
-	}
-
-	for _, row := range batch {
-		hErr := handler(ctx, row)
-		if hErr == nil {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE email_outbox
-				SET status = 'dispatched',
-				    attempts = attempts + 1,
-				    dispatched_at = now(),
-				    last_error = NULL
-				WHERE id = $1
-			`, row.ID); err != nil {
-				return 0, fmt.Errorf("email outbox: mark dispatched: %w", err)
-			}
-			continue
-		}
-
-		// Failure path — pick retry-with-backoff or DLQ based on attempt count.
-		newAttempt := row.Attempts + 1
-		errMsg := truncateError(hErr.Error())
-		if newAttempt >= MaxOutboxAttempts {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE email_outbox
-				SET status = 'failed',
-				    attempts = $2,
-				    last_error = $3
-				WHERE id = $1
-			`, row.ID, newAttempt, errMsg); err != nil {
-				return 0, fmt.Errorf("email outbox: mark failed: %w", err)
-			}
-			slog.Error("email outbox: row moved to DLQ after max attempts",
-				"outbox_id", row.ID,
-				"tenant_id", row.TenantID,
-				"email_type", row.EmailType,
-				"attempts", newAttempt,
-				"error", errMsg,
-			)
-			continue
-		}
-
-		delay := outboxBackoff(newAttempt)
-		nextAt := time.Now().UTC().Add(delay)
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE email_outbox
-			SET attempts = $2,
-			    next_attempt_at = $3,
-			    last_error = $4
-			WHERE id = $1
-		`, row.ID, newAttempt, nextAt, errMsg); err != nil {
-			return 0, fmt.Errorf("email outbox: mark retry: %w", err)
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("email outbox: commit: %w", err)
+		return nil, fmt.Errorf("email outbox: commit claim: %w", err)
 	}
-	return len(batch), nil
+	return batch, nil
+}
+
+// attemptRow is phases 2+3 for one row: budget-bounded handler call
+// (panic-recovered) followed by a detached-ctx CAS mark.
+func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler OutboxHandler) {
+	rowCtx, cancel := context.WithTimeout(ctx, PerRowBudget)
+	hErr := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				// A poisoned row (pathological payload) must not strand
+				// the rest of the batch or cycle lease-long forever with
+				// no attempt record.
+				err = fmt.Errorf("%w: handler panic: %v", ErrPayloadDecode, r)
+			}
+		}()
+		return handler(rowCtx, row)
+	}()
+	cancel()
+
+	// Marks run detached from the batch deadline: the work already
+	// happened; failing to record it re-sends a delivered email.
+	markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer markCancel()
+
+	if hErr == nil {
+		s.markCAS(markCtx, row.ID, `
+			UPDATE email_outbox
+			SET status = 'dispatched', dispatched_at = now(), last_error = NULL
+			WHERE id = $1 AND status = 'pending'
+		`)
+		return
+	}
+
+	errMsg := truncateError(hErr.Error())
+	// row.Attempts is the CLAIM-persisted count (the single increment
+	// site) — DLQ once the budget is spent, or immediately for errors
+	// that can never succeed.
+	if row.Attempts >= MaxOutboxAttempts || IsPermanentSendError(hErr) {
+		s.markCAS(markCtx, row.ID, `
+			UPDATE email_outbox
+			SET status = 'failed', last_error = `+"$2"+`
+			WHERE id = $1 AND status = 'pending'
+		`, errMsg)
+		slog.Error("email outbox: row moved to DLQ",
+			"outbox_id", row.ID,
+			"tenant_id", row.TenantID,
+			"email_type", row.EmailType,
+			"attempts", row.Attempts,
+			"permanent", IsPermanentSendError(hErr),
+			"error", errMsg,
+		)
+		return
+	}
+
+	nextAt := time.Now().UTC().Add(outboxBackoff(row.Attempts))
+	s.markCAS(markCtx, row.ID, `
+		UPDATE email_outbox
+		SET next_attempt_at = $2, last_error = $3
+		WHERE id = $1 AND status = 'pending'
+	`, nextAt, errMsg)
+}
+
+// markCAS executes a per-row mark in its own short tx. The WHERE
+// status='pending' guard means a stale mark (lease expired, another
+// worker already resolved the row) matches zero rows and is dropped —
+// logged, never silently absorbed into a terminal-state regression.
+func (s *OutboxStore) markCAS(ctx context.Context, rowID, query string, args ...any) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		slog.Error("email outbox: begin mark tx", "outbox_id", rowID, "error", err)
+		return
+	}
+	defer postgres.Rollback(tx)
+	res, err := tx.ExecContext(ctx, query, append([]any{rowID}, args...)...)
+	if err != nil {
+		slog.Error("email outbox: mark failed", "outbox_id", rowID, "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		slog.Warn("email outbox: stale mark dropped (row no longer pending)", "outbox_id", rowID)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Error("email outbox: commit mark", "outbox_id", rowID, "error", err)
+	}
 }
 
 // TryDispatcherLock tries to acquire the cluster-wide advisory lock that
