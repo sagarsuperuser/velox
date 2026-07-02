@@ -38,6 +38,10 @@ func (a *subStoreAdapter) GetDueBillingForClock(ctx context.Context, tenantID, c
 	return a.store.GetDueBillingForClock(ctx, tenantID, clockID, limit)
 }
 
+func (a *subStoreAdapter) GetDueBillingForTenant(ctx context.Context, tenantID string, before time.Time, limit int) ([]domain.Subscription, error) {
+	return a.store.GetDueBillingForTenant(ctx, tenantID, before, limit)
+}
+
 func (a *subStoreAdapter) Get(ctx context.Context, tenantID, id string) (domain.Subscription, error) {
 	return a.store.Get(ctx, tenantID, id)
 }

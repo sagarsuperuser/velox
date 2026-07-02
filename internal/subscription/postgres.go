@@ -925,6 +925,67 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 	return subs, nil
 }
 
+// GetDueBillingForTenant is the operator-triggered (POST /v1/billing/run)
+// counterpart to GetDueBilling, scoped to ONE tenant under RLS. Where
+// GetDueBilling runs TxBypass to sweep every tenant for the wall-clock cron,
+// this runs TxTenant so the subscriptions RLS policy (0020, mode-aware)
+// restricts the result to the caller's own subscriptions AND livemode — the
+// manual trigger can never observe or bill another tenant's subs (the pre-fix
+// cross-tenant leak). Same disjoint-flow rules as GetDueBilling: clock-pinned
+// subs are excluded (operator Advance owns them). FOR UPDATE SKIP LOCKED keeps a
+// manual run and the concurrent wall-clock scheduler from contending on the same
+// row DURING the fetch; it does NOT by itself prevent double-billing — these
+// locks release when this fetch tx rolls back, before billSubscription runs.
+// Exactly-once is guaranteed downstream by idx_invoices_billing_idempotency (a
+// loser's 23505 → graceful ErrAlreadyExists skip), a mechanism this path reuses
+// unchanged.
+func (s *PostgresStore) GetDueBillingForTenant(ctx context.Context, tenantID string, before time.Time, limit int) ([]domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// No explicit tenant_id/livemode predicate: TxTenant sets app.tenant_id +
+	// app.livemode and the mode-aware RLS policy scopes both. Adding them to the
+	// WHERE would be redundant with — and weaker than — the policy fence.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
+		WHERE s.status IN ('active', 'trialing')
+		  AND s.test_clock_id IS NULL
+		  AND s.next_billing_at <= $1
+		ORDER BY s.next_billing_at ASC LIMIT $2
+		FOR UPDATE OF s SKIP LOCKED
+	`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []domain.Subscription
+	for rows.Next() {
+		var sub domain.Subscription
+		if err := scanSubRow(rows, &sub); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range subs {
+		if err := hydrateSubChildrenTx(ctx, tx, &subs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return subs, nil
+}
+
 // GetDueBillingForClock returns subs attached to a specific test
 // clock whose next_billing_at is on-or-before the clock's frozen
 // time. Operator-driven catchup path (ADR-028 disjoint flows) —
