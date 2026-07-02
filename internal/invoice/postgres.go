@@ -179,7 +179,8 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	COALESCE(tax_error_code,''), tax_next_retry_at,
 	COALESCE(payment_card_brand,''), COALESCE(payment_card_last4,''),
 	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,''),
-	is_simulated, tax_reversed_at`
+	is_simulated, tax_reversed_at,
+	COALESCE(payment_anomaly_kind,''), COALESCE(payment_anomaly_payment_intent_id,''), COALESCE(payment_anomaly_captured_cents,0)`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -2252,6 +2253,7 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		&inv.PaymentCardBrand, &inv.PaymentCardLast4,
 		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 		&inv.IsSimulated, &inv.TaxReversedAt,
+		&inv.PaymentAnomalyKind, &inv.PaymentAnomalyPaymentIntentID, &inv.PaymentAnomalyCapturedCents,
 	}
 }
 
@@ -2700,4 +2702,27 @@ func buildInvWhere(f ListFilter) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// RecordPaymentAnomaly stamps the durable payment-anomaly marker (ADR-068)
+// the dashboard attention banner reads. Single-slot, last-wins — the audit
+// log carries the history; the banner needs "money is wrong on THIS
+// invoice + which PI".
+func (s *PostgresStore) RecordPaymentAnomaly(ctx context.Context, tenantID, invoiceID, kind, paymentIntentID string, capturedCents int64) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE invoices SET
+			payment_anomaly_kind = $1,
+			payment_anomaly_payment_intent_id = $2,
+			payment_anomaly_captured_cents = $3,
+			updated_at = now()
+		WHERE id = $4
+	`, kind, paymentIntentID, capturedCents, invoiceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

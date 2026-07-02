@@ -173,6 +173,16 @@ type Invoice struct {
 	// lets webhook consumers route alerts. Empty for invoices defered
 	// before this column existed (migration 0067).
 	TaxErrorCode string `json:"tax_error_code,omitempty"`
+
+	// PaymentAnomaly* is the durable settle-path anomaly marker (ADR-068):
+	// kind is the per-cause event name (payment.duplicate_charge /
+	// payment.amount_mismatch / payment.received_on_voided_invoice), the PI
+	// is the offending PaymentIntent, captured the amount Stripe took.
+	// Single-slot, last-wins; drives the Critical attention banner even on
+	// terminal invoices.
+	PaymentAnomalyKind            string `json:"payment_anomaly_kind,omitempty"`
+	PaymentAnomalyPaymentIntentID string `json:"payment_anomaly_payment_intent_id,omitempty"`
+	PaymentAnomalyCapturedCents   int64  `json:"payment_anomaly_captured_cents,omitempty"`
 	// TaxNextRetryAt is the soonest the background reconciler may
 	// re-run tax calculation. NULL means "ready now" (either never
 	// tried or operator-driven retry just reset the schedule).

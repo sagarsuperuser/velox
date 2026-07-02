@@ -314,6 +314,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeAdapter := payment.NewStripe(stripeClient, invoiceStore, webhookStore, paymentSetupStore, dunningSvc)
 	stripeAdapter.SetCardFetcher(stripeClient)
 	stripeAdapter.SetEventDispatcher(eventDispatcher)
+	// Durable payment-anomaly marker (ADR-068): the settle path stamps
+	// duplicate-charge / amount-mismatch / paid-voided anomalies onto the
+	// invoice row; the dashboard attention banner reads them (Critical,
+	// pierces the terminal-state early-return).
+	stripeAdapter.SetAnomalyRecorder(invoiceStore)
 	stripeAdapter.SetBreaker(stripeBreaker)
 	// Reconcile async refund outcomes (pending→succeeded/failed) from refund
 	// webhooks onto the credit note — the create-call only sees the initial state.
