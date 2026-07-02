@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,7 @@ func setupThresholdEngine(thresholds *domain.BillingThresholds, usageQty int64) 
 	invoices := &mockInvoices{}
 
 	engine := wireBaseTax(NewEngine(subs, usage, pricing, invoices, nil, &mockSettings{}, nil, nil, nil))
+	engine.SetTxRunner(&fakeTxRunner{})
 	return engine, subs, invoices
 }
 
@@ -118,9 +120,12 @@ func setupThresholdEngine(thresholds *domain.BillingThresholds, usageQty int64) 
 func TestEvaluateThresholds_AmountCross(t *testing.T) {
 	// Plan: $49 base + 1000 calls @ $1 each = $1049 (104900 cents).
 	// Threshold: $1000 (100000 cents) → crossed.
+	// reset=false so the FULL in_arrears base counts (byte-identical legacy
+	// arm); reset=true prorates the base — covered by the ResetProratesBase
+	// tests below.
 	thresholds := &domain.BillingThresholds{
 		AmountGTE:         100000,
-		ResetBillingCycle: true,
+		ResetBillingCycle: false,
 	}
 	engine, _, _ := setupThresholdEngine(thresholds, 1000)
 
@@ -243,6 +248,180 @@ func TestEvaluateThresholds_BelowItemQuantity(t *testing.T) {
 	}
 }
 
+// TestEvaluateThresholds_ResetProratesBase locks fix 4 (ADR-066): with
+// reset_billing_cycle=true the fire re-anchors the cycle, so the cycle close
+// never true-ups this window's base — the threshold invoice is the base bill,
+// and it must carry only the ELAPSED fraction. Pre-fix the full month's base
+// rode every fire (a sub crossing 3x/month paid base 3x). The whole line
+// triple must be rewritten (emitBaseSegmentLine parity), not just the amount.
+func TestEvaluateThresholds_ResetProratesBase(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		AmountGTE:         100000,
+		ResetBillingCycle: true,
+	}
+	engine, _, _ := setupThresholdEngine(thresholds, 1000)
+
+	sub, _ := engine.subs.Get(context.Background(), "t1", "sub_1")
+	periodStart := *sub.CurrentBillingPeriodStart // Apr 1; monthly ⇒ 30-day full cycle
+	now := periodStart.AddDate(0, 0, 9)           // 9 days elapsed
+
+	eval, err := engine.evaluateThresholds(context.Background(), sub, periodStart, now)
+	if err != nil {
+		t.Fatalf("evaluateThresholds: %v", err)
+	}
+
+	// Base 4900 × 9/30 = 1470 exactly (RoundHalfToEven). Usage unchanged.
+	wantBase := int64(1470)
+	if eval.RunningSubtotal != 100000+wantBase {
+		t.Errorf("running subtotal: got %d, want %d (prorated base feeds the cap)", eval.RunningSubtotal, 100000+wantBase)
+	}
+	var base *domain.InvoiceLineItem
+	for i := range eval.LineItems {
+		if eval.LineItems[i].LineType == domain.LineTypeBaseFee {
+			base = &eval.LineItems[i]
+		}
+	}
+	if base == nil {
+		t.Fatal("expected a base_fee line")
+	}
+	if base.AmountCents != wantBase || base.TotalAmountCents != wantBase {
+		t.Errorf("base amount = %d/%d, want %d", base.AmountCents, base.TotalAmountCents, wantBase)
+	}
+	// qty × unit must reconcile with amount on every render surface.
+	if base.UnitAmountCents != wantBase {
+		t.Errorf("base unit = %d, want %d (qty 1 — unit must be recomputed, not the full plan price)", base.UnitAmountCents, wantBase)
+	}
+	if !strings.Contains(base.Description, "prorated 9/30 days") {
+		t.Errorf("base description = %q, want the standard '(prorated 9/30 days)' suffix", base.Description)
+	}
+}
+
+// TestEvaluateThresholds_ResetProration_StubPeriodDenominator locks the
+// denominator convention: the FULL plan interval advanced from periodStart —
+// never the current period length (domain/subscription.go invariant). A
+// re-anchored stub period (a prior reset=true fire left [Apr 10, May 1), 21
+// days) must still prorate a second fire against the plan's 30-day month:
+// 10 elapsed days = 4900×10/30 = 1633, NOT 4900×10/21 = 2333 (a 43% base
+// over-bill that compounds per fire).
+func TestEvaluateThresholds_ResetProration_StubPeriodDenominator(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		AmountGTE:         50000,
+		ResetBillingCycle: true,
+	}
+	engine, subs, _ := setupThresholdEngine(thresholds, 1000)
+
+	// Re-anchor the sub to a 21-day stub [Apr 10, May 1).
+	stubStart := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+	stubEnd := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	sub := subs.subs["sub_1"]
+	sub.CurrentBillingPeriodStart = &stubStart
+	sub.CurrentBillingPeriodEnd = &stubEnd
+	subs.subs["sub_1"] = sub
+
+	now := stubStart.AddDate(0, 0, 10) // Apr 20 — 10 days into the stub
+
+	eval, err := engine.evaluateThresholds(context.Background(), sub, stubStart, now)
+	if err != nil {
+		t.Fatalf("evaluateThresholds: %v", err)
+	}
+	var base *domain.InvoiceLineItem
+	for i := range eval.LineItems {
+		if eval.LineItems[i].LineType == domain.LineTypeBaseFee {
+			base = &eval.LineItems[i]
+		}
+	}
+	if base == nil {
+		t.Fatal("expected a base_fee line")
+	}
+	// advanceBillingPeriod(Apr 10, monthly) = May 10 ⇒ fullCycleDays = 30.
+	want := int64(1633) // RoundHalfToEven(4900×10, 30)
+	if base.AmountCents != want {
+		t.Errorf("stub-period prorated base = %d, want %d (denominator must be the full 30-day interval, not the 21-day stub)", base.AmountCents, want)
+	}
+	if !strings.Contains(base.Description, "prorated 10/30 days") {
+		t.Errorf("base description = %q, want 'prorated 10/30 days'", base.Description)
+	}
+}
+
+// TestEvaluateThresholds_ResetProration_CrossIntervalDenominator: a
+// yearly-interval item riding a monthly-period sub (cross-interval swaps are
+// allowed) must prorate its base against ITS OWN 365-day cycle, exactly as
+// emitBaseSegmentLine does per line — 36500×9/365 = 900, not 36500×9/30 =
+// 10950 (a 12x over-bill).
+func TestEvaluateThresholds_ResetProration_CrossIntervalDenominator(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		AmountGTE:         50000,
+		ResetBillingCycle: true,
+	}
+	engine, _, _ := setupThresholdEngine(thresholds, 1000)
+	mp := engine.pricing.(*mockPricing)
+	pln := mp.plans["pln_1"]
+	pln.BillingInterval = domain.BillingYearly
+	pln.BaseAmountCents = 36500
+	mp.plans["pln_1"] = pln
+
+	sub, _ := engine.subs.Get(context.Background(), "t1", "sub_1")
+	periodStart := *sub.CurrentBillingPeriodStart
+	now := periodStart.AddDate(0, 0, 9)
+
+	eval, err := engine.evaluateThresholds(context.Background(), sub, periodStart, now)
+	if err != nil {
+		t.Fatalf("evaluateThresholds: %v", err)
+	}
+	var base *domain.InvoiceLineItem
+	for i := range eval.LineItems {
+		if eval.LineItems[i].LineType == domain.LineTypeBaseFee {
+			base = &eval.LineItems[i]
+		}
+	}
+	if base == nil {
+		t.Fatal("expected a base_fee line")
+	}
+	want := int64(900) // RoundHalfToEven(36500×9, 365)
+	if base.AmountCents != want {
+		t.Errorf("cross-interval prorated base = %d, want %d (denominator = the LINE plan's own interval)", base.AmountCents, want)
+	}
+}
+
+// TestScanThresholds_ResetAdvanceFailure_IsLoud locks the ADR-066 error
+// contract: a reset=true fire whose cycle re-anchor fails must surface an
+// ERROR from the scan (the whole tx rolls back and the next tick retries).
+// Pre-fix the failure arm logged and returned (fired=true, nil) — and because
+// the invoice had already committed, the fire-once probe blocked every retry,
+// stranding the reset forever.
+func TestScanThresholds_ResetAdvanceFailure_IsLoud(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: true}
+	engine, subs, _ := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	subs.updateBillingCycleErr = fmt.Errorf("injected advance failure")
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if fired != 0 {
+		t.Errorf("fired = %d, want 0 (a failed reset fire must not count)", fired)
+	}
+	if len(errs) == 0 {
+		t.Fatal("scan swallowed the cycle-advance failure; want a loud per-sub error (retryable next tick)")
+	}
+}
+
+// TestScanThresholds_ResetWithoutTxRunner_FailsLoud: the engine must refuse a
+// reset=true fire when the coordinator-tx seam is missing rather than degrade
+// to the non-atomic two-write shape (no silent fallbacks).
+func TestScanThresholds_ResetWithoutTxRunner_FailsLoud(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: true}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	engine.txRunner = nil
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if fired != 0 || len(errs) == 0 {
+		t.Fatalf("fired=%d errs=%v; want 0 fired + a loud tx-runner-required error", fired, errs)
+	}
+	if len(invoices.invoices) != 0 {
+		t.Fatalf("invoice created without the atomic seam: %d", len(invoices.invoices))
+	}
+}
+
 // setupThresholdEngineWithTiming mirrors setupThresholdEngine but lets the
 // caller set the plan's BaseBillTiming so the in_advance double-bill guard
 // can be exercised directly.
@@ -302,9 +481,11 @@ func TestEvaluateThresholds_InAdvanceBaseExcluded(t *testing.T) {
 // base fee is NOT prepaid, so it must still count toward the running total and
 // appear on the early-finalize line items.
 func TestEvaluateThresholds_InArrearsBaseIncluded(t *testing.T) {
+	// reset=false: the full in_arrears base counts (the reset=true arm
+	// prorates it — see the ResetProratesBase tests).
 	thresholds := &domain.BillingThresholds{
 		AmountGTE:         100000,
-		ResetBillingCycle: true,
+		ResetBillingCycle: false,
 	}
 	engine, _, _ := setupThresholdEngineWithTiming(thresholds, 1000, domain.BillInArrears)
 
@@ -569,5 +750,92 @@ func TestScanOneThreshold_BoundarySkip(t *testing.T) {
 	}
 	if len(invoices.invoices) != 0 {
 		t.Fatalf("boundary tick created %d invoices; want 0 (defer to natural cycle)", len(invoices.invoices))
+	}
+}
+
+// TestFireThreshold_ZeroTotal_AutoPaid is T12 for the threshold writer: a
+// usage_gte item cap crossed by zero-priced usage (free-rated lines) produces
+// a $0 finalized invoice, which must be auto-marked paid — never charged
+// (amount_due=0 skips the charge arm), never dunned. Pre-fix the gate's
+// `totalWithTax > 0` conjunct stranded it payment_pending forever, polluting
+// the attention queue as permanently overdue. Mutation seam: restore the
+// conjunct and this fails.
+func TestFireThreshold_ZeroTotal_AutoPaid(t *testing.T) {
+	thresholds := &domain.BillingThresholds{
+		ResetBillingCycle: false,
+		ItemThresholds: []domain.SubscriptionItemThreshold{
+			{SubscriptionItemID: "subitem_1", UsageGTE: decimal.NewFromInt(1000)},
+		},
+	}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1500)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	// Free-rate the plan: $0 base + $0/call — the cap is quantity-based, so
+	// it crosses with a $0 running total.
+	mp := engine.pricing.(*mockPricing)
+	pln := mp.plans["pln_1"]
+	pln.BaseAmountCents = 0
+	mp.plans["pln_1"] = pln
+	rule := mp.rules["rrv_api"]
+	rule.FlatAmountCents = decimal.Zero
+	// The fixture's currency normally rides the base line (plan.Currency);
+	// with base gone the $0 usage line must carry it.
+	rule.Currency = "USD"
+	mp.rules["rrv_api"] = rule
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want 1 (quantity cap crossed)", fired)
+	}
+	if len(invoices.invoices) != 1 {
+		t.Fatalf("invoices = %d, want 1", len(invoices.invoices))
+	}
+	inv := invoices.invoices[0]
+	if inv.TotalAmountCents != 0 {
+		t.Fatalf("total = %d, want 0", inv.TotalAmountCents)
+	}
+	if inv.Status != domain.InvoicePaid || inv.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("$0 threshold invoice stranded: status=%q payment=%q, want paid/succeeded (Stripe parity: zero-amount invoices auto-mark paid)",
+			inv.Status, inv.PaymentStatus)
+	}
+}
+
+// TestScanThresholds_ProbeHealsStrandedZeroDue: a crash between the invoice
+// create and its $0/credited MarkPaid re-enters ONLY through the fire-once
+// probe — so the probe must repair the stranded payment_pending row
+// (ADR-066 heal-on-re-entry). Mutation seam: drop the healStrandedZeroDue
+// call from the probe hit and this fails.
+func TestScanThresholds_ProbeHealsStrandedZeroDue(t *testing.T) {
+	thresholds := &domain.BillingThresholds{AmountGTE: 50000, ResetBillingCycle: false}
+	engine, _, invoices := setupThresholdEngine(thresholds, 1000)
+	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+
+	// Seed the stranded state: threshold invoice committed finalized with
+	// nothing due, MarkPaid never ran (process died).
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	fireAt := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+	invoices.invoices = append(invoices.invoices, domain.Invoice{
+		ID: "vlx_inv_stranded", SubscriptionID: "sub_1", TenantID: "t1",
+		Status:             domain.InvoiceFinalized,
+		PaymentStatus:      domain.PaymentPending,
+		TaxStatus:          domain.InvoiceTaxOK,
+		AmountDueCents:     0,
+		BillingReason:      domain.BillingReasonThreshold,
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   fireAt,
+	})
+
+	fired, errs := engine.ScanThresholds(context.Background(), 50)
+	if len(errs) != 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 0 {
+		t.Fatalf("fired = %d, want 0 (probe hit)", fired)
+	}
+	healed := invoices.invoices[len(invoices.invoices)-1]
+	if healed.Status != domain.InvoicePaid || healed.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("stranded $0 invoice not healed on probe re-entry: status=%q payment=%q", healed.Status, healed.PaymentStatus)
 	}
 }

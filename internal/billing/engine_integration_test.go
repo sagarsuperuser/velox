@@ -208,6 +208,14 @@ func (a *invoiceStoreAdapter) LatestThresholdPeriodEnd(ctx context.Context, tena
 	return a.store.LatestThresholdPeriodEnd(ctx, tenantID, subscriptionID, periodStart, periodEnd)
 }
 
+func (a *invoiceStoreAdapter) GetLatestThresholdInvoiceForCycle(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	return a.store.GetLatestThresholdInvoiceForCycle(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
+func (a *invoiceStoreAdapter) GetInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
+	return a.store.GetInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart, periodEnd)
+}
+
 // TestFullBillingCycle_E2E tests the complete flow against real Postgres:
 // tenant → customer → meter → rating rule → plan → subscription → usage → billing engine → invoice
 func TestFullBillingCycle_E2E(t *testing.T) {
@@ -808,4 +816,8 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 			t.Errorf("credit grants = %d, want 0", n)
 		}
 	})
+}
+
+func (a *subStoreAdapter) UpdateBillingCycleTx(ctx context.Context, tx *sql.Tx, tenantID, id string, start, end, next time.Time, anchorDay int) error {
+	return a.store.UpdateBillingCycleTx(ctx, tx, tenantID, id, start, end, next, anchorDay)
 }

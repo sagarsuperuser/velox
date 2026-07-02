@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -234,7 +236,14 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	// index (idx_invoices_threshold_unique_per_cycle, 0056: one threshold
 	// invoice per sub+period_start) remains the correctness seam — the loser
 	// lands on errs.ErrAlreadyExists and short-circuits, exactly as before.
-	if _, err := e.invoices.LatestThresholdPeriodEnd(ctx, sub.TenantID, sub.ID, periodStart, *sub.CurrentBillingPeriodEnd); err == nil {
+	//
+	// The probe fetches the full row (not just the watermark instant) so a
+	// hit can heal the $0/credited MarkPaid crash window: a crash between
+	// invoice-create and MarkPaid re-enters HERE on every later tick — the
+	// only re-entry this sub gets — so this is where the stranded
+	// payment_pending row is repaired (ADR-066).
+	if existing, err := e.invoices.GetLatestThresholdInvoiceForCycle(ctx, sub.TenantID, sub.ID, periodStart, *sub.CurrentBillingPeriodEnd); err == nil {
+		e.healStrandedZeroDue(ctx, sub.TenantID, existing, now)
 		return false, nil // already fired this cycle
 	} else if !errors.Is(err, errs.ErrNotFound) {
 		// Scanning blind risks the exact re-fire burn the probe exists to stop —
@@ -253,6 +262,31 @@ func (e *Engine) scanOneThreshold(ctx context.Context, sub domain.Subscription) 
 	return e.fireThreshold(ctx, sub, eval, periodStart, now)
 }
 
+// healStrandedZeroDue repairs the ADR-066 crash window: an invoice committed
+// as finalized with nothing owed (born $0, or fully credited) whose MarkPaid
+// never ran because the process died between the create and the mark. Both
+// re-entry paths call it — the threshold fire-once probe and billOnePeriod's
+// ErrAlreadyExists branch — since neither ever reaches the normal MarkPaid
+// gate again. Idempotent by construction (the gate re-checks live state;
+// MarkPaid's already-paid branch is a no-op) and best-effort at the probe
+// call site: a failure WARNs and the same probe re-enters next tick.
+// The paidAt argument is the caller's effective now (test-clock aware) so a
+// healed simulated invoice's paid_at stays in the simulation's time domain.
+func (e *Engine) healStrandedZeroDue(ctx context.Context, tenantID string, inv domain.Invoice, paidAt time.Time) {
+	if inv.Status != domain.InvoiceFinalized ||
+		inv.PaymentStatus != domain.PaymentPending ||
+		inv.AmountDueCents > 0 {
+		return
+	}
+	if _, err := e.invoices.MarkPaid(ctx, tenantID, inv.ID, "", paidAt); err != nil {
+		slog.Warn("heal stranded zero-due invoice: mark paid failed (will retry on next re-entry)",
+			"invoice_id", inv.ID, "tenant_id", tenantID, "error", err)
+		return
+	}
+	slog.Info("healed stranded zero-due invoice (crash between create and mark-paid)",
+		"invoice_id", inv.ID, "tenant_id", tenantID)
+}
+
 // evaluateThresholds computes the partial-cycle running totals for a sub and
 // reports whether any configured cap has been crossed. Reuses
 // previewWithWindow's per-item base-fee + per-(meter, rule) usage line
@@ -269,10 +303,10 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	// on the early-finalize invoice — doing so double-bills the prepaid base.
 	// previewWithWindow emits one base_fee line per item (in sub.Items order)
 	// whose plan has BaseAmountCents > 0; mirror that ordering to know each
-	// base_fee preview line's timing. Predicate matches billOnePeriod's base
-	// loop (engine.go base-segment skip). in_arrears base fees and all usage
-	// lines pass through unchanged.
-	inAdvanceBaseTiming := make([]bool, 0, len(sub.Items))
+	// base_fee preview line's plan. Predicate matches billOnePeriod's base
+	// loop (engine.go base-segment skip). Usage lines pass through unchanged.
+	basePlans := make([]domain.Plan, 0, len(sub.Items))
+	baseQtys := make([]int64, 0, len(sub.Items))
 	for _, it := range sub.Items {
 		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
 		if err != nil {
@@ -281,7 +315,8 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 		if plan.BaseAmountCents <= 0 {
 			continue
 		}
-		inAdvanceBaseTiming = append(inAdvanceBaseTiming, plan.BaseBillTiming == domain.BillInAdvance)
+		basePlans = append(basePlans, plan)
+		baseQtys = append(baseQtys, it.Quantity)
 	}
 
 	// Roll up the running subtotal across the previewed lines. Multi-currency
@@ -293,11 +328,40 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	lineItems := make([]domain.InvoiceLineItem, 0, len(preview.Lines))
 	for _, pl := range preview.Lines {
 		if pl.LineType == "base_fee" {
-			isInAdvance := baseFeeIdx < len(inAdvanceBaseTiming) && inAdvanceBaseTiming[baseFeeIdx]
+			idx := baseFeeIdx
 			baseFeeIdx++
-			if isInAdvance {
+			if idx < len(basePlans) && basePlans[idx].BaseBillTiming == domain.BillInAdvance {
 				// Already prepaid — skip from running total and line items.
 				continue
+			}
+			// reset_billing_cycle=true: the fire re-anchors the cycle, so the
+			// cycle close that would normally true-up the base never bills this
+			// window — the threshold invoice IS the window's base bill. Prorate
+			// it to the elapsed fraction; pre-fix the full month's base rode
+			// every fire, so a sub crossing 3x/month paid base 3x. The formula
+			// mirrors emitBaseSegmentLine EXACTLY: denominator = the plan's own
+			// FULL interval advanced from periodStart (domain/subscription.go
+			// invariant — never the current period length, which over-bills
+			// re-anchored stubs, mid-cycle-created periods, and cross-interval
+			// items, and can be zero for a sub-day stub). The whole line triple
+			// is rewritten (description/unit/amount) so qty × unit == amount on
+			// every render surface. reset=false is untouched: the cycle close
+			// bills only the post-fire residual and skips base when a threshold
+			// watermark exists, so the full base here stays correct.
+			if idx < len(basePlans) && sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle {
+				plan := basePlans[idx]
+				qty := baseQtys[idx]
+				loc := e.tenantLocation(ctx, sub.TenantID)
+				fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, loc, sub.BillingAnchorDay).Sub(periodStart))
+				segDays := roundDays(now.Sub(periodStart))
+				if fullCycleDays > 0 && segDays < fullCycleDays {
+					prorated := money.RoundHalfToEven(plan.BaseAmountCents*qty*int64(segDays), int64(fullCycleDays))
+					pl.AmountCents = prorated
+					pl.Description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, qty, segDays, fullCycleDays)
+					if qty > 0 {
+						pl.UnitAmountCents = money.RoundHalfToEven(prorated, qty)
+					}
+				}
 			}
 		}
 		running += pl.AmountCents
@@ -493,7 +557,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// and we short-circuit. Note: we use periodStart as the boundary key,
 	// not now, so two ticks fired against the same in-flight cycle dedup
 	// to the same row even though their wall-clock differs.
-	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+	invoiceRow := domain.Invoice{
 		CustomerID:       sub.CustomerID,
 		SubscriptionID:   sub.ID,
 		InvoiceNumber:    invoiceNumber,
@@ -535,7 +599,48 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		// Simulated badge while sibling cycle/proration invoices on the
 		// same clock showed it. Matches every other engine writer.
 		IsSimulated: sub.TestClockID != "",
-	}, eval.LineItems)
+	}
+
+	// reset_billing_cycle=true: the invoice insert and the cycle re-anchor
+	// commit in ONE transaction (ADR-066). Pre-fix they were two sequential
+	// writes with a logs-and-returns failure arm — a crash or transient error
+	// between them stranded the reset FOREVER: the fire-once probe finds the
+	// committed invoice and skips every later tick, so nothing ever retried
+	// the advance, and the sub silently degraded to reset=false continuation.
+	// Under base proration (fix 4) that degradation under-bills base
+	// permanently: the invoice carries a prorated base while the cycle close
+	// skips all base segments behind the threshold watermark. Atomicity makes
+	// the failure retryable instead: the invoice rolls back with the
+	// re-anchor, the probe stays clear, and the next tick re-fires cleanly.
+	// External calls (CommitTax, charge) stay post-commit — the tx never
+	// spans network I/O.
+	var inv domain.Invoice
+	if sub.BillingThresholds.ResetBillingCycle {
+		if e.txRunner == nil {
+			// Fail loud, never fall back to the non-atomic two-write shape
+			// (feedback_no_silent_fallbacks). Production wires the pool in
+			// router.go; only a mis-wired harness lands here.
+			return false, fmt.Errorf("tx runner required for reset_billing_cycle threshold fire")
+		}
+		// Reset re-anchors the cycle to `now`, so recompute the billing anchor
+		// day for the new cadence and route through NextBillingPeriodEnd (NOT
+		// the interval-only advanceBillingPeriod) so a calendar sub re-snaps to
+		// the 1st rather than carrying the reset day-of-month (ADR-055).
+		loc := e.tenantLocation(ctx, sub.TenantID)
+		interval := plans[sub.Items[0].PlanID].BillingInterval
+		resetAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, interval, loc)
+		nextPeriodEnd := domain.NextBillingPeriodEnd(now, sub.BillingTime, interval, loc, resetAnchorDay)
+		err = e.txRunner.WithTenantTx(ctx, sub.TenantID, func(tx *sql.Tx) error {
+			created, txErr := e.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, sub.TenantID, invoiceRow, eval.LineItems)
+			if txErr != nil {
+				return txErr
+			}
+			inv = created
+			return e.subs.UpdateBillingCycleTx(ctx, tx, sub.TenantID, sub.ID, now, nextPeriodEnd, nextPeriodEnd, resetAnchorDay)
+		})
+	} else {
+		inv, err = e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, invoiceRow, eval.LineItems)
+	}
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
 			slog.Info("threshold invoice already exists for cycle (idempotent skip)",
@@ -575,16 +680,19 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		}
 	}
 
-	// If credits covered 100%, mark as paid immediately — BUT only on
-	// invoices that landed as finalized at create time. Draft invoices
-	// (tax pending / pause-collection) stay draft with credits applied.
-	// A tax-pending draft auto-finalizes later via the tax-retry chain; a
-	// pause-collection draft stays draft until the operator finalizes it
-	// (resume clears the pause and the next cycle generates finalized
-	// invoices, but the accrued drafts are NOT auto-finalized — there is no
-	// pause-resume auto-finalize chain). Mirrors the same gate added to
-	// billOnePeriod's equivalent block (2026-05-22 fix — invoice DEMO-000906).
-	if creditApplyOK && totalWithTax > 0 && inv.Status == domain.InvoiceFinalized {
+	// If nothing is owed — credits covered 100%, OR the invoice was born $0
+	// (zero-priced usage lines crossing a usage_gte cap) — mark paid
+	// immediately, BUT only on invoices that landed as finalized at create
+	// time. Draft invoices (tax pending / pause-collection) stay draft with
+	// credits applied. A tax-pending draft auto-finalizes later via the
+	// tax-retry chain; a pause-collection draft stays draft until the operator
+	// finalizes it. Mirrors billOnePeriod's gate (2026-05-22 fix — DEMO-000906).
+	// The old `totalWithTax > 0` conjunct stranded $0 finalized invoices
+	// payment_pending FOREVER — never charged (amount_due=0 skips the charge
+	// arm), never paid, polluting the attention queue as overdue (ADR-066;
+	// Stripe parity: zero-amount invoices are auto-marked paid, no payment
+	// attempt).
+	if creditApplyOK && inv.Status == domain.InvoiceFinalized {
 		updatedInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
 		if err == nil && updatedInv.AmountDueCents <= 0 {
 			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", now); err != nil {
@@ -648,33 +756,11 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.threshold_crossed", "subscription", sub.ID, sub.Code, meta)
 	}
 
-	// Cycle reset (when configured): the new cycle starts at fire time and
-	// the next bill is the natural cycle invoice. When reset_billing_cycle
-	// is false, the original cycle continues — a second invoice will fire
-	// at the natural cycle end with whatever residual usage accumulated.
-	if sub.BillingThresholds.ResetBillingCycle {
-		// Reset re-anchors the cycle to `now`, so recompute the billing anchor
-		// day for the new cadence and route through NextBillingPeriodEnd (NOT
-		// the interval-only advanceBillingPeriod) so a calendar sub re-snaps to
-		// the 1st rather than carrying the reset day-of-month (ADR-055).
-		loc := e.tenantLocation(ctx, sub.TenantID)
-		interval := plans[sub.Items[0].PlanID].BillingInterval
-		resetAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, interval, loc)
-		nextPeriodStart := now
-		nextPeriodEnd := domain.NextBillingPeriodEnd(now, sub.BillingTime, interval, loc, resetAnchorDay)
-		if err := e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, nextPeriodStart, nextPeriodEnd, nextPeriodEnd, resetAnchorDay); err != nil {
-			// Cycle advance failure is non-fatal at the count level: the
-			// invoice already exists, so we return fired=true and let the
-			// next tick reconcile. The partial unique index ensures the
-			// next tick won't double-fire.
-			slog.Error("threshold scan: cycle advance failed after fire",
-				"subscription_id", sub.ID,
-				"invoice_id", inv.ID,
-				"error", err,
-			)
-			return true, nil
-		}
-	}
+	// NOTE: the reset=true cycle re-anchor already committed atomically with
+	// the invoice insert above — there is deliberately no post-hoc
+	// UpdateBillingCycle arm here (the old two-write shape with its
+	// "let the next tick reconcile" comment was a lie: the fire-once probe
+	// blocked every retry).
 
 	slog.Info("threshold-fired invoice generated",
 		"invoice_id", inv.ID,
