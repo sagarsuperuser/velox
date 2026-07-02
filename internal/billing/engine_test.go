@@ -1645,6 +1645,37 @@ func TestRunCycle_LineItemDetails(t *testing.T) {
 	}
 }
 
+// TestRunCycle_OverrideLookupTransientError_Aborts (ADR-070,
+// no-silent-fallbacks): a transient failure resolving the customer's
+// override must ABORT the close — pre-fix any error was treated as
+// "no override" and a DB blip silently billed a negotiated customer at
+// list price on a committed, finalized invoice.
+//
+// Mutation-verify: restore the `overrideErr == nil &&` swallow in
+// resolveRatedRule — this test fails (an invoice is generated).
+func TestRunCycle_OverrideLookupTransientError_Aborts(t *testing.T) {
+	engine, _, _, pricing, invoices := setupEngine()
+	pricing.overrideErr = fmt.Errorf("connection reset by peer")
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) == 0 {
+		t.Fatal("close succeeded despite override-lookup failure; want abort")
+	}
+	if count != 0 || len(invoices.invoices) != 0 {
+		t.Fatalf("invoices generated on a failed override lookup: count=%d stored=%d — silently billed list price", count, len(invoices.invoices))
+	}
+
+	// Recovery: the same sub bills normally once the lookup heals.
+	pricing.overrideErr = nil
+	count, errs = engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("healed close errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("healed close generated %d invoices, want 1", count)
+	}
+}
+
 func TestRunCycle_WithPriceOverride(t *testing.T) {
 	engine, _, _, pricing, invoices := setupEngine()
 

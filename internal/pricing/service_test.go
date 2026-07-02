@@ -911,3 +911,154 @@ func TestUpsertMeterPricingRule_IsIdempotent(t *testing.T) {
 		t.Errorf("priority not updated: got %d want 50", second.Priority)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P4 (ADR-070) authoring guards
+// ---------------------------------------------------------------------------
+
+func TestCreateRatingRule_TierShapeValidation(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	mk := func(tiers []domain.RatingTier) CreateRatingRuleInput {
+		return CreateRatingRuleInput{
+			RuleKey: "tiered", Name: "Tiered", Mode: domain.PricingGraduated,
+			Currency: "USD", GraduatedTiers: tiers,
+		}
+	}
+	unit := decimal.NewFromInt(10)
+
+	// Non-monotonic up_to: accepted pre-ADR-070 (the qty=1 probe never
+	// reached tier 2), then hard-failed billOnePeriod at cycle close.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit}, {UpTo: 50, UnitAmountCents: unit}, {UpTo: 0, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("non-monotonic up_to accepted; want 422")
+	}
+	// Catch-all not last: dead tiers after it.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 0, UnitAmountCents: unit}, {UpTo: 100, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("mid-table catch-all accepted; want 422")
+	}
+	// Bounded final tier: quantity past the bound is unpriceable and
+	// blocks invoice generation.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("bounded final tier accepted; want 422 (requires a catch-all)")
+	}
+	// Valid shape.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit}, {UpTo: 0, UnitAmountCents: decimal.NewFromInt(5)},
+	})); err != nil {
+		t.Errorf("valid tier table rejected: %v", err)
+	}
+}
+
+func TestCreateRatingRule_CurrencyGuardWithActiveOverrides(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	v1, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU", Mode: domain.PricingFlat,
+		Currency: "usd", FlatAmountCents: decimal.NewFromInt(100),
+	})
+	if err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(80),
+	}); err != nil {
+		t.Fatalf("create override: %v", err)
+	}
+
+	// Currency change while an override references the key: the
+	// override's bare cents would be silently reinterpreted in EUR.
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU EUR", Mode: domain.PricingFlat,
+		Currency: "EUR", FlatAmountCents: decimal.NewFromInt(100),
+	}); err == nil {
+		t.Error("currency change with active override accepted; want 409")
+	}
+	// Same currency: publishes fine (version 2).
+	v2, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU v2", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(120),
+	})
+	if err != nil {
+		t.Fatalf("same-currency publish: %v", err)
+	}
+	if v2.Version != 2 {
+		t.Errorf("v2 version: got %d, want 2", v2.Version)
+	}
+	// Without overrides a currency change is allowed: new key, no override.
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "cpu", Name: "CPU", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(10),
+	}); err != nil {
+		t.Fatalf("create cpu v1: %v", err)
+	}
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "cpu", Name: "CPU EUR", Mode: domain.PricingFlat,
+		Currency: "EUR", FlatAmountCents: decimal.NewFromInt(10),
+	}); err != nil {
+		t.Errorf("currency change WITHOUT overrides rejected: %v (should be allowed — periods pin their version)", err)
+	}
+}
+
+func TestCreateOverride_ResolvesRuleInTenant(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	// Unknown / cross-tenant version id: clean 422, not a raw FK error.
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: "vlx_rrv_nope",
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	}); err == nil {
+		t.Error("override against unknown rule accepted; want 422")
+	}
+
+	v1, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "tokens", Name: "Tokens", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
+	})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	// Another tenant's id must not resolve (RLS scoping modelled by the
+	// fake's tenant check).
+	if _, err := svc.CreateOverride(ctx, "t2", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	}); err == nil {
+		t.Error("cross-tenant rule id accepted; want 422")
+	}
+
+	// Malformed override tiers rejected with the same authoring rules.
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingGraduated,
+		GraduatedTiers: []domain.RatingTier{
+			{UpTo: 100, UnitAmountCents: decimal.NewFromInt(10)},
+			{UpTo: 50, UnitAmountCents: decimal.NewFromInt(5)},
+		},
+	}); err == nil {
+		t.Error("non-monotonic override tiers accepted; want 422")
+	}
+
+	// Valid: derives rule_key from the referenced version.
+	o, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	})
+	if err != nil {
+		t.Fatalf("create override: %v", err)
+	}
+	if o.RuleKey != "tokens" {
+		t.Errorf("override rule_key: got %q, want tokens", o.RuleKey)
+	}
+}

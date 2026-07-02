@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"maps"
 	"strconv"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -23,6 +25,16 @@ type PricingWriter interface {
 	CreateMeterTx(ctx context.Context, tx *sql.Tx, tenantID string, m domain.Meter) (domain.Meter, error)
 	CreatePlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error)
 	UpsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error)
+
+	// Adoption reads (ADR-070): Uninstall keeps the created objects —
+	// the operator owns them — so reinstall must RECONNECT to the
+	// existing graph by natural key instead of duplicating or 409ing.
+	// Reads run on their own conn (the objects pre-date this install's
+	// tx). Adoption never clobbers: an operator's post-uninstall edits
+	// to a rule/meter/plan survive a reinstall untouched.
+	GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error)
+	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
+	ListPlans(ctx context.Context, tenantID string) ([]domain.Plan, error)
 }
 
 // DunningWriter is the narrow tx-aware surface recipe.Service needs from
@@ -303,8 +315,19 @@ func (s *Service) Instantiate(
 	objs := domain.CreatedObjects{}
 
 	// Rating rules first — meters and pricing rules reference them by ID.
+	// Reinstall-after-uninstall ADOPTS an existing key's latest version
+	// (never republishes — a reinstall isn't a price change, and bumping
+	// would silently reprice the operator's live subs at their next
+	// period open).
 	ratingRuleIDByKey := make(map[string]string, len(rendered.RatingRules))
 	for _, rr := range rendered.RatingRules {
+		if existing, err := s.pricing.GetRuleByKeyAsOf(ctx, tenantID, rr.Key, clock.Now(ctx)); err == nil {
+			ratingRuleIDByKey[rr.Key] = existing.ID
+			objs.RatingRuleIDs = append(objs.RatingRuleIDs, existing.ID)
+			continue
+		} else if !errors.Is(err, errs.ErrNotFound) {
+			return domain.RecipeInstance{}, fmt.Errorf("rating_rule %q: adoption check: %w", rr.Key, err)
+		}
 		created, err := s.pricing.CreateRatingRuleTx(ctx, tx, tenantID, ratingRuleFromRecipe(rr))
 		if err != nil {
 			return domain.RecipeInstance{}, fmt.Errorf("rating_rule %q: %w", rr.Key, err)
@@ -315,9 +338,17 @@ func (s *Service) Instantiate(
 
 	// Meters — multi-dim meters use pricing rules for rate selection, so
 	// rating_rule_version_id stays empty. Pricing rules below carry the
-	// per-dimension rate bindings.
+	// per-dimension rate bindings. Existing meter keys are adopted (same
+	// reinstall rationale as rating rules).
 	meterIDByKey := make(map[string]string, len(rendered.Meters))
 	for _, m := range rendered.Meters {
+		if existing, err := s.pricing.GetMeterByKey(ctx, tenantID, m.Key); err == nil {
+			meterIDByKey[m.Key] = existing.ID
+			objs.MeterIDs = append(objs.MeterIDs, existing.ID)
+			continue
+		} else if !errors.Is(err, errs.ErrNotFound) {
+			return domain.RecipeInstance{}, fmt.Errorf("meter %q: adoption check: %w", m.Key, err)
+		}
 		created, err := s.pricing.CreateMeterTx(ctx, tx, tenantID, domain.Meter{
 			Key:         m.Key,
 			Name:        m.Name,
@@ -351,7 +382,21 @@ func (s *Service) Instantiate(
 	}
 
 	// Plan — references the meters created above by ID, not key.
+	// Existing plan codes are adopted (same reinstall rationale; the
+	// operator's plan — possibly carrying live subs — is never touched).
+	existingPlans, err := s.pricing.ListPlans(ctx, tenantID)
+	if err != nil {
+		return domain.RecipeInstance{}, fmt.Errorf("list plans for adoption check: %w", err)
+	}
+	planIDByCode := make(map[string]string, len(existingPlans))
+	for _, ep := range existingPlans {
+		planIDByCode[ep.Code] = ep.ID
+	}
 	for _, p := range rendered.Plans {
+		if id, ok := planIDByCode[p.Code]; ok {
+			objs.PlanIDs = append(objs.PlanIDs, id)
+			continue
+		}
 		meterIDs := make([]string, 0, len(p.MeterKeys))
 		for _, mk := range p.MeterKeys {
 			meterIDs = append(meterIDs, meterIDByKey[mk])
