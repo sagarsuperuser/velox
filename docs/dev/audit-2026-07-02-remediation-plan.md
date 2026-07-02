@@ -230,6 +230,17 @@ Design locked in §1/P3. The three correctness-deciding details: sanitized per-s
 
 **[P4 SHIPPED 2026-07-03 — implementation deltas from the protocol, all recorded in the amended ADR-070: resolver keys on created_at stamped via clock.Now (no effective_from column — versions are immutable, creation IS effectivity; forward-advancing clocks coherent, backdated clocks accepted caveat); overrides are append-only effectivity rows ([created_at, deactivated_at) windows, migration 0128) so override EDITS are also period-open-pinned; recipe reinstall ADOPTS the whole graph by natural key (rules/meters/plans — version-bumping would reprice live subs; webhook-endpoint dup = named residual); key-born-mid-period resolves earliest active version, override absent at open = list price.]**
 
+### 4.5 P5 — transport panel outcome (AMENDED 2026-07-03; 2 lenses, both SHIP-WITH-FIXES. Implemented against THIS.)
+
+1. **Lease arithmetic corrected**: the locked "BatchSize×30s + 60s" undersized the true email per-row worst case ~2× (suppression 5s [newly bounded] + branding 5s + dial 10s [disjoint from the exchange deadline] + SMTP 30s + bounce report 5s ≈ 55s → PerRowBudget=60s, ENFORCED by a per-row ctx). Invariant chain, CI-locked: BatchSize×PerRowBudget ≤ BatchTimeout < ClaimLease(BatchSize)=BatchSize×PerRowBudget+60s. Shipped constants: BatchSize 10→5, BatchTimeout 60s→300s, ClaimLease 360s.
+2. **Marks detached**: every per-row mark (dispatched/retry/DLQ) runs on WithoutCancel+5s CAS (WHERE status='pending') — a mark for work performed always commits; a stale mark never regresses a terminal row. Row starts gated on a small remaining-budget floor (not the full budget — marks being detached means outcomes are never lost; the floor only shrinks the duplicate window).
+3. **Attempts increment moved INTO the claim UPDATE** (single site; claim-then-crash advances toward DLQ; poison rows per-row-recovered and classified permanent). Permanent errors (payload decode, ErrRecipientSuppressed, permanent 5xx) DLQ immediately.
+4. **Webhook constants SPLIT** (one constant provably can't serve both): birthLeaseWindow=120s on rows created in the SAME tx as the event (in-process goroutine owns attempt 1; retry worker = crash backstop); retryClaimLease = claimBatch×13s+60s with claimBatch 100→10 (190s). Retry worker leader-gated (LockKeyWebhookRetry). NULL next_retry_at claim branch RETAINED (legacy-rollout coverage).
+5. **handler-owns-mark**: DispatchFromOutbox marks the producing webhook_outbox row inside the event+deliveries tx — the crash window that minted receiver-undedupable duplicate events is structurally gone; ProcessBatch's own mark = CAS no-op backstop. UpdateDelivery = CAS, errors surfaced (ErrStaleDeliveryMark), never `_, _ =`.
+6. **SMTP**: ONE deliver() (the smtp.SendMail path had NO timeouts and OPPORTUNISTIC StartTLS = downgrade-strippable); strict STARTTLS; SMTP_TLS=none forbidden in production (fail-loud at send — the code comment used to claim this check existed); AUTH only when advertised+configured; env var is SMTP_TLS everywhere (the plan text's SMTP_TLS_MODE was wrong); boot-time transport-mode log; suppression check bounded 5s.
+7. **Redelivery semantics per row state (ADR-072)**: pending = at-least-once (one duplicate possible per crash/lease-expiry); dispatched = terminal-sent; failed = terminal-unsent until operator requeue (documented UPDATE statement in the ADR — post-repair recovery exists).
+
+
 ---
 
 ## 4. Day-by-Day, Critical Path, Cut-Line
