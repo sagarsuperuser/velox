@@ -531,8 +531,10 @@ func TestThresholdScan_BoundaryDefersToCycle(t *testing.T) {
 
 	// Rewind the period so wall-clock `now` is past period_end: the crossing is
 	// first observed on the far side of the boundary. Usage (first hour of
-	// cycleStart = now-72h) stays inside the shortened window.
-	pastEnd := time.Now().UTC().Add(-1 * time.Hour)
+	// cycleStart = now-72h) stays inside the shortened window. Truncated to
+	// microseconds so the value round-trips Postgres timestamptz exactly
+	// (Linux clocks are ns-granular; PG stores µs).
+	pastEnd := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Microsecond)
 	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
 	if err != nil {
 		t.Fatalf("begin rewind tx: %v", err)
