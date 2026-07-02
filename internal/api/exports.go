@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -132,6 +134,24 @@ func flushAndContinue(cw *csv.Writer, w http.ResponseWriter) error {
 	return nil
 }
 
+// exportAbort makes a mid-stream failure visible IN the file. The HTTP
+// status is already 200 by the time a store error or ctx timeout hits
+// (headers went out with the first row), so the stream used to just
+// END — a silently truncated CSV indistinguishable from a complete
+// export, feeding partial books into whatever the operator reconciles
+// against. The trailing EXPORT_INCOMPLETE record is the honest,
+// machine-checkable signal (documented contract: a row whose first
+// cell is EXPORT_INCOMPLETE means discard the file and retry), plus a
+// server-side error log. Best-effort by construction: if the client
+// connection itself died, the marker write fails silently — that
+// client isn't reading anyway.
+func exportAbort(ctx context.Context, cw *csv.Writer, resource string, err error) {
+	slog.ErrorContext(ctx, "csv export aborted mid-stream — emitted EXPORT_INCOMPLETE marker",
+		"resource", resource, "error", err)
+	_ = cw.Write([]string{"EXPORT_INCOMPLETE", "the export aborted before completion — discard this file and retry"})
+	cw.Flush()
+}
+
 // timePtrCSV formats a *time.Time as RFC3339 or empty string. Used
 // for nullable columns (canceled_at, paid_at, voided_at, etc).
 func timePtrCSV(t *time.Time) string {
@@ -174,6 +194,7 @@ func (h *exportsHandler) exportCustomers(w http.ResponseWriter, r *http.Request)
 		}
 		rows, _, err := h.customers.List(r.Context(), filter)
 		if err != nil {
+			exportAbort(r.Context(), cw, "customers", err)
 			return
 		}
 		if len(rows) == 0 {
@@ -245,6 +266,7 @@ func (h *exportsHandler) exportInvoices(w http.ResponseWriter, r *http.Request) 
 		}
 		rows, _, err := h.invoices.List(r.Context(), filter)
 		if err != nil {
+			exportAbort(r.Context(), cw, "invoices", err)
 			return
 		}
 		if len(rows) == 0 {
@@ -327,6 +349,7 @@ func (h *exportsHandler) exportSubscriptions(w http.ResponseWriter, r *http.Requ
 		}
 		rows, _, err := h.subscriptions.List(r.Context(), filter)
 		if err != nil {
+			exportAbort(r.Context(), cw, "subscriptions", err)
 			return
 		}
 		if len(rows) == 0 {
@@ -417,6 +440,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 		}
 		rows, _, err := h.usage.List(r.Context(), filter)
 		if err != nil {
+			exportAbort(r.Context(), cw, "usage_events", err)
 			return
 		}
 		if len(rows) == 0 {
