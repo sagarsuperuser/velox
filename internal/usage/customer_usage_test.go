@@ -51,7 +51,7 @@ type fakePricingReader struct {
 	plans      map[string]domain.Plan
 	meters     map[string]domain.Meter
 	rules      map[string]domain.RatingRuleVersion
-	pricingMap map[string][]domain.MeterPricingRule // by meter id
+	pricingMap map[string][]domain.MeterPricingRule    // by meter id
 	overrides  map[string]domain.CustomerPriceOverride // key: customerID+":"+ruleKey
 }
 
