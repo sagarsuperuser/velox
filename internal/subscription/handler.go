@@ -579,10 +579,14 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // scheduleCancel records a soft-cancel intent. Body must set exactly one of
-// {at_period_end:true, cancel_at:<RFC3339>}. The current period is unaffected;
-// the billing engine flips the sub to canceled when the boundary fires.
-// Re-calling this endpoint replaces any prior schedule (so a caller can
-// switch from at_period_end to a specific date by issuing a new request).
+// {at_period_end:true, cancel_at:<RFC3339>}. On an ACTIVE sub the current
+// period is unaffected and the billing engine flips the sub to canceled at
+// the boundary. On a TRIALING sub, at_period_end means cancel FREE at trial
+// end (Stripe semantics, ADR-069) and cancel_at accepts exactly trial_end_at
+// or >= current_billing_period_end — the response's derived
+// cancel_effective_at states when the cancel actually lands. Re-calling
+// replaces any prior schedule (so a caller can switch modes with a new
+// request); a 409 means the sub's status changed mid-flight — re-read.
 func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")

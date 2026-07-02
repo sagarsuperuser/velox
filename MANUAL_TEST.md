@@ -1054,6 +1054,16 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] On a taxed paid invoice (e.g. $100 net + 10% = $110), create + issue a full CN (one line, qty 1 × $110.00 gross). Download the CN PDF: line amount **$110.00**, totals rows read **"Total excluding tax" $100.00**, tax row **$10.00**, **"Credit Total" $110.00** — line amounts sum to Credit Total; no row claims to be a sum-of-lines "Subtotal" that doesn't match.
 - [ ] CN numbers are sequential per tenant (CN-…-0001, -0002). A failed number allocation FAILS the Create loudly; no CN with a timestamp-shaped number (CN-YYYYMM-…) is ever created.
 
+## FLOW TR-CXL: Trial cancellation (ADR-069)
+
+- [ ] Trialing sub → Cancel dialog first option reads **"At trial end"** with "won't be charged" copy; confirm → banner shows "at trial end (<trial_end date>)", GET returns `cancel_effective_at == trial_end_at`.
+- [ ] Advance the test clock past trial end → sub is **canceled**, `canceled_at == trial_end_at`, invoice list shows **NO invoice**, timeline shows one cancellation entry, webhook log shows one `subscription.canceled` (reason `trial_end_cancel`) and **zero** `subscription.trial_ended`.
+- [ ] Schedule the cancel, then **Undo** before trial end, advance the clock → sub ACTIVATES normally and bills period 1 (the rescind won).
+- [ ] Schedule, then **Extend trial** with an explicit cancel date pending → 409 "clear the scheduled cancel first"; with the flag-only schedule → extension succeeds and the banner's date moves to the new trial end.
+- [ ] "End trial now" is disabled (with reason) while a cancel is scheduled; via API → 409.
+- [ ] Explicit `cancel_at` strictly between trial end and period end → 400 naming both valid boundaries.
+- [ ] Immediately cancel a trialing sub whose trial just elapsed (scheduler hasn't activated it) → NO final invoice.
+
 ## FLOW C-ARCH: Archive semantics (ADR-067)
 
 - [ ] Customer with an ACTIVE subscription → Archive → 409 toast naming the subscription; customer stays active. Same for trialing and scheduled-cancel subs.

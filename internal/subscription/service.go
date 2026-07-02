@@ -1556,22 +1556,33 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 }
 
 // ScheduleCancelInput carries the soft-cancel intent. Exactly one of
-// AtPeriodEnd or CancelAt must be set on a single call. AtPeriodEnd defers
-// the cancel to current_billing_period_end; CancelAt is an explicit
-// timestamp the cycle scan compares against effectiveNow. The mutually-
-// exclusive split forces unambiguous caller intent — Stripe's update
-// endpoint accepts both fields together but the resulting precedence is
-// surprising; rejecting the combination here keeps the API obvious.
+// AtPeriodEnd or CancelAt must be set on a single call. AtPeriodEnd is
+// STATUS-POLYMORPHIC (ADR-069, Stripe semantics): on an ACTIVE sub it
+// defers the cancel to current_billing_period_end; on a TRIALING sub it
+// means cancel FREE at trial_end_at — the trial scans and the engine route
+// it through the dedicated no-invoice transition, and ExtendTrial moves it
+// with the trial (the reason it stays a flag rather than eagerly converting
+// to a pinned cancel_at). CancelAt is an explicit timestamp the cycle scan
+// compares against effectiveNow. The mutually-exclusive split forces
+// unambiguous caller intent — Stripe's update endpoint accepts both fields
+// together but the resulting precedence is surprising; rejecting the
+// combination here keeps the API obvious. The derived read-only
+// cancel_effective_at on the subscription answers "when does it actually
+// cancel" for consumers.
 type ScheduleCancelInput struct {
 	AtPeriodEnd bool       `json:"at_period_end,omitempty"`
 	CancelAt    *time.Time `json:"cancel_at,omitempty"`
 }
 
-// ScheduleCancel persists the soft-cancel intent. v1 only accepts
-// CancelAt values >= current_billing_period_end so the active period
-// bills normally and the cancel lands on a clean cycle boundary; the
-// shorten-current-period + proration variant is a follow-up that needs
-// the proration generator wired into the engine cancel path.
+// ScheduleCancel persists the soft-cancel intent. For ACTIVE subs,
+// CancelAt must be >= current_billing_period_end so the period bills
+// normally and the cancel lands on a clean cycle boundary (the
+// shorten-current-period + proration variant needs the proration generator
+// wired into the engine cancel path). For TRIALING subs (ADR-069), exactly
+// two CancelAt values are honorable: == trial_end_at (free cancel via the
+// trial-end guard) or >= current_billing_period_end (activate, bill period
+// 1, cancel at its close); the open interval between them is rejected —
+// no machinery honors it.
 //
 // Re-scheduling is idempotent: a second call with the same intent leaves
 // the row unchanged but for updated_at. Toggling between modes (e.g.

@@ -353,16 +353,20 @@ func (s *PostgresStore) CancelAtomicWithBill(ctx context.Context, tenantID, id s
 	return canceled, nil
 }
 
-// ScheduleCancellation persists the soft-cancel intent. Either field (or
-// both) may be set; the row stores them and the billing cycle scan applies
-// whichever boundary fires first. Returns the updated subscription with
-// hydrated items so the handler can echo the same shape it returns
-// elsewhere.
+// ScheduleCancellation persists the soft-cancel intent. The schedule fires
+// through TWO consumers (ADR-069): the billing cycle scan at period
+// boundaries for ACTIVE subs, and the trial-end guard/CancelAtTrialEnd for
+// TRIALING subs (a free, no-invoice cancel at trial_end_at). Returns the
+// updated subscription with hydrated items so the handler can echo the
+// same shape it returns elsewhere.
 //
-// The UPDATE is unconditional on status because callers can legitimately
-// schedule a cancel against a paused subscription (Stripe allows the same).
-// Only canceled/archived subs are rejected — there's nothing to schedule
-// once the sub has already terminated.
+// The UPDATE CAS-es on observedStatus — the status the caller validated the
+// intent under — because the flag's MEANING is status-polymorphic: landing
+// a "free at trial end" intent on a sub an activation writer just flipped
+// would silently turn it into a paid-period cancel. Status drift returns
+// InvalidState (409, re-read). Paused subs remain schedulable (Stripe
+// parity); canceled/archived are rejected — nothing to schedule once
+// terminated.
 func (s *PostgresStore) ScheduleCancellation(ctx context.Context, tenantID, id string, cancelAt *time.Time, cancelAtPeriodEnd bool, observedStatus domain.SubscriptionStatus) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
