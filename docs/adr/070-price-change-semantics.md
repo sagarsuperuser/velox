@@ -1,7 +1,7 @@
 # ADR-070: Price-change semantics — overrides follow rule_key, periods pin at open
 
-**Date:** 2026-07-02
-**Status:** Accepted (decisions locked Day 1 per the remediation plan; implementation = P4, last in the billing lane; designed by the P4 adversarial panel — 3 lenses, all SHIP-WITH-FIXES; consolidated protocol in plan §4.4)
+**Date:** 2026-07-02 (decisions locked Day 1); **amended 2026-07-03 at ship time** — §4 resolver mechanics and §Consequences updated to what shipped (implementation = migration 0128 + resolveRatedRule)
+**Status:** Accepted & shipped (designed by the P4 adversarial panel — 3 lenses, all SHIP-WITH-FIXES; consolidated protocol in plan §4.4)
 
 ## Context
 
@@ -47,11 +47,26 @@ Two product decisions gated P4 and P10:
    publishes were next-period but override edits stayed
    retroactive-at-close, the spend-cap coherence argument collapses (the
    threshold scan compares `capRunning` at old rates, close bills at new).
-4. **Resolver mechanics:** as-of resolution keys on an explicit
-   `effective_from` stamped via `clock.Now(ctx)` — `createRatingRuleTx`
-   stamps wall-clock today, which would resolve sim-time periods against
-   wall-clock publish stamps under test clocks (ADR-030) — and gates on
-   `lifecycle_state` (an archived or draft version must never be "latest").
+4. **Resolver mechanics (as shipped):** as-of resolution keys on
+   `created_at` — now stamped via `clock.Now(ctx)` instead of wall-clock
+   (no separate `effective_from` column; a version's creation IS its
+   effectivity, and versions are immutable). The resolver
+   (`GetRuleByKeyAsOf` / engine `resolveRatedRule`) picks the highest
+   ACTIVE version with `created_at <= periodStart`; archived/draft
+   versions never resolve. **A key born mid-period resolves to its
+   earliest active version** — a rule created after the period opened
+   has no prior price to preserve, and refusing to bill would block
+   every close for the common onboarding shape (meter + rule created
+   mid-month). Overrides get NO such fallback: an override absent at
+   period open means list price (a fine default exists). Overrides are
+   append-only effectivity rows — an upsert closes the prior row's
+   window (`deactivated_at`) and inserts a fresh one, so the in-flight
+   period keeps resolving the row it opened with. Test-clock caveat:
+   forward-advancing clocks (the Stripe shape — created at now, advanced
+   forward) resolve coherently because sim time runs ahead of the
+   wall-clock stamps; a clock frozen in the PAST would resolve
+   publishes made "during" the simulation as future — accepted, since
+   Velox clocks, like Stripe's, only advance forward from creation.
 5. **An override freezes PRICE, not rule semantics.** `ToRatingRule` is
    replaced by patch-the-resolved-rule: the resolved version's `ID`,
    `RuleKey`, `Currency`, `Name` survive; only pricing fields
@@ -76,13 +91,25 @@ Two product decisions gated P4 and P10:
 
 - P10's `customer_usage.go:401` slice implements override lookup by
   `rule_key` with the same as-of-period-start resolution, citing this ADR.
-- Recipe reinstall (`recipe/service.go:452`) allocates the next version in
-  SQL instead of hardcoding `Version:1`; version allocation generally moves
-  into SQL (`MAX(version)+1` with 23505 retry) so concurrent publishes stop
-  409ing spuriously.
-- Mid-period override deactivation (new DELETE endpoint) takes effect at the
-  next period open, same as every other rate change.
-- Full test matrix in plan §4.4 item 11 (detach regression both close paths,
-  preview==invoice parity across a publish, fire-then-publish-then-close
-  version agreement, zero-base all-override threshold fire, transient-error
-  loudness, migration collision collapse).
+- Version allocation moved into SQL (`MAX(version)+1` in the INSERT;
+  service retries the rare 23505) so concurrent publishes stop 409ing
+  spuriously.
+- **Recipe reinstall ADOPTS the existing graph by natural key** (rating
+  rules by `rule_key`, meters by key, plans by code) instead of
+  recreating or 409ing — Uninstall keeps the objects because the
+  operator owns them, so reinstall reconnects and never clobbers
+  post-uninstall operator edits (adopting also avoids a reinstall
+  silently REPRICING live subs, which version-bumping would). Residual:
+  a recipe-created webhook endpoint has no natural key and would
+  duplicate on reinstall — named backlog item.
+- Mid-period override deactivation (new DELETE endpoint) takes effect at
+  the next period open, same as every other rate change; the row is kept
+  with its window closed for audit and historical resolution.
+- Migration 0128 upgrade note: an override created mid-period under the
+  OLD semantics applied to that period's close; post-0128 it prices from
+  the next period open (its `created_at` postdates the period start).
+  Pre-launch, zero production tenants — accepted without backfill.
+- Full test matrix in plan §4.4 item 11, all mutation-verified 2026-07-03
+  (4 mutations killed: version-id override keying, latest-not-period-open
+  resolution, fabricated ApplyTo dropping Currency, restored error
+  swallow).

@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -56,17 +58,34 @@ func (s *PostgresStore) createRatingRuleTx(ctx context.Context, tx *sql.Tx, tena
 		return domain.RatingRuleVersion{}, fmt.Errorf("marshal graduated_tiers: %w", err)
 	}
 
+	// Version allocated IN SQL: MAX(version)+1 per (tenant, rule_key)
+	// under the same statement as the insert. The previous Go-side
+	// list-max let two concurrent publishes read the same max and the
+	// loser 409 spuriously; it also let the recipe path hardcode
+	// Version:1, which made reinstall-after-uninstall a guaranteed
+	// unique violation (ADR-070). The caller's Version field is
+	// ignored. A concurrent racer can still collide on the unique
+	// (tenant, rule_key, version) — service-level CreateRatingRule
+	// retries; tx composers (recipe) surface the rare conflict.
+	//
+	// created_at via clock.Now(ctx) (was wall-clock time.Now): as-of
+	// resolution compares period starts against these stamps, so they
+	// must honor any ctx-bound effective-now the same way every other
+	// time-anchored write does (ADR-030).
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO rating_rule_versions (id, tenant_id, rule_key, name, version, lifecycle_state, mode,
 			currency, flat_amount_cents, graduated_tiers, package_size, package_amount_cents,
 			overage_unit_amount_cents, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		SELECT $1, $2, $3, $4,
+			COALESCE(MAX(version), 0) + 1,
+			$5, $6, $7, $8, $9, $10, $11, $12, $13
+		FROM rating_rule_versions WHERE tenant_id = $2 AND rule_key = $3
 		RETURNING id, tenant_id, rule_key, name, version, lifecycle_state, mode, currency,
 			flat_amount_cents, graduated_tiers, package_size, package_amount_cents,
 			overage_unit_amount_cents, created_at
-	`, id, tenantID, rule.RuleKey, rule.Name, rule.Version, rule.LifecycleState, rule.Mode,
+	`, id, tenantID, rule.RuleKey, rule.Name, rule.LifecycleState, rule.Mode,
 		rule.Currency, rule.FlatAmountCents, tiersJSON, rule.PackageSize,
-		rule.PackageAmountCents, rule.OverageUnitAmountCents, time.Now().UTC(),
+		rule.PackageAmountCents, rule.OverageUnitAmountCents, clock.Now(ctx),
 	).Scan(
 		&rule.ID, &rule.TenantID, &rule.RuleKey, &rule.Name, &rule.Version,
 		&rule.LifecycleState, &rule.Mode, &rule.Currency, &rule.FlatAmountCents,
@@ -75,7 +94,7 @@ func (s *PostgresStore) createRatingRuleTx(ctx context.Context, tx *sql.Tx, tena
 	)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
-			return domain.RatingRuleVersion{}, errs.AlreadyExists("rule_key", fmt.Sprintf("rule_key %q version %d already exists", rule.RuleKey, rule.Version))
+			return domain.RatingRuleVersion{}, errs.AlreadyExists("rule_key", fmt.Sprintf("rule_key %q: concurrent version publish, retry", rule.RuleKey))
 		}
 		return domain.RatingRuleVersion{}, err
 	}
@@ -84,6 +103,44 @@ func (s *PostgresStore) createRatingRuleTx(ctx context.Context, tx *sql.Tx, tena
 		return domain.RatingRuleVersion{}, err
 	}
 	return rule, nil
+}
+
+// GetRuleByKeyAsOf resolves the rating-rule version in force at asOf
+// (ADR-070 pin-at-period-start): the highest active version whose
+// created_at <= asOf. A key born AFTER asOf (rule created mid-period —
+// there is no prior price to preserve) resolves to its earliest active
+// version. Archived/draft versions never resolve. errs.ErrNotFound when
+// the key has no active versions.
+func (s *PostgresStore) GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.RatingRuleVersion{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	rule, err := scanRatingRule(tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, rule_key, name, version, lifecycle_state, mode, currency,
+			flat_amount_cents, graduated_tiers, package_size, package_amount_cents,
+			overage_unit_amount_cents, created_at
+		FROM rating_rule_versions
+		WHERE rule_key = $1 AND lifecycle_state = 'active' AND created_at <= $2
+		ORDER BY version DESC LIMIT 1
+	`, ruleKey, asOf))
+	if err == nil {
+		return rule, nil
+	}
+	if !errors.Is(err, errs.ErrNotFound) {
+		return domain.RatingRuleVersion{}, err
+	}
+	// Key born after asOf: earliest active version.
+	return scanRatingRule(tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, rule_key, name, version, lifecycle_state, mode, currency,
+			flat_amount_cents, graduated_tiers, package_size, package_amount_cents,
+			overage_unit_amount_cents, created_at
+		FROM rating_rule_versions
+		WHERE rule_key = $1 AND lifecycle_state = 'active'
+		ORDER BY version ASC LIMIT 1
+	`, ruleKey))
 }
 
 func (s *PostgresStore) GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error) {

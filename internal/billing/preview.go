@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 // PreviewLine is one line of an invoice preview. Mirrors the line shape the
@@ -173,15 +175,23 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 	// AggregateByPricingRules is the canonical pricing identity — the
 	// cycle scan calls the same path, so a multi-dim tenant's preview
 	// matches what its actual invoice will be.
+	//
+	// A previewMeter ERROR aborts the whole preview (ADR-070,
+	// no-silent-fallbacks). Config-shaped soft cases (no rule binding,
+	// rule not found, rating failure) already surface as warnings from
+	// INSIDE previewMeter; what reaches this err is infrastructure
+	// failure (store errors, transient resolution failures), and a
+	// partial preview built from those is a lie — worse, the threshold
+	// scan PERSISTS these lines as a fire invoice, and a silently
+	// dropped meter's pre-fire usage would then be billed by nobody:
+	// the cycle close clamps every meter's window to the fire
+	// watermark, deferral only exists for non-additive buckets. The
+	// pre-ADR-070 warning-degradation here defeated previewMeter's own
+	// fail-loud contract for exactly the money path it matters on.
 	for _, meterID := range allMeterIDs {
 		meterLines, warnings, err := e.previewMeter(ctx, sub.TenantID, sub.CustomerID, meterID, periodStart, periodEnd)
 		if err != nil {
-			// Soft-fail: a missing meter / rule shouldn't abort the
-			// whole preview. Surface as a warning and continue —
-			// matches the existing behaviour of the legacy preview
-			// path which silently skipped on errors here.
-			result.Warnings = append(result.Warnings, fmt.Sprintf("meter %q: %s", meterID, err.Error()))
-			continue
+			return PreviewResult{}, fmt.Errorf("preview meter %q: %w", meterID, err)
 		}
 		result.Lines = append(result.Lines, meterLines...)
 		result.Warnings = append(result.Warnings, warnings...)
@@ -235,19 +245,23 @@ func (e *Engine) previewMeter(ctx context.Context, tenantID, customerID, meterID
 			continue
 		}
 
-		ratingRule, err := e.pricing.GetRatingRule(ctx, tenantID, ratingRuleID)
+		// Same resolution rule as the cycle scan and cancel finalize
+		// (resolveRatedRule; ADR-070 pin-at-period-start): version and
+		// override in force at the window open — `from` IS the period
+		// start for both callers (operator preview and the threshold
+		// scan, which persists these lines as a real invoice). This is
+		// what makes preview == invoice hold across a mid-period
+		// publish, and a threshold fire agree with the later close.
+		ratingRule, err := e.resolveRatedRule(ctx, tenantID, customerID, ratingRuleID, from)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("meter %q rule %q: rating rule not found", meter.Key, ratingRuleID))
-			continue
-		}
-
-		// Honour customer price overrides — same precedent as the cycle
-		// scan and the existing Preview path. An override returns a
-		// patched RatingRuleVersion with the override's tier table /
-		// flat amount in place. e.pricing.GetOverride returns an error
-		// when no override exists; we silently fall through.
-		if override, overrideErr := e.pricing.GetOverride(ctx, tenantID, customerID, ratingRuleID); overrideErr == nil && override.Active {
-			ratingRule = override.ToRatingRule()
+			if errors.Is(err, errs.ErrNotFound) {
+				warnings = append(warnings, fmt.Sprintf("meter %q rule %q: rating rule not found", meter.Key, ratingRuleID))
+				continue
+			}
+			// Transient failure: abort rather than degrade — a
+			// threshold fire built from this preview would silently
+			// misprice (e.g. list price for a negotiated customer).
+			return nil, nil, fmt.Errorf("resolve pricing for meter %q rule %q: %w", meter.Key, ratingRuleID, err)
 		}
 
 		amount, err := domain.ComputeAmountCents(ratingRule, agg.Quantity)

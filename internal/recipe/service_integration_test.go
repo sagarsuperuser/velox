@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/dunning"
@@ -198,6 +199,15 @@ func (f *failingPricingWriter) UpsertMeterPricingRuleTx(ctx context.Context, tx 
 	}
 	return f.inner.UpsertMeterPricingRuleTx(ctx, tx, tenantID, rule)
 }
+func (f *failingPricingWriter) GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	return f.inner.GetRuleByKeyAsOf(ctx, tenantID, ruleKey, asOf)
+}
+func (f *failingPricingWriter) GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error) {
+	return f.inner.GetMeterByKey(ctx, tenantID, key)
+}
+func (f *failingPricingWriter) ListPlans(ctx context.Context, tenantID string) ([]domain.Plan, error) {
+	return f.inner.ListPlans(ctx, tenantID)
+}
 
 // TestService_Instantiate_AtomicityRollback fails partway through the
 // graph build and verifies zero rows survive — the contract is "fully
@@ -331,5 +341,51 @@ func TestService_Uninstall_RemovesInstanceOnly(t *testing.T) {
 	// anthropic_style v2 (ADR-044): 4 models × 5 token roles = 20 rating rules.
 	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 20 {
 		t.Errorf("rating_rule_versions after Uninstall: got %d, want 20 (resources persist)", n)
+	}
+}
+
+// TestService_ReinstallAfterUninstall_AdoptsExistingGraph: Uninstall
+// keeps the created objects (the operator owns them), so reinstall must
+// RECONNECT to them by natural key — pre-ADR-070 it 409ed on the first
+// hardcoded-Version:1 rating rule ("the operator is told they own the
+// objects, then punished for owning them"). Adoption never duplicates:
+// object counts stay flat across the round trip.
+func TestService_ReinstallAfterUninstall_AdoptsExistingGraph(t *testing.T) {
+	f := newRecipeFixture(t)
+	tenantID := testutil.CreateTestTenant(t, f.db, "reinstall adopt")
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	first, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
+	if err != nil {
+		t.Fatalf("first Instantiate: %v", err)
+	}
+	rulesAfterFirst := countRows(t, f.db, tenantID, "rating_rule_versions")
+	metersAfterFirst := countRows(t, f.db, tenantID, "meters")
+	plansAfterFirst := countRows(t, f.db, tenantID, "plans")
+
+	if err := f.svc.Uninstall(ctx, tenantID, first.ID); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+
+	second, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
+	if err != nil {
+		t.Fatalf("reinstall after uninstall: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Error("reinstall returned the deleted instance id")
+	}
+
+	// Adoption, not duplication: the graph is reused, not rebuilt.
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != rulesAfterFirst {
+		t.Errorf("rating_rule_versions after reinstall: got %d, want %d (adopted, not republished)", n, rulesAfterFirst)
+	}
+	if n := countRows(t, f.db, tenantID, "meters"); n != metersAfterFirst {
+		t.Errorf("meters after reinstall: got %d, want %d", n, metersAfterFirst)
+	}
+	if n := countRows(t, f.db, tenantID, "plans"); n != plansAfterFirst {
+		t.Errorf("plans after reinstall: got %d, want %d", n, plansAfterFirst)
+	}
+	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
+		t.Errorf("recipe_instances after reinstall: got %d, want 1", n)
 	}
 }

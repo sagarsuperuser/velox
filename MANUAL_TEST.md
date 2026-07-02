@@ -717,6 +717,11 @@ whole cents — only the RATE gains precision.
 
 - [ ] POST /v1/price-overrides → that customer's invoice uses override price.
 - [ ] Other customers → default rule price.
+- [ ] **Override survives a rule publish (ADR-070)** — create a new version of the overridden rule (same `rule_key`), close the cycle → the invoice still bills the override price, not the new version's list price.
+- [ ] **Rate changes price from the NEXT period** — a version published (or an override created/edited) mid-period does not change the in-flight period's invoice; the following period bills the new rate.
+- [ ] **DELETE /v1/price-overrides/{id}** → the customer returns to list price from the next period; the in-flight period still bills the override. A second DELETE → 404.
+- [ ] **Malformed tiers are rejected at creation** — a graduated rule (or override) with non-increasing `up_to`, or without a final catch-all (`up_to=0`) tier → 422 naming the tier, instead of an invoice failure at cycle close.
+- [ ] **Currency change is blocked while overrides exist** — publishing a version with a different currency while any customer's active override references the rule → 409 naming the override count.
 
 ## FLOW B10: Manual tax + customer tax status
 

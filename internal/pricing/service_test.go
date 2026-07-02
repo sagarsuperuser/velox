@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -16,6 +17,7 @@ type memStore struct {
 	meters     map[string]domain.Meter
 	plans      map[string]domain.Plan
 	meterRules map[string]domain.MeterPricingRule
+	overrides  map[string]domain.CustomerPriceOverride
 }
 
 func newMemStore() *memStore {
@@ -28,15 +30,50 @@ func newMemStore() *memStore {
 }
 
 func (m *memStore) CreateRatingRule(_ context.Context, tenantID string, r domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
+	// Mirror the store's SQL allocation: version = MAX+1 per (tenant,
+	// rule_key); the caller's Version field is ignored.
+	next := 1
 	for _, existing := range m.rules {
-		if existing.TenantID == tenantID && existing.RuleKey == r.RuleKey && existing.Version == r.Version {
-			return domain.RatingRuleVersion{}, fmt.Errorf("%w: rule_key %q version %d", errs.ErrAlreadyExists, r.RuleKey, r.Version)
+		if existing.TenantID == tenantID && existing.RuleKey == r.RuleKey && existing.Version >= next {
+			next = existing.Version + 1
 		}
 	}
+	r.Version = next
 	r.ID = fmt.Sprintf("vlx_rrv_%d", len(m.rules)+1)
 	r.TenantID = tenantID
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now().UTC()
+	}
 	m.rules[r.ID] = r
 	return r, nil
+}
+
+// GetRuleByKeyAsOf mirrors PostgresStore's ADR-070 resolution: highest
+// active version created at or before asOf, else the key's earliest
+// active version (key born mid-period).
+func (m *memStore) GetRuleByKeyAsOf(_ context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	var best, earliest domain.RatingRuleVersion
+	foundBest, foundAny := false, false
+	for _, r := range m.rules {
+		if r.TenantID != tenantID || r.RuleKey != ruleKey || r.LifecycleState != domain.RatingRuleActive {
+			continue
+		}
+		if !foundAny || r.Version < earliest.Version {
+			earliest = r
+			foundAny = true
+		}
+		if !r.CreatedAt.After(asOf) && (!foundBest || r.Version > best.Version) {
+			best = r
+			foundBest = true
+		}
+	}
+	if foundBest {
+		return best, nil
+	}
+	if foundAny {
+		return earliest, nil
+	}
+	return domain.RatingRuleVersion{}, errs.ErrNotFound
 }
 
 func (m *memStore) GetRatingRule(_ context.Context, tenantID, id string) (domain.RatingRuleVersion, error) {
@@ -152,14 +189,51 @@ func (m *memStore) UpdatePlan(_ context.Context, tenantID string, p domain.Plan)
 }
 
 func (m *memStore) CreateOverride(_ context.Context, tenantID string, o domain.CustomerPriceOverride) (domain.CustomerPriceOverride, error) {
-	o.ID = fmt.Sprintf("vlx_cpo_%d", len(m.rules)+1)
+	if m.overrides == nil {
+		m.overrides = make(map[string]domain.CustomerPriceOverride)
+	}
+	// Mirror the append-only store: close the prior active row's window,
+	// insert a fresh active row.
+	for id, existing := range m.overrides {
+		if existing.TenantID == tenantID && existing.CustomerID == o.CustomerID && existing.RuleKey == o.RuleKey && existing.Active {
+			existing.Active = false
+			m.overrides[id] = existing
+		}
+	}
+	o.ID = fmt.Sprintf("vlx_cpo_%d", len(m.overrides)+1)
 	o.TenantID = tenantID
 	o.Active = true
+	m.overrides[o.ID] = o
 	return o, nil
 }
 
-func (m *memStore) GetOverride(_ context.Context, _, _, _ string) (domain.CustomerPriceOverride, error) {
+func (m *memStore) GetOverrideByKeyAsOf(_ context.Context, tenantID, customerID, ruleKey string, _ time.Time) (domain.CustomerPriceOverride, error) {
+	for _, o := range m.overrides {
+		if o.TenantID == tenantID && o.CustomerID == customerID && o.RuleKey == ruleKey && o.Active {
+			return o, nil
+		}
+	}
 	return domain.CustomerPriceOverride{}, errs.ErrNotFound
+}
+
+func (m *memStore) DeactivateOverride(_ context.Context, tenantID, id string) error {
+	o, ok := m.overrides[id]
+	if !ok || o.TenantID != tenantID || !o.Active {
+		return errs.ErrNotFound
+	}
+	o.Active = false
+	m.overrides[id] = o
+	return nil
+}
+
+func (m *memStore) CountActiveOverridesByRuleKey(_ context.Context, tenantID, ruleKey string) (int, error) {
+	n := 0
+	for _, o := range m.overrides {
+		if o.TenantID == tenantID && o.RuleKey == ruleKey && o.Active {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *memStore) ListOverrides(_ context.Context, _, _ string) ([]domain.CustomerPriceOverride, error) {
@@ -835,5 +909,156 @@ func TestUpsertMeterPricingRule_IsIdempotent(t *testing.T) {
 	}
 	if second.Priority != 50 {
 		t.Errorf("priority not updated: got %d want 50", second.Priority)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P4 (ADR-070) authoring guards
+// ---------------------------------------------------------------------------
+
+func TestCreateRatingRule_TierShapeValidation(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	mk := func(tiers []domain.RatingTier) CreateRatingRuleInput {
+		return CreateRatingRuleInput{
+			RuleKey: "tiered", Name: "Tiered", Mode: domain.PricingGraduated,
+			Currency: "USD", GraduatedTiers: tiers,
+		}
+	}
+	unit := decimal.NewFromInt(10)
+
+	// Non-monotonic up_to: accepted pre-ADR-070 (the qty=1 probe never
+	// reached tier 2), then hard-failed billOnePeriod at cycle close.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit}, {UpTo: 50, UnitAmountCents: unit}, {UpTo: 0, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("non-monotonic up_to accepted; want 422")
+	}
+	// Catch-all not last: dead tiers after it.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 0, UnitAmountCents: unit}, {UpTo: 100, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("mid-table catch-all accepted; want 422")
+	}
+	// Bounded final tier: quantity past the bound is unpriceable and
+	// blocks invoice generation.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit},
+	})); err == nil {
+		t.Error("bounded final tier accepted; want 422 (requires a catch-all)")
+	}
+	// Valid shape.
+	if _, err := svc.CreateRatingRule(ctx, "t1", mk([]domain.RatingTier{
+		{UpTo: 100, UnitAmountCents: unit}, {UpTo: 0, UnitAmountCents: decimal.NewFromInt(5)},
+	})); err != nil {
+		t.Errorf("valid tier table rejected: %v", err)
+	}
+}
+
+func TestCreateRatingRule_CurrencyGuardWithActiveOverrides(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	v1, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU", Mode: domain.PricingFlat,
+		Currency: "usd", FlatAmountCents: decimal.NewFromInt(100),
+	})
+	if err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(80),
+	}); err != nil {
+		t.Fatalf("create override: %v", err)
+	}
+
+	// Currency change while an override references the key: the
+	// override's bare cents would be silently reinterpreted in EUR.
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU EUR", Mode: domain.PricingFlat,
+		Currency: "EUR", FlatAmountCents: decimal.NewFromInt(100),
+	}); err == nil {
+		t.Error("currency change with active override accepted; want 409")
+	}
+	// Same currency: publishes fine (version 2).
+	v2, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "gpu", Name: "GPU v2", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(120),
+	})
+	if err != nil {
+		t.Fatalf("same-currency publish: %v", err)
+	}
+	if v2.Version != 2 {
+		t.Errorf("v2 version: got %d, want 2", v2.Version)
+	}
+	// Without overrides a currency change is allowed: new key, no override.
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "cpu", Name: "CPU", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(10),
+	}); err != nil {
+		t.Fatalf("create cpu v1: %v", err)
+	}
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "cpu", Name: "CPU EUR", Mode: domain.PricingFlat,
+		Currency: "EUR", FlatAmountCents: decimal.NewFromInt(10),
+	}); err != nil {
+		t.Errorf("currency change WITHOUT overrides rejected: %v (should be allowed — periods pin their version)", err)
+	}
+}
+
+func TestCreateOverride_ResolvesRuleInTenant(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	// Unknown / cross-tenant version id: clean 422, not a raw FK error.
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: "vlx_rrv_nope",
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	}); err == nil {
+		t.Error("override against unknown rule accepted; want 422")
+	}
+
+	v1, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "tokens", Name: "Tokens", Mode: domain.PricingFlat,
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
+	})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	// Another tenant's id must not resolve (RLS scoping modelled by the
+	// fake's tenant check).
+	if _, err := svc.CreateOverride(ctx, "t2", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	}); err == nil {
+		t.Error("cross-tenant rule id accepted; want 422")
+	}
+
+	// Malformed override tiers rejected with the same authoring rules.
+	if _, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingGraduated,
+		GraduatedTiers: []domain.RatingTier{
+			{UpTo: 100, UnitAmountCents: decimal.NewFromInt(10)},
+			{UpTo: 50, UnitAmountCents: decimal.NewFromInt(5)},
+		},
+	}); err == nil {
+		t.Error("non-monotonic override tiers accepted; want 422")
+	}
+
+	// Valid: derives rule_key from the referenced version.
+	o, err := svc.CreateOverride(ctx, "t1", CreateOverrideInput{
+		CustomerID: "cus_1", RatingRuleVersionID: v1.ID,
+		Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5),
+	})
+	if err != nil {
+		t.Fatalf("create override: %v", err)
+	}
+	if o.RuleKey != "tokens" {
+		t.Errorf("override rule_key: got %q, want tokens", o.RuleKey)
 	}
 }

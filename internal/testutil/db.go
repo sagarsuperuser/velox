@@ -189,3 +189,14 @@ func dropAllTables(t *testing.T, pool *sql.DB) {
 		t.Fatalf("drop public tables: %v", err)
 	}
 }
+
+// AdminPool opens the owner-role connection — the same role that runs
+// migrations. For tests that must perform DDL, e.g. replaying a shipped
+// migration's data transform against a seeded pre-migration shape
+// (the app role can't drop/recreate indexes it doesn't own).
+func AdminPool(t *testing.T) *sql.DB {
+	t.Helper()
+	pool := openPool(t, envOr("TEST_ADMIN_DATABASE_URL", defaultAdminDBURL))
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
+}

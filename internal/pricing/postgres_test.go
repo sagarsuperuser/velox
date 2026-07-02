@@ -73,14 +73,19 @@ func TestPostgresStore_RatingRules(t *testing.T) {
 		t.Errorf("list count: got %d, want 2", len(all))
 	}
 
-	// Unique constraint
-	_, err = store.CreateRatingRule(ctx, tenantID, domain.RatingRuleVersion{
+	// Version allocation happens in SQL (ADR-070): re-creating an
+	// existing key ignores the caller's Version and lands as the key's
+	// next version — a publish, never a unique violation.
+	dup, err := store.CreateRatingRule(ctx, tenantID, domain.RatingRuleVersion{
 		RuleKey: "api_calls", Name: "Dup", Version: 1,
 		LifecycleState: domain.RatingRuleDraft, Mode: domain.PricingFlat,
-		Currency: "USD",
+		Currency: "USD", FlatAmountCents: decimal.NewFromInt(10),
 	})
-	if err == nil {
-		t.Fatal("expected unique violation for duplicate rule_key+version")
+	if err != nil {
+		t.Fatalf("re-create existing key: %v", err)
+	}
+	if dup.Version != 2 {
+		t.Errorf("re-created key version: got %d, want 2 (SQL MAX+1, caller's Version ignored)", dup.Version)
 	}
 }
 

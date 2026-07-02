@@ -3,9 +3,11 @@ package pricing
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -68,28 +70,42 @@ func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input C
 		return domain.RatingRuleVersion{}, err
 	}
 
-	// Determine next version number
+	currency := strings.ToUpper(input.Currency)
+
+	// Currency guard (ADR-070): overrides follow the rule_key across
+	// version publishes and carry bare integer cents with no currency
+	// of their own — a publish that changes the key's currency would
+	// silently reinterpret every referencing override's amounts in the
+	// new currency ($8.00 becomes €8.00). Reject while any active
+	// override references the key; without overrides the change is
+	// safe (each period resolves its pinned version, and invoice lines
+	// carry their own currency).
 	existing, err := s.store.ListRatingRules(ctx, RatingRuleFilter{
-		TenantID: tenantID,
-		RuleKey:  input.RuleKey,
+		TenantID:   tenantID,
+		RuleKey:    input.RuleKey,
+		LatestOnly: true,
 	})
 	if err != nil {
 		return domain.RatingRuleVersion{}, err
 	}
-	nextVersion := 1
-	for _, r := range existing {
-		if r.Version >= nextVersion {
-			nextVersion = r.Version + 1
+	if len(existing) > 0 && existing[0].Currency != currency {
+		n, err := s.store.CountActiveOverridesByRuleKey(ctx, tenantID, input.RuleKey)
+		if err != nil {
+			return domain.RatingRuleVersion{}, fmt.Errorf("check overrides for currency guard: %w", err)
+		}
+		if n > 0 {
+			return domain.RatingRuleVersion{}, errs.InvalidState(fmt.Sprintf(
+				"cannot change currency from %s to %s: %d active customer price override(s) reference rule %q and would be silently repriced in the new currency — remove the overrides first",
+				existing[0].Currency, currency, n, input.RuleKey))
 		}
 	}
 
 	rule := domain.RatingRuleVersion{
 		RuleKey:                input.RuleKey,
 		Name:                   input.Name,
-		Version:                nextVersion,
 		LifecycleState:         domain.RatingRuleActive,
 		Mode:                   input.Mode,
-		Currency:               strings.ToUpper(input.Currency),
+		Currency:               currency,
 		FlatAmountCents:        input.FlatAmountCents,
 		GraduatedTiers:         input.GraduatedTiers,
 		PackageSize:            input.PackageSize,
@@ -97,32 +113,36 @@ func (s *Service) CreateRatingRule(ctx context.Context, tenantID string, input C
 		OverageUnitAmountCents: input.OverageUnitAmountCents,
 	}
 
-	// Validate the pricing config by computing a test amount
+	// Validate the pricing config by computing a test amount (shape
+	// errors beyond qty=1's reach are caught by validateRatingRuleInput).
 	if _, err := domain.ComputeAmountCents(rule, decimal.NewFromInt(1)); err != nil {
 		return domain.RatingRuleVersion{}, errs.Invalid("pricing", fmt.Sprintf("invalid pricing configuration: %v", err))
 	}
 
-	return s.store.CreateRatingRule(ctx, tenantID, rule)
+	// The store allocates the version in SQL (MAX+1). Two publishes
+	// racing the same key can still collide on the unique index — the
+	// loser retries with a freshly-allocated number instead of
+	// surfacing a spurious 409.
+	var created domain.RatingRuleVersion
+	var createErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		created, createErr = s.store.CreateRatingRule(ctx, tenantID, rule)
+		if createErr == nil || !errors.Is(createErr, errs.ErrAlreadyExists) {
+			return created, createErr
+		}
+	}
+	return domain.RatingRuleVersion{}, createErr
 }
 
 func (s *Service) GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error) {
 	return s.store.GetRatingRule(ctx, tenantID, id)
 }
 
-// GetLatestRuleByKey returns the latest version of a rating rule by its key.
-func (s *Service) GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error) {
-	rules, err := s.store.ListRatingRules(ctx, RatingRuleFilter{
-		TenantID:   tenantID,
-		RuleKey:    ruleKey,
-		LatestOnly: true,
-	})
-	if err != nil {
-		return domain.RatingRuleVersion{}, err
-	}
-	if len(rules) == 0 {
-		return domain.RatingRuleVersion{}, fmt.Errorf("no rating rule found for key %q", ruleKey)
-	}
-	return rules[0], nil
+// GetRuleByKeyAsOf resolves the version in force at asOf — the single
+// version-resolution rule every rating path shares (cycle close, cancel
+// finalize, threshold fire, preview; ADR-070 pin-at-period-start).
+func (s *Service) GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	return s.store.GetRuleByKeyAsOf(ctx, tenantID, ruleKey, asOf)
 }
 
 func (s *Service) ListRatingRules(ctx context.Context, filter RatingRuleFilter) ([]domain.RatingRuleVersion, error) {
@@ -149,25 +169,55 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 		return err
 	}
 
-	switch input.Mode {
+	return validatePricingShape(input.Mode, input.FlatAmountCents, input.GraduatedTiers, input.PackageSize, input.PackageAmountCents)
+}
+
+// validatePricingShape enforces the FULL pricing contract at authoring
+// time — shared by rating-rule creation and customer overrides. The
+// tier rules mirror ComputeAmountCents' rating-time checks exactly
+// (domain/pricing.go): the old validation probed ComputeAmountCents at
+// qty=1, which breaks out of the tier loop before reaching tier 2, so
+// a non-monotonic table ([{up_to:100},{up_to:50}]) or one without a
+// catch-all passed authoring and then hard-failed billOnePeriod at the
+// first cycle close whose quantity crossed tier 1 — blocking the sub's
+// invoice every tick.
+func validatePricingShape(mode domain.PricingMode, flat decimal.Decimal, tiers []domain.RatingTier, pkgSize, pkgAmount int64) error {
+	switch mode {
 	case domain.PricingFlat:
-		if !input.FlatAmountCents.IsPositive() {
+		if !flat.IsPositive() {
 			return errs.Invalid("flat_amount_cents", "unit price must be greater than 0")
 		}
 	case domain.PricingGraduated:
-		if len(input.GraduatedTiers) == 0 {
+		if len(tiers) == 0 {
 			return errs.Invalid("graduated_tiers", "at least one pricing tier is required")
 		}
-		for i, tier := range input.GraduatedTiers {
+		lastUpper := int64(0)
+		for i, tier := range tiers {
 			if !tier.UnitAmountCents.IsPositive() {
 				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: unit price must be greater than 0", i+1))
 			}
+			if tier.UpTo < 0 {
+				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: up_to must be positive, or 0 for the final catch-all tier", i+1))
+			}
+			if tier.UpTo == 0 {
+				if i != len(tiers)-1 {
+					return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: a catch-all tier (up_to=0) must be the last tier — tiers after it would never price anything", i+1))
+				}
+				continue
+			}
+			if tier.UpTo <= lastUpper {
+				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: up_to (%d) must be strictly greater than the previous tier's up_to (%d)", i+1, tier.UpTo, lastUpper))
+			}
+			lastUpper = tier.UpTo
+		}
+		if tiers[len(tiers)-1].UpTo != 0 {
+			return errs.Invalid("graduated_tiers", "the final tier must be a catch-all (up_to=0): a bounded last tier makes any usage beyond it unpriceable and blocks invoice generation at cycle close — use usage caps to limit consumption instead")
 		}
 	case domain.PricingPackage:
-		if input.PackageSize <= 0 {
+		if pkgSize <= 0 {
 			return errs.Invalid("package_size", "package size must be greater than 0")
 		}
-		if input.PackageAmountCents <= 0 {
+		if pkgAmount <= 0 {
 			return errs.Invalid("package_amount_cents", "package price must be greater than 0")
 		}
 	default:

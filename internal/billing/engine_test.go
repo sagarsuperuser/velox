@@ -615,7 +615,11 @@ type mockPricing struct {
 	plans     map[string]domain.Plan
 	meters    map[string]domain.Meter
 	rules     map[string]domain.RatingRuleVersion
-	overrides map[string]domain.CustomerPriceOverride // key: customerID+ruleID
+	overrides map[string]domain.CustomerPriceOverride // key: customerID+":"+ruleKey
+	// overrideErr, when set, is returned by GetOverrideByKeyAsOf —
+	// drives the fail-loud regression (a transient override-lookup
+	// failure must ABORT the close, never bill list price; ADR-070).
+	overrideErr error
 	// meterPricingRules drives the multi-dim fork (ADR-044): meters with
 	// entries here take the AggregateByPricingRules path. Keyed by meterID;
 	// nil/missing keeps the meter on the legacy single-rule path.
@@ -646,31 +650,45 @@ func (m *mockPricing) GetRatingRule(_ context.Context, _, id string) (domain.Rat
 	return r, nil
 }
 
-func (m *mockPricing) GetLatestRuleByKey(_ context.Context, _, ruleKey string) (domain.RatingRuleVersion, error) {
-	// Return the latest version with matching key
-	var latest domain.RatingRuleVersion
-	found := false
+// GetRuleByKeyAsOf mirrors the store's ADR-070 resolution: highest
+// active version created at or before asOf; a key born after asOf
+// resolves to its earliest active version. Mock rules usually leave
+// CreatedAt zero, which sorts before any asOf — i.e. "always in force".
+func (m *mockPricing) GetRuleByKeyAsOf(_ context.Context, _, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error) {
+	var best, earliest domain.RatingRuleVersion
+	foundBest, foundAny := false, false
 	for _, r := range m.rules {
-		if r.RuleKey == ruleKey {
-			if !found || r.Version > latest.Version {
-				latest = r
-				found = true
-			}
+		if r.RuleKey != ruleKey {
+			continue
+		}
+		if r.LifecycleState != "" && r.LifecycleState != domain.RatingRuleActive {
+			continue
+		}
+		if !foundAny || r.Version < earliest.Version {
+			earliest = r
+			foundAny = true
+		}
+		if !r.CreatedAt.After(asOf) && (!foundBest || r.Version > best.Version) {
+			best = r
+			foundBest = true
 		}
 	}
-	if !found {
-		return domain.RatingRuleVersion{}, fmt.Errorf("rule not found for key %s", ruleKey)
+	if foundBest {
+		return best, nil
 	}
-	return latest, nil
+	if foundAny {
+		return earliest, nil
+	}
+	return domain.RatingRuleVersion{}, errs.ErrNotFound
 }
 
-func (m *mockPricing) GetOverride(_ context.Context, _, customerID, ruleID string) (domain.CustomerPriceOverride, error) {
-	if m.overrides == nil {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
+func (m *mockPricing) GetOverrideByKeyAsOf(_ context.Context, _, customerID, ruleKey string, asOf time.Time) (domain.CustomerPriceOverride, error) {
+	if m.overrideErr != nil {
+		return domain.CustomerPriceOverride{}, m.overrideErr
 	}
-	o, ok := m.overrides[customerID+":"+ruleID]
-	if !ok {
-		return domain.CustomerPriceOverride{}, fmt.Errorf("not found")
+	o, ok := m.overrides[customerID+":"+ruleKey]
+	if !ok || o.CreatedAt.After(asOf) {
+		return domain.CustomerPriceOverride{}, errs.ErrNotFound
 	}
 	return o, nil
 }
@@ -1627,13 +1645,76 @@ func TestRunCycle_LineItemDetails(t *testing.T) {
 	}
 }
 
+// TestRunCycle_OverrideLookupTransientError_Aborts (ADR-070,
+// no-silent-fallbacks): a transient failure resolving the customer's
+// override must ABORT the close — pre-fix any error was treated as
+// "no override" and a DB blip silently billed a negotiated customer at
+// list price on a committed, finalized invoice.
+//
+// Mutation-verify: restore the `overrideErr == nil &&` swallow in
+// resolveRatedRule — this test fails (an invoice is generated).
+func TestRunCycle_OverrideLookupTransientError_Aborts(t *testing.T) {
+	engine, _, _, pricing, invoices := setupEngine()
+	pricing.overrideErr = fmt.Errorf("connection reset by peer")
+
+	count, errs := engine.RunCycle(context.Background(), 50)
+	if len(errs) == 0 {
+		t.Fatal("close succeeded despite override-lookup failure; want abort")
+	}
+	if count != 0 || len(invoices.invoices) != 0 {
+		t.Fatalf("invoices generated on a failed override lookup: count=%d stored=%d — silently billed list price", count, len(invoices.invoices))
+	}
+
+	// Recovery: the same sub bills normally once the lookup heals.
+	pricing.overrideErr = nil
+	count, errs = engine.RunCycle(context.Background(), 50)
+	if len(errs) > 0 {
+		t.Fatalf("healed close errors: %v", errs)
+	}
+	if count != 1 {
+		t.Fatalf("healed close generated %d invoices, want 1", count)
+	}
+}
+
+// TestPreview_OverrideLookupTransientError_Aborts locks the fix for the
+// verifier-caught under-bill: previewWithWindow used to degrade a
+// previewMeter ERROR into a warning and drop that meter's lines — and
+// the threshold scan PERSISTS preview lines as a fire invoice, after
+// which the cycle close clamps every meter to the fire watermark and
+// the dropped meter's pre-fire usage is billed by nobody. The preview
+// must ABORT on infrastructure failure; the threshold eval propagates
+// the error and retries next tick.
+//
+// Mutation-verify: restore the warning-degradation loop in
+// previewWithWindow — this test fails (preview succeeds with the meter
+// silently missing).
+func TestPreview_OverrideLookupTransientError_Aborts(t *testing.T) {
+	engine, subs, _, pricing, _ := setupEngine()
+	pricing.overrideErr = fmt.Errorf("connection reset by peer")
+
+	if _, err := engine.Preview(context.Background(), subs.subs["sub_1"]); err == nil {
+		t.Fatal("preview succeeded despite override-lookup failure; want abort (a partial preview persisted by a threshold fire under-bills permanently)")
+	}
+
+	pricing.overrideErr = nil
+	preview, err := engine.Preview(context.Background(), subs.subs["sub_1"])
+	if err != nil {
+		t.Fatalf("healed preview: %v", err)
+	}
+	if len(preview.Lines) == 0 {
+		t.Fatal("healed preview has no lines")
+	}
+}
+
 func TestRunCycle_WithPriceOverride(t *testing.T) {
 	engine, _, _, pricing, invoices := setupEngine()
 
-	// Set a per-customer override: API calls flat $50 instead of graduated
+	// Set a per-customer override: API calls flat $50 instead of graduated.
+	// Keyed by rule_key (ADR-070) — the override follows the rule across
+	// version publishes.
 	pricing.overrides = map[string]domain.CustomerPriceOverride{
-		"cus_1:rrv_api": {
-			ID: "cpo_1", CustomerID: "cus_1", RatingRuleVersionID: "rrv_api",
+		"cus_1:api_calls": {
+			ID: "cpo_1", CustomerID: "cus_1", RuleKey: "api_calls", RatingRuleVersionID: "rrv_api",
 			Mode: domain.PricingFlat, FlatAmountCents: decimal.NewFromInt(5000),
 			Active: true,
 		},

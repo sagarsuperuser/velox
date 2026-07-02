@@ -328,8 +328,8 @@ func TestRatingRuleFromRecipe(t *testing.T) {
 	if got.Name != "tier1" {
 		t.Errorf("Name should default to Key: got %q", got.Name)
 	}
-	if got.Version != 1 {
-		t.Errorf("Version: got %d, want 1", got.Version)
+	if got.Version != 0 {
+		t.Errorf("Version: got %d, want 0 (allocated in SQL by the store — MAX+1 per key, so reinstall lands the next version instead of 409ing; ADR-070)", got.Version)
 	}
 	if got.LifecycleState != domain.RatingRuleActive {
 		t.Errorf("LifecycleState: got %q, want active", got.LifecycleState)

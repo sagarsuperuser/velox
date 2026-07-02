@@ -488,8 +488,19 @@ type PricingReader interface {
 	GetPlan(ctx context.Context, tenantID, id string) (domain.Plan, error)
 	GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error)
 	GetRatingRule(ctx context.Context, tenantID, id string) (domain.RatingRuleVersion, error)
-	GetLatestRuleByKey(ctx context.Context, tenantID, ruleKey string) (domain.RatingRuleVersion, error)
-	GetOverride(ctx context.Context, tenantID, customerID, ruleID string) (domain.CustomerPriceOverride, error)
+	// GetRuleByKeyAsOf is the ONE version-resolution rule every rating
+	// path shares (ADR-070 pin-at-period-start): the version in force
+	// when the billing period opened prices the whole period — close,
+	// cancel finalize, threshold fire, and preview all agree by
+	// construction, and a mid-close publish can't mix versions inside
+	// one invoice.
+	GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error)
+	// GetOverrideByKeyAsOf resolves the customer's negotiated price in
+	// force at the period open. errs.ErrNotFound = no override (list
+	// price); ANY other error aborts the rating path — a transient DB
+	// failure must never silently bill list price (ADR-070,
+	// no-silent-fallbacks).
+	GetOverrideByKeyAsOf(ctx context.Context, tenantID, customerID, ruleKey string, asOf time.Time) (domain.CustomerPriceOverride, error)
 	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
 }
 
@@ -2764,12 +2775,9 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 					if wm.deferredBucket(agg.AggregationMode, meterID, ratingRuleID) != w.nonAdditiveOnly {
 						continue
 					}
-					rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, ratingRuleID)
+					rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, ratingRuleID, periodStart)
 					if err != nil {
-						return false, fmt.Errorf("get rating rule %s for meter %s: %w", ratingRuleID, meterID, err)
-					}
-					if override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, ratingRuleID); overrideErr == nil && override.Active {
-						rule = override.ToRatingRule()
+						return false, fmt.Errorf("resolve pricing for meter %s rule %s: %w", meterID, ratingRuleID, err)
 					}
 					amount, err := domain.ComputeAmountCents(rule, qty)
 					if err != nil {
@@ -2832,17 +2840,9 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			if meter.RatingRuleVersionID == "" {
 				continue
 			}
-			linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
+			rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, meter.RatingRuleVersionID, periodStart)
 			if err != nil {
-				return false, fmt.Errorf("get rating rule for meter %s: %w", meterID, err)
-			}
-			rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
-			if err != nil {
-				rule = linkedRule
-			}
-			override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
-			if overrideErr == nil && override.Active {
-				rule = override.ToRatingRule()
+				return false, fmt.Errorf("resolve pricing for meter %s: %w", meterID, err)
 			}
 			amount, err := domain.ComputeAmountCents(rule, quantity)
 			if err != nil {
@@ -3662,6 +3662,47 @@ func (e *Engine) BillFinalOnImmediateCancelTx(ctx context.Context, tx *sql.Tx, s
 	return e.billFinalOnImmediateCancelImpl(ctx, tx, sub)
 }
 
+// resolveRatedRule is the single pricing-resolution path every rater
+// shares (ADR-070): from a pinned rule-version binding (meter default or
+// pricing-rule row), resolve the version of that rule_key in force at
+// the period open, then patch the customer's override in force at the
+// same instant on top. One period, one price — cycle close, cancel
+// finalize, threshold fire, and preview all call this (preview via its
+// mirror in previewMeter), so they agree by construction and a
+// mid-close publish or override edit can't mix prices inside one
+// invoice.
+//
+// Error contract (no-silent-fallbacks): a missing override
+// (errs.ErrNotFound) means list price; ANY other failure — including
+// version resolution — aborts the rating path and retries next tick.
+// The pre-ADR-070 code treated every override error as absence and fell
+// back to the pinned version on resolution errors: a transient DB blip
+// silently billed a negotiated customer at list price.
+func (e *Engine) resolveRatedRule(ctx context.Context, tenantID, customerID, pinnedRuleVersionID string, periodStart time.Time) (domain.RatingRuleVersion, error) {
+	linked, err := e.pricing.GetRatingRule(ctx, tenantID, pinnedRuleVersionID)
+	if err != nil {
+		return domain.RatingRuleVersion{}, fmt.Errorf("get rating rule %s: %w", pinnedRuleVersionID, err)
+	}
+	rule, err := e.pricing.GetRuleByKeyAsOf(ctx, tenantID, linked.RuleKey, periodStart)
+	if err != nil {
+		if !errors.Is(err, errs.ErrNotFound) {
+			return domain.RatingRuleVersion{}, fmt.Errorf("resolve rule %q as of %s: %w", linked.RuleKey, periodStart.Format(time.RFC3339), err)
+		}
+		// Key has no ACTIVE versions (all archived) but a binding still
+		// points at one — rate at the pinned version rather than
+		// refusing to bill usage the meter admitted.
+		rule = linked
+	}
+	override, err := e.pricing.GetOverrideByKeyAsOf(ctx, tenantID, customerID, rule.RuleKey, periodStart)
+	if err == nil {
+		return override.ApplyTo(rule), nil
+	}
+	if errors.Is(err, errs.ErrNotFound) {
+		return rule, nil
+	}
+	return domain.RatingRuleVersion{}, fmt.Errorf("resolve override for rule %q: %w", rule.RuleKey, err)
+}
+
 func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx, sub domain.Subscription) (domain.Invoice, error) {
 	ctx, span := telemetry.Tracer("billing").Start(ctx, "billing.BillFinalOnImmediateCancel",
 		trace.WithAttributes(
@@ -4037,12 +4078,9 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 					if wm.deferredBucket(agg.AggregationMode, meterID, ratingRuleID) != mw.nonAdditiveOnly {
 						continue
 					}
-					rule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, ratingRuleID)
+					rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, ratingRuleID, periodStart)
 					if err != nil {
-						return domain.Invoice{}, fmt.Errorf("get rating rule %s for meter %s on cancel: %w", ratingRuleID, meterID, err)
-					}
-					if override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, ratingRuleID); overrideErr == nil && override.Active {
-						rule = override.ToRatingRule()
+						return domain.Invoice{}, fmt.Errorf("resolve pricing for meter %s rule %s on cancel: %w", meterID, ratingRuleID, err)
 					}
 					amount, err := domain.ComputeAmountCents(rule, qty)
 					if err != nil {
@@ -4110,17 +4148,9 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 			if meter.RatingRuleVersionID == "" {
 				continue
 			}
-			linkedRule, err := e.pricing.GetRatingRule(ctx, sub.TenantID, meter.RatingRuleVersionID)
+			rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, meter.RatingRuleVersionID, periodStart)
 			if err != nil {
-				return domain.Invoice{}, fmt.Errorf("get rating rule for meter %s on cancel: %w", meterID, err)
-			}
-			rule, err := e.pricing.GetLatestRuleByKey(ctx, sub.TenantID, linkedRule.RuleKey)
-			if err != nil {
-				rule = linkedRule
-			}
-			override, overrideErr := e.pricing.GetOverride(ctx, sub.TenantID, sub.CustomerID, rule.ID)
-			if overrideErr == nil && override.Active {
-				rule = override.ToRatingRule()
+				return domain.Invoice{}, fmt.Errorf("resolve pricing for meter %s on cancel: %w", meterID, err)
 			}
 			amount, err := domain.ComputeAmountCents(rule, quantity)
 			if err != nil {
