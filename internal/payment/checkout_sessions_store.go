@@ -32,18 +32,19 @@ type CheckoutClaim struct {
 }
 
 // ErrInvoiceNotPayable is returned by ClaimOpen when the payable re-check
-// inside the claim transaction fails — the invoice settled, voided, or a
-// charge is already in flight. The mint-vs-settle TOCTOU killer: the FOR
-// SHARE read serializes against the paid-flip's FOR UPDATE, so either the
-// claim aborts here, or it commits first and the settle's in-tx close is
-// guaranteed to see the row.
-var ErrInvoiceNotPayable = errors.New("invoice is not payable")
+// inside the claim transaction fails — the invoice settled or voided under
+// the caller. The mint-vs-settle TOCTOU killer: the FOR SHARE read
+// serializes against the paid-flip's FOR UPDATE, so either the claim aborts
+// here, or it commits first and the settle's in-tx close is guaranteed to
+// see the row. errs.InvalidState-kinded so peer-import-free handlers map it
+// to an honest 409 via the standard taxonomy.
+var ErrInvoiceNotPayable = errs.InvalidState("invoice is not in a payable state").WithCode("not_payable")
 
 // ErrChargeInFlight is the in-flight guard: a PaymentIntent is processing
 // (dunning auto-retry racing the customer's Pay click — the most likely
-// double-charge collision). Parity with the void/uncollectible/offline
-// guards.
-var ErrChargeInFlight = errors.New("a charge is already in progress for this invoice")
+// double-charge collision), or a drifted session the customer just
+// completed is settling. Parity with the void/uncollectible/offline guards.
+var ErrChargeInFlight = errs.InvalidState("a payment for this invoice is already in progress").WithCode("payment_in_progress")
 
 // CheckoutSessionStore persists checkout-session claims. All methods are
 // tenant-scoped via TxTenant (RLS-fenced).
@@ -280,3 +281,9 @@ func (s *CheckoutSessionStore) MarkExpired(ctx context.Context, tenantID, claimI
 	}
 	return tx.Commit()
 }
+
+// ErrSessionCompleted: a Stripe expire attempt found the session COMPLETED —
+// the customer already paid it. The caller must NOT mint a replacement (a
+// second payable vehicle = the double charge); the webhook settle is in
+// flight and the amount-mismatch escalation owns any drift consequence.
+var ErrSessionCompleted = errors.New("checkout session already completed")

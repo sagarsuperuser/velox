@@ -357,6 +357,16 @@ func (h *Handler) createCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	successURL, cancelURL := h.checkoutReturnURLs(inv.PublicToken)
 	sessionURL, err := h.stripe.CreateInvoicePaymentSession(r.Context(), inv.TenantID, inv, successURL, cancelURL)
 	if err != nil {
+		// Typed claim-protocol outcomes get honest 409s (ADR-068), not a
+		// misleading stripe_error 502: the invoice settled/voided under us,
+		// or a charge is mid-flight (dunning auto-retry racing the Pay
+		// click, or a drifted session the customer just completed) —
+		// retrying won't help, and paying again is exactly the double
+		// charge this protocol prevents.
+		if errors.Is(err, errs.ErrInvalidState) {
+			respond.FromError(w, r, err, "invoice")
+			return
+		}
 		slog.ErrorContext(r.Context(), "hostedinvoice: checkout session create",
 			"invoice_id", inv.ID, "tenant_id", inv.TenantID, "error", err)
 		respond.Error(w, r, http.StatusBadGateway, "api_error", "stripe_error",

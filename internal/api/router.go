@@ -431,7 +431,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe},
+		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: payment.NewCheckoutSessionStore(db)},
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 
