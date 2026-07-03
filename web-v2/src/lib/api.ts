@@ -822,9 +822,15 @@ export interface Invoice {
   billing_period_start: string
   billing_period_end: string
   // Inclusive last-day period string ("Jun 1, 2028 – Jun 30, 2028"), authored
-  // by the backend in the tenant TZ (ADR-058). Render verbatim; do NOT
-  // recompute from the half-open start/end. Empty/omitted for one-off invoices.
+  // by the backend in the invoice's billing TZ (ADR-058 / ADR-074). Render
+  // verbatim; do NOT recompute from the half-open start/end. Empty/omitted for
+  // one-off invoices.
   billing_period_display?: string
+  // The IANA TZ the invoice's period boundaries are anchored in (ADR-074),
+  // copied from the sub's snapshot at creation. Pass to formatCivil* for any
+  // per-line period the backend doesn't author (the line-item "Covers …" note);
+  // empty for ad-hoc/legacy invoices → helpers fall back to the live tenant TZ.
+  billing_timezone?: string
   stripe_payment_intent_id?: string
   last_payment_error?: string
   issued_at?: string

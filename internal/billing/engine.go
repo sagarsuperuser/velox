@@ -2983,6 +2983,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
 		CustomerID:         sub.CustomerID,
 		SubscriptionID:     sub.ID,
+		BillingTimezone:    sub.BillingTimezone,
 		InvoiceNumber:      invoiceNumber,
 		Status:             invStatus,
 		PaymentStatus:      domain.PaymentPending,
@@ -3511,9 +3512,10 @@ func (e *Engine) buildOnCreateInvoice(ctx context.Context, sub domain.Subscripti
 	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 
 	inv := domain.Invoice{
-		TenantID:       sub.TenantID,
-		CustomerID:     sub.CustomerID,
-		SubscriptionID: sub.ID,
+		TenantID:        sub.TenantID,
+		CustomerID:      sub.CustomerID,
+		SubscriptionID:  sub.ID,
+		BillingTimezone: sub.BillingTimezone,
 		// Tax-deferred + pause-collection gate (matches billOnePeriod).
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
@@ -4212,10 +4214,11 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 	}
 
 	invToCreate := domain.Invoice{
-		TenantID:       sub.TenantID,
-		CustomerID:     sub.CustomerID,
-		SubscriptionID: sub.ID,
-		InvoiceNumber:  invoiceNumber,
+		TenantID:        sub.TenantID,
+		CustomerID:      sub.CustomerID,
+		SubscriptionID:  sub.ID,
+		BillingTimezone: sub.BillingTimezone,
+		InvoiceNumber:   invoiceNumber,
 		// Tax-deferred + pause-collection gate (matches billOnePeriod).
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
