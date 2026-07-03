@@ -339,6 +339,21 @@ func (h *Handler) tenantLoc(ctx context.Context, tenantID string) *time.Location
 	return h.tzLocator.TenantLocation(ctx, tenantID)
 }
 
+// subLoc resolves the timezone THIS subscription's billing calendar is
+// anchored in (ADR-074) — the snapshotted BillingTimezone, falling back to
+// the live tenant timezone for legacy/unset rows. The proration denominator
+// (fullBillingCycleDays) must anchor here so it advances the cycle in the
+// SAME zone the sub's period boundaries were computed in, not the live
+// tenant setting (which a settings change could have moved).
+func (h *Handler) subLoc(ctx context.Context, sub domain.Subscription) *time.Location {
+	if sub.BillingTimezone != "" {
+		if loc, err := time.LoadLocation(sub.BillingTimezone); err == nil {
+			return loc
+		}
+	}
+	return h.tenantLoc(ctx, sub.TenantID)
+}
+
 // SetCreditNoteIssuer wires the tax-reversing credit-note primitive used by the
 // downgrade clawback path (ADR-048). When unset, downgrade credits fall back to
 // the legacy net ledger grant (no tax reversal). Implemented by
@@ -2087,7 +2102,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 	newAmount := newPlan.BaseAmountCents * spec.newQuantity
 	denomDays := spec.totalDays
 	if sub.CurrentBillingPeriodStart != nil {
-		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval, h.tenantLoc(ctx, tenantID), sub.BillingAnchorDay); fc > 0 {
+		if fc := fullBillingCycleDays(*sub.CurrentBillingPeriodStart, effectivePlan.BillingInterval, h.subLoc(ctx, sub), sub.BillingAnchorDay); fc > 0 {
 			denomDays = fc
 		}
 	}

@@ -2106,7 +2106,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// Interval is hardcoded monthly here (plans not yet fetched);
 			// trial-extended-past-yearly-cycle is an edge case that the
 			// pre-existing hardcoded `monthly` already approximated.
-			nextBilling := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, domain.BillingMonthly, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+			nextBilling := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, domain.BillingMonthly, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 			slog.Info("skipping billing (trial active)", "subscription_id", sub.ID)
 			return false, e.subs.UpdateBillingCycle(ctx, sub.TenantID, sub.ID, periodEnd, nextBilling, nextBilling, sub.BillingAnchorDay)
 		}
@@ -2441,7 +2441,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// billing_time-aware helper so calendar+monthly subs show
 			// the calendar-aligned next period on the line item, not
 			// the day-of-month-preserved drifted period.
-			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 			baseFee := plan.BaseAmountCents * it.Quantity
 			description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 			// Prorate when the upcoming period is shorter than a full
@@ -2452,7 +2452,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// Same shape as BillOnCreate's proration and
 			// emitBaseSegmentLine's segDays/fullCycleDays gate.
 			advanceDays := roundDays(baseEnd.Sub(baseStart))
-			fullCycleDays := roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(baseStart))
+			fullCycleDays := roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay).Sub(baseStart))
 			if advanceDays > 0 && fullCycleDays > 0 && advanceDays < fullCycleDays {
 				baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(advanceDays), int64(fullCycleDays))
 				description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, advanceDays, fullCycleDays)
@@ -2509,7 +2509,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			if segPlan.BaseBillTiming == domain.BillInAdvance {
 				continue
 			}
-			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay, &lineItems, &subtotal)
 		}
 	}
 
@@ -2541,7 +2541,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			if segPlan.BaseBillTiming == domain.BillInAdvance {
 				continue
 			}
-			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay, &lineItems, &subtotal)
 		}
 	}
 
@@ -2890,7 +2890,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// burning one on a phantom invoice creates audit gaps).
 	if subtotal == 0 && len(lineItems) == 0 {
 		nextPeriodStart := periodEnd
-		nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+		nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 		if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 			return false, fmt.Errorf("advance billing cycle (no-op invoice): %w", err)
 		}
@@ -2971,7 +2971,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// will be set to (computed via NextBillingPeriodEnd below
 			// at cycle close). Diverging here would leave the invoice
 			// header period and the sub's tracked period out of sync.
-			invoicePeriodEnd = domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[it.PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+			invoicePeriodEnd = domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[it.PlanID].BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 			break
 		}
 	}
@@ -3060,7 +3060,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// concurrent-cancel race (ErrInvalidState) is already absorbed to
 			// nil inside advanceCycleOrCancel, so this won't false-positive.
 			nextPeriodStart := periodEnd
-			nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+			nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 			if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 				return false, fmt.Errorf("advance billing cycle (heal path): %w", err)
 			}
@@ -3164,7 +3164,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				// Still advance the billing cycle (billing_time-aware
 				// so calendar subs auto-realign on credit-paid cycles too).
 				nextPeriodStart := periodEnd
-				nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+				nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 				if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 					return true, fmt.Errorf("advance billing cycle: %w", err)
 				}
@@ -3238,7 +3238,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// next calendar boundary instead of carrying the drifted day
 	// forward forever.
 	nextPeriodStart := periodEnd
-	nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+	nextPeriodEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plans[sub.Items[0].PlanID].BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay)
 
 	if err := e.advanceCycleOrCancel(ctx, sub, periodEnd, nextPeriodStart, nextPeriodEnd, now); err != nil {
 		return false, fmt.Errorf("advance billing cycle: %w", err)
@@ -3454,7 +3454,7 @@ func (e *Engine) buildOnCreateInvoice(ctx context.Context, sub domain.Subscripti
 		baseFee := plan.BaseAmountCents * it.Quantity
 		description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay).Sub(periodStart))
 		if periodDays > 0 && fullCycleDays > 0 && periodDays < fullCycleDays {
 			baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(periodDays), int64(fullCycleDays))
 			description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, periodDays, fullCycleDays)
@@ -3857,7 +3857,7 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 				if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
 					continue
 				}
-				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay, &lineItems, &subtotal)
 			}
 		}
 
@@ -3874,7 +3874,7 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 				if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
 					continue
 				}
-				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay, &lineItems, &subtotal)
 			}
 		}
 	}
@@ -4480,7 +4480,7 @@ func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscriptio
 		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
 			continue
 		}
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay).Sub(periodStart))
 		if fullCycleDays <= 0 {
 			continue
 		}
@@ -5016,7 +5016,7 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
 			continue
 		}
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.subscriptionLocation(ctx, sub), sub.BillingAnchorDay).Sub(periodStart))
 		if fullCycleDays <= 0 {
 			continue
 		}
@@ -5577,6 +5577,22 @@ func (e *Engine) tenantLocation(ctx context.Context, tenantID string) *time.Loca
 		return time.UTC
 	}
 	return loc
+}
+
+// subscriptionLocation returns the timezone THIS subscription's billing
+// calendar is anchored in (ADR-074): the snapshotted BillingTimezone,
+// falling back to the LIVE tenant timezone only for legacy/unset rows (so
+// pre-migration subs are byte-for-byte unchanged). Every period-boundary
+// and proration date-math must anchor here, not on tenantLocation — that
+// is what makes a tenant-timezone change display-only for running subs and
+// closes the ADR-058 mixed-anchor drift.
+func (e *Engine) subscriptionLocation(ctx context.Context, sub domain.Subscription) *time.Location {
+	if sub.BillingTimezone != "" {
+		if loc, err := time.LoadLocation(sub.BillingTimezone); err == nil {
+			return loc
+		}
+	}
+	return e.tenantLocation(ctx, sub.TenantID)
 }
 
 // cancelTrialAtEndFromEngine routes the engine's trial branch (the fourth
