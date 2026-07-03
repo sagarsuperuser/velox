@@ -39,6 +39,15 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		dateFmt = "YYYY-MM"
 	}
 
+	// Same currency scope as the overview: MRR cents in different
+	// currencies must never land in one SUM.
+	defaultCurrency, err := defaultCurrencyFor(ctx, tx)
+	if err != nil {
+		slog.Error("analytics mrr-movement: default currency", "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
 	// Pull three per-bucket aggregates (new / churned / plan-changes) then
 	// merge in Go. Doing this in three focused queries is cheaper and clearer
 	// than one giant UNION.
@@ -70,8 +79,9 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $3 AND s.activated_at < $4
+		  AND p.currency = $5
 		GROUP BY 1
-	`, period.Trunc, dateFmt, period.Start, period.End)
+	`, period.Trunc, dateFmt, period.Start, period.End, defaultCurrency)
 	if err != nil {
 		slog.Error("analytics mrr-movement: new query", "error", err)
 		respond.InternalError(w, r)
@@ -102,8 +112,9 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 		JOIN subscription_items si ON si.subscription_id = s.id AND si.deleted_at IS NULL
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $3 AND s.canceled_at < $4
+		  AND p.currency = $5
 		GROUP BY 1
-	`, period.Trunc, dateFmt, period.Start, period.End)
+	`, period.Trunc, dateFmt, period.Start, period.End, defaultCurrency)
 	if err != nil {
 		slog.Error("analytics mrr-movement: churned query", "error", err)
 		respond.InternalError(w, r)
@@ -122,27 +133,32 @@ func (h *Handler) mrrMovement(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = rows.Close()
 
-	// Expansion / Contraction per bucket: plan or quantity events in this
-	// bucket, for subs active throughout the period (activated before start,
-	// not canceled before end) to avoid double-counting against New / Churned.
+	// Expansion / Contraction per bucket: plan, quantity, AND item
+	// add/remove events in this bucket, for subs active throughout the
+	// period (activated before start, not canceled before end) to avoid
+	// double-counting against New / Churned. LEFT joins because 'add' has
+	// no from_* and 'remove' no to_* — the old inner joins dropped both,
+	// so Net never reconciled with the headline MRR delta.
 	rows, err = tx.QueryContext(ctx, `
 		SELECT to_char(date_trunc($1, c.changed_at), $2) AS d,
 		       (
-		           (CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents * c.to_quantity / 12
-		                 ELSE pto.base_amount_cents * c.to_quantity END)
-		         - (CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents * c.from_quantity / 12
-		                 ELSE pfrom.base_amount_cents * c.from_quantity END)
+		           COALESCE(CASE WHEN pto.billing_interval = 'yearly' THEN pto.base_amount_cents * c.to_quantity / 12
+		                 ELSE pto.base_amount_cents * c.to_quantity END, 0)
+		         - COALESCE(CASE WHEN pfrom.billing_interval = 'yearly' THEN pfrom.base_amount_cents * c.from_quantity / 12
+		                 ELSE pfrom.base_amount_cents * c.from_quantity END, 0)
 		       ) AS delta
 		FROM subscription_item_changes c
 		JOIN subscriptions s ON s.id = c.subscription_id
-		JOIN plans pfrom ON pfrom.id = c.from_plan_id
-		JOIN plans pto ON pto.id = c.to_plan_id
-		WHERE c.change_type IN ('plan', 'quantity')
+		LEFT JOIN plans pfrom ON pfrom.id = c.from_plan_id
+		LEFT JOIN plans pto ON pto.id = c.to_plan_id
+		WHERE c.change_type IN ('plan', 'quantity', 'add', 'remove')
 		  AND c.changed_at >= $3 AND c.changed_at < $4
+		  AND (pfrom.id IS NULL OR pfrom.currency = $5)
+		  AND (pto.id IS NULL OR pto.currency = $5)
 		  AND s.activated_at IS NOT NULL
 		  AND s.activated_at < $3
 		  AND (s.canceled_at IS NULL OR s.canceled_at >= $4)
-	`, period.Trunc, dateFmt, period.Start, period.End)
+	`, period.Trunc, dateFmt, period.Start, period.End, defaultCurrency)
 	if err != nil {
 		slog.Error("analytics mrr-movement: change-events query", "error", err)
 		respond.InternalError(w, r)
