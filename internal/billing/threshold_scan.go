@@ -480,7 +480,7 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 			if idx < len(basePlans) && sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle {
 				plan := basePlans[idx]
 				qty := baseQtys[idx]
-				loc := e.tenantLocation(ctx, sub.TenantID)
+				loc := e.subscriptionLocation(ctx, sub)
 				fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, loc, sub.BillingAnchorDay).Sub(periodStart))
 				segDays := roundDays(now.Sub(periodStart))
 				if fullCycleDays > 0 && segDays < fullCycleDays {
@@ -789,7 +789,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		// day for the new cadence and route through NextBillingPeriodEnd (NOT
 		// the interval-only advanceBillingPeriod) so a calendar sub re-snaps to
 		// the 1st rather than carrying the reset day-of-month (ADR-055).
-		loc := e.tenantLocation(ctx, sub.TenantID)
+		loc := e.subscriptionLocation(ctx, sub)
 		interval := plans[sub.Items[0].PlanID].BillingInterval
 		resetAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, interval, loc)
 		nextPeriodEnd := domain.NextBillingPeriodEnd(now, sub.BillingTime, interval, loc, resetAnchorDay)
