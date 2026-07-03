@@ -222,6 +222,14 @@ type Invoice struct {
 	CreditsAppliedCents int64      `json:"credits_applied_cents"`
 	BillingPeriodStart  time.Time  `json:"billing_period_start"`
 	BillingPeriodEnd    time.Time  `json:"billing_period_end"`
+	// BillingTimezone is the IANA timezone the period boundaries above are
+	// civil-midnight in — copied from the subscription's snapshot (ADR-074) at
+	// invoice creation and immutable thereafter. BillingPeriodDisplay is computed
+	// in THIS zone, not the live tenant TZ, so the inclusive last-day step lands
+	// on the right civil date even after a tenant changes its timezone. Empty for
+	// ad-hoc/manual invoices with no owning subscription (and legacy rows); the
+	// read path then falls back to the live tenant TZ, preserving prior behavior.
+	BillingTimezone string `json:"billing_timezone,omitempty"`
 	// BillingPeriodDisplay is the human period string with the INCLUSIVE last
 	// covered day ("Jun 1, 2028 – Jun 30, 2028"), rendered date-only in the
 	// tenant TZ — the industry-standard period display (ADR-058 follow-up).

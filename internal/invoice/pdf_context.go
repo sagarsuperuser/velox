@@ -71,10 +71,16 @@ func BuildPDFContext(
 			}
 			// Inclusive-last-day period string (ADR-058): fetch paths that
 			// bypass the service read decorator (hosted GetByPublicToken)
-			// arrive without it — author it here from the same domain
-			// helper + tenant TZ the dashboard uses.
+			// arrive without it — author it here from the same domain helper.
+			// Anchored in the invoice's own billing TZ (ADR-074 snapshot),
+			// falling back to the tenant TZ for ad-hoc/legacy invoices — the
+			// same resolution the service decorator (invoiceDisplayLoc) uses.
 			if inv.BillingPeriodDisplay == "" {
-				inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(inv.BillingPeriodStart, inv.BillingPeriodEnd, domain.LoadLocationOrUTC(ts.Timezone))
+				periodLoc := domain.LoadLocationOrUTC(ts.Timezone)
+				if inv.BillingTimezone != "" {
+					periodLoc = domain.LoadLocationOrUTC(inv.BillingTimezone)
+				}
+				inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(inv.BillingPeriodStart, inv.BillingPeriodEnd, periodLoc)
 			}
 		}
 	}

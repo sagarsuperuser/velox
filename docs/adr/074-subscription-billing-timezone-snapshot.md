@@ -125,13 +125,21 @@ mutation-locked in `period_display_test.go`.)
   billing", "created at") is not a civil-day-derived range and legitimately shows
   in the operator's current TZ; those keep `formatDate`.
 
-**Scope shipped in two focused PRs** (money-path diffs stay small): the
-subscription API + frontend land first; the **invoice** render sites
-(`invoice/service.go` `invoiceLocation`, `pdf_context.go`, and the line-item
-"Covers" FE label) get the same anchor-TZ treatment via a denormalized
-`invoices.billing_timezone` column in the immediate follow-up. Until that lands,
-invoices retain the original live-TZ display — a pre-existing behavior, not a new
-regression, and only observable for a tenant that has changed TZ.
+**Shipped in two focused PRs** (money-path diffs stay small):
+
+- **PR1 — subscription API + frontend.** `Subscription.CurrentBillingPeriodDisplay`
+  stamped at every response site; the dashboard renders it verbatim.
+- **PR2 — invoice.** A denormalized **`invoices.billing_timezone`** column
+  (migration 0134), copied from the sub's snapshot at every invoice-creation site
+  (`billing/engine.go` ×3, `threshold_scan.go` ×1). The read-path decorator
+  (`invoice/service.go` `invoiceDisplayLoc`) and the PDF/hosted fallback
+  (`pdf_context.go`) render `billing_period_display` in that zone; the frontend
+  line-item "Covers …" label passes `invoice.billing_timezone`. **No backfill** —
+  an existing invoice's period was computed under whatever TZ was live when it was
+  generated (not recoverable from stored data), so legacy rows stay NULL and fall
+  back to the live tenant TZ, exactly what they display today. Only invoices
+  created after 0134 render in the anchor zone. This is a display fix; the invoice
+  wire (`billing_period_start/end`) is unchanged.
 
 ## Accepted residuals
 

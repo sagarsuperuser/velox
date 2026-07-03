@@ -970,7 +970,7 @@ export default function InvoiceDetailPage() {
                           item.billing_period_end !== invoice.billing_period_end
                         ) && (
                           <div className="text-xs text-muted-foreground mt-0.5">
-                            Covers {formatCivilPeriod(item.billing_period_start, item.billing_period_end)}
+                            Covers {formatCivilPeriod(item.billing_period_start, item.billing_period_end, invoice.billing_timezone)}
                           </div>
                         )}
                       </TableCell>

@@ -723,6 +723,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	invoiceRow := domain.Invoice{
 		CustomerID:       sub.CustomerID,
 		SubscriptionID:   sub.ID,
+		BillingTimezone:  sub.BillingTimezone,
 		InvoiceNumber:    invoiceNumber,
 		Status:           invStatus,
 		PaymentStatus:    domain.PaymentPending,
