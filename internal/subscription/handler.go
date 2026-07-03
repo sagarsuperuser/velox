@@ -354,6 +354,26 @@ func (h *Handler) subLoc(ctx context.Context, sub domain.Subscription) *time.Loc
 	return h.tenantLoc(ctx, sub.TenantID)
 }
 
+// stampPeriodDisplay populates the computed CurrentBillingPeriodDisplay — the
+// inclusive human period range ("Jun 1 – Jun 30"), anchored in the sub's
+// billing TZ (subLoc, ADR-074) so the displayed range matches the invoice and
+// never shifts when the tenant changes its display timezone. No-op when the sub
+// has no current period. Called for every subscription response via respondSub.
+func (h *Handler) stampPeriodDisplay(ctx context.Context, sub *domain.Subscription) {
+	if sub.CurrentBillingPeriodStart != nil && sub.CurrentBillingPeriodEnd != nil {
+		sub.CurrentBillingPeriodDisplay = domain.FormatInclusivePeriod(
+			*sub.CurrentBillingPeriodStart, *sub.CurrentBillingPeriodEnd, h.subLoc(ctx, *sub))
+	}
+}
+
+// respondSub writes a single subscription as JSON, first stamping the computed
+// period-display field. Every handler that returns a subscription goes through
+// here so the display can't be forgotten on a new path.
+func (h *Handler) respondSub(w http.ResponseWriter, r *http.Request, status int, sub domain.Subscription) {
+	h.stampPeriodDisplay(r.Context(), &sub)
+	respond.JSON(w, r, status, sub)
+}
+
 // SetCreditNoteIssuer wires the tax-reversing credit-note primitive used by the
 // downgrade clawback path (ADR-048). When unset, downgrade credits fall back to
 // the legacy net ledger grant (no tax reversal). Implemented by
@@ -472,7 +492,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCreated, sub, nil)
 
-	respond.JSON(w, r, http.StatusCreated, sub)
+	h.respondSub(w, r, http.StatusCreated, sub)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -500,6 +520,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if subs == nil {
 		subs = []domain.Subscription{}
 	}
+	for i := range subs {
+		h.stampPeriodDisplay(r.Context(), &subs[i])
+	}
 
 	respond.List(w, r, subs, total)
 }
@@ -519,7 +542,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
@@ -542,7 +565,7 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionActivated, sub, nil)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
@@ -590,7 +613,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // scheduleCancel records a soft-cancel intent. Body must set exactly one of
@@ -641,7 +664,7 @@ func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelScheduled, sub, extra)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // pauseCollection sets the Stripe-parity collection-pause state. Distinct
@@ -677,7 +700,7 @@ func (h *Handler) pauseCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionPaused, sub, extra)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // endTrial flips a 'trialing' subscription to 'active' immediately,
@@ -706,7 +729,7 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 		"triggered_by": "operator",
 	})
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // extendTrial pushes a trialing subscription's trial_end_at later. Body:
@@ -749,7 +772,7 @@ func (h *Handler) extendTrial(w http.ResponseWriter, r *http.Request) {
 		"trial_end":    body.TrialEnd.UTC(),
 	})
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // resumeCollection clears the collection-pause state. Idempotent —
@@ -774,7 +797,7 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCollectionResumed, sub, nil)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // setBillingThresholds writes the Stripe-parity hard-cap config onto a
@@ -847,7 +870,7 @@ func (h *Handler) setBillingThresholds(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // clearBillingThresholds removes any threshold configuration on a
@@ -871,7 +894,7 @@ func (h *Handler) clearBillingThresholds(w http.ResponseWriter, r *http.Request)
 		}))
 	}
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // clearScheduledCancel removes any prior schedule. Idempotent — clearing a
@@ -896,7 +919,7 @@ func (h *Handler) clearScheduledCancel(w http.ResponseWriter, r *http.Request) {
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelCleared, sub, nil)
 
-	respond.JSON(w, r, http.StatusOK, sub)
+	h.respondSub(w, r, http.StatusOK, sub)
 }
 
 // addItem appends a new priced line to a subscription. When the parent

@@ -411,7 +411,18 @@ type Subscription struct {
 	BillingThresholds         *BillingThresholds `json:"billing_thresholds,omitempty"`
 	CurrentBillingPeriodStart *time.Time         `json:"current_billing_period_start,omitempty"`
 	CurrentBillingPeriodEnd   *time.Time         `json:"current_billing_period_end,omitempty"`
-	NextBillingAt             *time.Time         `json:"next_billing_at,omitempty"`
+	// CurrentBillingPeriodDisplay is the human period string with the INCLUSIVE
+	// last covered day ("Jun 1, 2028 – Jun 30, 2028"), rendered date-only in the
+	// sub's billing TZ (BillingTimezone) — the display peer of the ADR-074
+	// snapshot and the exact analogue of Invoice.BillingPeriodDisplay. Computed
+	// on read (never persisted); the raw half-open Current*Period*Start/End above
+	// are unchanged (SDK/wire contract stays half-open). Empty when the sub has
+	// no current period. Backend-authored so the inclusive end can't drift across
+	// the Go and TS runtimes, and — critically — it's anchored in the SUB's
+	// billing TZ, not the live tenant TZ, so a tenant TZ change never shifts the
+	// displayed range of a running sub (the off-by-one ADR-074 exists to prevent).
+	CurrentBillingPeriodDisplay string     `json:"current_billing_period_display,omitempty"`
+	NextBillingAt               *time.Time `json:"next_billing_at,omitempty"`
 	// BillingAnchorDay is the operator's intended billing day-of-month (1..31)
 	// for yearly and anniversary-monthly subs — the stable reference the
 	// month-end clamp advances from so a Jan-31 anchor bills Jan 31, Feb 28,

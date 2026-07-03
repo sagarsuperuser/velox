@@ -519,7 +519,7 @@ export default function SubscriptionDetailPage() {
               // Last day the period covers (inclusive), not the exclusive
               // boundary instant — distinct from the "Next Billing" dot and
               // consistent with the "Current period" range below (ADR-058).
-              date: formatCivilDate(sub.current_billing_period_end),
+              date: formatCivilDate(sub.current_billing_period_end, sub.billing_timezone),
               isPast: periodEnd <= now,
             })
           }
@@ -644,7 +644,7 @@ export default function SubscriptionDetailPage() {
                   </p>
                   {sub.current_billing_period_start && sub.current_billing_period_end && (
                     <p className="text-xs text-muted-foreground mt-1">
-                      First billing: {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end)}
+                      First billing: {sub.current_billing_period_display}
                     </p>
                   )}
                 </>
@@ -669,7 +669,7 @@ export default function SubscriptionDetailPage() {
                   </p>
                   {sub.current_billing_period_start && sub.current_billing_period_end && (
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Period: {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end)}
+                      Period: {sub.current_billing_period_display}
                     </p>
                   )}
                 </>
@@ -902,7 +902,7 @@ export default function SubscriptionDetailPage() {
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-sm text-muted-foreground w-40 shrink-0">Trial</span>
                 <span className="text-sm text-foreground">
-                  {formatCivilPeriod(sub.trial_start_at, sub.trial_end_at) || '\u2014'} — canceled at trial end
+                  {formatCivilPeriod(sub.trial_start_at, sub.trial_end_at, sub.billing_timezone) || '\u2014'} — canceled at trial end
                 </span>
               </div>
             ) : (
@@ -911,7 +911,7 @@ export default function SubscriptionDetailPage() {
                   {sub.status === 'trialing' ? 'First billing period' : 'Current period'}
                 </span>
                 <span className="text-sm text-foreground">
-                  {formatCivilPeriod(sub.current_billing_period_start, sub.current_billing_period_end) || '\u2014'}
+                  {sub.current_billing_period_display || '\u2014'}
                 </span>
               </div>
             )}

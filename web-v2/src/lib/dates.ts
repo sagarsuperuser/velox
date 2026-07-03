@@ -84,18 +84,27 @@ export function formatYMDInTZ(iso: string, timezone?: string): string {
 //
 // These two helpers are the client-side mirror of the Go functions
 // domain.InclusiveDisplayEnd / domain.FormatInclusivePeriod (the canonical
-// spec — keep them byte-for-byte identical). The invoice surfaces get the
-// string straight from the backend (`billing_period_display`, computed by
-// FormatInclusivePeriod) because the PDF is server-rendered; the React
-// subscription surfaces already receive the raw half-open instants over the
-// wire, so they compute the same string here rather than round-tripping a
-// derived field through every read path. Display only — the wire stays
+// spec — keep them byte-for-byte identical). The CANONICAL billing-period range
+// is authored by the backend and rendered verbatim — invoices via
+// `billing_period_display` and subscriptions via `current_billing_period_display`
+// (both computed by FormatInclusivePeriod in the row's billing TZ). Do NOT use
+// these helpers to re-derive a subscription's current-period range; that
+// reintroduced a real bug once — the FE computed in the LIVE tenant TZ, so a sub
+// whose billing TZ differed from the current tenant setting (ADR-074) displayed a
+// range shifted by a day.
+//
+// What remains for these helpers: auxiliary period/date labels the backend does
+// not author — a trial range, a single inclusive period-end date, a line-item's
+// "Covers …" span. For those, ALWAYS pass the explicit anchor timezone (the sub's
+// `billing_timezone`, or the invoice's), NEVER let it default to the live tenant
+// TZ for a period that was anchored elsewhere. Display only — the wire stays
 // half-open.
 //
 // The conversion is a CALENDAR step, never a 24h instant subtraction: snap the
-// exclusive boundary to its civil date in tenant TZ, then step back one calendar
-// day. A 24h subtraction lands on the wrong civil date across a DST boundary or
-// a non-midnight end — the same off-by-one class ADR-058 fixed in the engine.
+// exclusive boundary to its civil date in the given TZ, then step back one
+// calendar day. A 24h subtraction lands on the wrong civil date across a DST
+// boundary or a non-midnight end — the same off-by-one class ADR-058 fixed in
+// the engine.
 
 // inclusiveEndYMD returns [year, month, day] of the last calendar day fully
 // covered by a half-open period whose exclusive end is `endISO`, in tenant TZ.
