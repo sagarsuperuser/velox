@@ -275,14 +275,15 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	if h.invoices != nil {
 		if inv, err := h.invoices.Get(r.Context(), tenantID, cn.InvoiceID); err == nil {
 			orig = OriginalInvoiceInfo{
-				Number:        inv.InvoiceNumber,
-				IssuedAt:      inv.IssuedAt,
-				Currency:      inv.Currency,
-				TaxCountry:    inv.TaxCountry,
-				TaxName:       inv.TaxName,
-				TaxRate:       inv.TaxRate,
-				ReverseCharge: inv.TaxReverseCharge,
-				ExemptReason:  inv.TaxExemptReason,
+				Number:          inv.InvoiceNumber,
+				IssuedAt:        inv.IssuedAt,
+				Currency:        inv.Currency,
+				BillingTimezone: inv.BillingTimezone,
+				TaxCountry:      inv.TaxCountry,
+				TaxName:         inv.TaxName,
+				TaxRate:         inv.TaxRate,
+				ReverseCharge:   inv.TaxReverseCharge,
+				ExemptReason:    inv.TaxExemptReason,
 			}
 		}
 	}

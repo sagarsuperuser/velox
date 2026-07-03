@@ -2295,12 +2295,14 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 			// Labels: a plan change names the two plans; a quantity change
 			// reuses one plan name, so the seat counts carry the contrast
-			// (Stripe's "Unused time on 1 × Pro" shape).
-			creditDesc := upgradeCreditLabel(oldPlan, spec.changeAt)
-			chargeDesc := upgradeChargeLabel(newPlan, spec.changeAt)
+			// (Stripe's "Unused time on 1 × Pro" shape). The boundary date
+			// renders in the sub's billing timezone (ADR-074), not the host zone.
+			labelLoc := h.subLoc(ctx, sub)
+			creditDesc := upgradeCreditLabel(oldPlan, spec.changeAt, labelLoc)
+			chargeDesc := upgradeChargeLabel(newPlan, spec.changeAt, labelLoc)
 			if spec.changeType == domain.ItemChangeTypeQuantity {
-				creditDesc = qtyChangeCreditLabel(newPlan, oldQty, spec.changeAt)
-				chargeDesc = qtyChangeChargeLabel(newPlan, newQty, spec.changeAt)
+				creditDesc = qtyChangeCreditLabel(newPlan, oldQty, spec.changeAt, labelLoc)
+				chargeDesc = qtyChangeChargeLabel(newPlan, newQty, spec.changeAt, labelLoc)
 			}
 
 			creditLine := tmpl
@@ -2688,23 +2690,27 @@ func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string 
 // Stripe "Unused time on … / Remaining time on …" convention with the
 // proration boundary date. The date is the change instant; finance/ops read
 // these on the invoice, so no engineering jargon.
-func upgradeCreditLabel(oldPlan domain.Plan, at time.Time) string {
-	return fmt.Sprintf("Unused time on %s (after %s)", oldPlan.Name, at.Format("Jan 2, 2006"))
+// The proration-boundary date in these labels renders in loc — the sub's
+// billing timezone (ADR-074) — not the raw process zone, so the persisted,
+// customer-facing invoice-line description doesn't shift a calendar day on a
+// non-UTC deployment (ADR-075 audit).
+func upgradeCreditLabel(oldPlan domain.Plan, at time.Time, loc *time.Location) string {
+	return fmt.Sprintf("Unused time on %s (after %s)", oldPlan.Name, at.In(loc).Format("Jan 2, 2006"))
 }
 
-func upgradeChargeLabel(newPlan domain.Plan, at time.Time) string {
-	return fmt.Sprintf("Remaining time on %s (after %s)", newPlan.Name, at.Format("Jan 2, 2006"))
+func upgradeChargeLabel(newPlan domain.Plan, at time.Time, loc *time.Location) string {
+	return fmt.Sprintf("Remaining time on %s (after %s)", newPlan.Name, at.In(loc).Format("Jan 2, 2006"))
 }
 
 // qtyChangeCreditLabel / qtyChangeChargeLabel are the quantity-increase
 // variants of the pair above. Both lines name the SAME plan, so the seat
 // counts carry the contrast — Stripe's "Unused time on 1 × Pro" shape.
-func qtyChangeCreditLabel(plan domain.Plan, oldQty int64, at time.Time) string {
-	return fmt.Sprintf("Unused time on %d × %s (after %s)", oldQty, plan.Name, at.Format("Jan 2, 2006"))
+func qtyChangeCreditLabel(plan domain.Plan, oldQty int64, at time.Time, loc *time.Location) string {
+	return fmt.Sprintf("Unused time on %d × %s (after %s)", oldQty, plan.Name, at.In(loc).Format("Jan 2, 2006"))
 }
 
-func qtyChangeChargeLabel(plan domain.Plan, newQty int64, at time.Time) string {
-	return fmt.Sprintf("Remaining time on %d × %s (after %s)", newQty, plan.Name, at.Format("Jan 2, 2006"))
+func qtyChangeChargeLabel(plan domain.Plan, newQty int64, at time.Time, loc *time.Location) string {
+	return fmt.Sprintf("Remaining time on %d × %s (after %s)", newQty, plan.Name, at.In(loc).Format("Jan 2, 2006"))
 }
 
 // clawbackReason maps a downgrade change type to the credit-note `reason`

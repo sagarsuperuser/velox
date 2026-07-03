@@ -60,6 +60,11 @@ type OriginalInvoiceInfo struct {
 	Number   string
 	IssuedAt *time.Time
 	Currency string
+	// BillingTimezone is the original invoice's billing-calendar timezone
+	// (ADR-074). The CN's Issued/Invoice-Date/Voided civil dates render in this
+	// zone (falling back to UTC when empty), so a non-UTC deployment doesn't
+	// print a day-shifted date on a customer-retained credit note (ADR-075).
+	BillingTimezone string
 	// TaxCountry is the ISO-3166 code the invoice's tax was reported
 	// under. Used for the tax-row label when the CN doesn't carry a
 	// per-line breakdown of its own.
@@ -122,6 +127,10 @@ func RenderPDF(
 	} else {
 		symbol = "$"
 	}
+
+	// Civil dates render in the original invoice's billing timezone (ADR-074),
+	// UTC when unknown — never the raw process zone (ADR-075 audit).
+	docLoc := domain.LoadLocationOrUTC(orig.BillingTimezone)
 
 	pdf := &gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
@@ -244,7 +253,7 @@ func RenderPDF(
 
 	detailRow("Number", cn.CreditNoteNumber)
 	if cn.IssuedAt != nil {
-		detailRow("Issued", cn.IssuedAt.Format("January 2, 2006"))
+		detailRow("Issued", cn.IssuedAt.In(docLoc).Format("January 2, 2006"))
 	} else {
 		detailRow("Status", string(cn.Status))
 	}
@@ -252,7 +261,7 @@ func RenderPDF(
 		detailRow("Original Invoice", orig.Number)
 	}
 	if orig.IssuedAt != nil {
-		detailRow("Invoice Date", orig.IssuedAt.Format("January 2, 2006"))
+		detailRow("Invoice Date", orig.IssuedAt.In(docLoc).Format("January 2, 2006"))
 	}
 	detailRow("Currency", strings.ToUpper(currency))
 
@@ -466,7 +475,7 @@ func RenderPDF(
 	case domain.CreditNoteVoided:
 		voidDate := "N/A"
 		if cn.VoidedAt != nil {
-			voidDate = cn.VoidedAt.Format("January 2, 2006")
+			voidDate = cn.VoidedAt.In(docLoc).Format("January 2, 2006")
 		}
 		setColor(200, 80, 80)
 		textAt(margin, y, fmt.Sprintf("This credit note was voided on %s.", voidDate))
