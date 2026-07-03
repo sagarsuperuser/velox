@@ -764,22 +764,25 @@ type Invoice struct {
 	Attention         Attention `json:"attention,omitempty"`
 	AutoChargePending bool      `json:"auto_charge_pending,omitempty"`
 
-	// BillingPeriodDisplay Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the tenant timezone (ADR-058). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period.
+	// BillingPeriodDisplay Human period string with the inclusive last covered day ("Jun 1, 2028 – Jun 30, 2028"), date-only in the invoice's billing timezone (ADR-058 / ADR-074). Computed on read; the raw billing_period_start/end stay half-open. Empty/omitted for one-off invoices with no period.
 	BillingPeriodDisplay string    `json:"billing_period_display,omitempty"`
 	BillingPeriodEnd     time.Time `json:"billing_period_end"`
 	BillingPeriodStart   time.Time `json:"billing_period_start"`
 
 	// BillingReason Mirrors Stripe's `invoice.billing_reason`. Classifies the trigger
 	// that produced the invoice. Stamped at create time and never mutated.
-	BillingReason       InvoiceBillingReason `json:"billing_reason,omitempty"`
-	CreatedAt           time.Time            `json:"created_at"`
-	CreditsAppliedCents int64                `json:"credits_applied_cents"`
-	Currency            string               `json:"currency"`
-	CustomerId          string               `json:"customer_id"`
-	DiscountCents       int64                `json:"discount_cents"`
-	DueAt               time.Time            `json:"due_at,omitempty"`
-	Footer              string               `json:"footer,omitempty"`
-	Id                  string               `json:"id"`
+	BillingReason InvoiceBillingReason `json:"billing_reason,omitempty"`
+
+	// BillingTimezone IANA timezone the period boundaries are anchored in, copied from the owning subscription's snapshot at creation (ADR-074). billing_period_display is rendered in this zone, not the live tenant timezone, so it does not shift after a tenant changes its timezone. Empty for ad-hoc/legacy invoices with no owning subscription.
+	BillingTimezone     string    `json:"billing_timezone,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	CreditsAppliedCents int64     `json:"credits_applied_cents"`
+	Currency            string    `json:"currency"`
+	CustomerId          string    `json:"customer_id"`
+	DiscountCents       int64     `json:"discount_cents"`
+	DueAt               time.Time `json:"due_at,omitempty"`
+	Footer              string    `json:"footer,omitempty"`
+	Id                  string    `json:"id"`
 
 	// InvoiceNumber Empty until the invoice is finalized.
 	InvoiceNumber string `json:"invoice_number"`
