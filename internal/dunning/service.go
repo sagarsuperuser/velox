@@ -1092,15 +1092,21 @@ func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, ru
 	}
 	invoiceNumber := run.InvoiceID
 	var publicToken string
+	var billTZ string
 	if s.invoiceGet != nil {
 		if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil {
 			invoiceNumber = inv.InvoiceNumber
 			publicToken = inv.PublicToken
+			billTZ = inv.BillingTimezone
 		}
 	}
 	nextRetry := "TBD"
 	if run.NextActionAt != nil {
-		nextRetry = run.NextActionAt.Format("January 2, 2006")
+		// Render the retry date in the invoice's billing timezone (ADR-074),
+		// UTC when unknown — not the raw process zone, so the customer-facing
+		// "we'll try again on <date>" line doesn't shift a day on a non-UTC
+		// deployment (ADR-075 audit).
+		nextRetry = run.NextActionAt.In(domain.LoadLocationOrUTC(billTZ)).Format("January 2, 2006")
 	}
 	if err := s.emailNotifier.SendDunningWarning(ctx, tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErrMsg, publicToken); err != nil {
 		slog.Error("failed to enqueue dunning warning email",

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,12 +25,20 @@ const (
 
 // SetupTestDB runs migrations as superuser, cleans data, and returns an
 // app-user connection where RLS is enforced.
+// utcOnce pins the test process to UTC exactly like cmd/velox/main (ADR-075),
+// so integration tests observe the same canonical-UTC timestamp behavior as
+// production regardless of the host timezone (a dev box on IST would otherwise
+// scan timestamptz back in +05:30 and diverge from CI/prod). sync.Once keeps the
+// global assignment race-free across parallel integration tests.
+var utcOnce sync.Once
+
 func SetupTestDB(t *testing.T) *postgres.DB {
 	t.Helper()
 
 	if testing.Short() {
 		t.Skip("skipping integration test (use -short=false)")
 	}
+	utcOnce.Do(func() { time.Local = time.UTC })
 
 	adminURL := envOr("TEST_ADMIN_DATABASE_URL", defaultAdminDBURL)
 	appURL := envOr("TEST_DATABASE_URL", defaultAppDBURL)

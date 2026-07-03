@@ -29,6 +29,17 @@ import (
 )
 
 func main() {
+	// Pin the process to UTC (ADR-075). pgx decodes timestamptz via time.Unix,
+	// which lands in time.Local — so on a non-UTC host the DB read path returns
+	// timestamps in the host zone, and time.Time.MarshalJSON then emits a
+	// host-dependent offset (e.g. "+05:30") on the API wire instead of canonical
+	// "…Z". The app already MINTS instants in UTC (clock.Now().UTC()); this makes
+	// the DB READ path agree, so every serialized timestamp is host-independent
+	// UTC. Must be the first statement — before any DB connection or goroutine —
+	// so the assignment can't race a concurrent time.Local read. Billing date-math
+	// is unaffected: it anchors in explicit zones (ADR-058/074), never time.Local.
+	time.Local = time.UTC
+
 	cmd := "serve"
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]

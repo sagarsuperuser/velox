@@ -388,12 +388,19 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		y += 14
 	}
 
+	// Civil dates render in the invoice's billing timezone (ADR-074 snapshot),
+	// falling back to UTC for legacy/ad-hoc invoices — NOT the raw process zone.
+	// The document's Period row already uses this zone; the Issued/Due/Paid/Void
+	// dates must match, or a non-UTC deployment prints a day-shifted calendar
+	// date on a customer-retained financial document (ADR-075 audit).
+	docLoc := domain.LoadLocationOrUTC(inv.BillingTimezone)
+
 	detailRow("Number", inv.InvoiceNumber)
 	if inv.IssuedAt != nil {
-		detailRow("Issued", inv.IssuedAt.Format("January 2, 2006"))
+		detailRow("Issued", inv.IssuedAt.In(docLoc).Format("January 2, 2006"))
 	}
 	if inv.DueAt != nil {
-		detailRow("Due Date", inv.DueAt.Format("January 2, 2006"))
+		detailRow("Due Date", inv.DueAt.In(docLoc).Format("January 2, 2006"))
 	}
 	// Inclusive last-day period ("Jun 1 – Jun 30"), authored once via
 	// domain.FormatInclusivePeriod (ADR-058 follow-up) and carried on
@@ -758,12 +765,12 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 	if inv.Status == domain.InvoiceVoided {
 		voidDate := "N/A"
 		if inv.VoidedAt != nil {
-			voidDate = inv.VoidedAt.Format("January 2, 2006")
+			voidDate = inv.VoidedAt.In(docLoc).Format("January 2, 2006")
 		}
 		setColor(200, 80, 80)
 		textAt(margin, y, fmt.Sprintf("This invoice was voided on %s. No payment is due.", voidDate))
 	} else if inv.PaymentStatus == domain.PaymentSucceeded && inv.PaidAt != nil {
-		textAt(margin, y, fmt.Sprintf("Paid on %s - Thank you!", inv.PaidAt.Format("January 2, 2006")))
+		textAt(margin, y, fmt.Sprintf("Paid on %s - Thank you!", inv.PaidAt.In(docLoc).Format("January 2, 2006")))
 	} else {
 		textAt(margin, y, fmt.Sprintf("Payment due within %d days of issue date.", inv.NetPaymentTermDays))
 	}
