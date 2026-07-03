@@ -1,5 +1,14 @@
 # Locked Execution Plan — Audit Remediation Sprint (2026-07-02 → 2026-07-07)
 
+**Status: COMPLETE 2026-07-03 — four days ahead of the window.** All 14
+planned batches shipped as 16 merged PRs (#337–#341, #343, #345–#357;
+P1 split into three PRs, P2b into two): P3, P1a/b/c, P2a, P2b-a/b, P4,
+P14, P6, P8, P9-core, P12, P13, P10, P11, P5, P7, and the P9
+query-rewrite spill. Every HIGH and MEDIUM is closed or carries a named
+deferral in its owning ADR (ADR-065…073); the ~41 remaining LOWs and
+named deferrals live in the audit report, which remains the backlog
+tracker. Everything below is preserved as written at lock time.
+
 **Status: LOCKED 2026-07-02.** This document commits the remediation of the [2026-07-02 full-product audit](audit-2026-07-02-full-product.md) — 117 verified findings (16 high / 51 medium / 50 low, deduped) — inside the Fable window, which closes **end of day 2026-07-07**. Five quota windows remain (Jul 3–7; Jul 2's window was spent on the audit itself). The plan was validated by five adversarial lenses (batch/collision, three fix-design deep-dives, timeline realism); their blockers are folded in below, not appended. Hard/correctness-critical work is front-loaded; mechanical and copy work trails. Track execution against the **deduped report list** (16/51/50), not the raw findings JSON (19/56/42) — when a batch merges, mark every dupe-root it closes (known dupe pairs: settings `:406`/`:407`; `docs/self-host.md:15` high+med; `Dunning.tsx:149` ×2; `UpdatePayment.tsx` med+low; the two usage_events-index findings; `api.ts:1623` ×2).
 
 **Coverage commitment:** every HIGH and every MEDIUM is assigned to exactly one batch below. Only the 50 LOWs are backlog — minus 9 named ride-alongs that ship inside batches that already own their files. The only conscious medium-adjacent deferrals are named in Tier 4 of the cut-line.
