@@ -671,6 +671,16 @@ export interface Subscription {
   billing_time: string
   current_billing_period_start?: string
   current_billing_period_end?: string
+  // Backend-authored inclusive period range ("Jun 1 – Jun 30"), rendered in the
+  // sub's billing TZ (ADR-074). Use this verbatim for period-range labels — do
+  // NOT recompute from the half-open start/end, which would (a) duplicate the Go
+  // inclusive-day logic and (b) render in the live tenant TZ, shifting the range
+  // for a sub whose billing TZ differs from the current tenant setting.
+  current_billing_period_display?: string
+  // The IANA TZ the sub's billing calendar is anchored in (ADR-074). Pass to the
+  // formatCivil* helpers for any period/date the backend doesn't already author
+  // (trial range, single period-end date), so they render in the anchor zone.
+  billing_timezone?: string
   next_billing_at?: string
   trial_start_at?: string
   trial_end_at?: string

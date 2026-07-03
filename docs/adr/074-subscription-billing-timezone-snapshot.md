@@ -58,9 +58,14 @@ anchor *day*; freezing the anchor *timezone* completes the model.
    the full site-set audit caught it; missing it would have anchored the
    proration *denominator* to the live tenant TZ while the period *boundaries*
    used the snapshot — the exact mismatch this ADR prevents.
-3. **Display stays live.** The two render sites (`invoice/service.go`
-   `invoiceTimezone`, `pdf_context.go` period formatting) keep reading the live
-   tenant timezone — a display lens over the immutable billing math.
+3. **Display stays live — but see the 2026-07-04 amendment.** As first shipped,
+   the render sites kept reading the live tenant timezone ("a display lens over
+   the immutable billing math"). That was correct for *event instants* but
+   **wrong for the period RANGE string**: the inclusive-day conversion ("last
+   day covered") is a civil-calendar step that is only meaningful in the zone the
+   boundary is civil-midnight in — the snapshot. Rendering the range in a
+   different (live) TZ shifts it by a day for a tenant that changed TZ. The
+   amendment below narrows this decision.
 4. **Migration 0133 backfills every existing subscription** with its tenant's
    *current* timezone, so in-flight subs get **zero behavior change**: their
    effective timezone at migration becomes their frozen anchor. Rows whose
@@ -89,6 +94,44 @@ site-set audit + mutation-verified tests + edge-case coverage. A fresh-context
 spec self-review ran before merge. The Fable panel remains a fast-follow to
 adversarially sweep for a missed edge (backfill on unusual rows, DST
 interactions) when credits return.
+
+## Amendment (2026-07-04): period-range display follows the snapshot, not the live TZ
+
+The original decision 3 ("display stays live") was too broad. A period **range**
+label ("Jun 1 – Jun 30") is derived by snapping the half-open boundaries to their
+civil dates and stepping the exclusive end back one calendar day — the ADR-058
+inclusive-display step. That step is only correct in the timezone the boundary is
+civil-midnight in, i.e. the sub's **snapshot** (`billing_timezone`). Rendering it
+in the live tenant TZ reintroduces exactly the mixed-anchor off-by-one this ADR
+exists to kill: an IST-anchored period `[May 2 00:00 IST, Jun 1 00:00 IST)` reads
+`"May 2 – May 31"` in Kolkata but `"May 1 – May 30"` in New_York — a full day off
+— the moment the operator changes the tenant TZ. (Empirically confirmed;
+mutation-locked in `period_display_test.go`.)
+
+**Corrected contract:**
+
+- **Period-range strings are authored by the backend in the anchor TZ.** Invoices
+  already surface `Invoice.BillingPeriodDisplay`; subscriptions now surface the
+  new **`Subscription.CurrentBillingPeriodDisplay`** — computed on read via
+  `FormatInclusivePeriod(start, end, subLoc(sub))`, stamped at every subscription
+  response site by the handler's `respondSub`/`stampPeriodDisplay`. The wire stays
+  half-open; this is a derived display field.
+- **The frontend renders those strings verbatim** and no longer recomputes a
+  sub's period range in the browser (which defaulted to the live tenant TZ). The
+  TS `formatCivil*` mirror survives only for auxiliary labels the backend doesn't
+  author (trial range, single period-end date, line-item "Covers …"), and those
+  now receive the explicit `billing_timezone` rather than defaulting to live.
+- **Event instants still render live.** A wall-clock timestamp ("Renews", "Next
+  billing", "created at") is not a civil-day-derived range and legitimately shows
+  in the operator's current TZ; those keep `formatDate`.
+
+**Scope shipped in two focused PRs** (money-path diffs stay small): the
+subscription API + frontend land first; the **invoice** render sites
+(`invoice/service.go` `invoiceLocation`, `pdf_context.go`, and the line-item
+"Covers" FE label) get the same anchor-TZ treatment via a denormalized
+`invoices.billing_timezone` column in the immediate follow-up. Until that lands,
+invoices retain the original live-TZ display — a pre-existing behavior, not a new
+regression, and only observable for a tenant that has changed TZ.
 
 ## Accepted residuals
 
