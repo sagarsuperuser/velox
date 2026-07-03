@@ -5,7 +5,21 @@ shape today is Docker Compose on a single VM. A managed-Kubernetes path
 (Helm chart, multi-replica HA, Terraform-as-IaC) is not in v1; it lands
 when a design partner names which Kubernetes flavour they actually run.
 
-## Compose path
+## Deploying (single-VM compose stack)
+
+**The canonical walkthrough is
+[`deploy/compose/README.md`](../deploy/compose/README.md)** — a
+containerized four-service stack (postgres, redis, velox-api, nginx)
+with its own `.env.example`. Five minutes from a fresh VM to a working
+tenant: set four secrets, `docker compose up -d`, then one
+`POST /v1/bootstrap` call returns your dashboard owner login and API
+keys (test + live).
+
+Everything below on this page is reference material — Postgres
+requirements, env vars, scaling, observability — that applies to both
+the compose stack and a hand-rolled install.
+
+## Local development (host Go toolchain, not a deployment)
 
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git
@@ -13,13 +27,14 @@ cd velox
 
 cp .env.example .env   # make dev reads it; local defaults work as-is
 docker compose up -d postgres redis mailpit
-VELOX_BOOTSTRAP_EMAIL=you@example.com VELOX_BOOTSTRAP_PASSWORD=change-me-please \
+VELOX_BOOTSTRAP_EMAIL=you@example.com VELOX_BOOTSTRAP_PASSWORD=change-me-please1 \
   make bootstrap
 make dev
 ```
 
 (`VELOX_BOOTSTRAP_EMAIL`/`VELOX_BOOTSTRAP_PASSWORD` are optional — bootstrap
-defaults the owner to `admin@velox.local` and prints a generated password.)
+defaults the owner to `admin@velox.local` and prints a generated password.
+Passwords must be at least 12 characters.)
 
 That gives you:
 
@@ -63,24 +78,30 @@ For your own VM:
 - Version: 16.x
 - Extensions: none required (Velox uses standard `gen_random_bytes`,
   `LATERAL`, RLS — all built-in).
-- **`velox_app` role (required for tenant isolation).** Velox enforces
-  multi-tenant isolation with Row-Level Security, which only applies to a
-  **non-owner** role. At request time it connects as `velox_app`, derived from
-  `DATABASE_URL` by swapping the credentials to `velox_app`/`velox_app`. The
-  compose path creates this role automatically
-  ([`deploy/compose/postgres-init.sql`](../deploy/compose/postgres-init.sql));
-  on your own Postgres you must create it:
+- **A least-privilege runtime role (required for tenant isolation).**
+  Velox enforces multi-tenant isolation with Row-Level Security. Request
+  traffic runs on the connection in `APP_DATABASE_URL` — a role like
+  `velox_app` with its own password, NOT the admin role. The compose
+  stack creates it from `VELOX_APP_DB_PASSWORD`
+  ([`deploy/compose/postgres-init.sh`](../deploy/compose/postgres-init.sh));
+  on your own Postgres:
 
   ```sql
-  CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
-  GRANT velox_app TO <the role in your DATABASE_URL>;
-  -- migrations GRANT the needed table privileges to velox_app
+  -- use psql -v pw='...' and :'pw' quoting, or substitute a literal
+  CREATE ROLE velox_app WITH LOGIN PASSWORD :'pw';
+  GRANT ALL PRIVILEGES ON DATABASE velox TO velox_app;
+  GRANT ALL ON SCHEMA public TO velox_app;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_app;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_app;
   ```
 
-  **With `APP_ENV=staging` or `production`, Velox refuses to start** if it
-  can't open the `velox_app` pool — running as the table owner would bypass
-  RLS and leak data across tenants. (In `local` it warns and continues, since
-  a single-tenant dev box often uses one superuser URL.)
+  **With `APP_ENV=staging` or `production`, Velox refuses to start**
+  (ADR-073) when `APP_DATABASE_URL` is missing, carries the default
+  password `velox_app` (or an empty one), can't be opened, or points at
+  a role that can bypass RLS (superuser/`BYPASSRLS` — the boot check
+  catches a copied `DATABASE_URL`). In `local` it derives
+  `velox_app:velox_app` from `DATABASE_URL` and warns instead, since a
+  single-tenant dev box often uses one superuser URL.
 - Backups: take a `pg_dump` snapshot on whatever cadence your data loss
   tolerance allows. Stripe's webhook outbox + Velox's audit log are the
   two surfaces where lost rows are most expensive; both are covered by a
@@ -115,8 +136,9 @@ Optional:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `RUN_MIGRATIONS_ON_BOOT` | `false` | Run migrations on startup |
-| `APP_ENV` | `local` | `local`/`staging`/`production`. Gates the cookie `Secure` flag and RLS fail-closed boot — `staging`/`production` refuse to start without the `velox_app` role (see Postgres above) |
+| `RUN_MIGRATIONS_ON_BOOT` | `false` | Run migrations on startup (racing replicas serialize on an advisory lock and skip already-applied work) |
+| `APP_ENV` | `local` | `local`/`staging`/`production`. Gates the cookie `Secure` flag and the fail-closed boot checks — `staging`/`production` refuse to start without a valid `APP_DATABASE_URL` (see Postgres above) and refuse a `VELOX_BOOTSTRAP_TOKEN` under 16 chars |
+| `TRUST_PROXY` | _(unset)_ | Comma-separated proxy IPs/CIDRs whose `X-Forwarded-For`/`X-Real-IP` are trusted for client-IP resolution (rate limiting, audit logs). Unset = headers ignored, direct TCP peer used |
 | `DASHBOARD_BASE_URL` | _(unset)_ | Canonical dashboard origin for password-reset links. **Unset disables password-reset emails** — the origin is never derived from request headers (host-header poisoning). Set to e.g. `http://localhost:5173` in dev |
 | `SMTP_HOST` / `SMTP_PORT` | _(unset)_ | Outbound email relay. Unset → emails are not sent (`ErrSMTPNotConfigured`). The compose path points these at mailpit (`localhost:1025`) |
 
