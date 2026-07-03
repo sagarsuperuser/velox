@@ -404,10 +404,10 @@ func resolveAppURL(env, adminURL, appURL string) (url, fallbackWarn string, err 
 			// trust-auth shape both hand cross-tenant read/write to
 			// anyone with TCP reach — the exact exposure HIGH #9
 			// flagged. Refuse outside local dev.
-			switch {
-			case password == "":
+			switch password {
+			case "":
 				return "", "", fmt.Errorf("APP_DATABASE_URL has no password (trust-auth shape) — forbidden in %s; set a real password for the app role (ALTER ROLE %s PASSWORD ...)", env, username)
-			case password == "velox_app" || password == username:
+			case "velox_app", username:
 				return "", "", fmt.Errorf("APP_DATABASE_URL uses the default/guessable password for role %q — forbidden in %s; rotate it (openssl rand -hex 24, then ALTER ROLE ... PASSWORD) and update APP_DATABASE_URL", username, env)
 			}
 		}
