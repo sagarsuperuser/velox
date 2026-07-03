@@ -1445,6 +1445,7 @@ Failed external effects (tax reversal, ambiguous charge) self-heal via scheduler
 ## FLOW U1: Dashboard
 
 - [ ] 4 KPI cards: MRR (sparkline+trend), Active Customers, Failed Payments (red if >0), Revenue 30d.
+- [ ] MRR/movement honest under change: remove a subscription item → MRR drops AND Contraction gains it; items in a non-default currency never appear in MRR/ARR/movement; MRR-now − MRR-prev equals movement Net.
 - [ ] Revenue bar chart, Recent Activity (last 5 invoices clickable).
 - [ ] Get Started checklist: 6 steps, auto-tracks against server state, self-hides at 100%. Dismiss persists per-tenant.
 - [ ] No "Trigger Billing" button (use `POST /v1/billing/run`).
