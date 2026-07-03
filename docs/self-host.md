@@ -11,18 +11,22 @@ when a design partner names which Kubernetes flavour they actually run.
 git clone https://github.com/sagarsuperuser/velox.git
 cd velox
 
-docker compose up -d postgres
-VELOX_OWNER_EMAIL=you@example.com VELOX_OWNER_PASSWORD=change-me-please \
+cp .env.example .env   # make dev reads it; local defaults work as-is
+docker compose up -d postgres redis mailpit
+VELOX_BOOTSTRAP_EMAIL=you@example.com VELOX_BOOTSTRAP_PASSWORD=change-me-please \
   make bootstrap
 make dev
 ```
+
+(`VELOX_BOOTSTRAP_EMAIL`/`VELOX_BOOTSTRAP_PASSWORD` are optional — bootstrap
+defaults the owner to `admin@velox.local` and prints a generated password.)
 
 That gives you:
 
 - `postgres` on `:5432` (volume-backed, password `velox`)
 - `redis` on `:6379` (used by the rate limiter)
 - `mailpit` on `:1025` SMTP / `:8025` web UI (catches outbound transactional mail)
-- `velox-api` on `:8080`
+- `velox-api` on `:8080` (from `make dev`, not a container)
 
 The dashboard:
 
@@ -96,9 +100,16 @@ Required:
 
 | Var | Purpose |
 |---|---|
-| `DATABASE_URL` | Postgres DSN |
-| `VELOX_OWNER_EMAIL` | Bootstrap dashboard owner |
-| `VELOX_OWNER_PASSWORD` | Bootstrap dashboard owner |
+| `DATABASE_URL` | Postgres DSN — admin/migration role |
+| `APP_DATABASE_URL` | Postgres DSN — least-privilege `velox_app` runtime role (RLS enforced). Required in `staging`/`production`; local dev derives `velox_app:velox_app` from `DATABASE_URL` when unset |
+
+Bootstrap-time (read by `make bootstrap` / `cmd/velox-bootstrap`, not the server):
+
+| Var | Purpose |
+|---|---|
+| `VELOX_BOOTSTRAP_EMAIL` | Dashboard owner email (default `admin@velox.local`) |
+| `VELOX_BOOTSTRAP_PASSWORD` | Owner password (unset → generated and printed once) |
+| `VELOX_BOOTSTRAP_TENANT` | Tenant name (default `Demo Tenant`) |
 
 Optional:
 
@@ -132,10 +143,10 @@ local dev observability is `tail -f` on the API logs).
 
 Key metrics to watch:
 
-- `velox_billing_cycle_run_duration_seconds` — cycle scan latency
+- `velox_billing_cycle_duration_seconds` — cycle scan latency
 - `velox_tax_outcome_total{outcome,reason}` — tax-provider failure modes
 - `velox_audit_write_errors_total` — audit log write failures
-- `velox_stripe_webhook_in_total{result}` — inbound webhook outcomes
+- `velox_stripe_breaker_state` — Stripe API circuit breaker (1 = open)
 
 ## Related
 

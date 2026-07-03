@@ -234,7 +234,7 @@ the validation checks above. Schedule quarterly restore drills:
 1. Pull the most recent backup.
 2. Restore to a non-production database.
 3. Run the validation queries.
-4. Boot Velox against the restored DB; hit `/v1/healthz`.
+4. Boot Velox against the restored DB; hit `/health/ready`.
 5. Run the smoke tests in `MANUAL_TEST.md` (FLOW S1).
 
 A backup you've never restored is hope, not a backup.

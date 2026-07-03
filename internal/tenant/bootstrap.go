@@ -1,15 +1,12 @@
 package tenant
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -18,17 +15,21 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// BootstrapHandler provides a one-time setup endpoint for creating
-// the first tenant + API keys. Protected by VELOX_BOOTSTRAP_TOKEN env var.
-// Only works when no tenants exist (race-safe via INSERT ... ON CONFLICT).
+// BootstrapHandler provides a one-time setup endpoint for creating the
+// first tenant + owner user + API keys. Protected by the
+// VELOX_BOOTSTRAP_TOKEN env var; only works while no tenants exist.
+// The actual provisioning is tenant.RunBootstrap — the single writer
+// shared with cmd/velox-bootstrap (ADR-073).
 type BootstrapHandler struct {
 	db    *postgres.DB
+	deps  BootstrapDeps
 	token string // Required token from VELOX_BOOTSTRAP_TOKEN env var; empty = disabled
 }
 
-func NewBootstrapHandler(db *postgres.DB) *BootstrapHandler {
+func NewBootstrapHandler(db *postgres.DB, deps BootstrapDeps) *BootstrapHandler {
 	return &BootstrapHandler{
 		db:    db,
+		deps:  deps,
 		token: strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TOKEN")),
 	}
 }
@@ -39,22 +40,50 @@ func (h *BootstrapHandler) Routes() chi.Router {
 	return r
 }
 
+// bootstrapRequest: the token travels in the body or the Authorization
+// header, NEVER a query string — query strings land in proxy access
+// logs. Owner fields are optional; defaults live in RunBootstrap.
 type bootstrapRequest struct {
-	TenantName string `json:"tenant_name"`
-	Token      string `json:"token"`
+	TenantName    string `json:"tenant_name"`
+	Token         string `json:"token"`
+	OwnerEmail    string `json:"owner_email"`
+	OwnerPassword string `json:"owner_password"`
 }
 
 type bootstrapResponse struct {
-	Tenant    domain.Tenant `json:"tenant"`
-	SecretKey string        `json:"secret_key"`
-	PublicKey string        `json:"public_key"`
-	Message   string        `json:"message"`
+	Tenant             domain.Tenant `json:"tenant"`
+	OwnerEmail         string        `json:"owner_email"`
+	OwnerPassword      string        `json:"owner_password"`
+	PasswordGenerated  bool          `json:"password_generated"`
+	SecretKeyTest      string        `json:"secret_key_test"`
+	SecretKeyLive      string        `json:"secret_key_live"`
+	PublishableKeyTest string        `json:"publishable_key_test"`
+	Message            string        `json:"message"`
 }
 
 func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Bootstrap token is always required
+	// Guard order (ADR-073): already-bootstrapped FIRST, before any
+	// token comparison. The old token-first order made the 403-vs-409
+	// split a PERPETUAL token-validity oracle on bootstrapped installs;
+	// checking bootstrapped-ness first also hides whether a token is
+	// even configured. The trade: unauthenticated probes learn
+	// virgin-install state and cost one cheap SELECT — accepted
+	// (rate-limited since P12). This check is advisory for UX; the
+	// authoritative guard is RunBootstrap's re-check under the
+	// bootstrap advisory lock.
+	var bootstrapped bool
+	if err := h.db.Pool.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tenants)`).Scan(&bootstrapped); err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+	if bootstrapped {
+		respond.Error(w, r, http.StatusConflict, "invalid_request_error", "already_bootstrapped",
+			"bootstrap already completed — tenants exist")
+		return
+	}
+
 	if h.token == "" {
 		respond.Error(w, r, http.StatusForbidden, "authentication_error", "forbidden",
 			"bootstrap disabled — set VELOX_BOOTSTRAP_TOKEN env var to enable")
@@ -78,88 +107,39 @@ func (h *BootstrapHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.TenantName) == "" {
-		req.TenantName = "Default Tenant"
-	}
-
-	// Race-safe tenant creation: INSERT ... ON CONFLICT DO NOTHING + check affected rows.
-	// Two simultaneous requests will not both succeed.
-	tenantID := postgres.NewID("vlx_ten")
-	now := time.Now().UTC()
-
-	result, err := h.db.Pool.ExecContext(ctx,
-		`INSERT INTO tenants (id, name, status, created_at, updated_at)
-		SELECT $1, $2, 'active', $3, $3
-		WHERE NOT EXISTS (SELECT 1 FROM tenants LIMIT 1)`,
-		tenantID, req.TenantName, now)
-	if err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		respond.Error(w, r, http.StatusConflict, "invalid_request_error", "already_bootstrapped",
-			"bootstrap already completed — tenants exist")
-		return
-	}
-
-	// Create keys
-	secretRaw, secretPrefix, secretHash := generateKey("vlx_secret_")
-	pubRaw, pubPrefix, pubHash := generateKey("vlx_pub_")
-
-	tx, err := h.db.BeginTx(ctx, postgres.TxBypass, "")
-	if err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-	defer postgres.Rollback(tx)
-
-	// Bootstrap seeds test-mode keys so a fresh install can connect Stripe test
-	// credentials without a live-mode detour. TxBypass doesn't set
-	// app.livemode, and the 0021 trigger on api_keys defaults it to live when
-	// unset — pin it to test here.
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.livemode', 'off', true)`); err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
-	secretKeyID := postgres.NewID("vlx_key")
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'secret','Bootstrap Secret Key (Test)',$4)`,
-		secretKeyID, secretPrefix, secretHash, tenantID); err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
-	pubKeyID := postgres.NewID("vlx_key")
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, name, tenant_id) VALUES ($1,$2,$3,'publishable','Bootstrap Publishable Key (Test)',$4)`,
-		pubKeyID, pubPrefix, pubHash, tenantID); err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
-	respond.JSON(w, r, http.StatusCreated, bootstrapResponse{
-		Tenant:    domain.Tenant{ID: tenantID, Name: req.TenantName, Status: domain.TenantStatusActive, CreatedAt: now, UpdatedAt: now},
-		SecretKey: secretRaw,
-		PublicKey: pubRaw,
-		Message:   "Bootstrap complete. Save these keys — the secret key will not be shown again.",
+	result, err := RunBootstrap(ctx, h.db, h.deps, BootstrapOpts{
+		TenantName:      req.TenantName,
+		OwnerEmail:      req.OwnerEmail,
+		OwnerPassword:   req.OwnerPassword,
+		FirstTenantOnly: true,
 	})
-}
+	if err != nil {
+		if errors.Is(err, ErrAlreadyBootstrapped) {
+			// Race loser: another request committed between our
+			// advisory check and RunBootstrap's authoritative one.
+			respond.Error(w, r, http.StatusConflict, "invalid_request_error", "already_bootstrapped",
+				"bootstrap already completed — tenants exist")
+			return
+		}
+		// Validation (bad email, password under user.MinPasswordLength)
+		// → 422 with the offending field; conflicts → 409. Nothing was
+		// written in any of these cases — RunBootstrap validates before
+		// its first write and runs one all-or-nothing tx.
+		respond.FromError(w, r, err, "bootstrap")
+		return
+	}
 
-func generateKey(prefix string) (raw, dbPrefix, hashHex string) {
-	secret := make([]byte, 32)
-	rand.Read(secret)
-	secretHex := hex.EncodeToString(secret)
-	raw = prefix + secretHex
-	dbPrefix = prefix + secretHex[:12]
-	hash := sha256.Sum256([]byte(raw))
-	hashHex = hex.EncodeToString(hash[:])
-	return
+	// Credentials + raw keys transit exactly once; keep every cache
+	// (browser, proxy) out of the loop.
+	w.Header().Set("Cache-Control", "no-store")
+	respond.JSON(w, r, http.StatusCreated, bootstrapResponse{
+		Tenant:             result.Tenant,
+		OwnerEmail:         result.OwnerUser.Email,
+		OwnerPassword:      result.OwnerPassword,
+		PasswordGenerated:  result.PasswordGenerated,
+		SecretKeyTest:      result.TestSecretKey,
+		SecretKeyLive:      result.LiveSecretKey,
+		PublishableKeyTest: result.TestPublishableKey,
+		Message:            "Bootstrap complete. Save these credentials — they will not be shown again.",
+	})
 }

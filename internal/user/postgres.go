@@ -153,6 +153,33 @@ func (s *PostgresStore) AttachTenant(ctx context.Context, userID, tenantID, role
 	return tx.Commit()
 }
 
+// CreateInTx inserts a user and their tenant attachment inside the
+// CALLER's transaction — the seam tenant.RunBootstrap needs so the
+// owner user commits (or rolls back) atomically with the tenant, keys,
+// and settings it belongs to (ADR-073). passwordHash must already be a
+// bcrypt hash (user.HashPassword validates + hashes). No commit here;
+// the caller owns the tx.
+func (s *PostgresStore) CreateInTx(ctx context.Context, tx *sql.Tx, email, passwordHash, tenantID, role string) (domain.User, error) {
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO users (email, password_hash)
+		VALUES ($1, $2)
+		RETURNING `+userCols, strings.TrimSpace(email), passwordHash)
+	u, err := scanUser(row)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			return domain.User{}, ErrEmailTaken
+		}
+		return domain.User{}, fmt.Errorf("create user: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_tenants (user_id, tenant_id, role)
+		VALUES ($1, $2, $3)
+	`, u.ID, tenantID, role); err != nil {
+		return domain.User{}, fmt.Errorf("attach tenant: %w", err)
+	}
+	return u, nil
+}
+
 func (s *PostgresStore) TenantsForUser(ctx context.Context, userID string) ([]domain.UserTenant, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

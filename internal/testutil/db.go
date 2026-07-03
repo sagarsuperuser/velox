@@ -97,7 +97,8 @@ func cleanDB(t *testing.T, pool *sql.DB) {
 				coupon_redemptions, coupons,
 				customer_price_overrides, webhook_deliveries, webhook_events,
 				webhook_endpoints, idempotency_keys, audit_log, tenant_settings,
-				tenants
+				tenants,
+				users, user_tenants, password_reset_tokens
 			CASCADE;
 		EXCEPTION WHEN undefined_table THEN
 			-- Tables don't exist yet (fresh DB before first migration)

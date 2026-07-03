@@ -165,7 +165,7 @@ To verify Velox can talk to Postgres:
 SELECT 1;
 ```
 
-Velox's `/v1/healthz` endpoint runs this against the configured DSN.
+Velox's `/health/ready` endpoint pings the configured DSN.
 Use it for readiness probes.
 
 ## Compatibility matrix

@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Velox billing engine — operator-grade observability. Imports against any Prometheus datasource scraping /v1/metrics. Panels grouped by concern: HTTP, Billing engine, Payments, Dunning, Outboxes, Stripe.",
+  "description": "Velox billing engine — operator-grade observability. Imports against any Prometheus datasource scraping /metrics. Panels grouped by concern: HTTP, Billing engine, Payments, Dunning, Outboxes, Stripe.",
   "editable": true,
   "graphTooltip": 1,
   "panels": [

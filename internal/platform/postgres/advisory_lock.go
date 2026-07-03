@@ -21,6 +21,17 @@ const (
 	// sizing non-critical on multi-replica deploys — the same posture
 	// both outbox dispatchers already take.
 	LockKeyWebhookRetry int64 = 76540005
+	// LockKeyBootstrap serializes tenant bootstrap (ADR-073): taken as
+	// pg_advisory_xact_lock inside RunBootstrap's single tx so the
+	// first-tenant existence check and the owner-email uniqueness
+	// pre-check are authoritative, not check-then-insert TOCTOUs.
+	LockKeyBootstrap int64 = 76540006
+	// LockKeyMigrateHybrid serializes the ENTIRE hybrid migration loop
+	// (ADR-073) — deliberately NOT golang-migrate's derived lock id
+	// (same-id on a second session would deadlock the library's own
+	// Lock()). Held for the loop's whole duration so per-iteration
+	// version reads are authoritative across racing replicas.
+	LockKeyMigrateHybrid int64 = 76540007
 )
 
 // AdvisoryLock is a held Postgres session-scoped advisory lock. Release MUST

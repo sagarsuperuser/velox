@@ -30,7 +30,13 @@ type Config struct {
 }
 
 type DBConfig struct {
-	URL             string
+	URL string
+	// AppURL is APP_DATABASE_URL — the least-privilege velox_app role
+	// the request path runs under (RLS enforced). Used VERBATIM when
+	// set (ADR-073). Empty in local dev = derive velox_app:velox_app
+	// from URL; empty in staging/production = the server refuses to
+	// boot (see cmd/velox openAppPool).
+	AppURL          string
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
@@ -53,6 +59,7 @@ func Load() (Config, error) {
 		Migrate: boolEnv("RUN_MIGRATIONS_ON_BOOT", false),
 		DB: DBConfig{
 			URL:             dbURL,
+			AppURL:          strings.TrimSpace(os.Getenv("APP_DATABASE_URL")),
 			MaxOpenConns:    intEnv("DB_MAX_OPEN_CONNS", 20),
 			MaxIdleConns:    intEnv("DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: time.Duration(intEnv("DB_CONN_MAX_LIFETIME_MIN", 30)) * time.Minute,
@@ -95,6 +102,13 @@ func (c Config) validateFatal() error {
 		if _, err := hex.DecodeString(encKey); err != nil {
 			return fmt.Errorf("VELOX_ENCRYPTION_KEY is not valid hex: %w", err)
 		}
+	}
+
+	// The bootstrap token mints the owner login AND the first live key —
+	// a guessable one is deployment takeover during the pre-bootstrap
+	// window. Same fail-closed spirit as the encryption key (ADR-073).
+	if c.Env != "local" && c.BootstrapToken != "" && len(c.BootstrapToken) < 16 {
+		return fmt.Errorf("VELOX_BOOTSTRAP_TOKEN is %d chars — require at least 16 outside local dev (it authorizes owner-credential + live-key creation; generate with: openssl rand -hex 32)", len(c.BootstrapToken))
 	}
 
 	// Stripe credentials live per-tenant in stripe_provider_credentials (see
