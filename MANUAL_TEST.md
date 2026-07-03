@@ -1524,10 +1524,21 @@ Major releases, infra changes, post-mortems.
 
 ## FLOW X2: Bootstrap lockdown
 
-- [ ] No `VELOX_BOOTSTRAP_TOKEN` → POST /v1/bootstrap → 403 `bootstrap disabled`.
-- [ ] Wrong token → 403 `invalid bootstrap token`.
-- [ ] Correct token, tenants exist → 409 `bootstrap already completed`.
-- [ ] `make bootstrap` CLI always works.
+- [ ] Fresh DB, no `VELOX_BOOTSTRAP_TOKEN` → POST /v1/bootstrap → 403 `bootstrap disabled`.
+- [ ] Fresh DB, wrong token → 403 `invalid bootstrap token`.
+- [ ] Tenants exist → 409 `already_bootstrapped` for EVERY probe: valid token, wrong token, no token, even token-unset (ADR-073 — no token-validity or token-configured oracle).
+- [ ] Bad `owner_password` (<12 chars) → 422 AND zero rows written (tenants/users/api_keys all empty); retry with a valid password → 201.
+- [ ] `make bootstrap` CLI always works (multi-tenant re-runs with a different email).
+
+## FLOW X2b: Self-host bootstrap → dashboard login → live key (ADR-073)
+
+Setup: fresh DB, `VELOX_BOOTSTRAP_TOKEN` set (≥16 chars).
+
+- [ ] POST /v1/bootstrap with token + `{"owner_email","owner_password"}` → 201 with `Cache-Control: no-store`; response carries `owner_email`, `owner_password`, `secret_key_test` (`vlx_secret_test_…`), `secret_key_live` (`vlx_secret_live_…`), `publishable_key_test`.
+- [ ] POST /v1/auth/login with those credentials → 200 + `velox_session` cookie.
+- [ ] `GET /v1/customers` with `Authorization: Bearer <secret_key_live>` → 200 (live mode reachable without psql).
+- [ ] Omit owner fields → owner defaults to `admin@velox.local` with a generated password in the response.
+- [ ] `APP_ENV=production` boot without `APP_DATABASE_URL` (or with password `velox_app`) → process exits with `refusing to start` naming APP_DATABASE_URL; with `APP_DATABASE_URL` pointed at the admin role → exits with `can BYPASS row-level security`.
 
 ## FLOW X3: Rate limiting
 

@@ -8,17 +8,17 @@ Stripe troubleshooting is out of scope.
 
 | Endpoint | Purpose | Use for |
 |---|---|---|
-| `GET /v1/healthz` | Liveness — process running, DB reachable | Kubernetes liveness probe |
-| `GET /v1/readyz` | Readiness — scheduler ran recently, DB write-OK | Kubernetes readiness probe + LB health check |
-| `GET /v1/metrics` | Prometheus scrape | Metrics-collection job |
+| `GET /health` | Liveness — process running | Kubernetes liveness probe |
+| `GET /health/ready` | Readiness — DB reachable (ping), scheduler ran recently | Kubernetes readiness probe + LB health check |
+| `GET /metrics` | Prometheus scrape (Bearer `METRICS_TOKEN` when set) | Metrics-collection job |
 
-`/v1/readyz` flips to "not ready" if the scheduler hasn't ticked in
+`/health/ready` returns 503 if the scheduler hasn't ticked in
 2× the configured interval — this catches scheduler stalls without
 requiring liveness restart. See "Scheduler stalled" below.
 
 ## Key metrics to alert on
 
-All metrics are exported under `/v1/metrics`. The set below is the
+All metrics are exported under `/metrics`. The set below is the
 alerting tier — what should page someone vs. what's informational.
 
 ### Page (critical)
@@ -51,14 +51,14 @@ alerting tier — what should page someone vs. what's informational.
 - `velox_usage_events_ingested_total` — usage ingest rate
 - `velox_billing_cycle_duration_seconds` — cycle latency
 - `velox_credit_operations_total` — credit ledger activity
-- `velox_tax_outcome_total{provider, outcome}` — tax-provider success/failure breakdown
+- `velox_tax_outcome_total{outcome, reason}` — non-happy tax outcomes (deferrals) by reason
 - `velox_scheduled_cleanup_rows_total` — periodic cleanup activity
 
 ## Failure modes — diagnosis + fix
 
 ### 1. Scheduler stalled
 
-**Symptom**: `/v1/readyz` returns 503; subscriptions due for billing
+**Symptom**: `/health/ready` returns 503; subscriptions due for billing
 aren't being invoiced; `velox_billing_cycles_total` rate drops to 0.
 
 **Why it happens**:
@@ -75,8 +75,8 @@ FROM pg_stat_activity
 WHERE state = 'active' AND query_start < now() - interval '30 seconds'
 ORDER BY duration DESC;
 
--- Scheduler last-run timestamp (from /v1/readyz response body)
-curl -s http://localhost:8080/v1/readyz
+-- Scheduler last-run timestamp (from /health/ready response body)
+curl -s http://localhost:8080/health/ready
 ```
 
 **Fix**:

@@ -59,7 +59,7 @@ Token roles are disjoint, so each `{model, token_type}` is exactly one rule at e
 - **Decimal quantities** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens
 - **Per-rule aggregation modes** — `sum`, `count`, `last_during_period`, `last_ever`, `max`
 - **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`)
-- **Embeddable cost dashboard** — drop `<CostDashboard customerId={…} />` into your app and end users see "$4.31 of GPT-4 today" with a projected bill
+- **Customer cost visibility** — per-customer usage/cost breakdown in the dashboard, plus a token-authenticated public JSON endpoint (`/v1/public/cost-dashboard/{token}`, rotatable per-customer token) your app can render — "$4.31 of GPT-4 today" with a projected bill. A packaged embeddable widget is roadmap, not shipped.
 
 ### Self-host first
 - **Docker Compose** — single-VM install, ~5 min from clone to invoice
@@ -116,6 +116,7 @@ Stating these loudly so the wrong customers self-select out:
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
 
 # Backend — Postgres + bootstrap demo tenant + operator user + API keys
+cp .env.example .env # make dev reads it; the defaults work for local dev as-is
 docker compose up -d postgres
 make bootstrap       # prints operator email + password + secret-test, secret-live, publishable-test keys
 make dev             # API on :8080
@@ -224,7 +225,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 - **Decimal per-unit rates** — sub-cent-per-unit pricing (e.g. $3.00 / 1M tokens) bills linearly and exactly via decimal unit prices (Stripe `unit_amount_decimal` model); invoice totals stay whole cents
 - **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`; recipe-picker UI; one-click uninstall
 - **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
-- **Embeddable cost dashboard** — `<CostDashboard customerId={…} />` plus token-authenticated public URL
+- **Customer cost visibility** — dashboard cost view plus token-authenticated public cost JSON (rotatable per-customer token)
 - **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), credit notes, dunning, hosted invoice page, transactional outbox
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.

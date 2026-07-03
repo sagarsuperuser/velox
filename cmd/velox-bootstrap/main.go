@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/tenant"
 	"github.com/sagarsuperuser/velox/internal/user"
 )
 
@@ -41,169 +40,58 @@ func main() {
 	db := postgres.NewDB(pool, 5*time.Second)
 	ctx := context.Background()
 
-	// Resolve bootstrap email + password upfront so we can pre-check
-	// uniqueness before inserting tenant/keys. Without this, a re-run
-	// with the default email would commit a fresh tenant + 3 API keys
-	// then fail at user-create, leaving orphans in the DB.
 	bootstrapEmail := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_EMAIL"))
-	if bootstrapEmail == "" {
-		bootstrapEmail = "admin@velox.local"
-	}
 	bootstrapPassword := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_PASSWORD"))
-	passwordGenerated := false
-	if bootstrapPassword == "" {
-		bootstrapPassword = generatePassword()
-		passwordGenerated = true
-	}
 
-	// Pre-check: refuse early with actionable guidance if this email
-	// already owns a tenant. The CLI does NOT block additional-tenant
-	// creation — Velox's model is multi-tenant in the data layer; just
-	// pass a different email to spin up a second tenant in the same
-	// deployment, useful for cross-tenant tests (FLOW X1, A2-disagreeing-
-	// identities) and ahead of any "platform admin" UI.
-	var existingCount int
-	if err := db.Pool.QueryRowContext(ctx,
-		`SELECT count(*) FROM users WHERE email = $1`, bootstrapEmail,
-	).Scan(&existingCount); err != nil {
-		fatal("check existing user: %v", err)
-	}
-	if existingCount > 0 {
-		fmt.Fprintf(os.Stderr, "ERROR: an account already exists for %s.\n\n", bootstrapEmail)
-		fmt.Fprintln(os.Stderr, "Velox is already bootstrapped for this email. Pick one:")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  1. Sign in with the existing credentials at http://localhost:5173/login")
-		fmt.Fprintln(os.Stderr, "  2. Create an ADDITIONAL tenant in the same deployment:")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_EMAIL=tenant-b@local \`)
-		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \`)
-		fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_TENANT='Tenant B' \`)
-		fmt.Fprintln(os.Stderr, `       make bootstrap`)
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  3. Wipe and re-bootstrap (loses all dev data):")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "       docker compose down -v && docker compose up -d postgres redis mailpit")
-		fmt.Fprintln(os.Stderr, "       make bootstrap")
-		os.Exit(1)
-	}
-
-	// Create tenant. Tenant name resolution order:
+	// Tenant name resolution order:
 	//   1. VELOX_BOOTSTRAP_TENANT env var — works through `make bootstrap`
 	//      (make swallows positional args and re-interprets them as
 	//      separate targets, so `make bootstrap "Tenant B"` would NOT
 	//      forward "Tenant B" to the binary)
 	//   2. Positional arg(s) — works when invoking the binary directly
 	//      (`go run ./cmd/velox-bootstrap "Tenant B"`)
-	//   3. Default: "Demo Tenant"
-	tenantID := postgres.NewID("vlx_ten")
+	//   3. RunBootstrap's default: "Demo Tenant"
 	tenantName := strings.TrimSpace(os.Getenv("VELOX_BOOTSTRAP_TENANT"))
 	if tenantName == "" && len(os.Args) > 1 {
 		tenantName = strings.Join(os.Args[1:], " ")
 	}
-	if tenantName == "" {
-		tenantName = "Demo Tenant"
-	}
 
-	_, err = db.Pool.ExecContext(ctx,
-		`INSERT INTO tenants (id, name, status) VALUES ($1, $2, 'active') ON CONFLICT DO NOTHING`,
-		tenantID, tenantName)
+	// The CLI is a thin caller of the single bootstrap writer
+	// (tenant.RunBootstrap, ADR-073): one all-or-nothing tx creates
+	// tenant + settings + keys + owner user, guards authoritative under
+	// the bootstrap advisory lock. The CLI does NOT block
+	// additional-tenant creation — Velox's model is multi-tenant in the
+	// data layer; pass a different email to spin up a second tenant in
+	// the same deployment (useful for cross-tenant tests, FLOW X1 /
+	// A2-disagreeing-identities, and ahead of any "platform admin" UI).
+	userStore := user.NewPostgresStore(db)
+	result, err := tenant.RunBootstrap(ctx, db, tenant.BootstrapDeps{
+		HashPassword: user.HashPassword,
+		CreateUserTx: userStore.CreateInTx,
+	}, tenant.BootstrapOpts{
+		TenantName:      tenantName,
+		OwnerEmail:      bootstrapEmail,
+		OwnerPassword:   bootstrapPassword,
+		FirstTenantOnly: false,
+	})
 	if err != nil {
-		fatal("create tenant: %v", err)
-	}
-
-	// Hard invariant: every tenant has a tenant_settings row.
-	// Without this, the engine path (ApplyTaxToLineItems → settings.Get)
-	// previously fell through to silent zero-tax when settings were
-	// missing — now SettingsStore.Get synthesizes defaults on miss,
-	// but bootstrap should still seed an explicit row so operators
-	// can immediately edit settings via the API without an implicit
-	// upsert side-effect on first invoice. Defaults match
-	// tenant.DefaultSettings; deliberately written with raw SQL
-	// (not via the SettingsStore) because bootstrap runs before
-	// the tenant has any auth context.
-	if _, err := db.Pool.ExecContext(ctx, `
-		INSERT INTO tenant_settings (
-			tenant_id, default_currency, timezone, invoice_prefix,
-			net_payment_terms, tax_provider, tax_on_failure
-		)
-		VALUES ($1, 'USD', 'UTC', 'VLX', 30, 'manual', 'block')
-		ON CONFLICT (tenant_id) DO NOTHING
-	`, tenantID); err != nil {
-		fatal("create tenant settings: %v", err)
-	}
-
-	// Use bypass RLS for bootstrap.
-	tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
-	if err != nil {
-		fatal("begin tx: %v", err)
-	}
-
-	// Mint paired test + live secret keys plus a test publishable key.
-	// Bootstrap seeds both modes so a fresh install can reach live mode
-	// without a `psql` detour: per Stripe's pattern, you can't mint
-	// cross-mode keys post-auth (a test-mode caller mints test keys), so
-	// the only path to a first live key is to mint it here. Operators
-	// who don't intend to charge real money simply ignore the live key.
-	testSecretKey, testSecretPrefix, testSecretID := mintKey("vlx_secret_test_")
-	liveSecretKey, liveSecretPrefix, liveSecretID := mintKey("vlx_secret_live_")
-	testPubKey, testPubPrefix, testPubID := mintKey("vlx_pub_test_")
-
-	// migration 0021 installs a BEFORE INSERT trigger on api_keys that
-	// overwrites NEW.livemode from the `app.livemode` session setting —
-	// TxBypass doesn't set it, so the trigger would default to live for
-	// every row. Set it explicitly per insert.
-	insert := func(id, prefix, rawKey, keyType string, livemode bool, name string) {
-		mode := "off"
-		if livemode {
-			mode = "on"
+		if errors.Is(err, tenant.ErrOwnerEmailExists) {
+			printEmailExistsGuidance(bootstrapEmail)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`SELECT set_config('app.livemode', $1, true)`, mode); err != nil {
-			_ = tx.Rollback()
-			fatal("set livemode: %v", err)
-		}
-		hash := sha256.Sum256([]byte(rawKey))
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO api_keys (id, key_prefix, key_hash, key_type, livemode, name, tenant_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			id, prefix, hex.EncodeToString(hash[:]), keyType, livemode, name, tenantID); err != nil {
-			_ = tx.Rollback()
-			fatal("create %s key: %v", name, err)
-		}
-	}
-
-	insert(testSecretID, testSecretPrefix, testSecretKey, "secret", false, "Bootstrap Key (Test)")
-	insert(liveSecretID, liveSecretPrefix, liveSecretKey, "secret", true, "Bootstrap Key (Live)")
-	insert(testPubID, testPubPrefix, testPubKey, "publishable", false, "Bootstrap Publishable Key (Test)")
-
-	if err := tx.Commit(); err != nil {
-		fatal("commit: %v", err)
-	}
-
-	// Create the dashboard user. Email + password were resolved earlier
-	// so we could pre-check uniqueness before any inserts; this call
-	// is the actual create. If it fails (e.g. password validation,
-	// tenant attach) the tenant + keys are already committed — that's
-	// rare given the pre-check, but kept best-effort. Operators can
-	// re-run with the same email after fixing the cause; the
-	// pre-check will skip and a second user-create attempt will run.
-	userSvc := user.NewService(user.NewPostgresStore(db), nil)
-	createdUser, err := userSvc.CreateUser(ctx, bootstrapEmail, bootstrapPassword, tenantID, "owner")
-	if err != nil {
-		fatal("create dashboard user: %v", err)
+		fatal("bootstrap: %v", err)
 	}
 
 	fmt.Println("========================================")
 	fmt.Println("  Velox Bootstrap Complete")
 	fmt.Println("========================================")
 	fmt.Println()
-	fmt.Printf("  Tenant:     %s\n", tenantName)
-	fmt.Printf("  Tenant ID:  %s\n", tenantID)
+	fmt.Printf("  Tenant:     %s\n", result.Tenant.Name)
+	fmt.Printf("  Tenant ID:  %s\n", result.Tenant.ID)
 	fmt.Println()
 	fmt.Println("  Dashboard sign-in (http://localhost:5173/login):")
-	fmt.Printf("  Email:    %s\n", createdUser.Email)
-	if passwordGenerated {
-		fmt.Printf("  Password: %s   (generated — save this; not retrievable)\n", bootstrapPassword)
+	fmt.Printf("  Email:    %s\n", result.OwnerUser.Email)
+	if result.PasswordGenerated {
+		fmt.Printf("  Password: %s   (generated — save this; not retrievable)\n", result.OwnerPassword)
 	} else {
 		fmt.Println("  Password: (the value of VELOX_BOOTSTRAP_PASSWORD)")
 	}
@@ -211,16 +99,16 @@ func main() {
 	fmt.Println("  API keys for SDK / curl callers:")
 	fmt.Println()
 	fmt.Println("  Secret Key — TEST mode (no real money):")
-	fmt.Printf("  %s\n", testSecretKey)
+	fmt.Printf("  %s\n", result.TestSecretKey)
 	fmt.Println()
 	fmt.Println("  Secret Key — LIVE mode (charges real cards):")
-	fmt.Printf("  %s\n", liveSecretKey)
+	fmt.Printf("  %s\n", result.LiveSecretKey)
 	fmt.Println()
 	fmt.Println("  Publishable Key (restricted, test mode):")
-	fmt.Printf("  %s\n", testPubKey)
+	fmt.Printf("  %s\n", result.TestPublishableKey)
 	fmt.Println()
 	fmt.Println("  Try it on the API:")
-	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", testSecretKey)
+	fmt.Printf("  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/customers\n", result.TestSecretKey)
 	fmt.Println()
 	fmt.Println("  Need a second tenant for cross-tenant tests? Re-run with a")
 	fmt.Println("  different email:")
@@ -231,24 +119,29 @@ func main() {
 	fmt.Println("========================================")
 }
 
-// generatePassword returns 24 random hex chars — meets the 12-char
-// minimum from internal/user.MinPasswordLength with a wide margin.
-// Printed to stdout once; not retrievable.
-func generatePassword() string {
-	b := make([]byte, 12)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-// mintKey returns a freshly generated raw key with the given mode-aware
-// prefix, its DB lookup prefix (full prefix + first 12 hex chars), and
-// a newly-minted vlx_key id. Matches auth.Service.CreateKey's indexed-
-// prefix shape so ValidateKey can find these rows by prefix.
-func mintKey(prefix string) (raw, dbPrefix, id string) {
-	secret := make([]byte, 32)
-	rand.Read(secret)
-	secretHex := hex.EncodeToString(secret)
-	return prefix + secretHex, prefix + secretHex[:12], postgres.NewID("vlx_key")
+// printEmailExistsGuidance keeps the CLI's actionable re-run options on
+// the owner-email conflict — the one bootstrap failure a dev hits
+// routinely (re-running `make bootstrap` with the default email).
+func printEmailExistsGuidance(email string) {
+	if email == "" {
+		email = "admin@velox.local"
+	}
+	fmt.Fprintf(os.Stderr, "ERROR: an account already exists for %s.\n\n", email)
+	fmt.Fprintln(os.Stderr, "Velox is already bootstrapped for this email. Pick one:")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  1. Sign in with the existing credentials at http://localhost:5173/login")
+	fmt.Fprintln(os.Stderr, "  2. Create an ADDITIONAL tenant in the same deployment:")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_EMAIL=tenant-b@local \`)
+	fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_PASSWORD='choose-a-password' \`)
+	fmt.Fprintln(os.Stderr, `       VELOX_BOOTSTRAP_TENANT='Tenant B' \`)
+	fmt.Fprintln(os.Stderr, `       make bootstrap`)
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  3. Wipe and re-bootstrap (loses all dev data):")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "       docker compose down -v && docker compose up -d postgres redis mailpit")
+	fmt.Fprintln(os.Stderr, "       make bootstrap")
+	os.Exit(1)
 }
 
 func fatal(format string, args ...any) {

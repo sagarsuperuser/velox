@@ -1091,8 +1091,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Get("/health/ready", handleDeepHealth(db))
 	r.Handle("/metrics", mw.MetricsAuth(mw.MetricsHandler()))
 
-	// Bootstrap — one-time setup (no auth, only works when no tenants exist)
-	bootstrapH := tenant.NewBootstrapHandler(db)
+	// Bootstrap — one-time setup (no auth, only works when no tenants
+	// exist). The deps wire the peer user package into
+	// tenant.RunBootstrap's single-tx owner-user creation (ADR-073).
+	bootstrapH := tenant.NewBootstrapHandler(db, tenant.BootstrapDeps{
+		HashPassword: user.HashPassword,
+		CreateUserTx: user.NewPostgresStore(db).CreateInTx,
+	})
 	r.Group(func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))

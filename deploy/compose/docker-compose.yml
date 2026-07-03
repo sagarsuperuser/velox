@@ -1,9 +1,10 @@
 # Velox single-VM self-host stack
 #
-# Three containers behind one nginx reverse proxy:
+# Four containers behind one nginx reverse proxy:
 #   nginx       :80    -> velox-api:8080
-#   velox-api   :8080  -> postgres:5432
+#   velox-api   :8080  -> postgres:5432, redis:6379
 #   postgres    :5432  (no host port — internal only)
+#   redis       :6379  (no host port — internal only; rate limiting)
 #
 # Migrations run on first boot via RUN_MIGRATIONS_ON_BOOT=true.
 # A separate worker binary is intentionally not split out: in v1 the
@@ -24,13 +25,28 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-velox}
       POSTGRES_USER: ${POSTGRES_USER:-velox}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — see .env.example}
+      # Consumed by postgres-init.sh (runs in THIS container on first
+      # boot) to create the least-privilege velox_app runtime role.
+      VELOX_APP_DB_PASSWORD: ${VELOX_APP_DB_PASSWORD:?VELOX_APP_DB_PASSWORD is required — see .env.example}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-velox} -d ${POSTGRES_DB:-velox}"]
       interval: 5s
       timeout: 5s
+      retries: 10
+
+  redis:
+    # Rate limiting backend. APP_ENV=production fail-closes the limiter,
+    # so the stack ships Redis in-stack — without it every /v1/auth and
+    # /v1/bootstrap request would 429. Used for rate limiting only.
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 10
 
   velox-api:
@@ -39,13 +55,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       # Core
       APP_ENV: ${APP_ENV:-production}
       PORT: "8080"
       RUN_MIGRATIONS_ON_BOOT: "true"
-      # Database — admin URL; the binary derives a velox_app role URL for RLS.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Database — admin/migration role
       DATABASE_URL: postgres://${POSTGRES_USER:-velox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-velox}?sslmode=disable
+      # Database — least-privilege runtime role (RLS enforced). Production
+      # refuses to boot without this, with a default password, or with a
+      # bypass-capable role (ADR-073). Keep the password URL-safe
+      # (openssl rand -hex 24) — it is embedded in this DSN unescaped.
+      APP_DATABASE_URL: postgres://velox_app:${VELOX_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-velox}?sslmode=disable
       # Pool tuning (defaults from internal/config/config.go)
       DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-20}
       DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
@@ -55,16 +79,20 @@ services:
       DB_QUERY_TIMEOUT_MS: ${DB_QUERY_TIMEOUT_MS:-5000}
       # Encryption-at-rest (mandatory in production — refuses to start without it)
       VELOX_ENCRYPTION_KEY: ${VELOX_ENCRYPTION_KEY}
-      # Bootstrap token for POST /v1/bootstrap
+      # Bootstrap token for POST /v1/bootstrap (min 16 chars outside local)
       VELOX_BOOTSTRAP_TOKEN: ${VELOX_BOOTSTRAP_TOKEN}
-      # Optional — rate limiting fails open without Redis
-      REDIS_URL: ${REDIS_URL:-}
-      # Optional — Stripe webhook signing
-      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Rate limiting backend (in-stack; fail-closed in production without it)
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # nginx fronts the API: trust its X-Forwarded-For/X-Real-IP so rate
+      # limits and audit logs key on the real client IP, not the proxy.
+      # Compose networks come from Docker's private pools; narrow this if
+      # you pin a custom subnet.
+      TRUST_PROXY: ${TRUST_PROXY:-172.16.0.0/12,192.168.0.0/16}
       # Optional — outbound email (SMTP). Velox enqueues to email_outbox
-      # regardless; the dispatcher noops when SMTP_HOST is unset.
+      # regardless; sends DLQ when SMTP_HOST is unset.
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_TLS: ${SMTP_TLS:-starttls}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-billing@example.com}
@@ -73,16 +101,16 @@ services:
       PAYMENT_UPDATE_URL: ${PAYMENT_UPDATE_URL:-}
       PAYMENT_UPDATE_RETURN_URL: ${PAYMENT_UPDATE_RETURN_URL:-}
       CUSTOMER_PORTAL_URL: ${CUSTOMER_PORTAL_URL:-}
-      # Optional — dashboard email links
-      VELOX_DASHBOARD_URL: ${VELOX_DASHBOARD_URL:-}
-      VELOX_DASHBOARD_PASSWORD_RESET_URL: ${VELOX_DASHBOARD_PASSWORD_RESET_URL:-}
-      VELOX_DASHBOARD_INVITE_URL: ${VELOX_DASHBOARD_INVITE_URL:-}
+      # Optional — dashboard origin for password-reset email links
+      DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-}
       # Optional — cookie domain for dashboard sessions in production
       VELOX_COOKIE_DOMAIN: ${VELOX_COOKIE_DOMAIN:-}
       # Optional — CORS origins (comma-separated)
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       # Optional — /metrics auth
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Optional — blind-index key for encrypted email search (64 hex chars)
+      VELOX_EMAIL_BIDX_KEY: ${VELOX_EMAIL_BIDX_KEY:-}
       # Optional — OpenTelemetry export
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-velox}

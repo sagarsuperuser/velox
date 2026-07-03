@@ -1,8 +1,8 @@
 # Velox self-host on a single VM (Docker Compose)
 
-A 5-minute path from a fresh VM to a working Velox tenant. Three
-containers behind one nginx: postgres, velox-api, nginx. Migrations run
-on first boot.
+A 5-minute path from a fresh VM to a working Velox tenant. Four
+containers behind one nginx: postgres, redis, velox-api, nginx.
+Migrations run on first boot.
 
 ## Prerequisites
 
@@ -19,22 +19,26 @@ cd velox/deploy/compose
 cp .env.example .env
 ```
 
-Edit `.env` and set the three required secrets:
+Edit `.env` and set the four required secrets:
 
 ```bash
-# Postgres password — pick a long random string
+# Postgres admin/migration password
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
+
+# Password for the least-privilege velox_app runtime role (RLS enforced).
+# hex output keeps it URL-safe — it's embedded into a connection URL.
+VELOX_APP_DB_PASSWORD=$(openssl rand -hex 24)
 
 # 64 hex chars (32 bytes) for PII encryption-at-rest
 VELOX_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
-# Authorises POST /v1/bootstrap to create the first tenant
+# Authorises POST /v1/bootstrap to create the first tenant (min 16 chars)
 VELOX_BOOTSTRAP_TOKEN=$(openssl rand -hex 32)
 ```
 
 (Or generate them in-shell and paste in.) Everything else in `.env` is
-optional — the binary boots without SMTP, Stripe webhook secrets, or
-Redis. See `.env.example` for the full list.
+optional — the binary boots without SMTP or Stripe configuration. See
+`.env.example` for the full list.
 
 ## 2. Bring the stack up
 
@@ -45,10 +49,12 @@ docker compose up -d
 First boot does three things you'll see in the logs:
 
 1. `postgres` initialises the `velox` database and creates the
-   `velox_app` runtime role (see `postgres-init.sql`).
+   `velox_app` runtime role with your `VELOX_APP_DB_PASSWORD` (see
+   `postgres-init.sh`).
 2. `velox-api` starts with `RUN_MIGRATIONS_ON_BOOT=true`, applies all
-   pending migrations from `internal/platform/migrate/sql/`, then begins
-   serving on `:8080` and starts the in-process scheduler.
+   pending migrations from `internal/platform/migrate/sql/`, verifies
+   the runtime role cannot bypass RLS, then begins serving on `:8080`
+   and starts the in-process scheduler.
 3. `nginx` proxies host `:80` to `velox-api:8080`.
 
 Tail the logs while it converges:
@@ -75,19 +81,35 @@ health check to `/health/ready`.
 
 ## 4. Create your first tenant
 
-The bootstrap endpoint is gated by the token you set in `.env`:
+The bootstrap endpoint is gated by the token you set in `.env`.
+
+**Run this ON the VM** (`http://localhost/...`) or through an SSH
+tunnel — the response carries your owner password and live API key, and
+this stack terminates no TLS; do not send it over plain HTTP across a
+network. The token travels in the `Authorization` header (never a query
+string) so it stays out of proxy access logs.
 
 ```bash
 curl -X POST http://localhost/v1/bootstrap \
   -H "Authorization: Bearer ${VELOX_BOOTSTRAP_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"tenant_name":"Acme","owner_email":"you@example.com","owner_password":"a-strong-password"}'
+  -d '{"tenant_name":"Acme","owner_email":"you@example.com","owner_password":"a-strong-password-12ch"}'
 ```
 
-The response carries your first secret API key
-(`vlx_secret_test_…`). Save it — Velox stores only the SHA-256 hash, so
-the plaintext is never recoverable. Use that key against `/v1/*` from
-here on.
+(`owner_email`/`owner_password` are optional — omitted, the owner is
+`admin@velox.local` with a generated password returned once. Passwords
+must be at least 12 characters.)
+
+The response carries, exactly once (Velox stores only hashes — none of
+it is recoverable later):
+
+- your dashboard owner credentials (`owner_email` / `owner_password`),
+- a TEST secret key (`vlx_secret_test_…`),
+- a LIVE secret key (`vlx_secret_live_…` — charges real cards; ignore
+  it until you mean it),
+- a test publishable key.
+
+A repeat call answers `409 already_bootstrapped` — one-shot by design.
 
 ## 5. Verify
 
@@ -130,7 +152,7 @@ HSTS protections are on.
 ## Backups
 
 Once data matters, follow
-[`docs/self-host/postgres-backup.md`](../../docs/self-host/postgres-backup.md)
+[`docs/ops/backup-considerations.md`](../../docs/ops/backup-considerations.md)
 for a `pg_basebackup` + WAL-archive recipe and a tested restore drill.
 
 ## Troubleshooting
@@ -140,14 +162,33 @@ set the key in `.env` (64 hex chars, generate with `openssl rand -hex 32`)
 and `docker compose up -d` again. Production refuses to start without it
 to avoid silently storing PII in plaintext.
 
-**`velox-api` logs `running with admin database connection — RLS NOT enforced`** —
-the `velox_app` role wasn't created. The init SQL in
-`postgres-init.sql` only runs on a fresh `pgdata` volume. If you're
-upgrading an existing volume, run the script manually:
+**`velox-api` exits with `APP_DATABASE_URL is required in production`
+or `default/guessable password`** — set `VELOX_APP_DB_PASSWORD` in
+`.env` (compose builds `APP_DATABASE_URL` from it) and bring the stack
+back up. Production refuses to run the request path on the admin role
+or on the publicly documented default password.
+
+**`velox-api` exits with `could not open the app database connection`** —
+the `velox_app` role is missing or its password doesn't match
+`VELOX_APP_DB_PASSWORD`. `postgres-init.sh` only runs on a FRESH
+`pgdata` volume; on an existing volume create or rotate the role
+manually (psql's `:'pw'` quoting keeps any password intact):
 
 ```bash
-docker compose exec -T postgres psql -U velox -d velox < postgres-init.sql
+docker compose exec -e VELOX_APP_DB_PASSWORD postgres \
+  psql -U velox -d velox -v pw="$VELOX_APP_DB_PASSWORD" \
+  -c "ALTER ROLE velox_app PASSWORD :'pw'"
+# role doesn't exist yet? CREATE it instead:
+#   -c "CREATE ROLE velox_app WITH LOGIN PASSWORD :'pw'" \
+#   -c "GRANT ALL PRIVILEGES ON DATABASE velox TO velox_app" \
+#   -c "GRANT ALL ON SCHEMA public TO velox_app" \
+#   -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_app" \
+#   -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_app"
 ```
+
+**`velox-api` exits with `role can BYPASS row-level security`** —
+`APP_DATABASE_URL` points at the admin/superuser role (usually a
+copied `DATABASE_URL`). Point it at `velox_app`.
 
 **`/health/ready` returns 503 with `scheduler: degraded`** — the
 scheduler tick window has elapsed without a recorded run. Usually means
@@ -160,6 +201,8 @@ port) in `.env` and bring the stack back up.
 ## What's next
 
 - [`docs/self-host.md`](../../docs/self-host.md) — top-level self-host landing
-- [`docs/self-host/postgres-backup.md`](../../docs/self-host/postgres-backup.md) — backup + restore drill
-- Helm chart for Kubernetes — coming soon (Week 9 follow-up lane)
-- Terraform module for AWS VPC — coming soon (Week 9 follow-up lane)
+- [`docs/ops/backup-considerations.md`](../../docs/ops/backup-considerations.md) — backup + restore drill
+
+Kubernetes (Helm) and Terraform install paths are deliberately not
+shipped in v1 — they land when a design partner names the flavour they
+actually run.

@@ -22,6 +22,8 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 //go:embed sql/*.sql
@@ -60,6 +62,15 @@ const noTxHeader = "-- velox:no-transaction"
 // noTxHeaderScanLines bounds how far into a file we look for the header.
 // 5 is enough for a leading copyright/comment block plus the marker.
 const noTxHeaderScanLines = 5
+
+// hybridLockPollInterval/hybridLockWaitMax bound the try-lock poll in
+// acquireHybridLoopLock. 30 minutes is far beyond any migration this
+// repo ships (the slowest CONCURRENTLY index builds in seconds at
+// current scale) while still failing loudly if a replica wedges.
+const (
+	hybridLockPollInterval = 500 * time.Millisecond
+	hybridLockWaitMax      = 30 * time.Minute
+)
 
 // openMigrationPool opens a dedicated short-lived *sql.DB for one migration
 // command. Migrations are single-threaded, so a 1-connection pool is enough.
@@ -114,12 +125,14 @@ func newMigrator(db *sql.DB) (*migrate.Migrate, error) {
 // Up applies all pending migrations using a dedicated short-lived connection
 // pool. The caller's app pool (if any) is untouched — only the DSN is needed.
 //
-// Concurrency: golang-migrate's postgres driver takes an internal
-// pg_advisory_lock (keyed on db+schema) before applying. Multiple replicas
-// booting concurrently serialize on that lock — one runs migrations, the
-// others wait, then find ErrNoChange and proceed. We do not add an outer
-// lock: it would be redundant with the library's lock and introduces a
-// connection-leak edge case if the manual unlock fails after a network blip.
+// Concurrency: the pure-library fast path relies on golang-migrate's
+// internal pg_advisory_lock (keyed on db+schema) — racing replicas
+// serialize there, the losers find ErrNoChange and proceed. The hybrid
+// path (any embedded no-tx file — always, since 0062) additionally
+// serializes its WHOLE loop under LockKeyMigrateHybrid (ADR-073): the
+// library's per-step lock cannot protect the loop's decide-then-dispatch
+// reads, and unlocked racers could rewind versions or push a
+// CONCURRENTLY file through the in-tx path. See acquireHybridLoopLock.
 //
 // Production guidance: run migrations as a dedicated deploy step (e.g., a
 // Kubernetes Job with activeDeadlineSeconds, or a CI step before rollout),
@@ -186,6 +199,70 @@ func Up(dsn string) error {
 	return upHybrid(dsn, noTxVersions)
 }
 
+// acquireHybridLoopLock serializes the ENTIRE hybrid loop across
+// replicas (ADR-073). The loop's decide-then-dispatch reads of
+// schema_migrations were unlocked: two replicas booting together could
+// double-apply a no-tx migration, rewind the recorded version, or —
+// worst — mis-dispatch a `CONCURRENTLY` file through the library's
+// in-tx path (replica B's Steps(1) applies "whatever is next" under the
+// library's lock, not the version B's loop intended), leaving a dirty
+// crash-loop. Holding one Velox-owned lock for the loop's whole
+// duration makes every per-iteration read authoritative: the loser
+// replica waits, then finds each version already applied and skips.
+//
+// The key is deliberately NOT golang-migrate's derived lock id — the
+// library takes that id on its own session inside each step, and
+// holding the same id here would deadlock it. A dedicated 1-conn pool
+// carries the lock so holding it can't starve statusDB's bookkeeping
+// reads (both pools are capped at one connection).
+func acquireHybridLoopLock(dsn string) (release func(), err error) {
+	lockDB, err := openMigrationPool(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open hybrid lock pool: %w", err)
+	}
+	ctx := context.Background()
+	conn, err := lockDB.Conn(ctx)
+	if err != nil {
+		_ = lockDB.Close()
+		return nil, fmt.Errorf("acquire hybrid lock conn: %w", err)
+	}
+	// POLL with try-lock instead of a blocking pg_advisory_lock: a
+	// blocked lock statement holds a snapshot for as long as it waits,
+	// and the winner's CREATE INDEX CONCURRENTLY must wait out every
+	// older snapshot — a mutual wait Postgres cannot detect (advisory
+	// waits aren't in its deadlock graph). Short try-lock statements
+	// hold nothing between polls, so the winner's DDL proceeds and the
+	// loser gets the lock when it finishes.
+	deadline := time.Now().Add(hybridLockWaitMax)
+	for attempt := 0; ; attempt++ {
+		var got bool
+		if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, postgres.LockKeyMigrateHybrid).Scan(&got); err != nil {
+			_ = conn.Close()
+			_ = lockDB.Close()
+			return nil, fmt.Errorf("acquire hybrid migration loop lock: %w", err)
+		}
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = conn.Close()
+			_ = lockDB.Close()
+			return nil, fmt.Errorf("hybrid migration loop lock still held after %s — another replica's migration run appears wedged", hybridLockWaitMax)
+		}
+		if attempt%60 == 59 { // ~every 30s at 500ms polls
+			slog.Info("waiting for hybrid migration loop lock (another replica is migrating)")
+		}
+		time.Sleep(hybridLockPollInterval)
+	}
+	return func() {
+		if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, postgres.LockKeyMigrateHybrid); err != nil {
+			slog.Warn("release hybrid migration loop lock", "error", err)
+		}
+		_ = conn.Close()
+		_ = lockDB.Close()
+	}, nil
+}
+
 // upHybrid applies migrations one at a time, dispatching each to the
 // appropriate runner: golang-migrate's `Steps(1)` for normal in-tx files,
 // and our own `applyNoTx` for files marked with `-- velox:no-transaction`.
@@ -193,7 +270,15 @@ func Up(dsn string) error {
 // We hold a single dedicated *sql.DB only for the no-tx path (advisory
 // lock + raw exec). The library path opens its own throwaway pool per
 // step (see stepOneViaLibrary) so its Close() doesn't fight ours.
+// The whole loop runs under the hybrid loop lock (ADR-073) so racing
+// replicas serialize here, not per-step.
 func upHybrid(dsn string, noTxVersions map[uint]struct{}) error {
+	release, err := acquireHybridLoopLock(dsn)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	statusDB, err := openMigrationPool(dsn)
 	if err != nil {
 		return err
@@ -804,7 +889,14 @@ func Rollback(dsn string, steps int) (uint, error) {
 // rollbackHybrid is the symmetric counterpart to upHybrid for the down
 // direction. Walks back N steps, dispatching each to the library
 // (`Steps(-1)`) or our autocommit applier as the down file requires.
+// Serialized under the same hybrid loop lock as upHybrid (ADR-073).
 func rollbackHybrid(dsn string, steps int, noTxDown map[uint]struct{}) (uint, error) {
+	release, err := acquireHybridLoopLock(dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
 	statusDB, err := openMigrationPool(dsn)
 	if err != nil {
 		return 0, err

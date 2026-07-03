@@ -359,13 +359,14 @@ Commands:
   help                 Show this help
 
 Environment:
-  DATABASE_URL              PostgreSQL connection string (required, used for migrations if APP_DATABASE_URL set)
-  APP_DATABASE_URL          App database connection (least-privilege, used at runtime)
+  DATABASE_URL              PostgreSQL connection string — admin/migration role (required)
+  APP_DATABASE_URL          Runtime connection for the least-privilege velox_app role (RLS
+                            enforced). Used verbatim; REQUIRED in staging/production. Local
+                            dev derives velox_app:velox_app from DATABASE_URL when unset.
   PORT                      HTTP port (default: 8080)
   APP_ENV                   Environment: local, staging, production (default: local)
   RUN_MIGRATIONS_ON_BOOT    Run migrations on server start (default: false)
-  STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
-  VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint
+  VELOX_BOOTSTRAP_TOKEN     Token for POST /v1/bootstrap endpoint (min 16 chars outside local)
   PAYMENT_UPDATE_URL        Base URL for payment update page (e.g. https://app.example.com/update-payment)
   PAYMENT_UPDATE_RETURN_URL Where Stripe Checkout returns after the public payment-update flow; must be a real SPA route, e.g. https://app.example.com/payment-method-added (handler appends ?status=success|cancel)
   VELOX_ENCRYPTION_KEY      64-char hex key for PII encryption at rest
@@ -373,7 +374,8 @@ Environment:
 }
 
 // deriveAppURL replaces the user:password in a DATABASE_URL with velox_app:velox_app.
-// Returns "" if the URL can't be parsed.
+// Returns "" if the URL can't be parsed. LOCAL DEV ONLY (ADR-073) —
+// staging/production require an explicit APP_DATABASE_URL.
 func deriveAppURL(adminURL string) string {
 	u, err := neturl.Parse(adminURL)
 	if err != nil {
@@ -383,31 +385,74 @@ func deriveAppURL(adminURL string) string {
 	return u.String()
 }
 
-// openAppPool returns the non-superuser connection used for request-time
-// queries (where RLS must be enforced). The app-role URL is derived from
-// DATABASE_URL by swapping its credentials with velox_app/velox_app — so
-// operators only configure one URL, and the velox_app role must exist in
-// the database. If derivation fails, or the app-role pool can't be opened,
-// falls back to the admin pool with a loud warning — RLS NOT enforced in
-// that mode. The returned cleanup is a noop when falling back.
+// resolveAppURL applies ADR-073's fail-closed matrix for the runtime
+// (RLS-enforced) pool. Returns the URL to open, or fallbackWarn != ""
+// meaning "use the admin pool and log this" (local dev only), or an
+// error that must abort boot. Pure so the matrix is unit-testable.
+func resolveAppURL(env, adminURL, appURL string) (url, fallbackWarn string, err error) {
+	local := env == "local"
+
+	if appURL != "" {
+		u, perr := neturl.Parse(appURL)
+		if perr != nil || u.User == nil {
+			return "", "", fmt.Errorf("APP_DATABASE_URL is not a parseable connection URL with credentials: %v", perr)
+		}
+		username := u.User.Username()
+		password, _ := u.User.Password()
+		if !local {
+			// The publicly documented default and the no-credential
+			// trust-auth shape both hand cross-tenant read/write to
+			// anyone with TCP reach — the exact exposure HIGH #9
+			// flagged. Refuse outside local dev.
+			switch password {
+			case "":
+				return "", "", fmt.Errorf("APP_DATABASE_URL has no password (trust-auth shape) — forbidden in %s; set a real password for the app role (ALTER ROLE %s PASSWORD ...)", env, username)
+			case "velox_app", username:
+				return "", "", fmt.Errorf("APP_DATABASE_URL uses the default/guessable password for role %q — forbidden in %s; rotate it (openssl rand -hex 24, then ALTER ROLE ... PASSWORD) and update APP_DATABASE_URL", username, env)
+			}
+		}
+		return appURL, "", nil
+	}
+
+	if !local {
+		return "", "", fmt.Errorf("APP_DATABASE_URL is required in %s: the runtime pool must be a least-privilege role with its own password, not one derived from DATABASE_URL with the documented default — see docs/self-host.md", env)
+	}
+
+	derived := deriveAppURL(adminURL)
+	if derived == "" || derived == adminURL {
+		return "", "running with admin database connection — RLS NOT enforced. Create the velox_app role.", nil
+	}
+	return derived, "", nil
+}
+
+// checkRLSCapability reports whether the pool's role can bypass RLS.
+// Superuser and BYPASSRLS defeat row-level security wholesale; table
+// ownership does not (every RLS table is FORCE ROW LEVEL SECURITY).
+func checkRLSCapability(pool *sql.DB) (role string, canBypass bool, err error) {
+	err = pool.QueryRow(
+		`SELECT current_user, (rolsuper OR rolbypassrls) FROM pg_roles WHERE rolname = current_user`,
+	).Scan(&role, &canBypass)
+	return role, canBypass, err
+}
+
+// openAppPool returns the connection used for request-time queries,
+// where RLS must be enforced (ADR-073). APP_DATABASE_URL is honored
+// verbatim when set; staging/production refuse to boot without it, with
+// a default/empty password, or with a role that can bypass RLS — the
+// capability check is what catches the path of least resistance
+// (copying DATABASE_URL into APP_DATABASE_URL), which no string check
+// can see. Local dev keeps the velox_app:velox_app derivation and
+// warn-and-fallback. The returned cleanup is a noop when falling back.
 func openAppPool(cfg config.Config, adminPool *sql.DB) (*sql.DB, func()) {
 	noop := func() {}
 
-	// Outside local dev, falling back to the admin pool means RLS is NOT
-	// enforced — every request runs as the table owner and bypasses tenant
-	// isolation on every table (the most likely self-host misconfig: a
-	// superuser DATABASE_URL + no velox_app role). Fail closed rather than
-	// silently serve cross-tenant data. Local dev keeps warn-and-continue
-	// (single operator, single tenant, often a superuser URL).
-	failClosed := cfg.Env != "local"
-
-	appURL := deriveAppURL(cfg.DB.URL)
-	if appURL == "" || appURL == cfg.DB.URL {
-		if failClosed {
-			slog.Error("refusing to start: could not derive a velox_app role URL from DATABASE_URL, so RLS would not be enforced and tenants would not be isolated. Create the velox_app role and point DATABASE_URL at credentials swappable to velox_app — see docs/self-host.md.", "env", cfg.Env)
-			os.Exit(1)
-		}
-		slog.Warn("running with admin database connection — RLS NOT enforced. Create the velox_app role.")
+	appURL, fallbackWarn, err := resolveAppURL(cfg.Env, cfg.DB.URL, cfg.DB.AppURL)
+	if err != nil {
+		slog.Error("refusing to start: "+err.Error(), "env", cfg.Env)
+		os.Exit(1)
+	}
+	if fallbackWarn != "" {
+		slog.Warn(fallbackWarn)
 		return adminPool, noop
 	}
 
@@ -415,13 +460,30 @@ func openAppPool(cfg config.Config, adminPool *sql.DB) (*sql.DB, func()) {
 	appCfg.URL = appURL
 	appPool, err := config.OpenPostgres(appCfg)
 	if err != nil {
-		if failClosed {
-			slog.Error("refusing to start: could not open the velox_app database connection, so RLS would not be enforced and tenants would not be isolated. Ensure the velox_app role exists with LOGIN — see docs/self-host.md.", "error", err, "env", cfg.Env)
+		// An EXPLICIT APP_DATABASE_URL that doesn't work is fatal in
+		// every env — explicit config never silently degrades. Only the
+		// local derived URL keeps warn-and-fallback (role not created).
+		if cfg.DB.AppURL != "" || cfg.Env != "local" {
+			slog.Error("refusing to start: could not open the app database connection, so RLS would not be enforced and tenants would not be isolated. Check APP_DATABASE_URL and that the role exists with LOGIN — see docs/self-host.md.", "error", err, "env", cfg.Env)
 			os.Exit(1)
 		}
 		slog.Warn("could not open app database connection, falling back to admin", "error", err)
 		return adminPool, noop
 	}
-	slog.Info("using app database connection (RLS enforced)")
+
+	role, canBypass, err := checkRLSCapability(appPool)
+	if err != nil {
+		slog.Error("refusing to start: could not verify the app role's RLS posture", "error", err, "env", cfg.Env)
+		os.Exit(1)
+	}
+	if canBypass {
+		if cfg.Env != "local" {
+			slog.Error("refusing to start: the APP_DATABASE_URL role can BYPASS row-level security (superuser or BYPASSRLS) — tenants would not be isolated. Point APP_DATABASE_URL at a least-privilege role like velox_app, not the admin role — see docs/self-host.md.", "role", role, "env", cfg.Env)
+			os.Exit(1)
+		}
+		slog.Warn("app database role can bypass RLS — acceptable in local dev only", "role", role)
+	}
+
+	slog.Info("using app database connection (RLS enforced)", "role", role)
 	return appPool, func() { _ = appPool.Close() }
 }
