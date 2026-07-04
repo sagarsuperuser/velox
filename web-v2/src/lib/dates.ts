@@ -87,18 +87,19 @@ export function formatYMDInTZ(iso: string, timezone?: string): string {
 // spec — keep them byte-for-byte identical). The CANONICAL billing-period range
 // is authored by the backend and rendered verbatim — invoices via
 // `billing_period_display` and subscriptions via `current_billing_period_display`
-// (both computed by FormatInclusivePeriod in the row's billing TZ). Do NOT use
-// these helpers to re-derive a subscription's current-period range; that
-// reintroduced a real bug once — the FE computed in the LIVE tenant TZ, so a sub
-// whose billing TZ differed from the current tenant setting (ADR-074) displayed a
-// range shifted by a day.
+// (both computed by FormatInclusivePeriod in the org billing TZ). Prefer those
+// authored strings over re-deriving from the half-open start/end, so the Go and
+// TS inclusive-day logic can't drift.
 //
 // What remains for these helpers: auxiliary period/date labels the backend does
 // not author — a trial range, a single inclusive period-end date, a line-item's
-// "Covers …" span. For those, ALWAYS pass the explicit anchor timezone (the sub's
-// `billing_timezone`, or the invoice's), NEVER let it default to the live tenant
-// TZ for a period that was anchored elsewhere. Display only — the wire stays
-// half-open.
+// "Covers …" span. Anchor them in the OWNING entity's billing timezone:
+//   - INVOICE-anchored dates → pass `invoice.billing_timezone` (the org TZ
+//     denormalized at issue, ADR-077 — stays fixed if the org later re-zones).
+//   - SUBSCRIPTION-anchored dates → pass undefined; a sub bills in the one org
+//     timezone, which IS the live tenant setting, so the tenant-TZ fallback is
+//     the correct anchor (no per-sub snapshot exists to diverge from it, ADR-077
+//     supersedes ADR-074). Display only — the wire stays half-open.
 //
 // The conversion is a CALENDAR step, never a 24h instant subtraction: snap the
 // exclusive boundary to its civil date in the given TZ, then step back one
@@ -127,10 +128,11 @@ function inclusiveEndYMD(endISO: string, tz: string): [number, number, number] {
 // instant and must keep formatDate(). Empty input → "". Mirrors Go
 // domain.InclusiveDisplayEnd + the "Jan 2, 2006" layout.
 //
-// `timezone` is REQUIRED (ADR-076): a civil-day render must name its zone — the
-// owning entity's billing_timezone. Pass it explicitly (it may be undefined for a
-// legacy row → falls back to the tenant TZ); the type just forbids OMITTING it,
-// so a caller can't silently render in the live display TZ (the FE bug class).
+// `timezone` is REQUIRED (ADR-076): a civil-day render must name its zone —
+// `invoice.billing_timezone` for an invoice-anchored date, or undefined for a
+// subscription-anchored one (→ live tenant/org TZ, the sub's actual anchor,
+// ADR-077). The type forbids OMITTING the argument so a caller can't render a
+// civil day without consciously choosing its zone (the FE bug class).
 export function formatCivilDate(endISO: string | null | undefined, timezone: string | undefined): string {
   if (!endISO) return ''
   const tz = timezone || tenantTZ()
@@ -144,9 +146,9 @@ export function formatCivilDate(endISO: string | null | undefined, timezone: str
 // appears. Returns "" when the period is empty (start == end). Clamps the
 // inclusive end to >= the start's civil day so a sub-day stub never inverts.
 // Mirrors Go domain.FormatInclusivePeriod.
-// `timezone` is REQUIRED (ADR-076) — see formatCivilDate. Pass the owning
-// entity's billing_timezone explicitly; undefined falls back to the tenant TZ,
-// but the argument can't be omitted.
+// `timezone` is REQUIRED (ADR-076) — see formatCivilDate. Pass
+// `invoice.billing_timezone` for an invoice-anchored period, or undefined for a
+// subscription-anchored one (→ live tenant/org TZ); the argument can't be omitted.
 export function formatCivilPeriod(
   startISO: string | null | undefined,
   endISO: string | null | undefined,

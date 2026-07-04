@@ -413,14 +413,11 @@ type Subscription struct {
 	CurrentBillingPeriodEnd   *time.Time         `json:"current_billing_period_end,omitempty"`
 	// CurrentBillingPeriodDisplay is the human period string with the INCLUSIVE
 	// last covered day ("Jun 1, 2028 – Jun 30, 2028"), rendered date-only in the
-	// sub's billing TZ (BillingTimezone) — the display peer of the ADR-074
-	// snapshot and the exact analogue of Invoice.BillingPeriodDisplay. Computed
-	// on read (never persisted); the raw half-open Current*Period*Start/End above
-	// are unchanged (SDK/wire contract stays half-open). Empty when the sub has
-	// no current period. Backend-authored so the inclusive end can't drift across
-	// the Go and TS runtimes, and — critically — it's anchored in the SUB's
-	// billing TZ, not the live tenant TZ, so a tenant TZ change never shifts the
-	// displayed range of a running sub (the off-by-one ADR-074 exists to prevent).
+	// org's billing timezone (ADR-077) — the exact analogue of
+	// Invoice.BillingPeriodDisplay. Computed on read (never persisted); the raw
+	// half-open Current*Period*Start/End above are unchanged (SDK/wire contract
+	// stays half-open). Empty when the sub has no current period. Backend-authored
+	// so the inclusive end can't drift across the Go and TS runtimes.
 	CurrentBillingPeriodDisplay string     `json:"current_billing_period_display,omitempty"`
 	NextBillingAt               *time.Time `json:"next_billing_at,omitempty"`
 	// BillingAnchorDay is the operator's intended billing day-of-month (1..31)
@@ -431,20 +428,15 @@ type Subscription struct {
 	// advance then falls back to the historical path). Recomputed whenever the
 	// cycle re-anchors to "now" (cross-interval swap, threshold reset).
 	BillingAnchorDay int `json:"billing_anchor_day,omitempty"`
-	// BillingTimezone is the IANA timezone this subscription's calendar
-	// date-math is anchored in — snapshotted from the tenant timezone at
-	// creation and immutable thereafter (the peer of BillingAnchorDay). All
-	// period-boundary and proration date-math read THIS, not the live tenant
-	// setting, so changing the tenant timezone is display-only for running
-	// subs and only governs new ones (ADR-074). Empty = legacy/unset; the
-	// read path (BillingLocation via the engine/service helper) then falls
-	// back to the live tenant timezone, preserving pre-migration behavior.
-	BillingTimezone string    `json:"billing_timezone,omitempty"`
-	UsageCapUnits   *int64    `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
-	OverageAction   string    `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
-	TestClockID     string    `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	// Subscriptions have no per-sub billing timezone: every sub in a tenant
+	// bills in the one org timezone (default UTC), resolved live from tenant
+	// settings at compute time and denormalized onto the INVOICE at issue for
+	// historical stability (ADR-077, superseding the ADR-074 per-sub snapshot).
+	UsageCapUnits *int64    `json:"usage_cap_units,omitempty"` // Max usage units per billing period (nil = unlimited)
+	OverageAction string    `json:"overage_action,omitempty"`  // "block" or "charge" (default: charge)
+	TestClockID   string    `json:"test_clock_id,omitempty"`   // Test mode only — attached simulator clock
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 
 	// Items is populated by store reads that hydrate the subscription with
 	// its current priced lines. Writes through Store.Create require a
