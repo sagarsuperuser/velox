@@ -507,7 +507,11 @@ export default function SubscriptionDetailPage() {
             const periodStart = new Date(sub.current_billing_period_start)
             timelinePoints.push({
               label: sub.status === 'active' ? 'Period Start' : 'Last Period',
-              date: formatDate(sub.current_billing_period_start),
+              // Inclusive period-start boundary — render its civil date in the
+              // sub's billing TZ (formatDate, NOT formatCivilDate: no step-back),
+              // so it matches the Period range and doesn't shift with the live
+              // display TZ (ADR-074).
+              date: formatDate(sub.current_billing_period_start, sub.billing_timezone),
               isPast: periodStart <= now,
             })
           }

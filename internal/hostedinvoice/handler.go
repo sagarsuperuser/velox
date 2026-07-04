@@ -168,8 +168,14 @@ type viewInvoice struct {
 	DueAt               *time.Time `json:"due_at,omitempty"`
 	PaidAt              *time.Time `json:"paid_at,omitempty"`
 	VoidedAt            *time.Time `json:"voided_at,omitempty"`
-	Memo                string     `json:"memo,omitempty"`
-	Footer              string     `json:"footer,omitempty"`
+	// BillingTimezone lets the PUBLIC hosted page render the civil-day dates
+	// above (Issued/Due/Paid/Voided) in the invoice's billing timezone (ADR-074).
+	// The page is unauthenticated, so the SPA never learns the tenant timezone
+	// on its own — without this it would fall back to the *viewer's* browser zone
+	// and could print a due date a day off from (and contradicting) the PDF.
+	BillingTimezone string `json:"billing_timezone,omitempty"`
+	Memo            string `json:"memo,omitempty"`
+	Footer          string `json:"footer,omitempty"`
 }
 
 type viewLineItem struct {
@@ -462,6 +468,7 @@ func toViewInvoice(inv domain.Invoice) viewInvoice {
 		DueAt:               inv.DueAt,
 		PaidAt:              inv.PaidAt,
 		VoidedAt:            inv.VoidedAt,
+		BillingTimezone:     inv.BillingTimezone,
 		Memo:                inv.Memo,
 		Footer:              inv.Footer,
 	}
