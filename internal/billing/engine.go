@@ -5315,14 +5315,17 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, stripeCusID, stripePMID); err != nil {
 			cancel()
-			// Card decline: expected outcome. ChargeInvoice already
-			// stamped invoice.payment_status='failed' and fired
-			// inline StartDunning (closes the Phase 3 → Phase 5
-			// webhook race per stripe.go:401-426). Don't push the
-			// catchup to internal_failure for a normal payment
-			// failure. SetAutoChargePending(false) too so the next
-			// catchup run doesn't pick the same invoice — dunning's
-			// own retry schedule drives subsequent attempts.
+			// Card decline: expected outcome. ChargeInvoice stamped
+			// invoice.payment_status='failed'; dunning is started by the
+			// payment_intent.payment_failed WEBHOOK (handlePaymentFailed) —
+			// with Confirm+OffSession, Stripe creates the PI even on decline
+			// and sends that event — NOT inline in ChargeInvoice (see
+			// stripe.go: "Dunning is NOT started here"). A lost/late webhook
+			// is backstopped by the EnrollFailedWithoutDunning reconciler.
+			// Don't push the catchup to internal_failure for a normal payment
+			// failure. SetAutoChargePending(false) so the next catchup run
+			// doesn't re-pick the invoice — dunning's retry schedule drives
+			// subsequent attempts.
 			var pe *payment.PaymentError
 			if errors.As(err, &pe) && pe.DeclineCode != "" {
 				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)

@@ -548,7 +548,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	now := s.clock.Now(ctx)
 
 	var trialStart, trialEnd *time.Time
-	var startedAt *time.Time
+	var startedAt, activatedAt *time.Time
 
 	var periodStart, periodEnd, nextBilling *time.Time
 	billingAnchorDay := 0
@@ -589,6 +589,16 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	} else if input.StartNow {
 		status = domain.SubscriptionActive
 		startedAt = &now
+		// Immediate activation IS an activation — stamp activated_at so
+		// the sub is visible to MRR movement / point-in-time / churn,
+		// which key on activated_at as the MRR-start event. The operator
+		// Activate() and trial-end ActivateAfterTrial() paths already do
+		// this; the StartNow create path used to leave it NULL, so
+		// every no-trial sub was counted in headline MRR (status='active')
+		// but invisible to New/Net movement — the dashboard never
+		// reconciled. Trialing subs are NOT activated here (their
+		// activated_at is stamped at trial-end).
+		activatedAt = &now
 		interval := s.firstPlanInterval(ctx, tenantID, items)
 		ps, pe, anchorDay := firstPeriodForActivate(now, billingTime, interval, loc)
 		periodStart = &ps
@@ -622,6 +632,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		TrialStartAt:              trialStart,
 		TrialEndAt:                trialEnd,
 		StartedAt:                 startedAt,
+		ActivatedAt:               activatedAt,
 		CurrentBillingPeriodStart: periodStart,
 		CurrentBillingPeriodEnd:   periodEnd,
 		NextBillingAt:             nextBilling,

@@ -101,9 +101,9 @@ func (s *PostgresStore) createInTx(ctx context.Context, tx *sql.Tx, tenantID str
 			current_billing_period_start, current_billing_period_end, next_billing_at,
 			billing_anchor_day,
 			usage_cap_units, overage_action, test_clock_id,
-			billing_timezone,
+			billing_timezone, activated_at,
 			created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE(NULLIF($16,''),'charge'),NULLIF($17,''),$18,$19,$19)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,COALESCE(NULLIF($16,''),'charge'),NULLIF($17,''),$18,$19,$20,$20)
 		RETURNING `+subCols,
 		id, tenantID, sub.Code, sub.DisplayName, sub.CustomerID,
 		sub.Status, sub.BillingTime, postgres.NullableTime(sub.TrialStartAt),
@@ -113,7 +113,7 @@ func (s *PostgresStore) createInTx(ctx context.Context, tx *sql.Tx, tenantID str
 		postgres.NullableTime(sub.NextBillingAt),
 		sub.BillingAnchorDay,
 		sub.UsageCapUnits, sub.OverageAction, sub.TestClockID,
-		sub.BillingTimezone, now,
+		sub.BillingTimezone, postgres.NullableTime(sub.ActivatedAt), now,
 	), &sub)
 
 	if err != nil {
