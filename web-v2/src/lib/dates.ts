@@ -121,12 +121,17 @@ function inclusiveEndYMD(endISO: string, tz: string): [number, number, number] {
 }
 
 // formatCivilDate renders the INCLUSIVE last covered day of a half-open
-// period_end as "MMM d, yyyy" in tenant TZ ("Jun 30, 2028"). Use for a single
-// period-boundary label that means "last day covered" (e.g. a cycle's end).
-// NOT for event dates ("Renews", "Cancels", "Next billing") — those fire on the
-// exclusive boundary instant and must keep formatDate(). Empty input → "".
-// Mirrors Go domain.InclusiveDisplayEnd + the "Jan 2, 2006" layout.
-export function formatCivilDate(endISO?: string | null, timezone?: string): string {
+// period_end as "MMM d, yyyy" ("Jun 30, 2028"). Use for a single period-boundary
+// label that means "last day covered" (e.g. a cycle's end). NOT for event dates
+// ("Renews", "Cancels", "Next billing") — those fire on the exclusive boundary
+// instant and must keep formatDate(). Empty input → "". Mirrors Go
+// domain.InclusiveDisplayEnd + the "Jan 2, 2006" layout.
+//
+// `timezone` is REQUIRED (ADR-076): a civil-day render must name its zone — the
+// owning entity's billing_timezone. Pass it explicitly (it may be undefined for a
+// legacy row → falls back to the tenant TZ); the type just forbids OMITTING it,
+// so a caller can't silently render in the live display TZ (the FE bug class).
+export function formatCivilDate(endISO: string | null | undefined, timezone: string | undefined): string {
   if (!endISO) return ''
   const tz = timezone || tenantTZ()
   const [y, m, d] = inclusiveEndYMD(endISO, tz)
@@ -139,10 +144,13 @@ export function formatCivilDate(endISO?: string | null, timezone?: string): stri
 // appears. Returns "" when the period is empty (start == end). Clamps the
 // inclusive end to >= the start's civil day so a sub-day stub never inverts.
 // Mirrors Go domain.FormatInclusivePeriod.
+// `timezone` is REQUIRED (ADR-076) — see formatCivilDate. Pass the owning
+// entity's billing_timezone explicitly; undefined falls back to the tenant TZ,
+// but the argument can't be omitted.
 export function formatCivilPeriod(
-  startISO?: string | null,
-  endISO?: string | null,
-  timezone?: string,
+  startISO: string | null | undefined,
+  endISO: string | null | undefined,
+  timezone: string | undefined,
 ): string {
   if (!startISO || !endISO) return ''
   if (new Date(startISO).getTime() === new Date(endISO).getTime()) return ''

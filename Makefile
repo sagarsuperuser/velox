@@ -1,4 +1,4 @@
-.PHONY: build run test lint lint-clock lint-funding-set lint-manual-test migrate dev clean cli gen gen-go gen-ts
+.PHONY: build run test lint lint-clock lint-funding-set lint-manual-test lint-tz migrate dev clean cli gen gen-go gen-ts
 
 # Build the velox binary
 build:
@@ -70,6 +70,14 @@ lint-funding-set:
 # table / meter-key the code no longer has (ADR-038/041/043/044 cleanups, etc.).
 lint-manual-test:
 	@./scripts/check-manual-test-currency.sh
+
+# Timezone-display invariant guard (ADR-076): a civil-day .Format() must render
+# in an explicit .In(loc) zone (the entity's billing/tenant TZ), never the
+# process/host zone or a stray .UTC() on a customer date. Also asserts the
+# ADR-075 process-UTC pin. Bypass a genuine UTC/filename case with a same-line
+# `//tz:ok`. Converts the reactive ADR-074/075 audits into a permanent CI proof.
+lint-tz:
+	@./scripts/lint-tz.sh
 
 # Run benchmarks
 bench:
