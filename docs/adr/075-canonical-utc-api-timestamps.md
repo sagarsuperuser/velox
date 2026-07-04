@@ -86,6 +86,20 @@ document:
 Legacy/ad-hoc rows with no snapshot fall back to UTC (canonical, host-independent)
 rather than the old host zone — an improvement even where it isn't the tenant zone.
 
+**Product-wide follow-up sweep.** A second, exhaustive audit (every backend module +
+every frontend date surface) confirmed the four fixes above are correct and closed
+four more residuals in the same class, none reached by the first pass: the
+**cancel-proration** and **plan-swap-refund** credit-note descriptions in
+`billing/engine.go` (`.UTC().Format` → `.In(subscriptionLocation)`); the **public
+hosted-invoice page**, which as an unauthenticated route had no tenant timezone and
+rendered Due/Received/Voided in the *viewer's browser zone* — fixed by adding
+`billing_timezone` to the hosted payload and rendering in it (UTC fallback, matching
+the PDF); and the subscription-timeline "Period Start" dot, which used the live
+display TZ while its paired "Period End" used the billing TZ. The sweep found all
+other emails and modules clean, and deliberately left operator-dashboard analytics
+bucketing (UTC `date_trunc`) as a separate reporting-timezone product decision, not a
+customer-document defect.
+
 **Tests run under the same pin.** `testutil.SetupTestDB` sets `time.Local =
 time.UTC` via a `sync.Once`, so integration tests observe production behavior on
 any host (a dev box on IST would otherwise scan `timestamptz` back in `+05:30`

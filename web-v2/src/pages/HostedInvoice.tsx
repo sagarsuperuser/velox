@@ -40,6 +40,10 @@ interface HostedInvoicePayload {
     due_at?: string
     paid_at?: string
     voided_at?: string
+    // Invoice's billing timezone — this public page has no tenant-TZ context,
+    // so civil-day dates above are rendered in this zone (falling back to UTC),
+    // matching the PDF, not the viewer's browser zone (ADR-074/075).
+    billing_timezone?: string
     memo?: string
     footer?: string
   }
@@ -255,7 +259,7 @@ export default function HostedInvoicePage() {
             <p className="font-medium text-emerald-800 dark:text-emerald-300">Paid</p>
             {invoice.paid_at && (
               <p className="text-emerald-700/80 dark:text-emerald-400/80">
-                Received on {formatDate(invoice.paid_at)}
+                Received on {formatDate(invoice.paid_at, invoice.billing_timezone || "UTC")}
               </p>
             )}
           </div>
@@ -273,7 +277,7 @@ export default function HostedInvoicePage() {
             <p className="font-medium text-foreground">Voided</p>
             {invoice.voided_at && (
               <p className="text-muted-foreground">
-                Voided on {formatDate(invoice.voided_at)} — this invoice is no longer owed.
+                Voided on {formatDate(invoice.voided_at, invoice.billing_timezone || "UTC")} — this invoice is no longer owed.
               </p>
             )}
           </div>
@@ -425,7 +429,7 @@ export default function HostedInvoicePage() {
                 </p>
                 {invoice.due_at && invoice.status === 'finalized' && (
                   <p className="text-xs text-muted-foreground mt-1">
-                    Due {formatDate(invoice.due_at)}
+                    Due {formatDate(invoice.due_at, invoice.billing_timezone || "UTC")}
                   </p>
                 )}
               </div>

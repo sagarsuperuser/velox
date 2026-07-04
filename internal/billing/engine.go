@@ -4498,11 +4498,15 @@ func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscriptio
 		return cancelCreditInputs{}, false, nil
 	}
 
+	// Civil-day dates on the customer-facing credit-note / ledger description
+	// render in the sub's billing timezone (ADR-074/075), not UTC — a raw UTC
+	// render prints the prior calendar day for a positive-offset billing zone.
+	loc := e.subscriptionLocation(ctx, sub)
 	desc := fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
 		sub.Code,
-		periodStart.UTC().Format("2006-01-02"),
-		periodEnd.UTC().Format("2006-01-02"),
-		cancelAt.UTC().Format("2006-01-02"))
+		periodStart.In(loc).Format("2006-01-02"),
+		periodEnd.In(loc).Format("2006-01-02"),
+		cancelAt.In(loc).Format("2006-01-02"))
 
 	return cancelCreditInputs{
 		PeriodStart: periodStart,
@@ -5034,11 +5038,14 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 		return 0, nil
 	}
 
+	// Civil-day dates on the customer-facing credit-note / ledger description
+	// render in the sub's billing timezone (ADR-074/075), not UTC.
+	loc := e.subscriptionLocation(ctx, sub)
 	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
 		sub.Code,
-		periodStart.UTC().Format("2006-01-02"),
-		periodEnd.UTC().Format("2006-01-02"),
-		at.UTC().Format("2006-01-02"))
+		periodStart.In(loc).Format("2006-01-02"),
+		periodEnd.In(loc).Format("2006-01-02"),
+		at.In(loc).Format("2006-01-02"))
 
 	// Fan the refund across EVERY invoice that funded the period (base +
 	// mid-period upgrade) — same multi-source settlement as cancel — so a swap
