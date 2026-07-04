@@ -253,22 +253,6 @@ func (s *Service) tenantLocation(ctx context.Context, tenantID string) *time.Loc
 	return loc
 }
 
-// subscriptionLocation returns the timezone this subscription's billing
-// calendar is anchored in (ADR-074): the snapshotted BillingTimezone,
-// falling back to the LIVE tenant timezone only for legacy/unset rows (so
-// pre-migration subs behave exactly as before). Every period-boundary and
-// proration date-math on an EXISTING sub must use this, not tenantLocation
-// — that is what makes a tenant-timezone change display-only for running
-// subs. Create is the one exception: it reads tenantLocation to SNAPSHOT.
-func (s *Service) subscriptionLocation(ctx context.Context, sub domain.Subscription) *time.Location {
-	if sub.BillingTimezone != "" {
-		if loc, err := time.LoadLocation(sub.BillingTimezone); err == nil {
-			return loc
-		}
-	}
-	return s.tenantLocation(ctx, sub.TenantID)
-}
-
 // beginningOfDayIn is a package-local alias for domain.BeginningOfDayIn
 // so existing callers in this file don't need updates. Calendar-month
 // snapping flows through domain.NextBillingPeriodEnd (called via
@@ -559,14 +543,12 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// matches the proration math. Without this, a sub created at 14:00
 	// on the 1st gets billed for 30/31 days even though the UI shows
 	// May 1 → Jun 1 — see service_test.go TestPeriod_DayGradeSnap.
+	// The org's billing timezone (ADR-077) — every sub in a tenant bills in
+	// the one org zone (default UTC). This resolves it once for the first
+	// period's civil-day math; it is NOT snapshotted onto the sub (a per-sub
+	// timezone was ADR-074, superseded — no peer bills each subscription in
+	// its own zone, and it caused a divergence class that cost ~8 render bugs).
 	loc := s.tenantLocation(ctx, tenantID)
-	// SNAPSHOT the billing timezone onto the subscription (ADR-074), the
-	// peer of billing_anchor_day: this is the ONE moment we read the live
-	// tenant timezone for a sub's calendar. loc.String() is the canonical
-	// IANA name ("Asia/Kolkata") or "UTC" for an unset/invalid tenant TZ —
-	// a concrete, immutable anchor so a later tenant-timezone change never
-	// re-times this sub.
-	billingTZ := loc.String()
 
 	if input.TrialDays > 0 {
 		ts := now
@@ -637,7 +619,6 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		CurrentBillingPeriodEnd:   periodEnd,
 		NextBillingAt:             nextBilling,
 		BillingAnchorDay:          billingAnchorDay,
-		BillingTimezone:           billingTZ,
 		UsageCapUnits:             input.UsageCapUnits,
 		OverageAction:             overageAction,
 		TestClockID:               inheritedClockID,
@@ -706,7 +687,7 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 		// draft. Pre-fix also ignored sub.BillingTime entirely — an
 		// anniversary draft activated mid-month still got calendar-
 		// anchored periods.
-		loc := s.subscriptionLocation(ctx, sub)
+		loc := s.tenantLocation(ctx, sub.TenantID)
 		interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
 		ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
 		sub.CurrentBillingPeriodStart = &ps
@@ -1285,7 +1266,7 @@ func (s *Service) applyCrossIntervalPlanSwap(
 	// and synchronously bill the new in_advance period.
 	// Step 3b (in_arrears): truncate to (oldPS, now); scheduler closes
 	// the partial period under the OLD plan via segment-aware billing.
-	loc := s.subscriptionLocation(ctx, sub)
+	loc := s.tenantLocation(ctx, sub.TenantID)
 	// The swap re-anchors the cycle to `now`, so the billing anchor day is
 	// recomputed for the new cadence (ADR-055) — it must NOT keep the old
 	// interval's anchor day.
@@ -1351,7 +1332,7 @@ func (s *Service) applyCrossIntervalPlanSwapTx(
 		return ItemChangeResult{}, err
 	}
 
-	loc := s.subscriptionLocation(ctx, sub)
+	loc := s.tenantLocation(ctx, sub.TenantID)
 	// Re-anchor the cycle to `now` for the new cadence (ADR-055) — must NOT keep
 	// the old interval's anchor day.
 	swapAnchorDay := domain.AnchorDayFor(now, sub.BillingTime, newInterval, loc)
@@ -1815,7 +1796,7 @@ func (s *Service) EndTrial(ctx context.Context, tenantID, id string) (domain.Sub
 		return domain.Subscription{}, errs.InvalidState("subscription has a scheduled cancellation — clear the scheduled cancel first, then end the trial")
 	}
 
-	loc := s.subscriptionLocation(ctx, sub)
+	loc := s.tenantLocation(ctx, sub.TenantID)
 	interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
 	ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
 
@@ -2289,7 +2270,7 @@ func (s *Service) ExtendTrial(ctx context.Context, tenantID, id string, newTrial
 	// Re-anchor the first chargeable cycle on the new trial_end. Without
 	// this, extending past the old current_period_end silently drops a
 	// stub (same bug class as the pre-fix calendar+trial Create branch).
-	loc := s.subscriptionLocation(ctx, current)
+	loc := s.tenantLocation(ctx, current.TenantID)
 	newEnd := newTrialEnd.UTC()
 	interval := s.firstPlanInterval(ctx, tenantID, current.Items)
 	ps, pe, anchorDay := firstPeriodAfterTrial(newEnd, current.BillingTime, interval, loc)

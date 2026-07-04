@@ -508,10 +508,11 @@ export default function SubscriptionDetailPage() {
             timelinePoints.push({
               label: sub.status === 'active' ? 'Period Start' : 'Last Period',
               // Inclusive period-start boundary — render its civil date in the
-              // sub's billing TZ (formatDate, NOT formatCivilDate: no step-back),
-              // so it matches the Period range and doesn't shift with the live
-              // display TZ (ADR-074).
-              date: formatDate(sub.current_billing_period_start, sub.billing_timezone),
+              // org billing TZ (formatDate, NOT formatCivilDate: no step-back),
+              // so it matches the Period range. A sub bills in the one org TZ (=
+              // the live tenant setting, ADR-077), so undefined → tenant TZ is
+              // the anchor.
+              date: formatDate(sub.current_billing_period_start, undefined),
               isPast: periodStart <= now,
             })
           }
@@ -523,7 +524,7 @@ export default function SubscriptionDetailPage() {
               // Last day the period covers (inclusive), not the exclusive
               // boundary instant — distinct from the "Next Billing" dot and
               // consistent with the "Current period" range below (ADR-058).
-              date: formatCivilDate(sub.current_billing_period_end, sub.billing_timezone),
+              date: formatCivilDate(sub.current_billing_period_end, undefined),
               isPast: periodEnd <= now,
             })
           }
@@ -906,7 +907,7 @@ export default function SubscriptionDetailPage() {
               <div className="flex items-center justify-between px-6 py-3">
                 <span className="text-sm text-muted-foreground w-40 shrink-0">Trial</span>
                 <span className="text-sm text-foreground">
-                  {formatCivilPeriod(sub.trial_start_at, sub.trial_end_at, sub.billing_timezone) || '\u2014'} — canceled at trial end
+                  {formatCivilPeriod(sub.trial_start_at, sub.trial_end_at, undefined) || '\u2014'} — canceled at trial end
                 </span>
               </div>
             ) : (

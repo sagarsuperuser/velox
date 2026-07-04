@@ -1,9 +1,13 @@
 # ADR-074: A subscription's billing timezone is snapshotted at creation, not read live
 
 **Date:** 2026-07-04
-**Status:** Accepted (shipped as a pattern-copy of `billing_anchor_day`; the
-adversarial design panel is a deliberate fast-follow, not a pre-gate — see
-"Process" below)
+**Status:** **Superseded by [ADR-077](077-org-level-billing-timezone.md)**
+(2026-07-04). The per-subscription snapshot below is no longer the model: the
+billing timezone is an ORG-level setting (default UTC), resolved live at compute
+time and denormalized onto the *invoice* at issue. The deferred adversarial
+panel (see "Process") is what surfaced the flaw — no peer bills each
+subscription in its own frozen zone, and the snapshot's display divergence was
+the sole source of a ~8-bug render class. Kept for history; do not build on it.
 
 ## Context
 

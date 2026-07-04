@@ -672,15 +672,12 @@ export interface Subscription {
   current_billing_period_start?: string
   current_billing_period_end?: string
   // Backend-authored inclusive period range ("Jun 1 – Jun 30"), rendered in the
-  // sub's billing TZ (ADR-074). Use this verbatim for period-range labels — do
-  // NOT recompute from the half-open start/end, which would (a) duplicate the Go
-  // inclusive-day logic and (b) render in the live tenant TZ, shifting the range
-  // for a sub whose billing TZ differs from the current tenant setting.
+  // org billing TZ (ADR-077). Use this verbatim for period-range labels — do
+  // NOT recompute from the half-open start/end, which would duplicate the Go
+  // inclusive-day logic. Subscriptions carry no per-sub timezone; a sub renders
+  // in the one org timezone (= the live tenant setting), so auxiliary date
+  // labels can pass undefined to formatCivil* and fall back to the tenant TZ.
   current_billing_period_display?: string
-  // The IANA TZ the sub's billing calendar is anchored in (ADR-074). Pass to the
-  // formatCivil* helpers for any period/date the backend doesn't already author
-  // (trial range, single period-end date), so they render in the anchor zone.
-  billing_timezone?: string
   next_billing_at?: string
   trial_start_at?: string
   trial_end_at?: string
@@ -826,10 +823,12 @@ export interface Invoice {
   // verbatim; do NOT recompute from the half-open start/end. Empty/omitted for
   // one-off invoices.
   billing_period_display?: string
-  // The IANA TZ the invoice's period boundaries are anchored in (ADR-074),
-  // copied from the sub's snapshot at creation. Pass to formatCivil* for any
-  // per-line period the backend doesn't author (the line-item "Covers …" note);
-  // empty for ad-hoc/legacy invoices → helpers fall back to the live tenant TZ.
+  // The IANA TZ the invoice's period boundaries are anchored in — the org
+  // billing timezone resolved and DENORMALIZED onto the invoice at issue
+  // (ADR-077), so an issued invoice's dates stay fixed even if the org later
+  // changes its timezone. Pass to formatCivil* for any per-line period the
+  // backend doesn't author (the line-item "Covers …" note); empty for
+  // ad-hoc/legacy invoices → helpers fall back to the live tenant TZ.
   billing_timezone?: string
   stripe_payment_intent_id?: string
   last_payment_error?: string
