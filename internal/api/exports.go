@@ -95,9 +95,10 @@ func parseDateRange(r *http.Request) (from, to time.Time, err error) {
 // timestamp suffix on the filename means re-exports don't clobber.
 func writeCSVHeaders(w http.ResponseWriter, filenameStem string) *csv.Writer {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	// UTC filename stamp — must be stable/unambiguous, not vary by operator TZ.
+	stamp := time.Now().UTC().Format("20060102-150405") //tz:ok
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s-%s.csv"`,
-			filenameStem, time.Now().UTC().Format("20060102-150405")))
+		fmt.Sprintf(`attachment; filename="%s-%s.csv"`, filenameStem, stamp))
 	w.Header().Set("Cache-Control", "no-store")
 	return csv.NewWriter(w)
 }

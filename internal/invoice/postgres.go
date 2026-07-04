@@ -132,11 +132,12 @@ func mapInvoiceUniqueViolation(err error, inv domain.Invoice) error {
 	}
 	switch postgres.UniqueViolationConstraint(err) {
 	case idxInvoicesBillingIdempotency:
+		btz := domain.LoadLocationOrUTC(inv.BillingTimezone)
 		return errs.AlreadyExists("billing_period",
 			fmt.Sprintf("invoice already exists for subscription %q period %s..%s",
 				inv.SubscriptionID,
-				inv.BillingPeriodStart.UTC().Format("2006-01-02"),
-				inv.BillingPeriodEnd.UTC().Format("2006-01-02"))).WithCode("invoice_billing_period_taken")
+				inv.BillingPeriodStart.In(btz).Format("2006-01-02"),
+				inv.BillingPeriodEnd.In(btz).Format("2006-01-02"))).WithCode("invoice_billing_period_taken")
 	case idxInvoicesProrationDedup:
 		return errs.AlreadyExists("proration_source",
 			"proration invoice already exists for this item change").WithCode("invoice_proration_source_taken")

@@ -113,6 +113,15 @@ jobs:
       - name: lint-manual-test (doc currency)
         run: make lint-manual-test
 
+      # Timezone-display invariant (ADR-076): a civil-day .Format() must render
+      # in an explicit .In(loc) zone, never the process/host zone or a stray
+      # .UTC() on a customer date; and the ADR-075 process-UTC pin must be
+      # present. A green run is a machine-checked proof the invariant holds — it
+      # turns the reactive ADR-074/075 audits (~8 fixed render-site bugs) into a
+      # permanent gate. Bypass a genuine UTC/filename case with a same-line //tz:ok.
+      - name: lint-tz (ADR-076)
+        run: make lint-tz
+
   # codegen-drift fails the build when api/openapi.yaml has been edited
   # without regenerating the Go and TS artifacts that derive from it
   # (or vice versa — when a generated file was hand-edited). The check
