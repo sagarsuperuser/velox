@@ -126,6 +126,23 @@ default UTC). Subscriptions carry no timezone of their own.**
 - Simpler blast radius for future work: date-math has one zone source
   (`tenantLocation`), and the per-customer override, if ever needed, slots into
   that single function.
+- **Deferred (tracked) — operator confirm on an org-timezone change.** An org-TZ
+  change is already forward-only *by construction*: stored period boundaries
+  (`current_billing_period_start/end`, `next_billing_at`) are fixed instants and a
+  settings write never touches `subscriptions` rows, so the open period keeps its
+  window and only the next roll re-anchors — `next_start` is the prior period's end
+  instant, so there is provably no gap and no double-bill (at most one seam period
+  runs a few hours long/short). The missing finishing touch is the operator-facing
+  half: a **confirm/preview** ("this re-times *future* boundaries for N active
+  subscriptions; issued invoices are unaffected") before the change lands — a warn,
+  not a hard block, so the common fix-a-wrong-default case still works. Deferred at
+  0 customers / default-UTC, where it cannot bite (it needs an operator who sets a
+  non-UTC zone, has active subs, and changes it). **Trigger to build:** before the
+  first operator changes a non-UTC org timezone with active subscriptions. A
+  from-scratch design panel (2026-07-04, unanimous incl. a freeze-biased lens)
+  confirmed org-level over the per-sub freeze and named this confirm as the one
+  finishing touch of the correct design — recorded here so the deferral is explicit,
+  not a silent descope.
 - **Lesson (persisted):** the per-subscription snapshot was built by analogy to
   `billing_anchor_day` *before* the adversarial panel and *before* industry
   grounding. The panel + a 6-platform check would have killed it at design time
