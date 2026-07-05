@@ -1478,6 +1478,7 @@ Failed external effects (tax reversal, ambiguous charge) self-heal via scheduler
 - [ ] Stat cards: Total Events, Total Units, Active Meters, Active Customers.
 - [ ] Meter breakdown bars.
 - [ ] Filters: customer, date range. Stat cards stay constant when paging (reflect all filtered rows).
+- [ ] **Dimension filter actually filters (2026-07-05):** type `model=gpt-4o` in the dimension box → event log AND stat cards shrink to matching events only (server-side `properties @>`; pre-fix the server ignored the param and showed unfiltered data as filtered). `token_type=input,model=gpt-4o` ANDs; `cached=true` matches the boolean; malformed input (`model`) → 422 surfaced, not silently unfiltered.
 - [ ] Decimal precision: `0.5 + 0.5 + 0.0001` → `1.0001` (no rounding).
 - [ ] Export CSV.
 
@@ -1566,10 +1567,11 @@ Setup: fresh DB, `VELOX_BOOTSTRAP_TOKEN` set (≥16 chars).
 
 ## FLOW X3: Rate limiting
 
-- [ ] 100+ concurrent requests → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
-- [ ] Wait 10s, 20 more → ~16 allowed (limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
+- [ ] 100+ concurrent CRUD requests (e.g. `GET /v1/customers`) → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
+- [ ] Wait 10s, 20 more → ~16 allowed (general limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
+- [ ] **Ingest rides its own bucket (2026-07-05):** `POST /v1/usage-events` / `/batch` / `/integrations/litellm/spend` respond with `X-RateLimit-Limit: 1000` (per second — LiteLLM POSTs one callback per LLM call; the 100/min CRUD bucket silently dropped its events, since LiteLLM retries only on 5xx). Exhausting the general bucket does NOT 429 ingest. Overrides: `VELOX_RATE_LIMIT_GENERAL_PER_MIN`, `VELOX_RATE_LIMIT_INGEST_PER_SEC`.
 - [ ] Tenant A exhausted → Tenant B succeeds (separate buckets).
-- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → fail-closed.
+- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → general fail-closed; **ingest stays fail-open even in prod** (a Redis blip must not drop revenue events).
 - [ ] `/health`, `/health/ready`, `/metrics` not rate-limited.
 
 ## FLOW X4: Security headers + metrics auth

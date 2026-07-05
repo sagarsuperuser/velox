@@ -1397,6 +1397,20 @@ type PostV1TestClocksIdAdvanceJSONBody struct {
 	FrozenTime time.Time `json:"frozen_time"`
 }
 
+// GetV1UsageEventsParams defines parameters for GetV1UsageEvents.
+type GetV1UsageEventsParams struct {
+	CustomerId string `form:"customer_id,omitempty" json:"customer_id,omitempty"`
+	MeterId    string `form:"meter_id,omitempty" json:"meter_id,omitempty"`
+
+	// Dimensions Comma-separated key=value pairs matched against the event's
+	// dimensions via JSONB containment (multiple pairs AND).
+	// Values that parse as JSON booleans/numbers are matched
+	// typed ("cached=true", "attempt=2"); everything else as a
+	// string. Malformed pairs → 422. Example:
+	// `model=gpt-4o,token_type=input`.
+	Dimensions string `form:"dimensions,omitempty" json:"dimensions,omitempty"`
+}
+
 // PostV1UsageEventsJSONBody defines parameters for PostV1UsageEvents.
 type PostV1UsageEventsJSONBody struct {
 	// Dimensions Scalar dimension values used for pricing-rule dispatch (e.g. {"model", "token_type"}).
@@ -1622,7 +1636,7 @@ type ServerInterface interface {
 	GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request, id string)
 	// List usage events
 	// (GET /v1/usage-events)
-	GetV1UsageEvents(w http.ResponseWriter, r *http.Request)
+	GetV1UsageEvents(w http.ResponseWriter, r *http.Request, params GetV1UsageEventsParams)
 	// Ingest usage event
 	// (POST /v1/usage-events)
 	PostV1UsageEvents(w http.ResponseWriter, r *http.Request)
@@ -1874,7 +1888,7 @@ func (_ Unimplemented) GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *
 
 // List usage events
 // (GET /v1/usage-events)
-func (_ Unimplemented) GetV1UsageEvents(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetV1UsageEvents(w http.ResponseWriter, r *http.Request, params GetV1UsageEventsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3121,14 +3135,43 @@ func (siw *ServerInterfaceWrapper) GetV1TestClocksIdSubscriptions(w http.Respons
 // GetV1UsageEvents operation middleware
 func (siw *ServerInterfaceWrapper) GetV1UsageEvents(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetV1UsageEventsParams
+
+	// ------------- Optional query parameter "customer_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "customer_id", r.URL.Query(), &params.CustomerId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "customer_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "meter_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "meter_id", r.URL.Query(), &params.MeterId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "meter_id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "dimensions" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "dimensions", r.URL.Query(), &params.Dimensions, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dimensions", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetV1UsageEvents(w, r)
+		siw.Handler.GetV1UsageEvents(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1018,7 +1019,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// never unlimited. The Postgres lock is the source of truth and is
 	// unaffected by Redis state.
 	userSvc.SetFailureCounter(user.NewFallbackFailureCounter(rdb, clk))
-	rateLimiter := mw.NewRateLimiter(rdb, "general", 100, time.Minute)
+	rateLimiter := mw.NewRateLimiter(rdb, "general",
+		envInt("VELOX_RATE_LIMIT_GENERAL_PER_MIN", 100), time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
 	// silently disabling rate limiting (DDoS vector). The general/IP limiter
 	// deliberately stays fail-open in non-prod: per the industry split (OWASP
@@ -1030,6 +1032,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		rateLimiter.SetFailClosed(true)
 	}
+
+	// Dedicated, much larger bucket for the ingest surface (/v1/usage-events*
+	// + the LiteLLM adapter). The general 100/min bucket was sized for
+	// operator CRUD; LiteLLM POSTs ONE callback per LLM call (ADR-033), so
+	// any real AI-infra traffic above ~1.7 calls/s exhausted it inside the
+	// first hour of wiring the proxy — and LiteLLM retries only on 5xx, so
+	// every 429 was a silently dropped, permanently unbilled event. Peer
+	// anchor: Stripe meter events allow 1,000 calls/s live; Orb's TEST mode
+	// alone allows 2,000 events/min. Default 1000 req/s per key, override
+	// via VELOX_RATE_LIMIT_INGEST_PER_SEC.
+	//
+	// Deliberately NEVER fail-closed, even in production: the surface is
+	// authenticated (secret key required), and failing closed would turn a
+	// Redis blip into dropped revenue data — for ingest, lost-events risk
+	// outranks the DoS argument that closes the general bucket.
+	ingestLimiter := mw.NewRateLimiter(rdb, "ingest",
+		envInt("VELOX_RATE_LIMIT_INGEST_PER_SEC", 1000), time.Second)
 
 	// Tighter bucket for the public hosted-invoice surface. Industry
 	// practice (Stripe, Paddle) is to rate-limit payment pages more
@@ -1216,7 +1235,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the same auth ctx keys so handlers don't branch.
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
-		r.Use(rateLimiter.Middleware()) // After auth so tenant ID is available for bucket key
+		// After auth so tenant ID is available for the bucket key. Ingest
+		// paths ride their own (much larger) bucket — see ingestLimiter.
+		r.Use(mw.SplitRateLimit(isIngestPath, ingestLimiter, rateLimiter))
 		r.Use(mw.Idempotency(db))
 		r.Use(mw.AuditLog(db, settingsStore))
 		// Per-request timeout for ordinary CRUD endpoints. The SSE
@@ -1452,4 +1473,29 @@ func loggablePath(r *http.Request) string {
 		}
 	}
 	return path
+}
+
+// envInt reads an integer env override, falling back on empty/malformed
+// values. Used for the rate-limit knobs — a bad value silently reverting
+// to the default is acceptable here (the default is safe; a boot failure
+// over a limiter tweak is not).
+func envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+// isIngestPath scopes the dedicated ingest rate-limit bucket: the
+// usage-events subtree (single, batch, backfill — reads ride along
+// harmlessly) and the LiteLLM adapter, which POSTs one callback per LLM
+// call and must never be squeezed through the operator-CRUD bucket.
+func isIngestPath(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/v1/usage-events") ||
+		strings.HasPrefix(r.URL.Path, "/v1/integrations/litellm")
 }

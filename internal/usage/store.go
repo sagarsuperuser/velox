@@ -60,6 +60,14 @@ type ListFilter struct {
 	MeterID    string
 	From       *time.Time
 	To         *time.Time
+	// Dimensions filters events whose properties JSONB CONTAINS every
+	// pair (`properties @> $1` — multi-key containment is AND; served by
+	// the GIN index from migration 0062). Values are typed: the handler
+	// parses "cached=true" / "attempt=2" as JSON literals and everything
+	// else as strings, matching how ingest stored them. Pre-2026-07-05
+	// the dashboard SENT this param and the server silently dropped it —
+	// unfiltered data rendered as filtered.
+	Dimensions map[string]any
 	Limit      int
 	// Offset-based pagination (legacy path). Mutually exclusive with
 	// AfterTimestamp+AfterID — the cursor path takes precedence when

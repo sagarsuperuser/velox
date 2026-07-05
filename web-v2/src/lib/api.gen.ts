@@ -585,7 +585,19 @@ export interface paths {
         /** List usage events */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    customer_id?: string;
+                    meter_id?: string;
+                    /**
+                     * @description Comma-separated key=value pairs matched against the event's
+                     *     dimensions via JSONB containment (multiple pairs AND).
+                     *     Values that parse as JSON booleans/numbers are matched
+                     *     typed ("cached=true", "attempt=2"); everything else as a
+                     *     string. Malformed pairs → 422. Example:
+                     *     `model=gpt-4o,token_type=input`.
+                     */
+                    dimensions?: string;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -594,6 +606,13 @@ export interface paths {
             responses: {
                 /** @description Event list */
                 200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Malformed dimensions filter */
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
