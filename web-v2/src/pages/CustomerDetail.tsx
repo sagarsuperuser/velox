@@ -8,7 +8,8 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type Customer, type BillingProfile, type Invoice, type DunningPolicyWithCount, type Subscription, type CustomerPaymentMethod } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
-import { startOfDayInTZ } from '@/lib/dates'
+import { endOfDayInTZ, startOfDayInTZ } from '@/lib/dates'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Layout } from '@/components/Layout'
 import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import { CostDashboard } from '@/components/CostDashboard'
@@ -1576,6 +1577,12 @@ type ComposerLine = {
   quantity: string         // string-bound input; coerced at submit time
   unit_amount_cents: string  // string-bound; cent values, no decimals
   line_type: string
+  // Prepaid-credit sale (ADR-078): when set, finalizing the invoice grants
+  // this many cents of credits to the customer. add_on lines only; the
+  // backend enforces one commit line per invoice.
+  sellsCredits: boolean
+  commitGrantedCents: string // string-bound; cents
+  commitExpiresAt: string    // yyyy-mm-dd; '' = never expires
 }
 
 const blankLine = (): ComposerLine => ({
@@ -1583,6 +1590,9 @@ const blankLine = (): ComposerLine => ({
   quantity: '1',
   unit_amount_cents: '',
   line_type: 'add_on',
+  sellsCredits: false,
+  commitGrantedCents: '',
+  commitExpiresAt: '',
 })
 
 function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCreated }: {
@@ -1609,7 +1619,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   const [paymentTermDays, setPaymentTermDays] = useState(30)
   const [lines, setLines] = useState<ComposerLine[]>([blankLine()])
   const [errors, setErrors] = useState<{
-    lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }>
+    lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string; commit?: string }>
     form?: string
     period?: string
   }>({})
@@ -1643,15 +1653,16 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
 
   // validate returns sanitized lines suitable for the API. Returns null on
   // any validation failure (errors are surfaced via setErrors).
-  const validate = (): { description: string; line_type: string; quantity: number; unit_amount_cents: number }[] | null => {
-    const lineErrors: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string }> = {}
-    const cleaned: { description: string; line_type: string; quantity: number; unit_amount_cents: number }[] = []
+  const validate = (): { description: string; line_type: string; quantity: number; unit_amount_cents: number; commit_granted_cents?: number; commit_expires_at?: string }[] | null => {
+    const lineErrors: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string; commit?: string }> = {}
+    const cleaned: { description: string; line_type: string; quantity: number; unit_amount_cents: number; commit_granted_cents?: number; commit_expires_at?: string }[] = []
     if (lines.length === 0) {
       setErrors({ form: 'Add at least one line item.' })
       return null
     }
+    let commitLines = 0
     lines.forEach((l, i) => {
-      const errs: { description?: string; quantity?: string; unit_amount_cents?: string } = {}
+      const errs: { description?: string; quantity?: string; unit_amount_cents?: string; commit?: string } = {}
       const desc = l.description.trim()
       if (!desc) errs.description = 'Description is required'
       const qty = Number(l.quantity)
@@ -1667,6 +1678,29 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
       if (Number.isInteger(unit) && unit === 0) {
         errs.unit_amount_cents = 'Must be greater than 0'
       }
+      // Prepaid-credit sale: granted cents required and positive; at most
+      // one commit line per invoice (the backend enforces both too).
+      let commitGranted: number | undefined
+      let commitExpires: string | undefined
+      if (l.sellsCredits && (l.line_type || 'add_on') === 'add_on') {
+        commitLines++
+        const granted = Number(l.commitGrantedCents)
+        if (!Number.isFinite(granted) || !Number.isInteger(granted) || granted <= 0) {
+          errs.commit = 'Credits granted: whole cents, greater than 0'
+        } else if (commitLines > 1) {
+          errs.commit = 'Only one line per invoice can sell prepaid credits — use a separate invoice'
+        } else {
+          commitGranted = granted
+          if (l.commitExpiresAt) {
+            const today = new Date().toISOString().slice(0, 10)
+            if (l.commitExpiresAt <= today) {
+              errs.commit = 'Credit expiry must be a future date'
+            } else {
+              commitExpires = endOfDayInTZ(l.commitExpiresAt)
+            }
+          }
+        }
+      }
       if (Object.keys(errs).length > 0) {
         lineErrors[i] = errs
       } else {
@@ -1675,6 +1709,8 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
           line_type: l.line_type || 'add_on',
           quantity: qty,
           unit_amount_cents: unit,
+          ...(commitGranted !== undefined ? { commit_granted_cents: commitGranted } : {}),
+          ...(commitExpires !== undefined ? { commit_expires_at: commitExpires } : {}),
         })
       }
     })
@@ -1864,7 +1900,8 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
                     ? Math.round(qty) * Math.round(unit)
                     : 0
                   return (
-                    <div key={idx} className="grid grid-cols-[1fr_150px_140px_160px_44px] items-start gap-0">
+                    <div key={idx}>
+                    <div className="grid grid-cols-[1fr_150px_140px_160px_44px] items-start gap-0">
                       <div className="px-3 py-2 space-y-1">
                         <Input
                           placeholder="Implementation services"
@@ -1930,6 +1967,52 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
                           <Trash2 size={14} />
                         </Button>
                       </div>
+                    </div>
+                    {/* Prepaid-credit sale (ADR-078): finalizing the invoice
+                        grants the entered credits to the customer. add_on
+                        lines only; one per invoice. */}
+                    {(line.line_type || 'add_on') === 'add_on' && (
+                      <div className="px-3 pb-2 space-y-1.5">
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer w-fit">
+                          <Checkbox
+                            checked={line.sellsCredits}
+                            onCheckedChange={(v) => updateLine(idx, { sellsCredits: v === true })}
+                            disabled={isBusy}
+                          />
+                          This line sells prepaid credits
+                        </label>
+                        {line.sellsCredits && (
+                          <div className="flex flex-wrap items-center gap-2 pl-6">
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              min={1}
+                              step={1}
+                              placeholder="Credits granted (cents)"
+                              aria-label={`Line ${idx + 1} credits granted in cents`}
+                              className="w-[210px]"
+                              value={line.commitGrantedCents}
+                              onChange={e => updateLine(idx, { commitGrantedCents: e.target.value })}
+                              disabled={isBusy}
+                            />
+                            <Input
+                              type="date"
+                              aria-label={`Line ${idx + 1} credits expire`}
+                              className="w-auto"
+                              value={line.commitExpiresAt}
+                              onChange={e => updateLine(idx, { commitExpiresAt: e.target.value })}
+                              disabled={isBusy}
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              {Number(line.commitGrantedCents) > 0
+                                ? `Grants ${formatCents(Number(line.commitGrantedCents), currency)} of credits when the invoice is finalized.`
+                                : 'Expiry optional — blank means the credits never expire.'}
+                            </span>
+                          </div>
+                        )}
+                        {lineErrs.commit && <p className="text-xs text-destructive pl-6">{lineErrs.commit}</p>}
+                      </div>
+                    )}
                     </div>
                   )
                 })}
