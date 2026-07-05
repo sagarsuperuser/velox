@@ -64,23 +64,15 @@ func TestProcessExpiredTrials_RoutesDueCancel(t *testing.T) {
 	if fb.createTxCalls != 0 || fb.calls != 0 {
 		t.Fatalf("bill calls = %d/%d, want 0/0 (trials are FREE)", fb.createTxCalls, fb.calls)
 	}
-	var canceledEvents, trialEnded int
+	// Both lifecycle events moved IN-TX to the store writers (DispatchTx
+	// subscription subset, 2026-07-05): subscription.canceled rides the
+	// CancelAtTrialEnd tx (its CAS is what makes the winner fire exactly
+	// once), and trial_ended must not fire at all on the cancel route.
+	// Post-commit dispatch of either here would double-emit — assert none.
 	for _, e := range fd.events {
-		switch e.eventType {
-		case domain.EventSubscriptionCanceled:
-			canceledEvents++
-			if e.payload["reason"] != "trial_end_cancel" || e.payload["canceled_by"] != "schedule" {
-				t.Errorf("canceled payload = %v, want reason=trial_end_cancel canceled_by=schedule", e.payload)
-			}
-		case domain.EventSubscriptionTrialEnded:
-			trialEnded++
+		if e.eventType == domain.EventSubscriptionCanceled || e.eventType == domain.EventSubscriptionTrialEnded {
+			t.Fatalf("%s must not be dispatched post-commit — lifecycle events are enqueued in the transition tx", e.eventType)
 		}
-	}
-	if canceledEvents != 1 {
-		t.Fatalf("subscription.canceled events = %d, want exactly 1 (winner fires once)", canceledEvents)
-	}
-	if trialEnded != 0 {
-		t.Fatalf("subscription.trial_ended events = %d, want 0 (consumers read it as 'billing begins')", trialEnded)
 	}
 }
 

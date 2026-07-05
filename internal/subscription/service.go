@@ -2043,15 +2043,8 @@ func (s *Service) cancelTrialAtEnd(ctx context.Context, tenantID string, sub dom
 	if s.audit != nil {
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, meta)
 	}
-	if s.events != nil {
-		s.dispatchEvent(ctx, tenantID, domain.EventSubscriptionCanceled, map[string]any{
-			"subscription_id": canceled.ID,
-			"customer_id":     canceled.CustomerID,
-			"canceled_at":     canceled.CanceledAt.UTC(),
-			"canceled_by":     "schedule",
-			"reason":          "trial_end_cancel",
-		})
-	}
+	// subscription.canceled (schedule + trial_end_cancel) is enqueued IN the
+	// CancelAtTrialEnd tx (store-level DispatchTx subset) — not re-fired here.
 	slog.Info("trial ended with a due cancel schedule — canceled free of charge",
 		"subscription_id", canceled.ID, "tenant_id", tenantID)
 	return true, nil
@@ -2146,17 +2139,8 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 		if haveInv {
 			s.biller.FinalizeOnCreateInvoice(bound, activated, firstInv)
 		}
-		// Fire subscription.trial_ended webhook to match the engine
-		// auto-flip path. triggered_by="schedule" signals it was the
-		// catchup orchestrator (not the operator's EndTrial action).
-		if s.events != nil {
-			s.dispatchEvent(bound, tenantID, domain.EventSubscriptionTrialEnded, map[string]any{
-				"subscription_id": activated.ID,
-				"customer_id":     activated.CustomerID,
-				"ended_at":        trialEndAt.UTC(),
-				"triggered_by":    "schedule",
-			})
-		}
+		// subscription.trial_ended (triggered_by=schedule) is enqueued IN
+		// the ActivateAfterTrial tx (store-level DispatchTx subset).
 		processed++
 	}
 	return processed, batchErrs
@@ -2265,14 +2249,8 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 		if haveInv {
 			s.biller.FinalizeOnCreateInvoice(ctx, activated, firstInv)
 		}
-		if s.events != nil {
-			s.dispatchEvent(ctx, activated.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
-				"subscription_id": activated.ID,
-				"customer_id":     activated.CustomerID,
-				"ended_at":        trialEndAt.UTC(),
-				"triggered_by":    "schedule",
-			})
-		}
+		// subscription.trial_ended (triggered_by=schedule) is enqueued IN
+		// the ActivateAfterTrial tx (store-level DispatchTx subset).
 		processed++
 	}
 	return processed, batchErrs

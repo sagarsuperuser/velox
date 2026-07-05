@@ -475,7 +475,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCreated, sub, nil)
+	// subscription.created is enqueued IN the create tx (store-level
+	// DispatchTx subset, 2026-07-05) — do not also fire it here.
 
 	h.respondSub(w, r, http.StatusCreated, sub)
 }
@@ -548,7 +549,8 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionActivated, sub, nil)
+	// subscription.activated is enqueued IN the activation tx (store-level
+	// DispatchTx subset) — do not also fire it here.
 
 	h.respondSub(w, r, http.StatusOK, sub)
 }
@@ -596,7 +598,8 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
 	}
 
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCanceled, sub, nil)
+	// subscription.canceled is enqueued IN the cancel tx (store-level
+	// DispatchTx subset) — do not also fire it here.
 
 	h.respondSub(w, r, http.StatusOK, sub)
 }
@@ -710,9 +713,8 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 
-	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialEnded, sub, map[string]any{
-		"triggered_by": "operator",
-	})
+	// subscription.trial_ended (triggered_by=operator) is enqueued IN the
+	// end-trial tx (store-level DispatchTx subset) — do not also fire it here.
 
 	h.respondSub(w, r, http.StatusOK, sub)
 }

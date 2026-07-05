@@ -1044,19 +1044,8 @@ func (e *Engine) advanceCycleOrCancel(ctx context.Context, sub domain.Subscripti
 		})
 	}
 
-	if e.events != nil {
-		payload := map[string]any{
-			"subscription_id": canceled.ID,
-			"customer_id":     canceled.CustomerID,
-			"status":          string(canceled.Status),
-			"canceled_at":     now.UTC(),
-			"canceled_by":     "schedule",
-		}
-		if err := e.events.Dispatch(ctx, sub.TenantID, domain.EventSubscriptionCanceled, payload); err != nil {
-			slog.Error("dispatch subscription.canceled (scheduled)",
-				"subscription_id", sub.ID, "tenant_id", sub.TenantID, "error", err)
-		}
-	}
+	// subscription.canceled (canceled_by=schedule) is enqueued IN the
+	// FireScheduledCancellation tx (store-level DispatchTx subset).
 	return nil
 }
 
@@ -2196,14 +2185,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// ADR-031 trial-end in_advance coverage now rides the
 			// activation tx above (BillOnCreateTx via WithBill) — atomic
 			// with the flip, ADR-056/069.
-			if e.events != nil {
-				e.dispatchEvent(ctx, sub.TenantID, domain.EventSubscriptionTrialEnded, map[string]any{
-					"subscription_id": sub.ID,
-					"customer_id":     sub.CustomerID,
-					"ended_at":        now.UTC(),
-					"triggered_by":    "schedule",
-				})
-			}
+			// subscription.trial_ended (triggered_by=schedule) is enqueued
+			// IN the ActivateAfterTrial tx (store-level DispatchTx subset).
 		}
 	}
 
@@ -5698,18 +5681,8 @@ func (e *Engine) cancelTrialAtEndFromEngine(ctx context.Context, sub domain.Subs
 		}
 		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, meta)
 	}
-	if e.events != nil {
-		payload := map[string]any{
-			"subscription_id": canceled.ID,
-			"customer_id":     canceled.CustomerID,
-			"canceled_by":     "schedule",
-			"reason":          "trial_end_cancel",
-		}
-		if canceled.CanceledAt != nil {
-			payload["canceled_at"] = canceled.CanceledAt.UTC()
-		}
-		e.dispatchEvent(ctx, sub.TenantID, domain.EventSubscriptionCanceled, payload)
-	}
+	// subscription.canceled (schedule + trial_end_cancel) is enqueued IN the
+	// CancelAtTrialEnd tx (store-level DispatchTx subset).
 	slog.Info("trial ended with a due cancel schedule — canceled free of charge (engine path)",
 		"subscription_id", canceled.ID, "tenant_id", sub.TenantID)
 	return nil
