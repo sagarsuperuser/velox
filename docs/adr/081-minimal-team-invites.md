@@ -3,8 +3,9 @@
 Date: 2026-07-06
 Status: Accepted
 Amends: ADR-011 (which shipped single-user auth and deferred invites)
-Trigger: DP-readiness cut-reinstatement #2 (docs/dev/dp-readiness-2026-07-05.md
-"Single dashboard seat") — a self-hosted pilot puts the installing platform
+Trigger: DP-readiness cut-reinstatement #2 ("Single dashboard seat" in the
+DP-readiness register, maintained in the internal `velox-ops` repo) — a
+self-hosted pilot puts the installing platform
 engineer, the billing operator, and finance on one shared password within
 30 days, and the append-only audit log becomes attribution-blind with one
 user, undercutting a feature the README sells.
