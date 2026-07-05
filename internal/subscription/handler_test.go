@@ -672,18 +672,12 @@ func TestHandler_Cancel_FiresSubscriptionCanceled(t *testing.T) {
 		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
 	}
 
-	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionCanceled)
-	if !ok {
-		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionCanceled, eventTypes(dispatcher.events))
-	}
-	if ev.tenantID != tenantID {
-		t.Errorf("tenant_id: got %q, want %q", ev.tenantID, tenantID)
-	}
-	if ev.payload["subscription_id"] != subID {
-		t.Errorf("payload subscription_id: got %v, want %q", ev.payload["subscription_id"], subID)
-	}
-	if ev.payload["customer_id"] != "cus_1" {
-		t.Errorf("payload customer_id: got %v, want cus_1", ev.payload["customer_id"])
+	// subscription.canceled moved IN-TX to the store's cancel writer
+	// (DispatchTx subscription subset, 2026-07-05) — the handler must NOT
+	// also dispatch it (double-emit). In-tx enqueue + payload proven by
+	// lifecycle_outbox_integration_test.go.
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionCanceled); ok {
+		t.Fatalf("%s must not be dispatched by the handler — it is enqueued in the cancel tx", domain.EventSubscriptionCanceled)
 	}
 }
 
@@ -1611,12 +1605,11 @@ func TestHandler_EndTrial_FiresEvent(t *testing.T) {
 		t.Error("activated_at should be stamped")
 	}
 
-	ev, ok := dispatcher.firstOfType(domain.EventSubscriptionTrialEnded)
-	if !ok {
-		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionTrialEnded, eventTypes(dispatcher.events))
-	}
-	if ev.payload["triggered_by"] != "operator" {
-		t.Errorf("triggered_by: got %v, want operator", ev.payload["triggered_by"])
+	// subscription.trial_ended moved IN-TX to the store's EndTrialEarly
+	// writer (DispatchTx subscription subset) — the handler must NOT also
+	// dispatch it. Proven in-tx by lifecycle_outbox_integration_test.go.
+	if _, ok := dispatcher.firstOfType(domain.EventSubscriptionTrialEnded); ok {
+		t.Fatalf("%s must not be dispatched by the handler — it is enqueued in the end-trial tx", domain.EventSubscriptionTrialEnded)
 	}
 }
 

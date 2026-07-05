@@ -2554,27 +2554,15 @@ func TestRunCycle_CancelAtPeriodEnd_FiresAtBoundary(t *testing.T) {
 		t.Error("next_billing_at must be nil on canceled sub")
 	}
 
-	var got string
+	// subscription.canceled (canceled_by=schedule) moved IN-TX to the
+	// store's FireScheduledCancellation writer (DispatchTx subscription
+	// subset, 2026-07-05) — the engine must NOT also dispatch it
+	// post-commit (double-emit). In-tx enqueue + provenance payload proven
+	// by the real-Postgres lifecycle_outbox_integration_test.go.
 	for _, ev := range dispatcher.events {
 		if ev.eventType == domain.EventSubscriptionCanceled {
-			got = ev.eventType
-			// canceled_by is the normalized field across all three
-			// cancel paths (operator / customer-portal / engine
-			// auto-fire). The engine emits "schedule" so a webhook
-			// consumer reading subscription.canceled can match on
-			// the same field regardless of origin.
-			if ev.payload["canceled_by"] != "schedule" {
-				t.Errorf("canceled_by: got %v, want schedule", ev.payload["canceled_by"])
-			}
-			break
+			t.Fatalf("%s must not be dispatched post-commit — it is enqueued in the cancel tx", domain.EventSubscriptionCanceled)
 		}
-	}
-	if got == "" {
-		types := make([]string, 0, len(dispatcher.events))
-		for _, ev := range dispatcher.events {
-			types = append(types, ev.eventType)
-		}
-		t.Fatalf("expected %s, got types=%v", domain.EventSubscriptionCanceled, types)
 	}
 }
 
@@ -2863,22 +2851,15 @@ func TestRunCycle_Trial_Ended_AutoActivatesAndBills(t *testing.T) {
 		t.Error("activated_at should be stamped after trial-end auto-flip")
 	}
 
-	var trialEndedEvent map[string]any
+	// subscription.trial_ended moved IN-TX to the store's ActivateAfterTrial
+	// writer (DispatchTx subscription subset, 2026-07-05) — the engine must
+	// NOT also dispatch it post-commit (that would double-emit). The in-tx
+	// enqueue + payload is proven by the real-Postgres
+	// lifecycle_outbox_integration_test.go.
 	for _, ev := range dispatcher.events {
 		if ev.eventType == domain.EventSubscriptionTrialEnded {
-			trialEndedEvent = ev.payload
-			break
+			t.Fatalf("%s must not be dispatched post-commit — it is enqueued in the activation tx", domain.EventSubscriptionTrialEnded)
 		}
-	}
-	if trialEndedEvent == nil {
-		types := make([]string, 0, len(dispatcher.events))
-		for _, ev := range dispatcher.events {
-			types = append(types, ev.eventType)
-		}
-		t.Fatalf("expected %s event, got types=%v", domain.EventSubscriptionTrialEnded, types)
-	}
-	if trialEndedEvent["triggered_by"] != "schedule" {
-		t.Errorf("triggered_by: got %v, want schedule", trialEndedEvent["triggered_by"])
 	}
 }
 

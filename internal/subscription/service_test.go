@@ -2137,18 +2137,14 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		if _, errs := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen); len(errs) != 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
-		if len(fd.events) != 1 {
-			t.Fatalf("expected 1 webhook event, got %d", len(fd.events))
-		}
-		ev := fd.events[0]
-		if ev.eventType != domain.EventSubscriptionTrialEnded {
-			t.Errorf("event type: got %q, want %q", ev.eventType, domain.EventSubscriptionTrialEnded)
-		}
-		if ev.payload["triggered_by"] != "schedule" {
-			t.Errorf("triggered_by: got %v, want schedule", ev.payload["triggered_by"])
-		}
-		if ev.payload["subscription_id"] != sub.ID {
-			t.Errorf("subscription_id: got %v, want %v", ev.payload["subscription_id"], sub.ID)
+		// subscription.trial_ended moved IN-TX to the store's
+		// ActivateAfterTrial writer (DispatchTx subscription subset,
+		// 2026-07-05) — the service must NOT also dispatch it. In-tx
+		// enqueue + payload proven by lifecycle_outbox_integration_test.go.
+		for _, ev := range fd.events {
+			if ev.eventType == domain.EventSubscriptionTrialEnded {
+				t.Fatalf("%s must not be dispatched post-commit — it is enqueued in the activation tx", domain.EventSubscriptionTrialEnded)
+			}
 		}
 	})
 

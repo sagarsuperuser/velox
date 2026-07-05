@@ -1085,6 +1085,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 - [ ] Trialing sub → Cancel dialog first option reads **"At trial end"** with "won't be charged" copy; confirm → banner shows "at trial end (<trial_end date>)", GET returns `cancel_effective_at == trial_end_at`.
 - [ ] Advance the test clock past trial end → sub is **canceled**, `canceled_at == trial_end_at`, invoice list shows **NO invoice**, timeline shows one cancellation entry, webhook log shows one `subscription.canceled` (reason `trial_end_cancel`) and **zero** `subscription.trial_ended`.
+- [ ] **Lifecycle events ride the transition tx (2026-07-05):** `SELECT event_type, payload FROM webhook_outbox` right after any create/activate/cancel/end-trial → `subscription.created` / `.activated` / `.canceled` / `.trial_ended` rows exist **before** any dispatcher tick (enqueued IN the transition tx, exactly once per transition; a rolled-back cancel leaves no row). Payload keeps the provenance fields (`canceled_by`, `reason`, `triggered_by`). *(automated: `TestLifecycleEvents_EnqueuedInTransitionTx`)*
 - [ ] Schedule the cancel, then **Undo** before trial end, advance the clock → sub ACTIVATES normally and bills period 1 (the rescind won).
 - [ ] Schedule, then **Extend trial** with an explicit cancel date pending → 409 "clear the scheduled cancel first"; with the flag-only schedule → extension succeeds and the banner's date moves to the new trial end.
 - [ ] "End trial now" is disabled (with reason) while a cancel is scheduled; via API → 409.

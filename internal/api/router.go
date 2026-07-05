@@ -254,6 +254,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// credit.balance_low / _depleted / _recovered are emitted transactionally
 	// from every ledger-writing tx (ADR-078) — same outbox discipline.
 	creditStore.SetOutboxEnqueuer(outboxStore)
+	// subscription.created / .activated / .canceled / .trial_ended are
+	// enqueued IN their transition txs (DispatchTx subscription subset,
+	// 2026-07-05): the store's transition writers are the single emit site,
+	// covering the operator API, the engine's schedule paths, and the trial
+	// sweeps at once — a crash after commit can no longer silently drop a
+	// lifecycle event a provisioning webhook consumer depends on.
+	subStore.SetOutboxEnqueuer(outboxStore)
 	// Commit funding at finalize (ADR-078 D2): FinalizeWithDates grants the
 	// commit block in the finalize coordinator tx via credit.Service.
 	invoiceStore.SetCommitFunder(creditSvc)

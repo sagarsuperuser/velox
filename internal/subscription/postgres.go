@@ -17,11 +17,66 @@ import (
 )
 
 type PostgresStore struct {
-	db *postgres.DB
+	db     *postgres.DB
+	outbox OutboxEnqueuer
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
+}
+
+// OutboxEnqueuer enqueues an outbound webhook event inside the caller's tx,
+// so the event is persisted atomically with the state change (ADR-040
+// transactional outbox). Satisfied by *webhook.OutboxStore; declared
+// consumer-side so this store needs no webhook import. Same seam as the
+// invoice (invoice.paid / payment.succeeded) and credit (balance crossings)
+// stores.
+type OutboxEnqueuer interface {
+	Enqueue(ctx context.Context, tx *sql.Tx, tenantID, eventType string, payload map[string]any) (string, error)
+}
+
+// SetOutboxEnqueuer wires transactional lifecycle events (2026-07-05,
+// DispatchTx-seam subscription subset): subscription.created / .activated /
+// .canceled / .trial_ended are enqueued IN the transition tx, so a crash in
+// the old commit→dispatch window can no longer silently drop them — a
+// dropped emission left no row anywhere (nothing to replay, nothing to
+// reconcile). Optional — when unset (narrow tests), no events are enqueued.
+func (s *PostgresStore) SetOutboxEnqueuer(o OutboxEnqueuer) { s.outbox = o }
+
+// lifecyclePayload is the shared event payload base — mirrors the shape the
+// handler's fireEvent historically emitted so consumers see no contract
+// change: subscription_id, customer_id, status, item_count, period bounds.
+func lifecyclePayload(sub domain.Subscription, extra map[string]any) map[string]any {
+	payload := map[string]any{
+		"subscription_id": sub.ID,
+		"customer_id":     sub.CustomerID,
+		"status":          string(sub.Status),
+		"item_count":      len(sub.Items),
+	}
+	if sub.CurrentBillingPeriodStart != nil {
+		payload["current_period_start"] = sub.CurrentBillingPeriodStart.UTC()
+	}
+	if sub.CurrentBillingPeriodEnd != nil {
+		payload["current_period_end"] = sub.CurrentBillingPeriodEnd.UTC()
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	return payload
+}
+
+// enqueueLifecycle enqueues one lifecycle event on the caller's tx. An
+// enqueue failure fails the transition — atomicity with the state change is
+// the entire point of the seam (the pre-fix post-commit dispatch could drop
+// the event with no trace). No-op when the enqueuer isn't wired.
+func (s *PostgresStore) enqueueLifecycle(ctx context.Context, tx *sql.Tx, eventType string, sub domain.Subscription, extra map[string]any) error {
+	if s.outbox == nil {
+		return nil
+	}
+	if _, err := s.outbox.Enqueue(ctx, tx, sub.TenantID, eventType, lifecyclePayload(sub, extra)); err != nil {
+		return fmt.Errorf("enqueue %s: %w", eventType, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +204,12 @@ func (s *PostgresStore) createInTx(ctx context.Context, tx *sql.Tx, tenantID str
 		inserted = append(inserted, stored)
 	}
 	sub.Items = inserted
+
+	// subscription.created rides the create tx (DispatchTx subscription
+	// subset, 2026-07-05) — durable iff the create commits.
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionCreated, sub, nil); err != nil {
+		return domain.Subscription{}, err
+	}
 	return sub, nil
 }
 
@@ -294,6 +355,15 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.
 
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
+	}
+
+	// Update is Service.Activate's writer (sole caller) and its CAS admits
+	// only draft rows — a successful write with status=active IS the
+	// activation transition. Enqueue in-tx (DispatchTx subscription subset).
+	if sub.Status == domain.SubscriptionActive {
+		if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionActivated, sub, nil); err != nil {
+			return domain.Subscription{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -506,6 +576,15 @@ func (s *PostgresStore) FireScheduledCancellation(ctx context.Context, tenantID,
 		return domain.Subscription{}, err
 	}
 
+	// Schedule-driven cancel — enqueue in-tx with the schedule provenance
+	// the engine's post-commit dispatch historically stamped.
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionCanceled, sub, map[string]any{
+		"canceled_at": at.UTC(),
+		"canceled_by": "schedule",
+	}); err != nil {
+		return domain.Subscription{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return domain.Subscription{}, err
 	}
@@ -667,6 +746,14 @@ func (s *PostgresStore) activateAfterTrialInTx(ctx context.Context, tx *sql.Tx, 
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
 	}
+	// Schedule-driven trial end (engine catchup / expiry sweep) — enqueue
+	// in-tx with the provenance the prior post-commit dispatches stamped.
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionTrialEnded, sub, map[string]any{
+		"ended_at":     at.UTC(),
+		"triggered_by": "schedule",
+	}); err != nil {
+		return domain.Subscription{}, err
+	}
 	return sub, nil
 }
 
@@ -760,6 +847,13 @@ func (s *PostgresStore) endTrialEarlyInTx(ctx context.Context, tx *sql.Tx, id st
 		return domain.Subscription{}, err
 	}
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+	// Operator-driven early trial end — enqueue in-tx.
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionTrialEnded, sub, map[string]any{
+		"ended_at":     at.UTC(),
+		"triggered_by": "operator",
+	}); err != nil {
 		return domain.Subscription{}, err
 	}
 	return sub, nil
@@ -907,6 +1001,18 @@ func (s *PostgresStore) transitionInTx(ctx context.Context, tx *sql.Tx, id strin
 
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
 		return domain.Subscription{}, err
+	}
+
+	// Operator-driven cancel (CancelAtomic / CancelAtomicWithBill both route
+	// here; cancelSpec is the only canceled-target spec). Enqueue in-tx.
+	if spec.targetStatus == "canceled" {
+		extra := map[string]any{"canceled_by": "operator"}
+		if sub.CanceledAt != nil {
+			extra["canceled_at"] = sub.CanceledAt.UTC()
+		}
+		if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionCanceled, sub, extra); err != nil {
+			return domain.Subscription{}, err
+		}
 	}
 	return sub, nil
 }
@@ -2452,6 +2558,15 @@ func (s *PostgresStore) CancelAtTrialEnd(ctx context.Context, tenantID, id strin
 		return domain.Subscription{}, err
 	}
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+	// Free trialing→canceled (ADR-069) — enqueue in-tx with the provenance
+	// both prior dispatch sites (service + engine) stamped.
+	extra := map[string]any{"canceled_by": "schedule", "reason": "trial_end_cancel"}
+	if sub.CanceledAt != nil {
+		extra["canceled_at"] = sub.CanceledAt.UTC()
+	}
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionCanceled, sub, extra); err != nil {
 		return domain.Subscription{}, err
 	}
 	if err := tx.Commit(); err != nil {
