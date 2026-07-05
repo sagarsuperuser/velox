@@ -103,7 +103,9 @@ must be at least 12 characters.)
 The response carries, exactly once (Velox stores only hashes — none of
 it is recoverable later):
 
-- your dashboard owner credentials (`owner_email` / `owner_password`),
+- your dashboard owner credentials (`owner_email` / `owner_password`)
+  — log in at `http://localhost/` (the `velox-dashboard` container serves
+  the operator UI behind the same proxy as the API),
 - a TEST secret key (`vlx_secret_test_…`),
 - a LIVE secret key (`vlx_secret_live_…` — charges real cards; ignore
   it until you mean it),

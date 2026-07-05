@@ -236,7 +236,7 @@ POST   /v1/webhook-endpoints/endpoints  — register an outbound webhook endpoin
 GET    /v1/audit-log                    — query the append-only audit log
 ```
 
-Full endpoint list and request/response shapes: [`api/openapi.yaml`](api/openapi.yaml).
+API reference: [`api/openapi.yaml`](api/openapi.yaml) covers the core resource routes (usage, subscriptions, invoices, pricing, credits, provider costs, webhook endpoints); some operational routes (exports, analytics, audit log, settings) aren't in the spec yet. Webhook consumers: [`docs/webhooks.md`](docs/webhooks.md) — signature verification, envelope, retry ladder, event catalog, delivery contract.
 
 ---
 
