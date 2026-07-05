@@ -40,6 +40,7 @@ const configNav = [
   { to: '/pricing', icon: Tag, label: 'Pricing' },
   { to: '/recipes', icon: Sparkles, label: 'Recipes' },
   { to: '/credits', icon: Wallet, label: 'Credits' },
+  { to: '/provider-costs', icon: Tag, label: 'Provider costs' },
   { to: '/credit-notes', icon: Receipt, label: 'Credit Notes' },
   { to: '/dunning', icon: AlertTriangle, label: 'Dunning' },
   { to: '/dunning-policies', icon: AlertTriangle, label: 'Dunning policies' },

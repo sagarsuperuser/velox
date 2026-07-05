@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import Layout from '@/components/Layout'
+import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -17,7 +17,7 @@ import {
   useGetV1ProviderCosts,
   usePutV1ProviderCosts,
 } from '@/lib/gen/queries.gen'
-import { usePageTitle } from '@/lib/usePageTitle'
+import { usePageTitle } from '@/hooks/usePageTitle'
 
 // Provider costs (ADR-079): the operator's COGS table — what THEY pay LLM
 // providers per token. Feeds the per-event cost stamp at ingest and the
