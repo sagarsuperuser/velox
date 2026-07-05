@@ -23,6 +23,20 @@ Why: Anthropic measured this line nearly eliminating fabricated reports.
 For us it cuts false findings *before* the adversarial-verify stage instead
 of paying 3 verifier votes to kill them there.
 
+**Coverage, not self-filtering, at the find stage.** Grounding (above) kills
+false *positives*; this kills false *negatives*. Both Fable 5 and Opus 4.8
+follow "only high-severity / be conservative" faithfully — they investigate
+just as deeply, then drop findings below the bar, so recall falls. A finder's
+job is coverage; a later stage filters. Append:
+
+> Report every issue, including low-confidence and low-severity ones; tag each
+> with a confidence and a severity. A separate stage will rank and filter — do
+> not filter here.
+
+Our panels already have that downstream stage (adversarial-verify + dedup), so
+this just moves the filtering there. Keep this instruction brief — the point is
+one line of "coverage over precision here," not an enumerated finder rulebook.
+
 ## 2. Give the reason with the request
 
 Every agent prompt opens with intent, not just task:
