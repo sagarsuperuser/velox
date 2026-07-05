@@ -1045,22 +1045,25 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		TestClockSvc:      testClockSvc,
 	}
 
-	// Redis for distributed rate limiting (fail-open if not configured)
+	// Redis for distributed rate limiting. Failure direction is split:
+	// general + hosted-invoice limiters fail CLOSED in production (DDoS
+	// posture), ingest and /v1/auth always fail open (revenue events and
+	// operator login must survive a Redis blip).
 	var rdb *redis.Client
 	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
 		opt, err := redis.ParseURL(redisURL)
 		if err != nil {
-			slog.Warn("invalid REDIS_URL, rate limiting will fail open", "error", err)
+			slog.Warn("invalid REDIS_URL — general/hosted rate limiters FAIL CLOSED in production (requests 429), fail open otherwise; ingest always fails open", "error", err)
 		} else {
 			rdb = redis.NewClient(opt)
 			if err := rdb.Ping(context.Background()).Err(); err != nil {
-				slog.Warn("redis not reachable, rate limiting will fail open", "error", err)
+				slog.Warn("redis not reachable — general/hosted rate limiters FAIL CLOSED in production (requests 429), fail open otherwise; ingest always fails open", "error", err)
 			} else {
 				slog.Info("redis connected for rate limiting")
 			}
 		}
 	} else {
-		slog.Info("REDIS_URL not set, rate limiting will fail open")
+		slog.Info("REDIS_URL not set — rate limiting disabled in dev; in production the general/hosted limiters FAIL CLOSED (all covered requests 429) — set REDIS_URL")
 	}
 	// Per-email failed-login counter — the brute-force throttle behind the
 	// documented "5 misses → 15-min lock". Wired UNCONDITIONALLY (velox-ops
@@ -1081,19 +1084,31 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// deliberately stays fail-open in non-prod: per the industry split (OWASP
 	// ASVS + practitioner consensus) generic API rate limiting should fail
 	// open on a store blip, while the auth brute-force control is the
-	// always-on FallbackFailureCounter above. We do NOT additionally
-	// fail-close /v1/auth's IP limiter — that would re-introduce the
-	// Redis-blip login DoS the #21 design avoids.
+	// always-on FallbackFailureCounter above.
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		rateLimiter.SetFailClosed(true)
 	}
+	// /v1/auth gets its OWN limiter instance — same Redis namespace and
+	// limits as the general one (shared buckets), but NEVER fail-closed:
+	// locking operators out of login during a Redis blip re-introduces
+	// the DoS the #21 design avoids, and the brute-force control on auth
+	// is the always-on FallbackFailureCounter + Postgres lockout, not
+	// this limiter. The HA-readiness audit (docs/dev/
+	// ha-readiness-2026-07-06.md) found the prior wiring mounted the
+	// fail-closed general limiter on /v1/auth, contradicting this
+	// stated design — a prod Redis outage killed dashboard login.
+	authLimiter := mw.NewRateLimiter(rdb, "general",
+		envInt("VELOX_RATE_LIMIT_GENERAL_PER_MIN", 100), time.Minute)
 
 	// Dedicated, much larger bucket for the ingest surface (/v1/usage-events*
 	// + the LiteLLM adapter). The general 100/min bucket was sized for
 	// operator CRUD; LiteLLM POSTs ONE callback per LLM call (ADR-033), so
 	// any real AI-infra traffic above ~1.7 calls/s exhausted it inside the
-	// first hour of wiring the proxy — and LiteLLM retries only on 5xx, so
-	// every 429 was a silently dropped, permanently unbilled event. Peer
+	// first hour of wiring the proxy — and LiteLLM at stock config retries
+	// NOTHING (max_retries=0; the queue is cleared on any send error —
+	// verified against LiteLLM source 2026-07-06, see docs/dev/
+	// ha-readiness-2026-07-06.md), so every 429 was a silently dropped,
+	// permanently unbilled event. Peer
 	// anchor: Stripe meter events allow 1,000 calls/s live; Orb's TEST mode
 	// alone allows 2,000 events/min. Default 1000 req/s per key, override
 	// via VELOX_RATE_LIMIT_INGEST_PER_SEC.
@@ -1190,7 +1205,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// flow. Public surface (pre-session). Rate limited to slow
 	// credential stuffing. ADR-011.
 	r.Route("/v1/auth", func(r chi.Router) {
-		r.Use(rateLimiter.Middleware())
+		r.Use(authLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
 		// Invite accept flow — public like login/reset (the token IS the
 		// credential) and sharing the same limiter, so invite-token

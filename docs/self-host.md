@@ -58,16 +58,24 @@ This deployment shape is a **single-VM, single-instance** install:
   comes back up.
 - DB: 1 Postgres instance on the same host (or a managed Postgres if you
   point `DATABASE_URL` elsewhere).
-- Scheduler: in-process goroutine inside `velox-api` (per ADR-006). One
-  scheduler at a time; safe because there's only one API process.
+- Scheduler: in-process goroutine inside `velox-api` (per ADR-006).
+  Leader-elected via Postgres advisory locks — a second replica's
+  scheduler and outbox dispatchers stand by rather than double-fire, so
+  an accidental N=2 is correctness-safe on the money paths. A handful
+  of non-money surfaces still assume one process (SSE live tail,
+  per-process throttles) — the full list, with evidence, lives in
+  [docs/dev/ha-readiness-2026-07-06.md](dev/ha-readiness-2026-07-06.md).
 - LB: none.
 
 This is appropriate for: development, evaluation, single-tenant
 self-hosting where ~minutes of downtime per deploy/restart is acceptable.
 It is **not** a production-with-availability shape — for that, the next
-step is a multi-replica deployment with leader-elected scheduling and
-managed Postgres. That work is paused until a design partner with a
-specific Kubernetes flavour comes through; pre-emptively shipping three
+step is a load-balanced multi-replica deployment with managed Postgres
+(failover + PITR). Much of the groundwork already exists (leader-elected
+scheduling, SKIP-LOCKED outbox claims, DB-backed sessions/idempotency);
+the remaining scoped work list is in the HA-readiness doc above. That
+build is paused until a design partner with a specific Kubernetes
+flavour approaches production cutover; pre-emptively shipping three
 independent deployment paths produced surface nobody was running.
 
 ## Postgres
