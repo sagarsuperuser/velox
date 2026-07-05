@@ -1095,6 +1095,15 @@ type fakeBiller struct {
 	draftTxErr      error
 	issueDraftCalls int
 	issuedDraftIDs  []string
+	// plan-swap draft path (Bug B transplant). swapDraftHandled defaults
+	// FALSE, so existing swap tests fall through to BillOnPlanSwapImmediate
+	// (the pre-fix path) unchanged.
+	swapDraftTxCalls    int
+	swapDraftIDs        []string
+	swapDraftHandled    bool
+	swapDraftTxErr      error
+	issueSwapDraftCalls int
+	issuedSwapDraftIDs  []string
 }
 
 func (f *fakeBiller) BillOnCreate(_ context.Context, _ domain.Subscription) (domain.Invoice, error) {
@@ -1131,6 +1140,16 @@ func (f *fakeBiller) BillOnPlanSwapImmediate(_ context.Context, _ domain.Subscri
 	f.planSwapCalls++
 	f.planSwapAt = at
 	return f.planSwapCreditCents, f.planSwapErr
+}
+
+func (f *fakeBiller) BillOnPlanSwapDraftsTx(_ context.Context, _ *sql.Tx, _ domain.Subscription, _ time.Time) ([]string, int64, bool, error) {
+	f.swapDraftTxCalls++
+	return f.swapDraftIDs, 0, f.swapDraftHandled, f.swapDraftTxErr
+}
+
+func (f *fakeBiller) IssueSwapDrafts(_ context.Context, _ domain.Subscription, ids []string) {
+	f.issueSwapDraftCalls++
+	f.issuedSwapDraftIDs = append(f.issuedSwapDraftIDs, ids...)
 }
 
 func (f *fakeBiller) BillOnCreateTx(_ context.Context, _ *sql.Tx, _ domain.Subscription) (domain.Invoice, bool, error) {
