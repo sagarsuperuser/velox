@@ -1603,7 +1603,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 - [ ] Wait 10s, 20 more → ~16 allowed (general limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
 - [ ] **Ingest rides its own bucket (2026-07-05):** `POST /v1/usage-events` / `/batch` / `/integrations/litellm/spend` respond with `X-RateLimit-Limit: 1000` (per second — LiteLLM POSTs one callback per LLM call; the 100/min CRUD bucket silently dropped its events, since LiteLLM retries only on 5xx). Exhausting the general bucket does NOT 429 ingest. Overrides: `VELOX_RATE_LIMIT_GENERAL_PER_MIN`, `VELOX_RATE_LIMIT_INGEST_PER_SEC`.
 - [ ] Tenant A exhausted → Tenant B succeeds (separate buckets).
-- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → general fail-closed; **ingest stays fail-open even in prod** (a Redis blip must not drop revenue events).
+- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → general fail-closed; **ingest AND `/v1/auth` stay fail-open even in prod** (a Redis blip must not drop revenue events or lock operators out of login — brute-force control is the Postgres-backed lockout, not the limiter; 2026-07-06 HA audit fix). Boot logs state the split explicitly, never a blanket "fail open".
 - [ ] `/health`, `/health/ready`, `/metrics` not rate-limited.
 
 ## FLOW X4: Security headers + metrics auth

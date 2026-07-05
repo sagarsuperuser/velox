@@ -263,7 +263,7 @@ func serve() {
 	// Outbox dispatchers (always-on per ADR-040). Webhook outbox drains
 	// webhook_outbox → Service.Dispatch; email outbox drains email_outbox
 	// → *email.Sender. The dispatchers gate each tick on a cluster-wide
-	// advisory lock (postgres.LockKeyWebhookDispatcher / LockKeyEmailDispatcher)
+	// advisory lock (postgres.LockKeyOutboxDispatcher / LockKeyEmailDispatcher)
 	// so multi-replica deploys stay safe — only one replica drains at a
 	// time. Operators who need to pause delivery can hold the lock from
 	// an external psql session; restart isn't required.
@@ -301,12 +301,14 @@ func serve() {
 		slog.Error("http shutdown error", "error", err)
 	}
 
-	// Stop the test-clock catchup worker. Bounded by the same wall-
-	// clock cap that the worker uses internally (CatchupTimeout) so an
-	// in-flight catchup gets a chance to finish; if it doesn't, the
-	// clock stays in 'advancing' and recovery on next boot will
-	// resume it. ctx.Err on the catchup ctx itself is also signalled
-	// via the parent ctx cancellation above.
+	// Stop the test-clock catchup worker. Catchup deliberately runs on
+	// context.Background() (an in-flight advance must not be cut short
+	// mid-write), so parent-ctx cancellation does NOT propagate into it;
+	// Stop() just WAITS up to CatchupTimeout (10min) for the in-flight
+	// advance. Deployment grace periods shorter than that (K8s default
+	// 30s) SIGKILL mid-catchup — designed-for: the clock stays
+	// 'advancing' and boot-time recovery resumes it. See
+	// docs/dev/ha-readiness-2026-07-06.md (shutdown mechanics).
 	if !catchupWorker.Stop(testclock.CatchupTimeout) {
 		slog.Warn("test-clock catchup worker did not drain within timeout")
 	}

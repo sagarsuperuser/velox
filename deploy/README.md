@@ -69,12 +69,19 @@ endpoints are exempt from rate limiting and audit logging.
 
 ## Scaling
 
-- **Horizontal:** Multi-replica is safe — schedulers and outbox
-  dispatchers are leader-elected via Postgres advisory locks
-  (`internal/billing/postgres_locker.go`), so replicas coexist without
-  double-processing. The reference compose stack is single-replica;
-  the multi-replica deployment path is paused until a design partner
-  needs it.
+- **Horizontal:** Multi-replica is safe on the money paths — schedulers
+  and outbox dispatchers are leader-elected via Postgres advisory locks
+  (`internal/billing/postgres_locker.go`) with SKIP-LOCKED row claims,
+  so replicas coexist without double-billing or double-sending. "Safe"
+  is not "fully supported": a few surfaces still assume one process
+  (the dashboard's live webhook-event tail only shows events dispatched
+  by the replica serving the stream; the password-reset send cap
+  becomes per-replica), and Postgres-failover edge cases are unhandled.
+  The complete verified list — what breaks at N=2, what's already safe,
+  and the scoped build plan — is
+  [docs/dev/ha-readiness-2026-07-06.md](../docs/dev/ha-readiness-2026-07-06.md).
+  The reference compose stack is single-replica; the multi-replica
+  build triggers when a design partner approaches production cutover.
 - **Database:** Velox uses connection pooling (`DB_MAX_OPEN_CONNS`,
   default 20). When scaling replicas, ensure total connections across
   all instances don't exceed your PostgreSQL `max_connections`.

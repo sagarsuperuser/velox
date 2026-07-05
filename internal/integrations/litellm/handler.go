@@ -101,10 +101,17 @@ type SpendRowError struct {
 //     (tenant, customer, meter, idempotency_key) UNIQUE)
 //  5. Tally accepted / skipped / errors; return 200 with envelope
 //
-// Adapter never returns 5xx for partial failure — that would cause
-// LiteLLM to retry the entire batch including the already-ingested
-// rows, which the idempotency dedup catches but is wasted work.
-// 5xx is reserved for full-handler failure (DB down, etc.).
+// The handler NEVER returns 5xx once past decode: per-row persist
+// failures — including a fully-down DB reached past auth — surface as
+// errors[] entries with a 200 envelope, so callers MUST monitor
+// errors[] (a full DB outage also tends to die earlier, at API-key
+// auth, as a 401 per ADR-026). Rationale for no-5xx: a 5xx would make
+// a retry-configured LiteLLM re-send the whole batch (dedup catches
+// it, but wasted work) — and at stock config LiteLLM retries NOTHING
+// anyway (max_retries=0, queue cleared on any send error; verified
+// against LiteLLM source 2026-07-06). Recovery for dropped batches is
+// operator replay of LiteLLM's spend logs — idempotency keys make it
+// a pure gap-fill. See docs/dev/ha-readiness-2026-07-06.md.
 func (h *Handler) spend(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 

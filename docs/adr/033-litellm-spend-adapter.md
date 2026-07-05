@@ -60,7 +60,18 @@ LiteLLM's `response_cost` and `cost_breakdown` are stored on each event's `metad
 
 ### Partial-failure semantics
 
-The handler returns 200 with `{accepted, skipped, errors[]}` even when some rows fail. Reason: LiteLLM retries the entire batch on 5xx; per-row failures (missing user, missing meter) would cause retry storms even though the idempotency dedup catches duplicates. 5xx is reserved for full-handler failure (DB down).
+The handler returns 200 with `{accepted, skipped, errors[]}` even when some rows fail. Reason: per-row failures (missing user, missing meter) must not fail the batch; monitor `errors[]`.
+
+> **Correction (2026-07-06, HA-readiness audit):** this ADR originally
+> claimed "LiteLLM retries the entire batch on 5xx." Verified against
+> LiteLLM source: at stock config the generic logger has `max_retries=0`
+> and clears its queue on ANY send error — **LiteLLM retries nothing by
+> default**, and a 5xx (or an outage) drops the batch client-side.
+> Operators can configure `max_retries`/`retry_delay` to shrink (never
+> close) the window. Recovery is operator replay of LiteLLM's spend
+> logs — deterministic idempotency keys make it a pure gap-fill, with a
+> hard deadline at period finalize. Full analysis:
+> `docs/dev/ha-readiness-2026-07-06.md` ("Downtime = money?").
 
 ### What's NOT in scope (deferred)
 

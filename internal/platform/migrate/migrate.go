@@ -1073,10 +1073,14 @@ func CheckSchemaReady(db *sql.DB) error {
 	}
 
 	if dbVer > embedded {
-		// Rolling deploy: newer binary coming up against older binary's DB — this
-		// is normal during upgrades. But if the OLDER binary is starting against
-		// a NEWER DB, refuse — the old code may not understand new columns or
-		// enum values and could write data the new code then mis-interprets.
+		// dbVer > embedded means THIS (older) binary is running against a
+		// NEWER schema — a rolling deploy overlap or a rollback. Today we
+		// WARN and continue: old code may not understand new columns/enum
+		// values, and no expand/contract migration discipline is enforced,
+		// so this window is governed by nothing but migration authors'
+		// care. Whether to refuse instead is an open decision — see
+		// docs/dev/ha-readiness-2026-07-06.md (N=2 hazard: old-code-on-
+		// new-schema windows) before tightening.
 		slog.Warn("schema ahead of binary — likely a rollback in progress",
 			"database_version", dbVer,
 			"binary_version", embedded,
