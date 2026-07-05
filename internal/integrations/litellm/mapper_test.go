@@ -111,16 +111,16 @@ func TestCanonicalModel(t *testing.T) {
 		"GPT-4O-2024-08-06":                  "gpt-4o", // case-insensitive
 		"some-unknown-model-v9":              "",       // unrecognized → "" (raw kept upstream)
 		// Current-generation families (2026-07-05 refresh).
-		"claude-opus-4-5-20251101":   "claude-opus-4.5",
-		"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-		"claude-haiku-4-5-20251001":  "claude-haiku-4.5",
+		"claude-opus-4-5-20251101":             "claude-opus-4.5",
+		"claude-sonnet-4-5-20250929":           "claude-sonnet-4.5",
+		"claude-haiku-4-5-20251001":            "claude-haiku-4.5",
 		"anthropic/claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-		"gpt-5-2025-08-07":           "gpt-5",
-		"gpt-5-mini-2025-08-07":      "gpt-5-mini", // longest-prefix: not gpt-5
-		"gpt-5.1":                    "gpt-5.1",    // dotted id ≠ the bare gpt-5 entry
-		"gpt-4.1-mini":               "gpt-4.1-mini",
-		"gpt-4.1-2025-04-14":         "gpt-4.1",
-		"gpt-9-experimental":         "", // unknown FUTURE model still falls through
+		"gpt-5-2025-08-07":                     "gpt-5",
+		"gpt-5-mini-2025-08-07":                "gpt-5-mini", // longest-prefix: not gpt-5
+		"gpt-5.1":                              "gpt-5.1",    // dotted id ≠ the bare gpt-5 entry
+		"gpt-4.1-mini":                         "gpt-4.1-mini",
+		"gpt-4.1-2025-04-14":                   "gpt-4.1",
+		"gpt-9-experimental":                   "", // unknown FUTURE model still falls through
 	}
 	for raw, want := range cases {
 		if got := canonicalModel(raw); got != want {
