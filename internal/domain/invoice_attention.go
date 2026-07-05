@@ -69,7 +69,8 @@ const (
 	AttentionReasonPaymentFailed AttentionReason = "payment_failed"
 
 	// AttentionReasonPaymentUnconfirmed: charge attempt returned an
-	// ambiguous error (5xx, timeout) — the reconciler will resolve.
+	// ambiguous error (5xx, timeout) — the reconciler resolves it once
+	// Stripe reports a terminal outcome (in-flight PIs are skipped).
 	// Velox-specific (no direct industry parity); shipped because the
 	// PaymentIntent + reconciler architecture creates this state and
 	// operators benefit from a quiet "the system has it" signal rather
@@ -552,9 +553,15 @@ func classifyPaymentUnconfirmed(inv Invoice) *Attention {
 		Severity: AttentionSeverityInfo,
 		Reason:   AttentionReasonPaymentUnconfirmed,
 		Code:     "payment.unconfirmed",
-		Message:  "Payment outcome unconfirmed by the provider — Velox resolves this automatically on the next reconcile.",
-		DocURL:   docBaseURL + "payment-unconfirmed",
-		Since:    &since,
+		// Honest scope (2026-07-06 truth pass): the reconciler resolves
+		// TERMINAL Stripe outcomes (succeeded / canceled /
+		// requires_payment_method). A PI parked at requires_action —
+		// off-session SCA nobody completes — is deliberately SKIPPED every
+		// sweep, so those need the operator (cancel or nudge the customer),
+		// and this copy must not promise otherwise.
+		Message: "Payment outcome unconfirmed by the provider — Velox re-checks automatically and resolves once Stripe reports a final outcome. If it sits here for hours the charge may be waiting on customer action (e.g. 3-D Secure): check the payment in Stripe, then cancel or retry it.",
+		DocURL:  docBaseURL + "payment-unconfirmed",
+		Since:   &since,
 	}
 }
 

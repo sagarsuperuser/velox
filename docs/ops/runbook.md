@@ -29,7 +29,7 @@ alerting tier — what should page someone vs. what's informational.
 | `velox_billing_cycle_errors_total` | rate > 0.1/s for 5m | Billing cycles failing systematically |
 | `up{job="velox"}` | == 0 | Process down |
 | Postgres connection errors (count) | > 10/min | DB connectivity broken |
-| Scheduler `last_run` age | > 2× tick interval | Scheduler stalled |
+| `time() - velox_scheduler_last_run_timestamp_seconds` | > 2× tick interval | Scheduler stalled (also flips `/health/ready` to 503) |
 
 ### Warn (slack/email, not page)
 
@@ -39,8 +39,9 @@ alerting tier — what should page someone vs. what's informational.
 | `velox_dunning_runs_processed_total{outcome="failed"}` | rate > 0.5/s | Dunning machinery struggling |
 | `velox_webhook_deliveries_total{outcome="failed"}` | sustained failure | Customer's webhook endpoint down or signature wrong |
 | `velox_stripe_breaker_state` | == 1 (open) | Stripe API circuit-breaker tripped |
-| `email_outbox` pending count | > 1000 | Email dispatcher stuck or SMTP provider issue |
-| `webhook_outbox` pending count | > 1000 | Webhook dispatcher stuck |
+| `velox_email_outbox_pending` | > 1000 | Email dispatcher stuck or SMTP provider issue (−1 = the metric query itself failed) |
+| `velox_webhook_outbox_pending` | > 1000 | Webhook dispatcher stuck (−1 = metric query failed) |
+| `velox_creditnote_pending_issue_drafts` | sustained growth over days | Clawback drafts not issuing. NOTE: drafts deferred behind an in-flight source payment (ADR-059) sit here legitimately and do NOT appear in error logs — the reconciler's eligibility scan skips them by design until the source settles. Alert on growth/age, not presence. |
 | `velox_auto_charge_retries_total{outcome="failed"}` | growing rapidly | Many invoices stuck in retry |
 | `velox_audit_write_errors_total` | rate > 0/s | Audit log writes failing — SOC 2 evidence at risk |
 
@@ -192,12 +193,16 @@ SELECT outcome, count(*) FROM (
 
 ### 5. Stale `payment_status='unknown'` invoices
 
-**Symptom**: Invoices stuck at `payment_unconfirmed` for hours;
-attention banner says "reconciler will resolve."
+**Symptom**: Invoices stuck at `payment_unconfirmed` for hours.
 
 **Why**:
 - Stripe webhook delivery delayed or lost.
 - Reconciler isn't running (single-instance assumption broken?).
+- The PI is parked at `requires_action` (off-session SCA nobody
+  completes). The reconciler resolves only TERMINAL Stripe outcomes —
+  it deliberately skips in-flight PIs every sweep, so these never
+  self-heal: cancel the PI in Stripe (the reconciler then settles it
+  failed) or get the customer to complete authentication.
 
 **Diagnose**:
 ```sql
@@ -210,9 +215,11 @@ LIMIT 20;
 **Fix**:
 1. Check application logs for "reconciler" entries; should run
    every 60s.
-2. Manually trigger reconcile: hit `POST /v1/admin/reconcile-payments`
-   (if exposed) or the per-invoice retry-payment action in the
-   dashboard.
+2. There is no manual bulk-reconcile endpoint. The payment reconciler
+   sweeps automatically every tick; per invoice, use the dashboard's
+   invoice attention actions (charge now / retry) — the reconciler's
+   next pass also self-heals any invoice whose PI reached a terminal
+   state at Stripe.
 
 ### 6. Test-clock advance hung
 
@@ -254,7 +261,9 @@ operator's session.
 **This is a SEV-1.** RLS leakage is the worst-case bug.
 
 **Diagnose**:
-1. Lock down — set Velox to read-only via env var if possible.
+1. Lock down. Velox has NO read-only mode — contain by revoking API
+   keys (dashboard → API Keys) and/or stopping the API container;
+   Postgres stays up for forensics.
 2. Verify RLS is enabled on every tenant-scoped table:
    ```sql
    SELECT schemaname, tablename, rowsecurity
@@ -361,8 +370,9 @@ aggregator to see the full request chain.
 For SEV-1 (data leakage, billing-correctness bug, all customer
 charges failing):
 
-1. Stop the bleeding: read-only mode if possible; pause webhook
-   delivery (rotate webhook secrets to invalidate in-flight).
+1. Stop the bleeding: revoke API keys / stop the API container (no
+   read-only mode exists); pause webhook delivery by deactivating
+   endpoints (PATCH active=false — keeps the signing secret).
 2. Snapshot DB state for forensic review.
 3. Assemble responders: backend lead + DBA + (if customer-facing)
    support lead.

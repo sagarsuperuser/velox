@@ -127,7 +127,11 @@ backstop (the duplication has become a correctness pattern); OR the count of
 **obligation-shaped** effects outgrows "one drainer + a few bespoke sweeps"
 (rule of thumb ~6–7 — count MIGRATABLE effects only: Stripe state-syncs like
 `payment_unknown` and settlement/payout reconciliation never enqueue, so the
-migratable set is **4 today, not 6**); OR a `cmd/velox-worker` process split; OR
+migratable set is **5 today** — re-counted 2026-07-05 during the deferral
+reassessment: the plan-swap refund drafts (#381, Bug B transplant) joined
+the clawback-issue family as a fifth issue_pending consumer of the same
+reconciler; still under the ~6–7 line, and notably ADR-078 (commits)
+added ZERO bespoke sweeps); OR a `cmd/velox-worker` process split; OR
 a second engineer joins (copy-paste a 1-dev shop tolerates, a 2-dev shop
 shouldn't).
 

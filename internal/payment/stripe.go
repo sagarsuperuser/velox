@@ -178,6 +178,13 @@ type PaymentIntentResult struct {
 	// can replicate the webhook's customer-email suppression when it recovers a
 	// failure (ADR-049 Phase 2). Empty for the create response / when unset.
 	Purpose string
+	// AmountReceivedCents is the amount Stripe actually captured. Populated
+	// by GetPaymentIntent so the reconciler's SettleSucceeded carries the
+	// real captured figure — it passed a literal 0 pre-2026-07-06, which
+	// structurally disabled the ADR-068 payment.amount_mismatch alarm on
+	// the webhook-drop backstop path (the settle skips the truth-check
+	// when capturedCents == 0).
+	AmountReceivedCents int64
 }
 
 // InvoiceUpdater updates invoice payment status.

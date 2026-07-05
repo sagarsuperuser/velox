@@ -284,12 +284,12 @@
       "id": 15,
       "targets": [
         {
-          "expr": "velox_email_outbox_pending OR vector(0)",
+          "expr": "velox_email_outbox_pending",
           "legendFormat": "email pending",
           "refId": "A"
         },
         {
-          "expr": "velox_webhook_outbox_pending OR vector(0)",
+          "expr": "velox_webhook_outbox_pending",
           "legendFormat": "webhook pending",
           "refId": "B"
         }

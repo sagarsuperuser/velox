@@ -191,7 +191,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 		// retry generates a new PI.
 		slog.Warn("reconcile: no PI to query, settling failed",
 			"invoice_id", inv.ID, "tenant_id", inv.TenantID)
-		return r.settle(ctx, inv, "", false, "unknown outcome: no payment_intent_id to reconcile", terminalFailed)
+		return r.settle(ctx, inv, "", 0, false, "unknown outcome: no payment_intent_id to reconcile", terminalFailed)
 	}
 
 	var res PaymentIntentResult
@@ -221,14 +221,14 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 
 	switch res.Status {
 	case "succeeded":
-		return r.settle(ctx, inv, res.ID, false, "", terminalSucceeded)
+		return r.settle(ctx, inv, res.ID, res.AmountReceivedCents, false, "", terminalSucceeded)
 
 	case "canceled", "requires_payment_method":
 		// Replicate the webhook's customer-email suppression from the PI
 		// purpose: a dunning-retry PI already sent its own per-attempt email,
 		// and a hosted-pay PI's decline was shown inline. Other failures send.
 		suppressEmail := res.Purpose == "hosted_invoice_pay" || res.Purpose == "dunning_retry"
-		return r.settle(ctx, inv, res.ID, suppressEmail, "reconciled: "+res.Status, terminalFailed)
+		return r.settle(ctx, inv, res.ID, 0, suppressEmail, "reconciled: "+res.Status, terminalFailed)
 
 	case "processing", "requires_action", "requires_confirmation", "requires_capture":
 		// Still in flight on Stripe's side — give the webhook more time.
@@ -246,7 +246,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, inv domain.Invoice) (bool
 // through the settlement primitive so it fires the full side-effects (dunning,
 // event, email, card stamp) — identical to the webhook (ADR-049 Phase 2).
 // Falls back to legacy bare writes when no settler is wired (test-only).
-func (r *Reconciler) settle(ctx context.Context, inv domain.Invoice, piID string, suppressEmail bool, failMsg string, kind terminalKind) (bool, error) {
+func (r *Reconciler) settle(ctx context.Context, inv domain.Invoice, piID string, capturedCents int64, suppressEmail bool, failMsg string, kind terminalKind) (bool, error) {
 	// Fresh re-read so a webhook that won the race during the round-trip is
 	// observed (the sweep-list snapshot may be stale). On read error, proceed
 	// with the snapshot — the primitive's own guards still apply.
@@ -268,7 +268,10 @@ func (r *Reconciler) settle(ctx context.Context, inv domain.Invoice, piID string
 	if r.settler != nil {
 		switch kind {
 		case terminalSucceeded:
-			if err := r.settler.SettleSucceeded(ctx, inv.TenantID, fresh, piID, 0, SourceReconciler); err != nil {
+			// capturedCents = the PI's amount_received (not the pre-fix
+			// literal 0) so the ADR-068 amount-mismatch alarm works on the
+			// backstop path exactly as it does on the webhook path.
+			if err := r.settler.SettleSucceeded(ctx, inv.TenantID, fresh, piID, capturedCents, SourceReconciler); err != nil {
 				return false, fmt.Errorf("settle succeeded: %w", err)
 			}
 		default:
