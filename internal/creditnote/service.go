@@ -224,6 +224,25 @@ func (s *Service) create(ctx context.Context, tenantID string, input CreateInput
 	if inv.Status != domain.InvoiceFinalized && inv.Status != domain.InvoicePaid {
 		return domain.CreditNote{}, errs.InvalidState("can only create credit notes for finalized or paid invoices")
 	}
+	// ADR-078 D4: commit funding invoices are cash instruments — no credit
+	// notes, phase 1. Pre-payment, a concession CN would shrink the cash
+	// collected while the grant stays configured full-size; post-payment, a
+	// refund CN returns cash while the funded block stays drawable (and a
+	// credit-settled CN would ADD a second grant on top). Unwind paths:
+	// unpaid → void the invoice (retires the grant, ADR-078 D3); paid →
+	// blocked until the CN-retire leg ships (phase 2 — trigger: first DP
+	// commit-refund ask). Checked in the shared core so the operator path
+	// and the automated clawback paths carry the same rule.
+	invLines, err := s.invoices.ListLineItems(ctx, tenantID, input.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("list invoice line items: %w", err)
+	}
+	for _, li := range invLines {
+		if li.IsCommitLine() {
+			return domain.CreditNote{}, errs.InvalidState(
+				"this invoice funds a prepaid commit — credit notes are not supported on commit invoices; void the unpaid invoice to cancel the commit instead")
+		}
+	}
 
 	// Calculate totals. Line amounts are interpreted as tax-inclusive
 	// (gross) so the caller's sum matches the invoice's gross total the

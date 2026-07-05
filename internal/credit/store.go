@@ -57,6 +57,15 @@ type Store interface {
 	// expire only on operator Advance (against the clock's frozen_time),
 	// never on the wall-clock cron tick.
 	ListExpiredGrantsForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time) ([]domain.CreditLedgerEntry, error)
+
+	// RetireCommitGrantForInvoiceTx retires the remaining balance of the
+	// commit grant funded by the given invoice, on the caller's tx — the
+	// void leg of ADR-078. Clean no-op (0, nil) when the invoice funded no
+	// grant or the grant is already fully consumed/retired. The
+	// consumed_cents CAS flip is the structural exactly-once gate, so the
+	// legal uncollectible→void sequence and retries converge on one
+	// retirement entry.
+	RetireCommitGrantForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, error)
 }
 
 type ListFilter struct {

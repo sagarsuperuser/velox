@@ -403,6 +403,24 @@ type InvoiceLineItem struct {
 	BillingPeriodEnd    *time.Time     `json:"billing_period_end,omitempty"`
 	Metadata            map[string]any `json:"metadata,omitempty"`
 	CreatedAt           time.Time      `json:"created_at"`
+
+	// CommitGrantedCents marks this line as a prepaid-commit purchase
+	// (ADR-078): when the invoice finalizes, a credit block of this many
+	// cents is granted to the customer (grant_kind='commit'). May differ
+	// from AmountCents — discounted commits sell $10k of credits for $9k.
+	// Only valid on add_on lines of manual invoices, at most one per
+	// invoice, enforced in buildLineItem (CHECK constraint backstop in
+	// migration 0136). Nil = not a commit line.
+	CommitGrantedCents *int64 `json:"commit_granted_cents,omitempty"`
+	// CommitExpiresAt is the granted block's expiry. Nil = never expires
+	// (phase-1 default; term-aligned defaults arrive with recipe-carried
+	// commits in phase 2).
+	CommitExpiresAt *time.Time `json:"commit_expires_at,omitempty"`
+}
+
+// IsCommitLine reports whether this line funds a prepaid-commit grant.
+func (li InvoiceLineItem) IsCommitLine() bool {
+	return li.CommitGrantedCents != nil && *li.CommitGrantedCents > 0
 }
 
 // EffectiveUnitAmountDecimal is the per-unit price in DECIMAL CENTS, derived

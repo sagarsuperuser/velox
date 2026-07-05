@@ -114,8 +114,6 @@ services:
       # Optional — OpenTelemetry export
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-velox}
-      # Optional — billing alert evaluator interval (e.g. 5m)
-      VELOX_BILLING_ALERTS_INTERVAL: ${VELOX_BILLING_ALERTS_INTERVAL:-}
     healthcheck:
       # The image is distroless (no shell, no curl); use the binary's own
       # zero-arg `version` exit-0 as a process-level liveness probe. The

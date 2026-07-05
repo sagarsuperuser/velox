@@ -471,6 +471,21 @@ func (e SubscriptionStatus) Valid() bool {
 	}
 }
 
+// Defines values for PostV1CreditsGrantJSONBodyGrantKind.
+const (
+	Promotional PostV1CreditsGrantJSONBodyGrantKind = "promotional"
+)
+
+// Valid indicates whether the value is a known member of the PostV1CreditsGrantJSONBodyGrantKind enum.
+func (e PostV1CreditsGrantJSONBodyGrantKind) Valid() bool {
+	switch e {
+	case Promotional:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetV1CustomersParamsDir.
 const (
 	GetV1CustomersParamsDirAsc  GetV1CustomersParamsDir = "asc"
@@ -895,9 +910,20 @@ type InvoiceBillingReason string
 
 // InvoiceLineItem A single line on an invoice.
 type InvoiceLineItem struct {
-	AmountCents        int64                  `json:"amount_cents"`
-	BillingPeriodEnd   time.Time              `json:"billing_period_end,omitempty"`
-	BillingPeriodStart time.Time              `json:"billing_period_start,omitempty"`
+	AmountCents        int64     `json:"amount_cents"`
+	BillingPeriodEnd   time.Time `json:"billing_period_end,omitempty"`
+	BillingPeriodStart time.Time `json:"billing_period_start,omitempty"`
+
+	// CommitExpiresAt Expiry of the granted commit block. Absent/null = the credits
+	// never expire (the default).
+	CommitExpiresAt time.Time `json:"commit_expires_at,omitempty"`
+
+	// CommitGrantedCents Marks the line as a prepaid-commit purchase (ADR-078): when the
+	// invoice finalizes, a credit block of this many cents is granted
+	// to the customer. May differ from the line price — discounted
+	// commits sell $10k of credits for $9k. add_on lines on manual
+	// invoices only, at most one per invoice. Absent on normal lines.
+	CommitGrantedCents int64                  `json:"commit_granted_cents,omitempty"`
 	CreatedAt          time.Time              `json:"created_at"`
 	Currency           string                 `json:"currency"`
 	Description        string                 `json:"description"`
@@ -1095,7 +1121,20 @@ type PostV1CreditsGrantJSONBody struct {
 	AmountCents int64  `json:"amount_cents"`
 	CustomerId  string `json:"customer_id"`
 	Description string `json:"description,omitempty"`
+
+	// ExpiresAt Optional expiry; must be in the future. Omitted = never expires.
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+
+	// GrantKind Optional cost-basis class (ADR-078). `promotional` marks
+	// free/marketing credits, drained BEFORE all paid-class
+	// blocks. Omitted = unclassified (drains in the paid
+	// class). `commit` is reserved for the invoice-finalize
+	// funding path and rejected here.
+	GrantKind PostV1CreditsGrantJSONBodyGrantKind `json:"grant_kind,omitempty"`
 }
+
+// PostV1CreditsGrantJSONBodyGrantKind defines parameters for PostV1CreditsGrant.
+type PostV1CreditsGrantJSONBodyGrantKind string
 
 // GetV1CustomersParams defines parameters for GetV1Customers.
 type GetV1CustomersParams struct {

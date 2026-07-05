@@ -1446,6 +1446,20 @@ export interface paths {
                         /** Format: int64 */
                         amount_cents: number;
                         description?: string;
+                        /**
+                         * Format: date-time
+                         * @description Optional expiry; must be in the future. Omitted = never expires.
+                         */
+                        expires_at?: string;
+                        /**
+                         * @description Optional cost-basis class (ADR-078). `promotional` marks
+                         *     free/marketing credits, drained BEFORE all paid-class
+                         *     blocks. Omitted = unclassified (drains in the paid
+                         *     class). `commit` is reserved for the invoice-finalize
+                         *     funding path and rejected here.
+                         * @enum {string}
+                         */
+                        grant_kind?: "promotional";
                     };
                 };
             };
@@ -2181,6 +2195,21 @@ export interface components {
             };
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: int64
+             * @description Marks the line as a prepaid-commit purchase (ADR-078): when the
+             *     invoice finalizes, a credit block of this many cents is granted
+             *     to the customer. May differ from the line price — discounted
+             *     commits sell $10k of credits for $9k. add_on lines on manual
+             *     invoices only, at most one per invoice. Absent on normal lines.
+             */
+            commit_granted_cents?: number | null;
+            /**
+             * Format: date-time
+             * @description Expiry of the granted commit block. Absent/null = the credits
+             *     never expire (the default).
+             */
+            commit_expires_at?: string | null;
         };
         /**
          * @description Response shape for `GET /v1/invoices/{id}`. The handler returns the

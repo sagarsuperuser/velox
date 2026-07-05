@@ -7,9 +7,19 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
+import type { PostV1CreditsGrantBodyGrantKind } from './postV1CreditsGrantBodyGrantKind';
 
 export type PostV1CreditsGrantBody = {
   customer_id: string;
   amount_cents: number;
   description?: string;
+  /** Optional expiry; must be in the future. Omitted = never expires. */
+  expires_at?: string;
+  /** Optional cost-basis class (ADR-078). `promotional` marks
+  free/marketing credits, drained BEFORE all paid-class
+  blocks. Omitted = unclassified (drains in the paid
+  class). `commit` is reserved for the invoice-finalize
+  funding path and rejected here.
+   */
+  grant_kind?: PostV1CreditsGrantBodyGrantKind;
 };

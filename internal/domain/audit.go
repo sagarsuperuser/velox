@@ -51,14 +51,19 @@ const (
 )
 
 type TenantSettings struct {
-	TenantID        string  `json:"tenant_id"`
-	DefaultCurrency string  `json:"default_currency"`
-	Timezone        string  `json:"timezone"`
-	InvoicePrefix   string  `json:"invoice_prefix"`
-	NetPaymentTerms int     `json:"net_payment_terms"`
-	TaxRate         float64 `json:"tax_rate"` // Percent rate (4-decimal precision via NUMERIC(7,4)). 7.25 = 7.25%. ADR-042/043.
-	TaxName         string  `json:"tax_name,omitempty"`
-	TaxInclusive    bool    `json:"tax_inclusive"`
+	TenantID        string `json:"tenant_id"`
+	DefaultCurrency string `json:"default_currency"`
+	Timezone        string `json:"timezone"`
+	InvoicePrefix   string `json:"invoice_prefix"`
+	NetPaymentTerms int    `json:"net_payment_terms"`
+	// CreditBalanceLowThresholdCents arms the credit.balance_low outbound
+	// event: a ledger write that crosses a customer's balance from >= to
+	// < this value emits the event (ADR-078). Nil = low alerts off.
+	// balance_depleted (>0→0) and balance_recovered (0→>0) fire regardless.
+	CreditBalanceLowThresholdCents *int64  `json:"credit_balance_low_threshold_cents,omitempty"`
+	TaxRate                        float64 `json:"tax_rate"` // Percent rate (4-decimal precision via NUMERIC(7,4)). 7.25 = 7.25%. ADR-042/043.
+	TaxName                        string  `json:"tax_name,omitempty"`
+	TaxInclusive                   bool    `json:"tax_inclusive"`
 	// TaxProvider selects the backend used to compute tax. 'none' skips tax
 	// entirely; 'manual' uses the flat tenant-level rate below. Future
 	// providers (e.g. 'stripe_tax') will be added once their integrations are

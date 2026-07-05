@@ -1229,6 +1229,19 @@ Policy configuration surface — distinct from the dunning state machine under c
 - [ ] CN page: stat cards (Total Credited, Refunded, Applied to Balance, Issued); list rows show channel breakdown ("refund" / "credit" / "refund + credit" / etc.); CSV export has separate Refund/Credit/Out-of-band columns.
 - [x] **Issuing a credit note is atomic — a failed internal effect leaves no orphan (ADR-061):** on a **paid** invoice, create a credit-type credit note (credit-to-balance), then `REVOKE INSERT ON customer_credit_ledger FROM velox_app` and Issue it → the action **fails** and `SELECT status FROM credit_notes WHERE id='<cn>'` is still **`draft`** (the `draft→issued` flip rolled back with the failed grant — no "issued" credit the customer never received); `GRANT INSERT ON customer_credit_ledger TO velox_app` and re-issue → succeeds, status `issued`, balance credited once. *(automated: `TestIssue_GrantFailure_RollsBackCAS`)*
 
+## FLOW C4: Prepaid commits (ADR-078)
+
+- [ ] Compose a manual invoice with a commit line via API (`line_items: [{description, line_type:"add_on", quantity:1, unit_amount_cents:9000, commit_granted_cents:10000}]`) → draft created; customer balance unchanged (grant-on-issue, not on create). *(automated: `TestCommitFinalize_FundsGrantOnce`)*
+- [ ] Finalize it → customer balance **+$100** (the GRANTED amount, not the $90 price); Credits ledger shows "Prepaid commit — invoice <number>"; finalize again → 409, balance unchanged.
+- [ ] Second commit line on the same invoice → 400 "one commit per invoice"; commit line on a subscription-cycle invoice → 400 "only supported on manual invoices".
+- [ ] **Commit invoices are cash-only**: grant the customer separate credits, leave the commit invoice unpaid with no card on file → scheduler tick does NOT apply balance to it (amount_due unchanged); a normal invoice still gets credits applied. *(automated: `TestApplyToInvoice_CommitInvoiceIsCashInstrument`)*
+- [ ] Credit note against the commit invoice (paid or unpaid) → 409 "this invoice funds a prepaid commit … void the unpaid invoice to cancel the commit instead". *(automated: `TestCreditNote_BlockedOnCommitInvoice`)*
+- [ ] Draw part of the commit (run billing on a usage invoice), then **void** the funding invoice → balance drops to $0 (remaining retired; consumed stays consumed); ledger shows a negative adjustment "Commit retired — funding invoice voided". *(automated: `TestCommitVoid_RetiresRemaining`)*
+- [ ] Mark the funding invoice **uncollectible** instead → balance UNCHANGED (block stays live — collections stance); voiding it afterwards retires once. *(automated: `TestCommitUncollectible_NoRetire_ThenVoidRetiresOnce`)*
+- [ ] **Balance alerts**: set the credit low-balance threshold to $50 (settings API); grant $100 (webhook `credit.balance_recovered`), drain to $30 (`credit.balance_low` with `balance_cents`/`threshold_cents`), drain to $0 (`credit.balance_depleted`) — events visible on the Webhooks page. *(automated: `TestBalanceCrossingEvents`)*
+- [ ] Grant with `grant_kind:"promotional"` + a plain grant → billing drains the promotional block first. *(automated: `TestDrainOrder_PromotionalFirst_NullSafe`)*
+- [ ] Grant with `grant_kind:"commit"` via POST /v1/credits/grant → 400 (reserved for the funding path).
+
 ## FLOW C2b: Credits ledger readability
 
 - [ ] Customer ledger shows 5 columns (Date · Type · Description · Amount · Balance) with Amount/Balance fully visible at a 1280px window — nothing clipped at the right edge.

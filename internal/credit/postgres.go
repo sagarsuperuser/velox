@@ -15,11 +15,75 @@ import (
 )
 
 type PostgresStore struct {
-	db *postgres.DB
+	db     *postgres.DB
+	outbox OutboxEnqueuer
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
+}
+
+// OutboxEnqueuer enqueues an outbound webhook event inside the caller's tx, so
+// the event is persisted atomically with the balance change (ADR-040
+// transactional outbox). Satisfied by *webhook.OutboxStore; declared as a
+// narrow consumer-side interface so the credit store needs no webhook import.
+type OutboxEnqueuer interface {
+	Enqueue(ctx context.Context, tx *sql.Tx, tenantID, eventType string, payload map[string]any) (string, error)
+}
+
+// SetOutboxEnqueuer wires transactional balance-crossing events (ADR-078:
+// credit.balance_low / balance_depleted / balance_recovered). Optional —
+// when unset, no events are enqueued.
+func (s *PostgresStore) SetOutboxEnqueuer(o OutboxEnqueuer) { s.outbox = o }
+
+// emitBalanceCrossings enqueues the ADR-078 balance-VALUE crossing events for
+// a before→after balance change, on the caller's tx. Callers MUST hold the
+// per-customer advisory lock — that lock is what makes crossings well-ordered
+// per customer (every balance writer acquires it: append/adjust/apply/expiry).
+//
+// Crossings are defined on the raw SUM(amount_cents) balance. Known, accepted
+// lag: an expired-but-unswept block keeps SUM positive until the expiry sweep
+// retires it — the sweep's expiry entry produces the crossing then
+// (minutes-scale, matches the expiry discipline).
+func (s *PostgresStore) emitBalanceCrossings(ctx context.Context, tx *sql.Tx, tenantID, customerID string, before, after int64) error {
+	if s.outbox == nil || before == after {
+		return nil
+	}
+	base := func() map[string]any {
+		return map[string]any{
+			"customer_id":   customerID,
+			"balance_cents": after,
+		}
+	}
+	if before > 0 && after <= 0 {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventCreditBalanceDepleted, base()); err != nil {
+			return fmt.Errorf("enqueue credit.balance_depleted: %w", err)
+		}
+	}
+	if before <= 0 && after > 0 {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventCreditBalanceRecovered, base()); err != nil {
+			return fmt.Errorf("enqueue credit.balance_recovered: %w", err)
+		}
+	}
+	// Low-threshold crossing: only when the tenant configured one. Read
+	// in-tx (RLS-scoped); NULL/absent = low alerts off. Fires alongside
+	// depleted when a single write crosses both lines — per-cause events,
+	// consumers subscribe to what they need.
+	var threshold sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT credit_balance_low_threshold_cents FROM tenant_settings WHERE tenant_id = $1`,
+		tenantID,
+	).Scan(&threshold); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("read balance-low threshold: %w", err)
+	}
+	if threshold.Valid && threshold.Int64 > 0 && before >= threshold.Int64 && after < threshold.Int64 {
+		p := base()
+		p["threshold_cents"] = threshold.Int64
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventCreditBalanceLow, p); err != nil {
+			return fmt.Errorf("enqueue credit.balance_low: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
@@ -58,11 +122,12 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 	// raced. A per-customer transaction advisory lock always serializes,
 	// regardless of ledger state; it releases automatically on commit/rollback.
 	//
-	// Scope caveat: ApplyToInvoiceAtomic and AdjustAtomic do NOT take this
-	// lock — they serialize on FOR UPDATE row locks instead. Cross-discipline
-	// mutual exclusion (expiry vs apply/adjust) comes from ExpireGrantAtomic
-	// holding BOTH; grant-vs-apply races only skew the stored balance_after
-	// snapshot, which ListEntries recomputes chronologically anyway.
+	// Since ADR-078 this advisory lock is the UNIVERSAL per-customer
+	// serializer: ApplyToInvoiceAtomic and AdjustAtomic acquire it too
+	// (before their row locks), so every balance writer is mutually
+	// serialized — which is what makes balance_after snapshots and the
+	// emitBalanceCrossings before/after computations well-ordered per
+	// customer. Global lock order: invoice-row → advisory → ledger-rows.
 	//
 	// tenant_id is folded into the lock key as defense-in-depth (RLS already
 	// scopes the tx to this tenant).
@@ -104,13 +169,13 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		INSERT INTO customer_credit_ledger (id, tenant_id, customer_id, entry_type,
 			amount_cents, balance_after, description, invoice_id, expires_at, metadata, created_at,
 			source_subscription_id, source_subscription_item_id, source_plan_changed_at, source_change_type,
-			source_credit_note_id, source_invoice_reversal_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			source_credit_note_id, source_invoice_reversal_id, grant_kind, source_invoice_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING id, tenant_id, customer_id, entry_type, amount_cents, balance_after,
 			description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
 			COALESCE(source_subscription_id,''), COALESCE(source_subscription_item_id,''),
 			source_plan_changed_at, COALESCE(source_change_type,''),
-			COALESCE(source_credit_note_id,'')
+			COALESCE(source_credit_note_id,''), COALESCE(grant_kind,''), COALESCE(source_invoice_id,'')
 	`, entry.ID, tenantID, entry.CustomerID, entry.EntryType,
 		entry.AmountCents, entry.BalanceAfter, entry.Description,
 		postgres.NullableString(entry.InvoiceID), postgres.NullableTime(entry.ExpiresAt),
@@ -121,12 +186,14 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		postgres.NullableString(string(entry.SourceChangeType)),
 		postgres.NullableString(entry.SourceCreditNoteID),
 		postgres.NullableString(entry.SourceInvoiceReversalID),
+		postgres.NullableString(string(entry.GrantKind)),
+		postgres.NullableString(entry.SourceInvoiceID),
 	).Scan(&entry.ID, &entry.TenantID, &entry.CustomerID, &entry.EntryType,
 		&entry.AmountCents, &entry.BalanceAfter, &entry.Description,
 		&entry.InvoiceID, &entry.ExpiresAt, &metaJSON, &entry.CreatedAt,
 		&entry.SourceSubscriptionID, &entry.SourceSubscriptionItemID, &entry.SourcePlanChangedAt,
 		(*string)(&entry.SourceChangeType),
-		&entry.SourceCreditNoteID)
+		&entry.SourceCreditNoteID, (*string)(&entry.GrantKind), &entry.SourceInvoiceID)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -149,6 +216,14 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 			case "idx_credit_ledger_reversal_dedup":
 				return domain.CreditLedgerEntry{}, errs.AlreadyExists("invoice_reversal_source",
 					"credit ledger reversal already exists for this invoice").WithCode("credit_reversal_source_taken")
+			case "idx_credit_ledger_commit_fund_dedup":
+				// ADR-078 fund-once backstop. The finalize CAS already
+				// guarantees the commit granter runs at most once per
+				// invoice, so hitting this index means an invariant broke —
+				// and inside the finalize coordinator tx the violation has
+				// poisoned the tx anyway (never catch-and-continue here).
+				return domain.CreditLedgerEntry{}, errs.AlreadyExists("commit_fund_source",
+					"commit grant already exists for this funding invoice").WithCode("credit_commit_fund_taken")
 			}
 			return domain.CreditLedgerEntry{}, errs.AlreadyExists("",
 				fmt.Sprintf("unique constraint %q violated on credit ledger insert",
@@ -160,6 +235,12 @@ func (s *PostgresStore) appendEntryInTx(ctx context.Context, tx *sql.Tx, tenantI
 		return domain.CreditLedgerEntry{}, err
 	}
 	_ = json.Unmarshal(metaJSON, &entry.Metadata)
+
+	// ADR-078 balance-crossing events, atomic with the entry (the advisory
+	// lock acquired above keeps crossings well-ordered per customer).
+	if err := s.emitBalanceCrossings(ctx, tx, tenantID, entry.CustomerID, currentBalance, entry.BalanceAfter); err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
 	return entry, nil
 }
 
@@ -300,6 +381,19 @@ func (s *PostgresStore) AdjustAtomic(
 	}
 	defer postgres.Rollback(tx)
 
+	// Per-customer advisory lock BEFORE the row locks (ADR-078 global lock
+	// order: invoice-row → advisory → ledger-rows; AdjustAtomic takes no
+	// invoice locks, so its order starts at the advisory). This closes the
+	// grant-vs-adjust unserialized window — grants take the advisory lock
+	// but no row locks, so before ADR-078 the two writers shared no lock at
+	// all and balance_after / crossing computations could interleave.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+customerID,
+	); err != nil {
+		return domain.CreditLedgerEntry{}, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
+
 	// Lock customer's ledger rows (defense-in-depth: tenant_id predicate in
 	// addition to RLS — see AppendEntry).
 	if _, err := tx.ExecContext(ctx,
@@ -369,6 +463,11 @@ func (s *PostgresStore) AdjustAtomic(
 		return domain.CreditLedgerEntry{}, fmt.Errorf("insert adjustment: %w", err)
 	}
 
+	// ADR-078 balance-crossing events (advisory lock held above).
+	if err := s.emitBalanceCrossings(ctx, tx, tenantID, customerID, currentBalance, entry.BalanceAfter); err != nil {
+		return domain.CreditLedgerEntry{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return domain.CreditLedgerEntry{}, err
 	}
@@ -381,8 +480,18 @@ func (s *PostgresStore) AdjustAtomic(
 // drained = min(wantDrain, available); available = the total remaining
 // capacity across the selected blocks (sum of amount_cents-consumed_cents).
 //
-// Order: soonest-expiring first (NULL last) so usage minimizes wasted
-// expiring credits, earliest-created as the tie-breaker. Skips blocks
+// Order (ADR-078): promotional (zero-cost-basis) blocks first — free
+// marketing credits burn before paid-class blocks (commits + legacy
+// NULL-kind money-derived credits), the peer-verified revenue-preserving
+// rule. WITHIN a cost-basis class: soonest-expiring first (NULL last) so
+// usage minimizes wasted expiring credits, earliest-created as the
+// tie-breaker. The promotional predicate MUST be NULL-safe (IS NOT
+// DISTINCT FROM): a bare `grant_kind = 'promotional'` evaluates NULL for
+// every legacy block, and `DESC` sorts NULL FIRST — draining money-derived
+// legacy credits before free promo, the exact inversion this order exists
+// to prevent (panel-verified against live Postgres). Applies to BOTH
+// callers — drawdown (ApplyToInvoiceAtomic) AND clawback attribution
+// (AdjustAtomic) — promotional-first is intended for both. Skips blocks
 // past their expires_at — those will be retired by the expiry path;
 // draining them here would mask the retirement.
 //
@@ -401,7 +510,8 @@ func (s *PostgresStore) drainPositiveBlocks(
 		  AND amount_cents > 0
 		  AND consumed_cents < amount_cents
 		  AND (expires_at IS NULL OR expires_at > $3)
-		ORDER BY expires_at NULLS LAST, created_at, id
+		ORDER BY (grant_kind IS NOT DISTINCT FROM 'promotional') DESC,
+		         expires_at NULLS LAST, created_at, id
 	`, tenantID, customerID, now)
 	if err != nil {
 		return 0, 0, fmt.Errorf("scan positive blocks: %w", err)
@@ -472,6 +582,72 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	}
 	defer postgres.Rollback(tx)
 
+	// ADR-078 global lock order: invoice-row → customer advisory → ledger
+	// rows. The invoice row is locked FIRST and its state re-read IN-TX —
+	// the caller's invoiceAmountCents is a stale pre-read (dunning retry /
+	// auto-charge sweep read it on an earlier connection), and before
+	// ADR-078 a settle racing this apply silently burned credits into an
+	// already-paid invoice (usage entry + credits_applied bump committed
+	// while GREATEST capped the due at 0). The re-read also enforces that
+	// commit funding invoices are CASH instruments: a customer's balance —
+	// including the commit's own just-granted credits — must never pay the
+	// invoice that funds a grant ("credits buy credits": revenue booked on
+	// zero cash).
+	var (
+		invStatus       string
+		invAmountDue    int64
+		isCommitFunding bool
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT i.status, i.amount_due_cents,
+			EXISTS (
+				SELECT 1 FROM invoice_line_items li
+				WHERE li.invoice_id = i.id AND li.tenant_id = i.tenant_id
+				  AND li.commit_granted_cents IS NOT NULL
+			)
+		FROM invoices i
+		WHERE i.id = $1 AND i.tenant_id = $2
+		FOR UPDATE OF i
+	`, invoiceID, tenantID).Scan(&invStatus, &invAmountDue, &isCommitFunding)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("apply credits: invoice %s: %w", invoiceID, errs.ErrNotFound)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("apply credits: lock invoice %s: %w", invoiceID, err)
+	}
+	if isCommitFunding {
+		// Designed no-op, not a failure (ADR-078 D4). Stored-PM auto-charge
+		// still collects commit invoices with real cash.
+		slog.DebugContext(ctx, "credit apply skipped: commit funding invoices are cash instruments",
+			"invoice_id", invoiceID, "customer_id", customerID)
+		return 0, nil
+	}
+	switch domain.InvoiceStatus(invStatus) {
+	case domain.InvoiceDraft, domain.InvoiceFinalized:
+		// Payable — draft stays eligible: billOnePeriod applies credits to
+		// tax-pending drafts at build time.
+	default:
+		// Paid / voided / uncollectible: nothing to cover. The caller's
+		// pre-read went stale (e.g. the customer settled via checkout while
+		// a dunning tick was in flight).
+		slog.DebugContext(ctx, "credit apply skipped: invoice no longer payable",
+			"invoice_id", invoiceID, "status", invStatus)
+		return 0, nil
+	}
+	if invAmountDue <= 0 {
+		return 0, nil
+	}
+
+	// Per-customer advisory lock (ADR-078): serializes this drain against
+	// grant-path writers (which take the advisory lock but no row locks),
+	// making balance_after snapshots and alert crossings well-ordered.
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+customerID,
+	); err != nil {
+		return 0, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
+
 	// Lock the customer's ledger rows to serialize concurrent applications —
 	// without this, two simultaneous billing runs on the same customer could
 	// each see the full balance and over-deduct.
@@ -518,7 +694,10 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	// remaining than the balance, and an uncapped drain would write a negative
 	// balance_after — silent money corruption. We cap (balance can't go
 	// negative) AND warn (the drift is surfaced, never absorbed).
-	drainTarget := min(invoiceAmountCents, currentBalance)
+	// Drain against the IN-TX re-read amount_due, never the caller's stale
+	// invoiceAmountCents (ADR-078: the pre-read may predate a concurrent
+	// settle or credit note).
+	drainTarget := min(invAmountDue, currentBalance)
 	deduct, drainable, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, drainTarget, now)
 	if err != nil {
 		return 0, fmt.Errorf("drain credits for invoice: %w", err)
@@ -566,10 +745,108 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 		return 0, fmt.Errorf("update invoice amount_due: %w", err)
 	}
 
+	// ADR-078 balance-crossing events (advisory lock held above).
+	if err := s.emitBalanceCrossings(ctx, tx, tenantID, customerID, currentBalance, balanceAfter); err != nil {
+		return 0, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit credit application: %w", err)
 	}
 	return deduct, nil
+}
+
+// RetireCommitGrantForInvoiceTx retires the REMAINING balance of the commit
+// grant funded by `invoiceID`, on the caller's tx — the void leg of ADR-078
+// (invoice.Service.Void runs it inside the UpdateStatusWithReversal
+// coordinator tx, after the status flip). Clean no-op (0, nil) when the
+// invoice funded no grant (gate never granted / not a commit invoice) or the
+// grant is already fully consumed or retired.
+//
+// Shape is ExpireGrantAtomic's locked re-read on the CALLER's tx, with the
+// ADR-078 divergences: works for NULL expires_at (never-expiring commits are
+// first-class); the negative entry is stamped at void-time clock.Now — never
+// the grant's expiry (no future-dated ledger entries); entry_type is
+// 'adjustment' with metadata.reason='commit_void_retire' (this is a
+// non-payment clawback, not a term lapse — keeping it out of TotalExpired).
+// The `consumed_cents < amount_cents` CAS flip is the structural exactly-once
+// gate: a second retire (e.g. the legal uncollectible→void sequence, or any
+// retry) re-reads remaining == 0 and no-ops. Consumed stays consumed, always.
+//
+// Lock order (ADR-078 global): the caller already holds the invoice row lock;
+// this takes the customer advisory lock, then the grant row FOR UPDATE.
+func (s *PostgresStore) RetireCommitGrantForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, error) {
+	var (
+		grantID    string
+		customerID string
+		amount     int64
+		consumed   int64
+	)
+	// Find the funded grant. No FOR UPDATE yet — we must take the advisory
+	// lock first (grant-path writers serialize on it, not on row locks).
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, customer_id, amount_cents, consumed_cents
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND source_invoice_id = $2 AND grant_kind = 'commit'
+	`, tenantID, invoiceID).Scan(&grantID, &customerID, &amount, &consumed)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("find commit grant for invoice %s: %w", invoiceID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+customerID,
+	); err != nil {
+		return 0, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
+
+	// Re-read remaining under the row lock — the pre-lock snapshot is stale
+	// by construction (a concurrent drain can bump consumed_cents between
+	// the lookup and the lock).
+	err = tx.QueryRowContext(ctx, `
+		SELECT amount_cents, consumed_cents
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND id = $2
+		FOR UPDATE
+	`, tenantID, grantID).Scan(&amount, &consumed)
+	if err != nil {
+		return 0, fmt.Errorf("re-read commit grant %s under lock: %w", grantID, err)
+	}
+	remaining := amount - consumed
+	if remaining <= 0 {
+		return 0, nil // fully drawn or already retired — nothing to claw back
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customer_credit_ledger
+		SET consumed_cents = amount_cents
+		WHERE tenant_id = $1 AND id = $2 AND consumed_cents < amount_cents
+	`, tenantID, grantID)
+	if err != nil {
+		return 0, fmt.Errorf("retire commit grant %s: %w", grantID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("retire commit grant %s: rows affected: %w", grantID, err)
+	} else if n == 0 {
+		// Unreachable after the locked re-read; kept as the structural
+		// exactly-once gate so the entry below can never double-append.
+		return 0, nil
+	}
+
+	if _, err := s.appendEntryInTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  customerID,
+		EntryType:   domain.CreditAdjustment,
+		AmountCents: -remaining,
+		Description: fmt.Sprintf("Commit retired — funding invoice voided (grant %s)", grantID),
+		Metadata:    map[string]any{"reason": "commit_void_retire", "grant_id": grantID, "funding_invoice_id": invoiceID},
+		CreatedAt:   clock.Now(ctx),
+	}); err != nil {
+		return 0, fmt.Errorf("append commit retirement entry for grant %s: %w", grantID, err)
+	}
+	return remaining, nil
 }
 
 // GetByProrationSource returns the credit ledger entry previously written
@@ -843,13 +1120,15 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 				ORDER BY created_at, id
 				ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 			) AS running_balance,
-			description, invoice_id, expires_at, metadata, created_at
+			description, invoice_id, expires_at, metadata, created_at,
+			consumed_cents, grant_kind, source_invoice_id
 		FROM customer_credit_ledger
 		WHERE tenant_id = $1 AND customer_id = $2
 	)
 	SELECT id, tenant_id, customer_id, entry_type, amount_cents,
 		running_balance AS balance_after,
-		description, COALESCE(invoice_id,''), expires_at, metadata, created_at
+		description, COALESCE(invoice_id,''), expires_at, metadata, created_at,
+		consumed_cents, COALESCE(grant_kind,''), COALESCE(source_invoice_id,'')
 	FROM ledger WHERE 1=1`
 	args := []any{filter.TenantID, filter.CustomerID}
 	idx := 3
@@ -880,7 +1159,8 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 		var metaJSON []byte
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.EntryType,
 			&e.AmountCents, &e.BalanceAfter, &e.Description, &e.InvoiceID,
-			&e.ExpiresAt, &metaJSON, &e.CreatedAt); err != nil {
+			&e.ExpiresAt, &metaJSON, &e.CreatedAt,
+			&e.ConsumedCents, (*string)(&e.GrantKind), &e.SourceInvoiceID); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &e.Metadata)

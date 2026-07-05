@@ -116,14 +116,20 @@ type TenantSettingsReader interface {
 }
 
 // CreditReverser restores customer-balance credits that were applied to an
-// invoice when that invoice is voided. Void calls the in-tx variant so the
-// reversal grant commits in the SAME transaction as the status flip — a void
-// either restores the credits or doesn't happen. Optional: when nil (narrow
-// tests, none-credit tenants) Void proceeds without a reversal. Satisfied by
-// *credit.Service. Kept as a local interface so this package doesn't import
-// internal/credit.
+// invoice when that invoice is voided. Void calls the in-tx variants so both
+// ledger legs commit in the SAME transaction as the status flip — a void
+// either lands all its ledger effects or doesn't happen. Optional: when nil
+// (narrow tests, none-credit tenants) Void proceeds without them. Satisfied
+// by *credit.Service. Kept as a local interface so this package doesn't
+// import internal/credit.
 type CreditReverser interface {
 	ReverseForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, customerID, invoiceID, invoiceNumber string) (int64, error)
+	// RetireCommitGrantForInvoiceTx retires the remaining balance of the
+	// commit grant this invoice funded, if any (ADR-078 D3: voiding a
+	// commit funding invoice kills the unfunded credits; consumed stays
+	// consumed). Clean no-op for non-commit invoices and already-retired
+	// grants.
+	RetireCommitGrantForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, error)
 }
 
 type Service struct {
@@ -437,6 +443,11 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		li, err := buildLineItem(liInput, currency)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("line item %d: %w", i+1, err)
+		}
+		// Compose-time expiry sanity (ADR-078); re-checked at finalize.
+		if li.CommitExpiresAt != nil && !li.CommitExpiresAt.After(s.clock.Now(ctx)) {
+			return domain.Invoice{}, fmt.Errorf("line item %d: %w", i+1,
+				errs.Invalid("commit_expires_at", "must be in the future"))
 		}
 		subtotal += li.AmountCents
 		items = append(items, li)
@@ -808,7 +819,18 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 		if s.creditReverser == nil || inv.CustomerID == "" {
 			return nil
 		}
-		_, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber)
+		if _, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber); rerr != nil {
+			return rerr
+		}
+		// ADR-078 D3: voiding a commit FUNDING invoice retires the funded
+		// grant's remaining balance in this same tx (no-op for non-commit
+		// invoices). Void is the ONLY retire trigger — uncollectible and
+		// the dunning pause/cancel terminals leave the block live as a
+		// collections stance, and voided→paid is rejected so a retired
+		// grant can never be paid for afterwards. The consumed_cents CAS
+		// inside makes the legal uncollectible→void sequence and retries
+		// converge on one retirement.
+		_, rerr := s.creditReverser.RetireCommitGrantForInvoiceTx(ctx, tx, tenantID, inv.ID)
 		return rerr
 	})
 	if err != nil {
@@ -1058,6 +1080,16 @@ type AddLineItemInput struct {
 	LineType        string `json:"line_type"`
 	Quantity        int64  `json:"quantity"`
 	UnitAmountCents int64  `json:"unit_amount_cents"`
+
+	// CommitGrantedCents marks the line as a prepaid-commit purchase
+	// (ADR-078): when the invoice finalizes, a credit block of this many
+	// cents is granted (may differ from the line price — discounted
+	// commits). add_on lines on manual invoices only, at most one per
+	// invoice (invoice-level rules enforced in the store, in-tx).
+	CommitGrantedCents *int64 `json:"commit_granted_cents,omitempty"`
+	// CommitExpiresAt is the granted block's expiry; nil = never expires
+	// (phase-1 default).
+	CommitExpiresAt *time.Time `json:"commit_expires_at,omitempty"`
 }
 
 func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, input AddLineItemInput) (domain.InvoiceLineItem, error) {
@@ -1068,6 +1100,14 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 	li, err := buildLineItem(input, "")
 	if err != nil {
 		return domain.InvoiceLineItem{}, err
+	}
+	// Compose-time expiry sanity (ADR-078): a commit whose expiry already
+	// passed would grant dead-on-arrival credits. Checked against the
+	// invoice's clock (bindForInvoice above) so clock-pinned customers
+	// evaluate simulated time. Re-checked at finalize — the line may sit
+	// in draft past its expiry.
+	if li.CommitExpiresAt != nil && !li.CommitExpiresAt.After(s.clock.Now(ctx)) {
+		return domain.InvoiceLineItem{}, errs.Invalid("commit_expires_at", "must be in the future")
 	}
 	item, _, err := s.store.AddLineItemAtomic(ctx, tenantID, invoiceID, li)
 	return item, err
@@ -1118,14 +1158,35 @@ func buildLineItem(input AddLineItemInput, currency string) (domain.InvoiceLineI
 		return domain.InvoiceLineItem{}, errs.Invalid("amount", "quantity × unit_amount_cents overflows — split the charge across multiple line items")
 	}
 
+	// Commit purchase lines (ADR-078): line-local rules here; the
+	// invoice-level rules (manual invoices only, at most one commit line
+	// per invoice) are enforced in the store under the invoice row lock,
+	// covering both this path's consumers (AddLineItemAtomic and
+	// CreateWithLineItems).
+	if input.CommitGrantedCents != nil {
+		if *input.CommitGrantedCents <= 0 {
+			return domain.InvoiceLineItem{}, errs.Invalid("commit_granted_cents", "must be greater than 0")
+		}
+		if *input.CommitGrantedCents > 100_000_000 { // matches the credit grant cap; raise on first DP ask (ADR-078)
+			return domain.InvoiceLineItem{}, errs.Invalid("commit_granted_cents", "cannot exceed 1,000,000")
+		}
+		if domain.InvoiceLineItemType(lineType) != domain.LineTypeAddOn {
+			return domain.InvoiceLineItem{}, errs.Invalid("commit_granted_cents", "commit purchase lines must be add_on lines")
+		}
+	} else if input.CommitExpiresAt != nil {
+		return domain.InvoiceLineItem{}, errs.Invalid("commit_expires_at", "requires commit_granted_cents")
+	}
+
 	return domain.InvoiceLineItem{
-		LineType:         domain.InvoiceLineItemType(lineType),
-		Description:      desc,
-		Quantity:         input.Quantity,
-		UnitAmountCents:  input.UnitAmountCents,
-		AmountCents:      amountCents,
-		TotalAmountCents: amountCents,
-		Currency:         currency,
+		LineType:           domain.InvoiceLineItemType(lineType),
+		Description:        desc,
+		Quantity:           input.Quantity,
+		UnitAmountCents:    input.UnitAmountCents,
+		AmountCents:        amountCents,
+		TotalAmountCents:   amountCents,
+		Currency:           currency,
+		CommitGrantedCents: input.CommitGrantedCents,
+		CommitExpiresAt:    input.CommitExpiresAt,
 	}, nil
 }
 

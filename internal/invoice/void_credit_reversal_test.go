@@ -28,6 +28,10 @@ func (f *fakeCreditReverser) ReverseForInvoiceTx(_ context.Context, _ *sql.Tx, t
 	return f.reversed, f.err
 }
 
+func (f *fakeCreditReverser) RetireCommitGrantForInvoiceTx(_ context.Context, _ *sql.Tx, _, _ string) (int64, error) {
+	return 0, nil // non-commit invoices: clean no-op (ADR-078)
+}
+
 // TestVoid_CreditReversalAtomic pins the first-good-practice contract for the
 // void → consumed-credit reversal seam: the reversal rides the SAME coordinator
 // transaction as the status flip. A reversal failure rolls the void back (the
