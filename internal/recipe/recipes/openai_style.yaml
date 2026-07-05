@@ -1,13 +1,15 @@
 key: openai_style
-version: 2.0.0
+version: 3.0.0
 name: OpenAI-style AI inference
 summary: |
   Per-token billing across model × token_type for the GPT family plus
   embedding models. One multi-dim `tokens` meter. Designed for inference
   platforms reselling OpenAI API access.
 description: |
-  Models the public OpenAI pricing page: gpt-4-turbo, gpt-4o,
-  gpt-4o-mini, gpt-3.5-turbo, plus three embedding models. Token billing
+  Models the public OpenAI pricing page: the current lineup (gpt-5.1,
+  gpt-5, gpt-5-mini, gpt-5-nano, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano)
+  plus the legacy families proxies still route (gpt-4-turbo, gpt-4o,
+  gpt-4o-mini, gpt-3.5-turbo) and three embedding models. Token billing
   is broken out by the `token_type` event dimension (ADR-044):
 
     - input        base input (uncached)
@@ -49,6 +51,129 @@ meters:
     aggregation: sum
 
 rating_rules:
+  # gpt-5.1 — input $1.25 / output $10 per million; cache read $0.125 (per-token)
+  - key: gpt51_input
+    name: GPT-5.1 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000125'
+  - key: gpt51_cache_read
+    name: GPT-5.1 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0000125'
+  - key: gpt51_output
+    name: GPT-5.1 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.001'
+
+  # gpt-5 — input $1.25 / output $10 per million; cache read $0.125 (per-token)
+  - key: gpt5_input
+    name: GPT-5 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000125'
+  - key: gpt5_cache_read
+    name: GPT-5 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0000125'
+  - key: gpt5_output
+    name: GPT-5 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.001'
+
+  # gpt-5-mini — input $0.25 / output $2 per million; cache read $0.025 (per-token)
+  - key: gpt5_mini_input
+    name: GPT-5 mini input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000025'
+  - key: gpt5_mini_cache_read
+    name: GPT-5 mini cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0000025'
+  - key: gpt5_mini_output
+    name: GPT-5 mini output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0002'
+
+  # gpt-5-nano — input $0.05 / output $0.40 per million; cache read $0.005 (per-token)
+  - key: gpt5_nano_input
+    name: GPT-5 nano input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000005'
+  - key: gpt5_nano_cache_read
+    name: GPT-5 nano cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0000005'
+  - key: gpt5_nano_output
+    name: GPT-5 nano output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00004'
+
+  # gpt-4.1 — input $2 / output $8 per million; cache read $0.50 (per-token)
+  - key: gpt41_input
+    name: GPT-4.1 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0002'
+  - key: gpt41_cache_read
+    name: GPT-4.1 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00005'
+  - key: gpt41_output
+    name: GPT-4.1 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0008'
+
+  # gpt-4.1-mini — input $0.40 / output $1.60 per million; cache read $0.10 (per-token)
+  - key: gpt41_mini_input
+    name: GPT-4.1 mini input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00004'
+  - key: gpt41_mini_cache_read
+    name: GPT-4.1 mini cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00001'
+  - key: gpt41_mini_output
+    name: GPT-4.1 mini output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00016'
+
+  # gpt-4.1-nano — input $0.10 / output $0.40 per million; cache read $0.025 (per-token)
+  - key: gpt41_nano_input
+    name: GPT-4.1 nano input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00001'
+  - key: gpt41_nano_cache_read
+    name: GPT-4.1 nano cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0000025'
+  - key: gpt41_nano_output
+    name: GPT-4.1 nano output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00004'
+
+  # ---- Legacy families (kept: proxies mid-migration still route them,
+  # and the LiteLLM mapper still families them — dropping the rules
+  # would leave that traffic unbilled at cycle close). ----
+
   # gpt-4-turbo — input $10 / output $30 per million; cache read $0.50 (per-token)
   - key: gpt4_turbo_input
     name: GPT-4 Turbo input
@@ -132,6 +257,118 @@ rating_rules:
 
 # Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:
+  - meter: tokens
+    rating_rule: gpt51_input
+    dimension_match: { model: gpt-5.1, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt51_cache_read
+    dimension_match: { model: gpt-5.1, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt51_output
+    dimension_match: { model: gpt-5.1, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt5_input
+    dimension_match: { model: gpt-5, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_cache_read
+    dimension_match: { model: gpt-5, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_output
+    dimension_match: { model: gpt-5, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt5_mini_input
+    dimension_match: { model: gpt-5-mini, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_mini_cache_read
+    dimension_match: { model: gpt-5-mini, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_mini_output
+    dimension_match: { model: gpt-5-mini, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt5_nano_input
+    dimension_match: { model: gpt-5-nano, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_nano_cache_read
+    dimension_match: { model: gpt-5-nano, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt5_nano_output
+    dimension_match: { model: gpt-5-nano, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt41_input
+    dimension_match: { model: gpt-4.1, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_cache_read
+    dimension_match: { model: gpt-4.1, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_output
+    dimension_match: { model: gpt-4.1, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt41_mini_input
+    dimension_match: { model: gpt-4.1-mini, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_mini_cache_read
+    dimension_match: { model: gpt-4.1-mini, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_mini_output
+    dimension_match: { model: gpt-4.1-mini, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: gpt41_nano_input
+    dimension_match: { model: gpt-4.1-nano, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_nano_cache_read
+    dimension_match: { model: gpt-4.1-nano, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: gpt41_nano_output
+    dimension_match: { model: gpt-4.1-nano, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+
   - meter: tokens
     rating_rule: gpt4_turbo_input
     dimension_match: { model: gpt-4-turbo, token_type: input }

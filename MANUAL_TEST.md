@@ -227,7 +227,7 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
     -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
     -d '{
       "id":"smoke_call_1","call_type":"completion",
-      "model":"claude-3-5-sonnet-20241022","custom_llm_provider":"anthropic",
+      "model":"claude-sonnet-4-5-20250929","custom_llm_provider":"anthropic",
       "user":"cus_demo_ai",
       "usage":{"prompt_tokens":1200,"completion_tokens":350,"total_tokens":1550},
       "response_cost":0.018,"endTime":'$(date +%s)'
@@ -235,12 +235,12 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
   ```
   → `{"accepted":2,"skipped":0}` (one event per token role).
 - [ ] Repeat the curl 4 more times with `smoke_call_2` … `smoke_call_5` → 10 events total (5 input + 5 output).
-- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-3.5-sonnet` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-3-5-sonnet-20241022` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
+- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-sonnet-4.5` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-sonnet-4-5-20250929` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
 
 ### S2.4 Hybrid invoice at cycle close
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
 - [ ] `POST /v1/billing/run` → 1 cycle invoice generated.
-- [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-3.5-sonnet decimal rates.
+- [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
 - [ ] Invoice has the $99 base line covering the UPCOMING period; the base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
 - [ ] Usage line totals equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
 
@@ -834,7 +834,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW B16b: token usage billed on immediate cancel (ADR-044 cancel path)
 
-- [ ] Setup: sub on a pure-usage plan with the multi-dim `tokens` meter (per-`{model, token_type}` pricing rules, e.g. the claude-3.5-sonnet recipe — meter has NO direct rating-rule binding). Ingest input + output token usage mid-period.
+- [ ] Setup: sub on a pure-usage plan with the multi-dim `tokens` meter (per-`{model, token_type}` pricing rules, e.g. the claude-sonnet-4.5 recipe — meter has NO direct rating-rule binding). Ingest input + output token usage mid-period.
 - [ ] Cancel immediately → a final invoice IS emitted with `billing_reason=subscription_cancel`, one usage line per claimed rule (`… - canceled mid-period`), priced at the recipe's decimal rates.
 - [ ] Each usage line carries `quantity_decimal`; line amounts match what the same usage would bill at cycle close.
 
@@ -926,6 +926,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 
 - [ ] `POST /v1/recipes/anthropic_style/instantiate {livemode:false}` → 201 with all created IDs. DB now has products + prices + meters + dunning policy + webhook endpoint.
 - [ ] Pricing rules carry `dimension_match` JSONB.
+- [ ] **Catalog currency (2026-07-05 refresh):** anthropic_style prices the 4.5 generation (opus/sonnet/haiku 4.5) plus legacy 3.x (35 rules total); openai_style prices the gpt-5.x/gpt-4.1 families plus legacy; replicate_style rates are per-second retail (A100 `0.14`¢/s — not the old 14¢/s) with `sum` aggregation over per-interval deltas. Every model family the LiteLLM mapper emits has a recipe rule (CI-locked by `TestModelFamilies_EveryTokenPricedByARecipe`).
 - [ ] Repeat for all 3 recipes — each completes <500ms. (Instantiate **is** audit-logged via the catch-all audit middleware — only `preview` is `MarkSkip`'d; created resources carry `created_by=<key_id>`.)
 
 ## FLOW R3: Per-tenant idempotency
@@ -1635,7 +1636,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 ## FLOW M1: Provider cost tables + margin (ADR-079)
 
-- [ ] Settings → Provider costs (or `PUT /v1/provider-costs`): add a rate `{provider: "anthropic", model: "claude-3.5-sonnet", token_type: "input", cost_per_token: "0.000003"}` → row appears in the table. *(order matters: rates BEFORE usage — events ingested earlier stay honestly uncosted)*
+- [ ] Settings → Provider costs (or `PUT /v1/provider-costs`): add a rate `{provider: "anthropic", model: "claude-sonnet-4.5", token_type: "input", cost_per_token: "0.000003"}` → row appears in the table. *(order matters: rates BEFORE usage — events ingested earlier stay honestly uncosted)*
 - [ ] Ingest 1,000 input tokens with dims `{provider, model, token_type}` → `GET /v1/usage-events` shows `provider_cost_micros: 3000`, `provider_cost_source: "table"`. *(automated: `TestProviderCostStamp`)*
 - [ ] Edit the rate to 0.000009 → old events keep 3000 micros; a NEW event stamps 9000 (snapshot semantics).
 - [ ] Ingest a token event for a model with NO rate → `provider_cost_micros` null (uncosted, actionable); a non-token event (no provider/model dims) → `provider_cost_source: "not_applicable"`.
@@ -1656,13 +1657,13 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
     -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
     -d '{
       "id":"litellm_test_1","call_type":"completion",
-      "model":"claude-3-5-sonnet-20241022","custom_llm_provider":"anthropic",
+      "model":"claude-sonnet-4-5-20250929","custom_llm_provider":"anthropic",
       "user":"cus_litellm_test",
       "usage":{"prompt_tokens":1200,"completion_tokens":350,"total_tokens":1550},
       "response_cost":0.018,"endTime":1730000000
     }'
   ```
-  → `{"accepted":2,"skipped":0,"errors":[]}`. `GET /v1/usage-events?customer_id=<internal cus_ id>` shows TWO events on meter `tokens` — `token_type=input` qty 1200 + `token_type=output` qty 350 — both with `dimensions.model="claude-3.5-sonnet"` (the canonical recipe family — the mapper normalizes) + `dimensions.model_raw="claude-3-5-sonnet-20241022"` + `dimensions.provider="anthropic"`. (List filter is the internal `customer_id`, not `external_customer_id`.)
+  → `{"accepted":2,"skipped":0,"errors":[]}`. `GET /v1/usage-events?customer_id=<internal cus_ id>` shows TWO events on meter `tokens` — `token_type=input` qty 1200 + `token_type=output` qty 350 — both with `dimensions.model="claude-sonnet-4.5"` (the canonical recipe family — the mapper normalizes) + `dimensions.model_raw="claude-sonnet-4-5-20250929"` + `dimensions.provider="anthropic"`. (List filter is the internal `customer_id`, not `external_customer_id`.)
 - [ ] Idempotent replay: same POST again → `accepted=0` AND `errors:[]` **empty** (the store's duplicate-key replay is silent success, not a per-row error — regression: pre-2026-07-05 every replay filled `errors[]` while the DB dedup was in fact working). No duplicates in the event list.
 - [ ] Missing `user`: payload with `"user":""` → response has `errors[]` populated, batch otherwise OK. **NOT 5xx.**
 - [ ] Unknown customer: `"user":"cus_nonexistent"` → same partial-failure shape: `errors[].error` says `customer "cus_nonexistent" not found (set user=...)`.

@@ -70,9 +70,9 @@ What lands on the invoice (from `./scripts/demo.sh`, real output):
 ```text
 ACME Corp — VLX-000001                                    $3.88
 ──────────────────────────────────────────────────────────────
-Tokens (claude-3.5-sonnet · input)       400,000    →   $1.20
-Tokens (claude-3.5-sonnet · output)      175,000    →   $2.62
-Tokens (claude-3.5-sonnet · cache_read)  200,000    →   $0.06
+Tokens (claude-sonnet-4.5 · input)       400,000    →   $1.20
+Tokens (claude-sonnet-4.5 · output)      175,000    →   $2.62
+Tokens (claude-sonnet-4.5 · cache_read)  200,000    →   $0.06
 ──────────────────────────────────────────────────────────────
 Margin (billed $3.88 vs provider cost $1.28)            67.1%
 ```

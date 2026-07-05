@@ -1,21 +1,26 @@
 key: replicate_style
-version: 1.0.0
+version: 2.0.0
 name: Replicate-style GPU-time billing
 summary: |
-  Per-second GPU billing across {a100, a40, t4, cpu}. One meter, four
-  pricing rules, monthly invoicing. Designed for inference platforms
-  that bill by hardware time rather than tokens.
+  Per-second GPU billing across {h100, a100, a40, t4, cpu}. One meter,
+  five pricing rules, monthly invoicing. Designed for inference
+  platforms that bill by hardware time rather than tokens.
 description: |
   Models the public Replicate billing model: per-second cost varies by
-  GPU class. Events emit `gpu_seconds` tagged with `gpu_type`; the
-  pricing rules dispatch the per-class rate. `last_during_period` is
-  used so a long-running job samples its current accumulated duration
-  once per period rather than double-billing across overlapping
-  reports.
+  GPU class. Events emit `gpu_seconds` tagged with `gpu_type` and are
+  SUMMED — each event must carry the seconds consumed since the job's
+  previous report (a per-interval delta), not a cumulative running
+  total. (v1 used `last_during_period` on cumulative totals, which
+  bills only the LAST event per {gpu_type} bucket — correct for one
+  job, silently wrong the moment two jobs on the same GPU class
+  overlap in a period.)
 
-  Rates are in cents per second — A100 at 1.4¢/s tracks the published
-  retail rate for nvidia-a100. Operators override `currency`, the
-  customer-facing `plan_name`, and the slug `plan_code`.
+  Rates are in cents per second and track Replicate's published
+  per-second retail prices: H100 $0.001525/s, A100-80GB $0.001400/s,
+  A40 $0.000575/s, T4 $0.000225/s, CPU $0.000100/s. (v1 shipped the
+  A100 at 14¢/s — $504/hour, 100x retail — under a comment claiming
+  1.4¢/s.) Operators override `currency`, the customer-facing
+  `plan_name`, and the slug `plan_code`.
 
 overridable:
   - key: currency
@@ -37,48 +42,62 @@ meters:
     unit: seconds
     aggregation: sum
 
+# Rates in cents per second (decimal — sub-cent rates bill linearly and
+# exactly): $0.001525/s = 0.1525¢/s.
 rating_rules:
-  - key: gpu_a100
-    name: NVIDIA A100 per-second
+  - key: gpu_h100
+    name: NVIDIA H100 per-second
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 14
+    flat_amount_cents: '0.1525'
+  - key: gpu_a100
+    name: NVIDIA A100 (80GB) per-second
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.14'
   - key: gpu_a40
     name: NVIDIA A40 per-second
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 8
+    flat_amount_cents: '0.0575'
   - key: gpu_t4
     name: NVIDIA T4 per-second
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 5
+    flat_amount_cents: '0.0225'
   - key: cpu
     name: CPU-only per-second
     mode: flat
     currency: '{{ .currency }}'
-    flat_amount_cents: 1
+    flat_amount_cents: '0.01'
 
+# sum of per-interval deltas — see description; last_during_period on
+# cumulative totals under-bills the moment two jobs share a GPU class.
 pricing_rules:
+  - meter: gpu_seconds
+    rating_rule: gpu_h100
+    dimension_match: { gpu_type: h100 }
+    aggregation_mode: sum
+    priority: 100
   - meter: gpu_seconds
     rating_rule: gpu_a100
     dimension_match: { gpu_type: a100 }
-    aggregation_mode: last_during_period
+    aggregation_mode: sum
     priority: 100
   - meter: gpu_seconds
     rating_rule: gpu_a40
     dimension_match: { gpu_type: a40 }
-    aggregation_mode: last_during_period
+    aggregation_mode: sum
     priority: 100
   - meter: gpu_seconds
     rating_rule: gpu_t4
     dimension_match: { gpu_type: t4 }
-    aggregation_mode: last_during_period
+    aggregation_mode: sum
     priority: 100
   - meter: gpu_seconds
     rating_rule: cpu
     dimension_match: { gpu_type: cpu }
-    aggregation_mode: last_during_period
+    aggregation_mode: sum
     priority: 100
 
 plans:

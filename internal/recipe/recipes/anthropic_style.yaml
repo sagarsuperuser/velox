@@ -1,5 +1,5 @@
 key: anthropic_style
-version: 2.0.0
+version: 3.0.0
 name: Anthropic-style AI inference
 summary: |
   Per-token billing across model × token_type. One multi-dim `tokens` meter;
@@ -7,10 +7,12 @@ summary: |
   cache_write_5m, cache_write_1h). Monthly billing. For inference platforms
   reselling LLM API access.
 description: |
-  Models the public Anthropic pricing page: claude-3.5-sonnet,
-  claude-3-opus, claude-3-sonnet, claude-3-haiku, billed
-  per-million-tokens. Each model carries five token roles, matching how
-  Anthropic itemizes and prices token usage (ADR-044):
+  Models the public Anthropic pricing page: the current 4.5 generation
+  (claude-opus-4.5, claude-sonnet-4.5, claude-haiku-4.5) plus the legacy
+  claude-3.x families still carried by proxies mid-migration
+  (claude-3.5-sonnet, claude-3-opus, claude-3-sonnet, claude-3-haiku),
+  billed per-million-tokens. Each model carries five token roles,
+  matching how Anthropic itemizes and prices token usage (ADR-044):
 
     - input          base input (uncached)
     - output         generated tokens
@@ -54,6 +56,92 @@ meters:
     aggregation: sum
 
 rating_rules:
+  # Claude Opus 4.5 — input $5.00 / output $25.00 per million (per-token).
+  # Cache multiples as everywhere: read 0.1×, 5m write 1.25×, 1h write 2×.
+  - key: opus45_input
+    name: Claude Opus 4.5 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0005'
+  - key: opus45_output
+    name: Claude Opus 4.5 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0025'
+  - key: opus45_cache_read
+    name: Claude Opus 4.5 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00005'
+  - key: opus45_cache_write_5m
+    name: Claude Opus 4.5 cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000625'
+  - key: opus45_cache_write_1h
+    name: Claude Opus 4.5 cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.001'
+
+  # Claude Sonnet 4.5 — input $3.00 / output $15.00 per million (per-token).
+  - key: sonnet45_input
+    name: Claude Sonnet 4.5 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0003'
+  - key: sonnet45_output
+    name: Claude Sonnet 4.5 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0015'
+  - key: sonnet45_cache_read
+    name: Claude Sonnet 4.5 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00003'
+  - key: sonnet45_cache_write_5m
+    name: Claude Sonnet 4.5 cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000375'
+  - key: sonnet45_cache_write_1h
+    name: Claude Sonnet 4.5 cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0006'
+
+  # Claude Haiku 4.5 — input $1.00 / output $5.00 per million (per-token).
+  - key: haiku45_input
+    name: Claude Haiku 4.5 input
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0001'
+  - key: haiku45_output
+    name: Claude Haiku 4.5 output
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0005'
+  - key: haiku45_cache_read
+    name: Claude Haiku 4.5 cache read
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.00001'
+  - key: haiku45_cache_write_5m
+    name: Claude Haiku 4.5 cache write (5m)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.000125'
+  - key: haiku45_cache_write_1h
+    name: Claude Haiku 4.5 cache write (1h)
+    mode: flat
+    currency: '{{ .currency }}'
+    flat_amount_cents: '0.0002'
+
+  # ---- Legacy claude-3.x families (kept: proxies mid-migration still
+  # route them, and the LiteLLM mapper still families them — dropping the
+  # rules here would leave that traffic unbilled at cycle close). ----
+
   # Claude 3.5 Sonnet — input $3.00 / output $15.00 per million (per-token).
   - key: c35_sonnet_input
     name: Claude 3.5 Sonnet input
@@ -166,6 +254,84 @@ rating_rules:
 
 # Disjoint token roles → one rule per (model, token_type) at equal priority.
 pricing_rules:
+  - meter: tokens
+    rating_rule: opus45_input
+    dimension_match: { model: claude-opus-4.5, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus45_output
+    dimension_match: { model: claude-opus-4.5, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus45_cache_read
+    dimension_match: { model: claude-opus-4.5, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus45_cache_write_5m
+    dimension_match: { model: claude-opus-4.5, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: opus45_cache_write_1h
+    dimension_match: { model: claude-opus-4.5, token_type: cache_write_1h }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: sonnet45_input
+    dimension_match: { model: claude-sonnet-4.5, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet45_output
+    dimension_match: { model: claude-sonnet-4.5, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet45_cache_read
+    dimension_match: { model: claude-sonnet-4.5, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet45_cache_write_5m
+    dimension_match: { model: claude-sonnet-4.5, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: sonnet45_cache_write_1h
+    dimension_match: { model: claude-sonnet-4.5, token_type: cache_write_1h }
+    aggregation_mode: sum
+    priority: 100
+
+  - meter: tokens
+    rating_rule: haiku45_input
+    dimension_match: { model: claude-haiku-4.5, token_type: input }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku45_output
+    dimension_match: { model: claude-haiku-4.5, token_type: output }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku45_cache_read
+    dimension_match: { model: claude-haiku-4.5, token_type: cache_read }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku45_cache_write_5m
+    dimension_match: { model: claude-haiku-4.5, token_type: cache_write_5m }
+    aggregation_mode: sum
+    priority: 100
+  - meter: tokens
+    rating_rule: haiku45_cache_write_1h
+    dimension_match: { model: claude-haiku-4.5, token_type: cache_write_1h }
+    aggregation_mode: sum
+    priority: 100
+
   - meter: tokens
     rating_rule: c35_sonnet_input
     dimension_match: { model: claude-3.5-sonnet, token_type: input }

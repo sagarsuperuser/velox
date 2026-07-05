@@ -97,10 +97,10 @@ func TestService_Instantiate_BuildsFullGraph(t *testing.T) {
 		t.Errorf("CreatedObjects.MeterIDs: got %d, want %d", got, want)
 	}
 	// anthropic_style v2 (ADR-044): 4 models × 5 token roles.
-	if got, want := len(inst.CreatedObjects.RatingRuleIDs), 20; got != want {
+	if got, want := len(inst.CreatedObjects.RatingRuleIDs), 35; got != want {
 		t.Errorf("CreatedObjects.RatingRuleIDs: got %d, want %d", got, want)
 	}
-	if got, want := len(inst.CreatedObjects.PricingRuleIDs), 20; got != want {
+	if got, want := len(inst.CreatedObjects.PricingRuleIDs), 35; got != want {
 		t.Errorf("CreatedObjects.PricingRuleIDs: got %d, want %d", got, want)
 	}
 	if got, want := len(inst.CreatedObjects.PlanIDs), 1; got != want {
@@ -117,11 +117,11 @@ func TestService_Instantiate_BuildsFullGraph(t *testing.T) {
 	if n := countRows(t, f.db, tenantID, "meters"); n != 1 {
 		t.Errorf("meters row count: got %d, want 1", n)
 	}
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 20 {
-		t.Errorf("rating_rule_versions row count: got %d, want 20", n)
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
+		t.Errorf("rating_rule_versions row count: got %d, want 35", n)
 	}
-	if n := countRows(t, f.db, tenantID, "meter_pricing_rules"); n != 20 {
-		t.Errorf("meter_pricing_rules row count: got %d, want 20", n)
+	if n := countRows(t, f.db, tenantID, "meter_pricing_rules"); n != 35 {
+		t.Errorf("meter_pricing_rules row count: got %d, want 35", n)
 	}
 	if n := countRows(t, f.db, tenantID, "plans"); n != 1 {
 		t.Errorf("plans row count: got %d, want 1", n)
@@ -157,9 +157,9 @@ func TestService_Instantiate_Idempotent(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyExists on second instantiate, got %v", err)
 	}
 
-	// No second graph was built — counts unchanged (anthropic_style v2 = 20 rules).
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 20 {
-		t.Errorf("rating_rule_versions after duplicate Instantiate: got %d, want 20", n)
+	// No second graph was built — counts unchanged (anthropic_style v3 = 35 rules).
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
+		t.Errorf("rating_rule_versions after duplicate Instantiate: got %d, want 35", n)
 	}
 	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
 		t.Errorf("recipe_instances after duplicate Instantiate: got %d, want 1", n)
@@ -338,9 +338,9 @@ func TestService_Uninstall_RemovesInstanceOnly(t *testing.T) {
 	if n := countRows(t, f.db, tenantID, "meters"); n != 1 {
 		t.Errorf("meters after Uninstall: got %d, want 1 (resources persist)", n)
 	}
-	// anthropic_style v2 (ADR-044): 4 models × 5 token roles = 20 rating rules.
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 20 {
-		t.Errorf("rating_rule_versions after Uninstall: got %d, want 20 (resources persist)", n)
+	// anthropic_style v3 (2026-07-05 refresh): 7 models × 5 token roles = 35 rating rules.
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
+		t.Errorf("rating_rule_versions after Uninstall: got %d, want 35 (resources persist)", n)
 	}
 }
 

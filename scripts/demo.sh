@@ -103,9 +103,9 @@ green "✓ Subscription $SUB_ID active ($(echo "$SUB" | jq -r '.status'))"
 
 step "5. Tell Velox what YOU pay Anthropic (provider cost table)"
 for rate in \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "input",      "cost_per_token": "0.0000012"}' \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "output",     "cost_per_token": "0.0000045"}' \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "cache_read", "cost_per_token": "0.00000005"}' ; do
+  '{"provider": "anthropic", "model": "claude-sonnet-4.5", "token_type": "input",      "cost_per_token": "0.0000012"}' \
+  '{"provider": "anthropic", "model": "claude-sonnet-4.5", "token_type": "output",     "cost_per_token": "0.0000045"}' \
+  '{"provider": "anthropic", "model": "claude-sonnet-4.5", "token_type": "cache_read", "cost_per_token": "0.00000005"}' ; do
   req PUT "/v1/provider-costs" "$rate" >/dev/null
 done
 green "✓ 3 provider rates saved — every new event gets its COGS stamped at ingest"
@@ -118,7 +118,7 @@ for i in 1 2 3 4 5; do
   req POST "/v1/integrations/litellm/spend" "{
     \"id\": \"chatcmpl-$RUN-$i\",
     \"call_type\": \"completion\",
-    \"model\": \"claude-3-5-sonnet-20241022\",
+    \"model\": \"claude-sonnet-4-5-20250929\",
     \"custom_llm_provider\": \"anthropic\",
     \"user\": \"acme_$RUN\",
     \"usage\": {
