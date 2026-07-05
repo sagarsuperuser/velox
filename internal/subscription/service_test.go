@@ -545,6 +545,13 @@ func (m *memStore) RemoveItemTx(ctx context.Context, _ *sql.Tx, tenantID, itemID
 	return m.RemoveItem(ctx, tenantID, itemID)
 }
 
+// FindMeterConflicts: the in-memory fake reports no conflicts — the
+// double-billing guard's SQL (live-sub join + meter_ids unnest) is proven
+// against real Postgres in meter_overlap_guard_integration_test.go.
+func (m *memStore) FindMeterConflicts(context.Context, string, string, string, []string) ([]MeterConflict, error) {
+	return nil, nil
+}
+
 func (m *memStore) ApplyItemPlanImmediately(ctx context.Context, tenantID, itemID, newPlanID string, changedAt time.Time) (domain.SubscriptionItem, error) {
 	it, ok := m.items[itemID]
 	if !ok || it.TenantID != tenantID {

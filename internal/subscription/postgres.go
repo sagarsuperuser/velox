@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -1557,6 +1558,62 @@ func (s *PostgresStore) removeItemInTx(ctx context.Context, tx *sql.Tx, itemID s
 		return errs.ErrNotFound
 	}
 	return nil
+}
+
+// FindMeterConflicts implements the double-billing guard's conflict scan:
+// one query walks the customer's live (draft/trialing/active) subs → live
+// items → plans → unnested meter_ids, intersected with the candidate set.
+// pending_plan_id joins too — a scheduled swap starts billing its meters at
+// the next cycle boundary, so admitting an overlap against it now just
+// defers the double-bill. Tenant scoping rides the RLS tx like every other
+// reader; candidate meters travel as a jsonb array (matching how plans
+// store meter_ids) rather than pulling in a driver-specific array type.
+func (s *PostgresStore) FindMeterConflicts(ctx context.Context, tenantID, customerID, excludeItemID string, meterIDs []string) ([]MeterConflict, error) {
+	if len(meterIDs) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	candidates, err := json.Marshal(meterIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT m.meter_id, sub.id, sub.code
+		FROM subscriptions sub
+		JOIN subscription_items si
+		  ON si.subscription_id = sub.id AND si.deleted_at IS NULL
+		JOIN plans p
+		  ON p.id = si.plan_id OR p.id = si.pending_plan_id
+		-- meter_ids is 'null' (not '[]') for meterless plans — the pricing
+		-- store marshals a nil slice — and unnesting a scalar is an error.
+		CROSS JOIN LATERAL jsonb_array_elements_text(
+			CASE WHEN jsonb_typeof(p.meter_ids) = 'array' THEN p.meter_ids ELSE '[]'::jsonb END
+		) AS m(meter_id)
+		WHERE sub.customer_id = $1
+		  AND sub.status IN ('draft', 'trialing', 'active')
+		  AND si.id <> $2
+		  AND m.meter_id IN (SELECT jsonb_array_elements_text($3::jsonb))
+		ORDER BY m.meter_id, sub.code`,
+		customerID, excludeItemID, string(candidates))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var conflicts []MeterConflict
+	for rows.Next() {
+		var c MeterConflict
+		if err := rows.Scan(&c.MeterID, &c.SubscriptionID, &c.SubscriptionCode); err != nil {
+			return nil, err
+		}
+		conflicts = append(conflicts, c)
+	}
+	return conflicts, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
