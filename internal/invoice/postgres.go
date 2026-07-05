@@ -1028,8 +1028,9 @@ func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantI
 	}
 	// payment.succeeded — CARD settlement path only. Enqueued in the SAME tx as
 	// the paid-flip so the only event carrying the Stripe payment_intent_id is
-	// crash-safe rather than fire-and-forget post-commit (the gap that lost it in
-	// a sub-ms crash window — see payment/settlement.go). Reaches here only on the
+	// crash-safe rather than fire-and-forget post-commit (a post-commit window
+	// is as wide as whatever runs before the enqueue — see the durability-
+	// tiering block in payment/settlement.go). Reaches here only on the
 	// finalized/uncollectible→paid transition (the already-paid branch returned
 	// above), so it fires exactly once, same as invoice.paid.
 	if cardSettlement && s.outbox != nil {

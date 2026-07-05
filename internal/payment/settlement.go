@@ -124,6 +124,50 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 			"invoice_id", inv.ID, "payment_intent_id", paymentIntentID, "source", source)
 		return nil
 	}
+	// The settle tx committed. Detach the post-commit side-effect block from
+	// the caller's cancellation: this ctx is usually a webhook REQUEST ctx,
+	// and a client disconnect / server drain mid-block would kill the
+	// remaining enqueues even though the payment is already booked — no
+	// crash required. WithoutCancel keeps the ctx VALUES (tenant binding,
+	// simulated clock, livemode) and drops only the cancel signal; every
+	// call below is individually bounded (DB query timeout / Stripe client
+	// timeout), so nothing can hang unbounded.
+	ctx = context.WithoutCancel(ctx)
+
+	// DURABILITY TIERING. The consistency-critical events — invoice.paid AND
+	// payment.succeeded — are BOTH enqueued INSIDE
+	// MarkPaidCardSettlementTransition's tx (invoice/postgres.go), so they are
+	// crash-safe and exactly-once with the paid-flip (transactional outbox,
+	// ADR-040).
+	//
+	// Everything below is post-commit + best-effort BY DESIGN, ordered by
+	// what a process death costs, cheapest-to-lose LAST:
+	//   1. amount truth-check + receipt enqueue: fast DB writes with NO
+	//      reconciler behind them — a dropped receipt enqueue is gone for
+	//      good (the dispatcher's retry + DLQ only own delivery AFTER the
+	//      enqueue lands). They run FIRST, before any network call. This
+	//      block was historically last, below two Stripe calls, while its
+	//      comment claimed a "sub-ms" crash window — the window was
+	//      seconds-wide and grew every time a PR inserted another call
+	//      above it (2026-07-05 reassessment).
+	//   2. dunning resolve: idempotent AND backstopped — the dunning
+	//      sweep's paid-pre-check floor re-resolves it on the next tick.
+	//   3. checkout-session expire + card stamp: Stripe NETWORK calls with
+	//      their own backstops (session ExpiresAt <= 1h; card stamp is a
+	//      cosmetic timeline sub-line).
+	//
+	// RULE for future additions: this block is APPEND-ONLY AT THE END —
+	// inserting a call above the receipt enqueue widens the unrecoverable
+	// window again. A new step may only go earlier if it is a fast DB write
+	// whose loss is MORE expensive than a receipt.
+	//
+	// Receipt email is deliberately NOT in-tx: strict atomicity is the wrong
+	// contract for email, and folding it in would drag customer-email
+	// resolution + the suppression-list read under the invoice row lock.
+	// DEFERRED UPGRADE (if a design partner needs guaranteed receipts): a
+	// receipt-pending marker + reconciler re-fire — tracked in
+	// docs/adr/README.md "Open follow-ups".
+
 	// Amount truth-check (ADR-068): the captured amount must equal what the
 	// transition booked (amount_paid = amount_due at settle). A drifted
 	// Checkout session (credit note changed the due inside the session's
@@ -134,14 +178,22 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 			"captured amount differs from the amount booked at settle")
 	}
 
-	// Best-effort Stripe-side expire of any still-live checkout sessions for
-	// this invoice (ADR-068). The DB rows were already closed IN the settle
-	// tx (choke-point close in markPaidReportingTransition) so the reuse
-	// path cannot serve them; this network sweep shrinks the window in which
-	// a second device could pay a session that is dead in our books but live
-	// at Stripe. Gated on transitioned==true (once-only); each session's own
-	// ExpiresAt (<=1h) is the backstop when a call fails.
-	s.expireCheckoutSessionsBestEffort(ctx, tenantID, fresh)
+	// Enqueue payment receipt email. s.emailReceipt is *OutboxSender
+	// (ADR-040), so SendPaymentReceipt is a fast DB INSERT and the
+	// dispatcher's retry loop owns delivery + backoff. Failure here logs but
+	// does not fail the caller — the payment already committed, and returning
+	// an error would make the webhook re-fire the whole event (re-MarkPaid +
+	// double-firing the customer-facing event).
+	if s.emailReceipt != nil && s.customerEmail != nil {
+		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+		if err != nil || email == "" {
+			slog.Warn("skip payment receipt email — cannot resolve customer email",
+				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, receiptAmountCents(capturedCents, fresh), inv.Currency, inv.PublicToken); err != nil {
+			slog.Error("failed to enqueue payment receipt email",
+				"invoice_id", inv.ID, "email", email, "error", err)
+		}
+	}
 
 	slog.Info("payment succeeded",
 		"invoice_id", inv.ID,
@@ -155,7 +207,7 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// paid-pre-check floor to catch it on the next tick. Best-effort + nil-tolerant
 	// (narrow tests) + idempotent (no-op when there is no active run); on failure the
 	// floor still resolves it, so log and continue. Runs in the invoice-bound ctx
-	// (line above) so it stamps simulated time on clock-pinned invoices.
+	// so it stamps simulated time on clock-pinned invoices.
 	//
 	// Exactly-once: dunning's resolveRunNow CASes the resolve, so this and
 	// processRun's own resolve on a synchronous retry-success emit ONE
@@ -168,30 +220,14 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		}
 	}
 
-	// DURABILITY TIERING (2026-06-22 fix). The consistency-critical events —
-	// invoice.paid AND payment.succeeded — are now BOTH enqueued INSIDE
-	// MarkPaidCardSettlementTransition's tx (invoice/postgres.go), so they are
-	// crash-safe and exactly-once with the paid-flip. A crash here can no longer
-	// lose payment.succeeded — the only event carrying the Stripe
-	// payment_intent_id — which was the gap this fix closed (transactional outbox,
-	// ADR-040; the standard pattern: persist the event in the same tx as the state
-	// change, the dispatcher delivers it at-least-once afterward).
-	//
-	// What remains below is post-commit + best-effort BY DESIGN, not oversight —
-	// each is the correct contract for its kind, not a consistency-critical event:
-	//   - receipt email: an at-least-once human notification with its own
-	//     dispatcher retry + 72h/15-attempt DLQ once enqueued. Strict atomicity is
-	//     the wrong contract for email, and making it in-tx would drag customer-
-	//     email resolution + the suppression-list read under the invoice row lock.
-	//     A crash in this sub-ms window can drop the receipt ENQUEUE; that is the
-	//     accepted residual. DEFERRED UPGRADE (if a design partner needs guaranteed
-	//     receipts): a receipt-pending marker + reconciler re-fire — tracked in
-	//     docs/adr/README.md "Open follow-ups".
-	//   - card stamp: cosmetic (a timeline sub-line) and a Stripe NETWORK call that
-	//     must never be held under the row lock.
-	// SettleFailed's symmetric move (payment.failed + failed-email in-tx) is a
-	// separate follow-up; its dunning-start stays post-commit (already idempotent
-	// via its own UNIQUE-per-invoice constraint, migration 0085).
+	// Best-effort Stripe-side expire of any still-live checkout sessions for
+	// this invoice (ADR-068). The DB rows were already closed IN the settle
+	// tx (choke-point close in markPaidReportingTransition) so the reuse
+	// path cannot serve them; this network sweep shrinks the window in which
+	// a second device could pay a session that is dead in our books but live
+	// at Stripe. Gated on transitioned==true (once-only); each session's own
+	// ExpiresAt (<=1h) is the backstop when a call fails.
+	s.expireCheckoutSessionsBestEffort(ctx, tenantID, fresh)
 
 	// Stamp the card actually charged onto the invoice so the activity
 	// timeline can show "Invoice paid · via Visa •••• 4242" (ADR-020).
@@ -212,26 +248,9 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 		}
 	}
 
-	// payment.succeeded is now enqueued IN-TX by MarkPaidCardSettlementTransition
+	// payment.succeeded is enqueued IN-TX by MarkPaidCardSettlementTransition
 	// (above), so it commits atomically with the paid-flip. Do NOT also fire it
 	// here — that would double-fire it (one in-tx, one post-commit).
-
-	// Enqueue payment receipt email. s.emailReceipt is *OutboxSender
-	// (ADR-040), so SendPaymentReceipt is a fast DB INSERT and the
-	// dispatcher's retry loop owns delivery + backoff. Failure here logs but
-	// does not fail the caller — the payment already committed, and returning
-	// an error would make the webhook re-fire the whole event (re-MarkPaid +
-	// double-firing the customer-facing event).
-	if s.emailReceipt != nil && s.customerEmail != nil {
-		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
-		if err != nil || email == "" {
-			slog.Warn("skip payment receipt email — cannot resolve customer email",
-				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, receiptAmountCents(capturedCents, fresh), inv.Currency, inv.PublicToken); err != nil {
-			slog.Error("failed to enqueue payment receipt email",
-				"invoice_id", inv.ID, "email", email, "error", err)
-		}
-	}
 
 	return nil
 }
@@ -319,6 +338,36 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 		"source", source,
 	)
 
+	// The fail-stamp committed. Same post-commit contract as the success
+	// path: detach from the caller's cancellation (webhook request ctx —
+	// a disconnect must not kill the remaining enqueues; values including
+	// the simulated clock survive WithoutCancel), and order the block
+	// cheapest-to-lose LAST. The email enqueue runs FIRST: it has NO
+	// reconciler behind it, while a dropped dunning-start is re-driven by
+	// the dunning_backfill sweep. Pre-fix the email sat below
+	// startDunningWithRetry's ~600ms-per-attempt retry loop — a seconds-
+	// wide unrecoverable window behind a fully-recoverable step.
+	ctx = context.WithoutCancel(ctx)
+
+	// Enqueue the payment-failed email. As with the receipt path, this is a
+	// fast outbox INSERT and the dispatcher owns delivery retry; failure logs
+	// but does not fail the caller (invoice state already committed).
+	// suppressCustomerEmail skips ONLY this block — dunning below runs
+	// regardless (the suppression is about duplicate customer comms, not
+	// collections).
+	if !suppressCustomerEmail && s.emailPaymentFailed != nil {
+		if s.customerEmail == nil {
+			slog.Error("payment failed email — customer email resolver not wired",
+				"invoice_id", inv.ID)
+		} else if email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
+			slog.Warn("skip payment failed email — cannot resolve customer email",
+				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
+		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
+			slog.Error("failed to enqueue payment failed email",
+				"invoice_id", inv.ID, "email", email, "error", err)
+		}
+	}
+
 	// Auto-start dunning for failed payments. failureAt is the simulated
 	// cycle-close instant — the moment in the invoice's own time domain when
 	// this charge "should" have happened — so dunning's next_action_at lands
@@ -344,26 +393,6 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 		} else {
 			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)
-		}
-	}
-
-	if suppressCustomerEmail {
-		return nil
-	}
-
-	// Enqueue the payment-failed email. As with the receipt path, this is a
-	// fast outbox INSERT and the dispatcher owns delivery retry; failure logs
-	// but does not fail the caller (invoice state already committed).
-	if s.emailPaymentFailed != nil {
-		if s.customerEmail == nil {
-			slog.Error("payment failed email — customer email resolver not wired",
-				"invoice_id", inv.ID)
-		} else if email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
-			slog.Warn("skip payment failed email — cannot resolve customer email",
-				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
-			slog.Error("failed to enqueue payment failed email",
-				"invoice_id", inv.ID, "email", email, "error", err)
 		}
 	}
 

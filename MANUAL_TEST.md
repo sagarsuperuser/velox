@@ -691,6 +691,7 @@ whole cents — only the RATE gains precision.
 ## FLOW B6: Subscription lifecycle
 
 - [ ] **Create-subscription picker finds ANY customer (P11)** — with 51+ customers, typing the 51st customer's name (or email/external id) in the New Subscription dialog finds them; a customer with no prior subscription is selectable.
+- [ ] **Meter-overlap guard (double-billing, 2026-07-05):** customer has a live sub on a plan billing meter M → creating a second sub with a *different* plan that also bills M → 409 naming the existing sub code + meter ("usage would be invoiced twice"). Same 409 on AddItem and on a plan swap (immediate or scheduled) onto M. A sub with a disjoint meter set → allowed. Cancel the first sub → the meter is billable again.
 
 - [ ] Trial 7 days → no charge during trial; status flips to active AT `trial_end_at` (Phase 0.5 / cron, ADR-037); first invoice fires at activation for in_advance items or at the post-trial cycle close for in_arrears. Full coverage in FLOW TC6.
 - [ ] Pause button on a `status=active` sub → opens **Pause collection** confirm dialog (the hard-pause radio option was removed in PR-6). Click through → cycle keeps drafting invoices, auto-charge is suppressed, no dunning fires on the resulting drafts. Resume collection → next cycle bills normally; drafts stay drafts unless operator finalizes them manually.
@@ -772,7 +773,9 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 - [ ] `POST /v1/usage-events` with dimensions `{model, operation, cached, tier}` → 201; value stored as NUMERIC.
 - [ ] Decimal preserved end-to-end (`10000.5` round-trips).
-- [ ] Replay same idempotency_key → 409 Conflict (`invalid_request_error`), no duplicate (the duplicate-key error propagates; there's no fetch-original-on-replay).
+- [ ] Replay same idempotency_key → **200 + the ORIGINAL event** with `Idempotent-Replayed: true` header, no duplicate row (Stripe idempotency shape; pre-2026-07-05 this was a bare 409).
+- [ ] `POST /v1/usage-events/batch` with one invalid row → 422 `batch_rejected`, `errors[]` indexed per row, **zero events written** (all-or-nothing — a retry can never double-ingest a committed prefix). Replay a fully-committed keyed batch → 201 `{ingested: 0, deduplicated: N}`, no error rows.
+- [ ] Batch body over the 1MB cap → 413 `batch_too_large` (not a misleading 400 "expected JSON array").
 - [ ] Rule with `dimension_match={"token_type":"input"}` claims only input events; `{"token_type":"cache_read"}` claims only cache-read events. Token roles are DISJOINT (ADR-044), so each `{model, token_type}` matches exactly one rule — no priority tie-break needed (the old boolean `cached` + priority-wins model is gone).
 - [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
 - [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.

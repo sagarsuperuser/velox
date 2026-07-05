@@ -2,7 +2,9 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +31,90 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 	}
 	defer postgres.Rollback(tx)
 
+	event, err = ingestOneTx(ctx, tx, tenantID, event)
+	if err != nil {
+		return domain.UsageEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.UsageEvent{}, err
+	}
+	return event, nil
+}
+
+// IngestBatch writes every event in ONE transaction — all-or-nothing.
+// Pre-fix, BatchIngest looped one tx per event: a mid-batch abort (client
+// timeout, connection drop, crash) left a COMMITTED PREFIX, and the
+// standard client response — retry the whole batch — re-ingested that
+// prefix. Events without idempotency keys have no dedup line of defense,
+// so the retry double-billed every prefix event. Atomic batches make the
+// keyless retry safe: either the response arrived (don't retry) or
+// nothing committed (retry is a clean first write).
+//
+// Keyed duplicates (replay of a fully-committed batch, or the same key
+// twice within one batch) are counted in deduped, not errors — matching
+// the LiteLLM door's replay contract.
+func (s *PostgresStore) IngestBatch(ctx context.Context, tenantID string, events []domain.UsageEvent) (inserted, deduped int, err error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	for i, event := range events {
+		_, err := ingestOneTx(ctx, tx, tenantID, event)
+		switch {
+		case errors.Is(err, errs.ErrDuplicateKey):
+			deduped++
+		case err != nil:
+			return 0, 0, fmt.Errorf("event[%d]: %w", i, err)
+		default:
+			inserted++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return inserted, deduped, nil
+}
+
+// GetByIdempotencyKey fetches the event a replayed key originally wrote.
+// Backs replay-as-success on the public ingest door: instead of a bare
+// 409, the handler returns the original row (Stripe idempotency shape).
+// Livemode scoping rides the RLS session like every other reader.
+func (s *PostgresStore) GetByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.UsageEvent, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.UsageEvent{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var event domain.UsageEvent
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, customer_id, meter_id,
+			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin,
+			provider_cost_micros, COALESCE(provider_cost_source,'')
+		FROM usage_events WHERE idempotency_key = $1`, key,
+	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
+		&event.Quantity, propertiesScanner{&event.Dimensions},
+		&event.IdempotencyKey, &event.Timestamp, &event.Origin,
+		&event.ProviderCostMicros, &event.ProviderCostSource)
+	if err == sql.ErrNoRows {
+		return domain.UsageEvent{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.UsageEvent{}, err
+	}
+	return event, nil
+}
+
+// ingestOneTx is the single-source INSERT every ingest path funnels
+// through (live POST, batch, backfill, LiteLLM). Runs on the caller's tx
+// so Ingest keeps its own-commit shape while IngestBatch composes N
+// inserts atomically. Returns errs.ErrDuplicateKey (no row written) when
+// the event's idempotency key already exists — via ON CONFLICT DO NOTHING
+// rather than a unique-violation error, because a violation would poison
+// the surrounding batch transaction.
+func ingestOneTx(ctx context.Context, tx *sql.Tx, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error) {
 	id := postgres.NewID("vlx_evt")
 
 	origin := string(event.Origin)
@@ -80,6 +166,7 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 					THEN 'not_applicable'
 				WHEN (SELECT COUNT(*) FROM rate) = 1 THEN 'table'
 			END
+		ON CONFLICT (tenant_id, livemode, idempotency_key) DO NOTHING
 		RETURNING id, tenant_id, customer_id, meter_id,
 			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin,
 			provider_cost_micros, COALESCE(provider_cost_source,'')
@@ -92,13 +179,13 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 		&event.IdempotencyKey, &event.Timestamp, &event.Origin,
 		&event.ProviderCostMicros, &event.ProviderCostSource)
 
-	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			return domain.UsageEvent{}, fmt.Errorf("%w: idempotency_key %q", errs.ErrDuplicateKey, event.IdempotencyKey)
-		}
-		return domain.UsageEvent{}, err
+	// ON CONFLICT DO NOTHING returns no row on an idempotency replay —
+	// surfaced as ErrDuplicateKey to keep this store's contract identical
+	// to the pre-batch unique-violation shape (callers branch on it).
+	if err == sql.ErrNoRows {
+		return domain.UsageEvent{}, fmt.Errorf("%w: idempotency_key %q", errs.ErrDuplicateKey, event.IdempotencyKey)
 	}
-	if err := tx.Commit(); err != nil {
+	if err != nil {
 		return domain.UsageEvent{}, err
 	}
 	return event, nil

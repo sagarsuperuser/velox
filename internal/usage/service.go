@@ -141,6 +141,26 @@ func validateDimensions(dims map[string]any) error {
 }
 
 func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
+	prepared, err := s.prepare(ctx, tenantID, input, origin)
+	if err != nil {
+		return domain.UsageEvent{}, err
+	}
+	event, err := s.store.Ingest(ctx, tenantID, prepared)
+	if err == nil {
+		// Count only rows that actually landed. An idempotency-replay errors
+		// out of store.Ingest (no new row), so it isn't counted — the metric
+		// is true ingest throughput, not request volume. Every path funnels
+		// here (live POST, batch, backfill, LiteLLM).
+		mw.RecordUsageIngested(1)
+	}
+	return event, err
+}
+
+// prepare runs the full per-event validation + timestamp resolution and
+// composes the domain row, WITHOUT writing it. Split from ingest so
+// BatchIngest can validate every event up front and then hand the whole
+// slice to one store transaction (all-or-nothing).
+func (s *Service) prepare(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
 		return domain.UsageEvent{}, errs.Required("customer_id")
 	}
@@ -204,7 +224,7 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 	// to true-up closed periods, reject past a window, or surface a
 	// late-event counter — all need a billing-policy call, not a silent
 	// per-event subscription lookup on this hot path.
-	event, err := s.store.Ingest(ctx, tenantID, domain.UsageEvent{
+	return domain.UsageEvent{
 		CustomerID:     input.CustomerID,
 		MeterID:        input.MeterID,
 		Quantity:       input.Quantity,
@@ -212,36 +232,51 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 		IdempotencyKey: input.IdempotencyKey,
 		Timestamp:      ts,
 		Origin:         origin,
-	})
-	if err == nil {
-		// Count only rows that actually landed. An idempotency-replay errors
-		// out of store.Ingest (no new row), so it isn't counted — the metric
-		// is true ingest throughput, not request volume. Every path funnels
-		// here (live POST, batch, backfill, LiteLLM).
-		mw.RecordUsageIngested(1)
-	}
-	return event, err
+	}, nil
 }
 
-// BatchIngest ingests multiple usage events. Returns successfully ingested count
-// and any individual errors (partial success is allowed).
-func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []IngestInput) (int, []error) {
+// BatchIngest validates every event, then writes them ALL in one store
+// transaction — all-or-nothing. Pre-fix each event committed in its own
+// tx: a mid-batch abort (client timeout, dropped connection) left a
+// committed prefix, and the standard retry-the-batch response re-ingested
+// that prefix — double-billed usage for every event without an
+// idempotency key. Now either the whole batch lands or none of it does,
+// so a keyless retry is always a clean first write.
+//
+// Returns (inserted, deduped, errs). Validation failures are collected
+// for EVERY failing index (a bare "quantity too large" across a 500-event
+// batch was undebuggable) and abort before any write. Idempotency replays
+// count as deduped — success, not failure — matching the LiteLLM door.
+func (s *Service) BatchIngest(ctx context.Context, tenantID string, events []IngestInput) (int, int, []error) {
+	prepared := make([]domain.UsageEvent, 0, len(events))
 	var batchErrs []error
-	ingested := 0
-
 	for i, input := range events {
-		_, err := s.Ingest(ctx, tenantID, input)
+		ev, err := s.prepare(ctx, tenantID, input, domain.UsageOriginAPI)
 		if err != nil {
-			// Index the row so the caller can FIX the failing event —
-			// a bare "quantity too large" across a 500-event batch was
-			// undebuggable from the response.
 			batchErrs = append(batchErrs, fmt.Errorf("event[%d]: %w", i, err))
 			continue
 		}
-		ingested++
+		prepared = append(prepared, ev)
+	}
+	if len(batchErrs) > 0 {
+		return 0, 0, batchErrs
 	}
 
-	return ingested, batchErrs
+	inserted, deduped, err := s.store.IngestBatch(ctx, tenantID, prepared)
+	if err != nil {
+		return 0, 0, []error{err}
+	}
+	if inserted > 0 {
+		mw.RecordUsageIngested(inserted)
+	}
+	return inserted, deduped, nil
+}
+
+// GetByIdempotencyKey fetches the event a replayed key originally wrote —
+// backs the public door's replay-as-success response (200 + original row
+// + Idempotent-Replayed header instead of a bare 409).
+func (s *Service) GetByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.UsageEvent, error) {
+	return s.store.GetByIdempotencyKey(ctx, tenantID, key)
 }
 
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error) {

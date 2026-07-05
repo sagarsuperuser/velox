@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -35,6 +36,38 @@ func (m *memStore) Ingest(_ context.Context, tenantID string, e domain.UsageEven
 	e.TenantID = tenantID
 	m.events[e.ID] = e
 	return e, nil
+}
+
+// IngestBatch mirrors the real store's atomic contract: any non-dup error
+// aborts the whole batch with nothing written; dups count as deduped.
+func (m *memStore) IngestBatch(ctx context.Context, tenantID string, events []domain.UsageEvent) (int, int, error) {
+	staged := newMemStore()
+	for k, v := range m.events {
+		staged.events[k] = v
+	}
+	inserted, deduped := 0, 0
+	for i, e := range events {
+		_, err := staged.Ingest(ctx, tenantID, e)
+		switch {
+		case errors.Is(err, errs.ErrDuplicateKey):
+			deduped++
+		case err != nil:
+			return 0, 0, fmt.Errorf("event[%d]: %w", i, err)
+		default:
+			inserted++
+		}
+	}
+	m.events = staged.events
+	return inserted, deduped, nil
+}
+
+func (m *memStore) GetByIdempotencyKey(_ context.Context, tenantID, key string) (domain.UsageEvent, error) {
+	for _, e := range m.events {
+		if e.TenantID == tenantID && e.IdempotencyKey == key {
+			return e, nil
+		}
+	}
+	return domain.UsageEvent{}, errs.ErrNotFound
 }
 
 // listClamp mirrors the PostgresStore.List cap (it silently clamps the
@@ -400,23 +433,57 @@ func TestIngest_ZeroQuantityStaysZero(t *testing.T) {
 	}
 }
 
-// P10: batch errors carry the row index so the caller can FIX the
-// failing event — a bare error string across a 500-event batch was
-// undebuggable from the response.
-func TestBatchIngest_ErrorsAreIndexed(t *testing.T) {
-	svc := NewService(newMemStore())
-	ingested, errs := svc.BatchIngest(context.Background(), "t1", []IngestInput{
+// A batch with any invalid event ingests NOTHING — all-or-nothing, so a
+// client retry can never double-ingest a committed prefix (the keyless-
+// retry money bug: pre-fix, rows before the failure committed, and the
+// standard retry-the-batch response billed them twice). Errors still
+// carry the row index (P10) so the caller can FIX the failing event —
+// a bare "quantity too large" across a 500-event batch was undebuggable.
+func TestBatchIngest_AllOrNothing_ErrorsIndexed(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ingested, deduped, errs := svc.BatchIngest(context.Background(), "t1", []IngestInput{
 		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1)},
 		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(2)},
 		{CustomerID: "", MeterID: "mtr_1", Quantity: dec(3)}, // row 2 (0-based): invalid
 	})
-	if ingested != 2 {
-		t.Fatalf("ingested: got %d, want 2 (partial success)", ingested)
+	if ingested != 0 || deduped != 0 {
+		t.Fatalf("got ingested=%d deduped=%d, want 0/0 — a failing batch must write nothing", ingested, deduped)
+	}
+	if len(store.events) != 0 {
+		t.Fatalf("store has %d events, want 0 (committed prefix = double-billing on retry)", len(store.events))
 	}
 	if len(errs) != 1 {
 		t.Fatalf("errors: got %d, want 1", len(errs))
 	}
 	if !strings.Contains(errs[0].Error(), "event[2]") {
 		t.Errorf("batch error not indexed: %q (want event[2] so the caller knows WHICH row)", errs[0].Error())
+	}
+}
+
+// Replaying an already-ingested idempotency key through a batch counts as
+// deduped SUCCESS, not an error — a network-level retry of a committed
+// batch must not trip the caller's pipeline alerting (and must match the
+// LiteLLM door's silent-success contract).
+func TestBatchIngest_ReplayCountsAsDeduped(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	if _, err := svc.Ingest(context.Background(), "t1", IngestInput{
+		CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), IdempotencyKey: "evt-a",
+	}); err != nil {
+		t.Fatalf("seed ingest: %v", err)
+	}
+	ingested, deduped, errs := svc.BatchIngest(context.Background(), "t1", []IngestInput{
+		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(1), IdempotencyKey: "evt-a"}, // replay
+		{CustomerID: "cus_1", MeterID: "mtr_1", Quantity: dec(2), IdempotencyKey: "evt-b"}, // fresh
+	})
+	if len(errs) != 0 {
+		t.Fatalf("replay must not error: %v", errs)
+	}
+	if ingested != 1 || deduped != 1 {
+		t.Fatalf("got ingested=%d deduped=%d, want 1/1", ingested, deduped)
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("store has %d events, want 2 (no duplicate row)", len(store.events))
 	}
 }

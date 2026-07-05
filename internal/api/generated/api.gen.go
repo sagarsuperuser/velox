@@ -1428,9 +1428,29 @@ type PostV1UsageEventsJSONBody_Quantity struct {
 
 // PostV1UsageEventsBatchJSONBody defines parameters for PostV1UsageEventsBatch.
 type PostV1UsageEventsBatchJSONBody = []struct {
-	CustomerId string `json:"customer_id"`
-	MeterId    string `json:"meter_id"`
-	Quantity   int    `json:"quantity"`
+	Dimensions map[string]interface{} `json:"dimensions,omitempty"`
+
+	// EventName The meter key (e.g. "tokens").
+	EventName string `json:"event_name"`
+
+	// ExternalCustomerId The customer's external_id (your identifier), not the internal vlx_cus_ id.
+	ExternalCustomerId string `json:"external_customer_id"`
+	IdempotencyKey     string `json:"idempotency_key,omitempty"`
+
+	// Quantity Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values.
+	Quantity  PostV1UsageEventsBatchJSONBody_Quantity `json:"quantity"`
+	Timestamp time.Time                               `json:"timestamp,omitempty"`
+}
+
+// PostV1UsageEventsBatchJSONBodyQuantity0 defines parameters for PostV1UsageEventsBatch.
+type PostV1UsageEventsBatchJSONBodyQuantity0 = float32
+
+// PostV1UsageEventsBatchJSONBodyQuantity1 defines parameters for PostV1UsageEventsBatch.
+type PostV1UsageEventsBatchJSONBodyQuantity1 = string
+
+// PostV1UsageEventsBatchJSONBody_Quantity defines parameters for PostV1UsageEventsBatch.
+type PostV1UsageEventsBatchJSONBody_Quantity struct {
+	union json.RawMessage
 }
 
 // PostV1AuthLoginJSONRequestBody defines body for PostV1AuthLogin for application/json ContentType.
@@ -1606,7 +1626,7 @@ type ServerInterface interface {
 	// Ingest usage event
 	// (POST /v1/usage-events)
 	PostV1UsageEvents(w http.ResponseWriter, r *http.Request)
-	// Batch ingest usage events (max 1000)
+	// Batch ingest usage events (max 1000, all-or-nothing)
 	// (POST /v1/usage-events/batch)
 	PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request)
 	// Resolve the current credential to its tenant context
@@ -1864,7 +1884,7 @@ func (_ Unimplemented) PostV1UsageEvents(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Batch ingest usage events (max 1000)
+// Batch ingest usage events (max 1000, all-or-nothing)
 // (POST /v1/usage-events/batch)
 func (_ Unimplemented) PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)

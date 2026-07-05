@@ -377,6 +377,68 @@ func (s *Service) rejectMixedItemIntervals(ctx context.Context, tenantID string,
 	return nil
 }
 
+// rejectMeterOverlap is the double-billing guard: no two live (draft /
+// trialing / active) subscriptions of a customer may bill the same meter,
+// and no two items on one subscription may either. Usage aggregation is
+// customer+meter scoped with NO subscription filter (engine.go
+// AggregateForBillingPeriodByAgg), so overlapping meter sets would invoice
+// the same usage once per subscription — silent double-billing. Migration
+// 0026 dropped the one-live-sub-per-customer index deferring to
+// "application policy"; this is that policy, scoped to the actual money
+// invariant (disjoint-meter subs stay allowed).
+//
+// planIDs is the incoming plan set (all items on Create; the added /
+// swapped-to plan on item mutations). currentSubID is the sub being
+// mutated ("" on Create — it doesn't exist yet) and only steers the error
+// message: a same-sub conflict means "this sub already has an item on that
+// meter". excludeItemID skips the item being plan-swapped so its outgoing
+// plan's meters don't self-conflict ("" for creates and adds). Skipped
+// when PlanReader isn't wired (narrow unit tests) — mirrors every sibling
+// guard.
+func (s *Service) rejectMeterOverlap(ctx context.Context, tenantID, customerID, currentSubID, excludeItemID string, planIDs []string) error {
+	if s.plans == nil {
+		return nil
+	}
+	meterPlan := make(map[string]string) // meter id → first candidate plan billing it
+	meters := make([]string, 0, len(planIDs))
+	for _, pid := range planIDs {
+		plan, err := s.plans.GetPlan(ctx, tenantID, pid)
+		if err != nil {
+			return errs.Invalid("items", fmt.Sprintf("plan %q not found", pid))
+		}
+		for _, m := range plan.MeterIDs {
+			if prev, dup := meterPlan[m]; dup {
+				if prev == pid {
+					continue // same plan listing a meter twice — harmless
+				}
+				return errs.Invalid("items", fmt.Sprintf(
+					"plans %q and %q both bill meter %s — usage would be invoiced twice; keep one of them", prev, pid, m))
+			}
+			meterPlan[m] = pid
+			meters = append(meters, m)
+		}
+	}
+	if len(meters) == 0 {
+		return nil
+	}
+	conflicts, err := s.store.FindMeterConflicts(ctx, tenantID, customerID, excludeItemID, meters)
+	if err != nil {
+		return err
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+	c := conflicts[0]
+	if c.SubscriptionID == currentSubID {
+		return errs.InvalidState(fmt.Sprintf(
+			"this subscription already has an item billing meter %s — usage would be invoiced twice; remove or swap the existing item instead",
+			c.MeterID))
+	}
+	return errs.InvalidState(fmt.Sprintf(
+		"subscription %q already bills meter %s for this customer — usage would be invoiced twice; cancel that subscription first, or price both plans as items on one subscription",
+		c.SubscriptionCode, c.MeterID))
+}
+
 // firstPlanInterval returns the BillingInterval to use for period
 // anchoring on a sub. Reads the first item's plan via PlanReader; on
 // any failure (reader not wired, plan deleted, RLS gap) defaults to
@@ -519,6 +581,16 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 			if plan.Status == domain.PlanArchived {
 				return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — unarchive it or pick an active plan", it.PlanID))
 			}
+		}
+
+		// Double-billing guard: the new sub's meters must be disjoint from
+		// every other live sub of this customer (and from each other).
+		planIDs := make([]string, 0, len(items))
+		for _, it := range items {
+			planIDs = append(planIDs, it.PlanID)
+		}
+		if err := s.rejectMeterOverlap(ctx, tenantID, input.CustomerID, "", "", planIDs); err != nil {
+			return domain.Subscription{}, err
 		}
 	}
 
@@ -836,6 +908,12 @@ func (s *Service) AddItem(ctx context.Context, tenantID, subscriptionID string, 
 		}
 	}
 
+	// Double-billing guard: the added plan's meters must be disjoint from
+	// every live sub of the customer — including this sub's other items.
+	if err := s.rejectMeterOverlap(ctx, tenantID, sub.CustomerID, subscriptionID, "", []string{input.PlanID}); err != nil {
+		return domain.SubscriptionItem{}, err
+	}
+
 	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
 	return s.store.AddItem(ctx, tenantID, domain.SubscriptionItem{
 		SubscriptionID: subscriptionID,
@@ -881,6 +959,13 @@ func (s *Service) AddItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscript
 		if err := s.rejectMixedItemIntervals(ctx, tenantID, newPlusExisting); err != nil {
 			return domain.SubscriptionItem{}, err
 		}
+	}
+
+	// Double-billing guard — same as the non-Tx AddItem. Runs its own
+	// read tx (like the sub re-read above); the unique index stays the
+	// write-time gate for same-plan duplicates.
+	if err := s.rejectMeterOverlap(ctx, tenantID, sub.CustomerID, subscriptionID, "", []string{input.PlanID}); err != nil {
+		return domain.SubscriptionItem{}, err
 	}
 
 	ctx = s.bindForSub(ctx, tenantID, subscriptionID)
@@ -963,6 +1048,13 @@ func (s *Service) UpdateItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 		// already on an archived plan keep billing (archive ≠ cancel).
 		if newPlan.Status == domain.PlanArchived {
 			return ItemChangeResult{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — pick an active plan", input.NewPlanID))
+		}
+		// Double-billing guard: the swapped-to plan's meters must be
+		// disjoint from every live sub of the customer and this sub's
+		// OTHER items. The item being swapped is excluded — its outgoing
+		// plan stops billing when the new one starts.
+		if err := s.rejectMeterOverlap(ctx, tenantID, sub.CustomerID, subscriptionID, itemID, []string{input.NewPlanID}); err != nil {
+			return ItemChangeResult{}, err
 		}
 		if !input.Immediate {
 			return ItemChangeResult{}, errAtomicNotApplicable
@@ -1137,6 +1229,12 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, subscriptionID, item
 		// (ADR-067).
 		if newPlan.Status == domain.PlanArchived {
 			return ItemChangeResult{}, errs.InvalidState(fmt.Sprintf("plan %q is archived — pick an active plan", input.NewPlanID))
+		}
+		// Double-billing guard — same as UpdateItemTx. Also gates SCHEDULED
+		// changes: a pending swap onto an already-billed meter would start
+		// double-billing at the next cycle boundary.
+		if err := s.rejectMeterOverlap(ctx, tenantID, sub.CustomerID, subscriptionID, itemID, []string{input.NewPlanID}); err != nil {
+			return ItemChangeResult{}, err
 		}
 		currentTiming := currentPlan.BaseBillTiming
 		if currentTiming == "" {

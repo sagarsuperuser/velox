@@ -277,6 +277,24 @@ type Store interface {
 	// RemoveItemTx is the in-transaction variant — same atomicity
 	// rationale as AddItemTx.
 	RemoveItemTx(ctx context.Context, tx *sql.Tx, tenantID, itemID string) error
+
+	// FindMeterConflicts returns, for each candidate meter, the live
+	// (draft / trialing / active) subscriptions of the customer whose
+	// items' plans already bill that meter — including scheduled
+	// pending_plan_id swaps, which will start billing at the next cycle
+	// boundary. excludeItemID skips one item (the item being plan-swapped;
+	// "" for creates and adds). Backs the double-billing guard: usage
+	// aggregation is customer+meter scoped with no subscription filter,
+	// so two live subs sharing a meter would each invoice the same usage.
+	FindMeterConflicts(ctx context.Context, tenantID, customerID, excludeItemID string, meterIDs []string) ([]MeterConflict, error)
+}
+
+// MeterConflict names one meter that a live subscription of the customer
+// already bills. Returned by FindMeterConflicts for the double-billing guard.
+type MeterConflict struct {
+	MeterID          string
+	SubscriptionID   string
+	SubscriptionCode string
 }
 
 type ListFilter struct {

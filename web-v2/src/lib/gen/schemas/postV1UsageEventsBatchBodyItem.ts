@@ -7,9 +7,16 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 
  * OpenAPI spec version: 2026-04-07
  */
+import type { PostV1UsageEventsBatchBodyItemDimensions } from './postV1UsageEventsBatchBodyItemDimensions';
 
 export type PostV1UsageEventsBatchBodyItem = {
-  customer_id: string;
-  meter_id: string;
-  quantity: number;
+  /** The customer's external_id (your identifier), not the internal vlx_cus_ id. */
+  external_customer_id: string;
+  /** The meter key (e.g. "tokens"). */
+  event_name: string;
+  /** Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values. */
+  quantity: number | string;
+  dimensions?: PostV1UsageEventsBatchBodyItemDimensions;
+  idempotency_key?: string;
+  timestamp?: string;
 };

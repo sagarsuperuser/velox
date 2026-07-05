@@ -633,6 +633,17 @@ export interface paths {
                 };
             };
             responses: {
+                /**
+                 * @description Idempotency replay — the original event is returned unchanged
+                 *     with an `Idempotent-Replayed: true` header. No duplicate row
+                 *     is written.
+                 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
                 /** @description Event ingested */
                 201: {
                     headers: {
@@ -657,7 +668,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Batch ingest usage events (max 1000) */
+        /**
+         * Batch ingest usage events (max 1000, all-or-nothing)
+         * @description The batch is atomic: every event validates, then all of them
+         *     commit in one transaction. On any validation failure NOTHING is
+         *     ingested, so retrying the whole batch is always safe — including
+         *     for events without idempotency keys. Replays of already-ingested
+         *     keys are counted in `deduplicated` and are NOT errors.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -668,22 +686,50 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        customer_id: string;
-                        meter_id: string;
-                        quantity: number;
+                        /** @description The customer's external_id (your identifier), not the internal vlx_cus_ id. */
+                        external_customer_id: string;
+                        /** @description The meter key (e.g. "tokens"). */
+                        event_name: string;
+                        /** @description Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values. */
+                        quantity: number | string;
+                        dimensions?: {
+                            [key: string]: unknown;
+                        };
+                        idempotency_key?: string;
+                        /** Format: date-time */
+                        timestamp?: string;
                     }[];
                 };
             };
             responses: {
-                /** @description All events ingested */
+                /** @description Batch committed */
                 201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description Newly written events. */
+                            ingested?: number;
+                            /** @description Idempotency replays — already ingested, counted as success. */
+                            deduplicated?: number;
+                            total?: number;
+                        };
+                    };
+                };
+                /** @description Request body over the 1MB cap — send smaller batches. */
+                413: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
-                /** @description Partial success */
-                206: {
+                /**
+                 * @description Batch rejected — one or more events failed validation and
+                 *     NOTHING was ingested. `errors[]` names every failing index
+                 *     (`event[i]: reason`); fix them and retry the whole batch.
+                 */
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };

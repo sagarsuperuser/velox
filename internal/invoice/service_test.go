@@ -1396,6 +1396,36 @@ func TestRecordOfflinePayment(t *testing.T) {
 			t.Error("expected error on draft invoice")
 		}
 	})
+
+	// amount_cents must be the BOOKED amount, not the post-transition
+	// amount_due. MarkPaid flips amount_paid=amount_due and amount_due=0
+	// in one statement; the pre-fix payload read AmountDueCents from the
+	// updated row, so every offline payment audited and webhooked as a
+	// ZERO-value payment (2026-07-05 money-bug sprint).
+	t.Run("audit + event carry the booked amount, not zero", func(t *testing.T) {
+		store := newMemStore()
+		store.invoices["inv_amt"] = domain.Invoice{
+			ID: "inv_amt", TenantID: "t1", CustomerID: "c", InvoiceNumber: "VLX-42",
+			Status: domain.InvoiceFinalized, AmountDueCents: 4200, Currency: "USD",
+		}
+		svc := NewService(store, nil, newMemNumberer())
+		audit := &captureAuditInvoice{}
+		events := &captureEvents{}
+		svc.SetAuditLogger(audit)
+		svc.SetEventDispatcher(events)
+
+		if _, err := svc.RecordOfflinePayment(ctx, "t1", "inv_amt", "Wire 2026-07-05"); err != nil {
+			t.Fatalf("RecordOfflinePayment: %v", err)
+		}
+		if len(audit.entries) != 1 || audit.entries[0].metadata["amount_cents"] != int64(4200) {
+			t.Errorf("audit amount_cents: got %v, want 4200 (booked amount, not the zeroed amount_due)",
+				audit.entries[0].metadata["amount_cents"])
+		}
+		if len(events.events) != 1 || events.events[0].payload["amount_cents"] != int64(4200) {
+			t.Errorf("event amount_cents: got %v, want 4200 (integrators must see the real payment value)",
+				events.events[0].payload["amount_cents"])
+		}
+	})
 }
 
 // TestMarkPaid_StoreGate_RejectsDraftAndTaxPending locks in the
