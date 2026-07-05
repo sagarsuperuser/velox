@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -243,7 +244,7 @@ jobs:
 
   docker:
     needs: [test, frontend]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,13 +261,54 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tag pushes (vX.Y.Z) publish a pinnable versioned image + stamp the
+      # binary (velox version / Velox-Version header). Main pushes keep the
+      # :sha and :latest moving tags with a dev-<sha> stamp — operators are
+      # told to pin version tags (deploy/compose/README.md).
+      - name: Compute image tags + version stamp
+        id: meta
+        run: |
+          REPO="ghcr.io/${{ github.repository }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            REF_TAG="${VERSION}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+            REF_TAG="${GITHUB_SHA}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<TAGS"
+            echo "${REPO}:${REF_TAG}"
+            echo "${REPO}:latest"
+            echo "TAGS"
+            echo "dashtags<<DTAGS"
+            echo "${REPO}-dashboard:${REF_TAG}"
+            echo "${REPO}-dashboard:latest"
+            echo "DTAGS"
+          } >> "$GITHUB_OUTPUT"
+
+
       - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The operator dashboard image (compose's velox-dashboard service) —
+      # published alongside the API so a VPC install never builds from
+      # source unless it wants to.
+      - name: Build and push dashboard image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/compose/Dockerfile.dashboard
+          push: true
+          tags: ${{ steps.meta.outputs.dashtags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
