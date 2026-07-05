@@ -8,10 +8,8 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
  * OpenAPI spec version: 2026-04-07
  */
 
-export type PostV1CustomersBody = {
-  external_id: string;
-  display_name: string;
-  email?: string;
+export type PostV1CreditNotesIdSendBody = {
+  email: string;
   /** @maxItems 10 */
   additional_emails?: string[];
 };

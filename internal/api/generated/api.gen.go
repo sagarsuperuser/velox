@@ -781,12 +781,18 @@ type CreditBalance struct {
 
 // Customer defines model for Customer.
 type Customer struct {
-	CreatedAt   time.Time      `json:"created_at,omitempty"`
-	DisplayName string         `json:"display_name,omitempty"`
-	Email       string         `json:"email,omitempty"`
-	ExternalId  string         `json:"external_id,omitempty"`
-	Id          string         `json:"id,omitempty"`
-	Status      CustomerStatus `json:"status,omitempty"`
+	// AdditionalEmails CC'd on billing documents and billing-state emails (invoice,
+	// receipt, dunning, payment failed, credit note) — never on
+	// credential-bearing emails (setup links, resets, invites).
+	// Normalized to lowercase bare addresses, deduped, capped at 10,
+	// never equal to the primary email. Stored encrypted at rest.
+	AdditionalEmails []string       `json:"additional_emails,omitempty"`
+	CreatedAt        time.Time      `json:"created_at,omitempty"`
+	DisplayName      string         `json:"display_name,omitempty"`
+	Email            string         `json:"email,omitempty"`
+	ExternalId       string         `json:"external_id,omitempty"`
+	Id               string         `json:"id,omitempty"`
+	Status           CustomerStatus `json:"status,omitempty"`
 
 	// TestClockId Test clock this customer is pinned to (test mode only). When set,
 	// the customer — and any invoices/subscriptions created for it —
@@ -1262,6 +1268,12 @@ type PostV1CreditNotesJSONBody struct {
 	RefundAmountCents    int    `json:"refund_amount_cents,omitempty"`
 }
 
+// PostV1CreditNotesIdSendJSONBody defines parameters for PostV1CreditNotesIdSend.
+type PostV1CreditNotesIdSendJSONBody struct {
+	AdditionalEmails []string            `json:"additional_emails,omitempty"`
+	Email            openapi_types.Email `json:"email"`
+}
+
 // PostV1CreditsGrantJSONBody defines parameters for PostV1CreditsGrant.
 type PostV1CreditsGrantJSONBody struct {
 	AmountCents int64  `json:"amount_cents"`
@@ -1315,9 +1327,10 @@ type GetV1CustomersParamsDir string
 
 // PostV1CustomersJSONBody defines parameters for PostV1Customers.
 type PostV1CustomersJSONBody struct {
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email,omitempty"`
-	ExternalId  string `json:"external_id"`
+	AdditionalEmails []string `json:"additional_emails,omitempty"`
+	DisplayName      string   `json:"display_name"`
+	Email            string   `json:"email,omitempty"`
+	ExternalId       string   `json:"external_id"`
 }
 
 // GetV1CustomersIdMarginParams defines parameters for GetV1CustomersIdMargin.
@@ -1383,6 +1396,12 @@ type PostV1InvoicesCreatePreviewJSONBody struct {
 	// SubscriptionId Optional. Defaults to the customer's primary active
 	// subscription if not supplied.
 	SubscriptionId string `json:"subscription_id,omitempty"`
+}
+
+// PostV1InvoicesIdSendJSONBody defines parameters for PostV1InvoicesIdSend.
+type PostV1InvoicesIdSendJSONBody struct {
+	AdditionalEmails []string            `json:"additional_emails,omitempty"`
+	Email            openapi_types.Email `json:"email"`
 }
 
 // PostV1MembersInviteJSONBody defines parameters for PostV1MembersInvite.
@@ -1627,6 +1646,9 @@ type PostV1AuthPasswordResetRequestJSONRequestBody PostV1AuthPasswordResetReques
 // PostV1CreditNotesJSONRequestBody defines body for PostV1CreditNotes for application/json ContentType.
 type PostV1CreditNotesJSONRequestBody PostV1CreditNotesJSONBody
 
+// PostV1CreditNotesIdSendJSONRequestBody defines body for PostV1CreditNotesIdSend for application/json ContentType.
+type PostV1CreditNotesIdSendJSONRequestBody PostV1CreditNotesIdSendJSONBody
+
 // PostV1CreditsGrantJSONRequestBody defines body for PostV1CreditsGrant for application/json ContentType.
 type PostV1CreditsGrantJSONRequestBody PostV1CreditsGrantJSONBody
 
@@ -1635,6 +1657,9 @@ type PostV1CustomersJSONRequestBody PostV1CustomersJSONBody
 
 // PostV1InvoicesCreatePreviewJSONRequestBody defines body for PostV1InvoicesCreatePreview for application/json ContentType.
 type PostV1InvoicesCreatePreviewJSONRequestBody PostV1InvoicesCreatePreviewJSONBody
+
+// PostV1InvoicesIdSendJSONRequestBody defines body for PostV1InvoicesIdSend for application/json ContentType.
+type PostV1InvoicesIdSendJSONRequestBody PostV1InvoicesIdSendJSONBody
 
 // PostV1MembersInviteJSONRequestBody defines body for PostV1MembersInvite for application/json ContentType.
 type PostV1MembersInviteJSONRequestBody PostV1MembersInviteJSONBody
@@ -1710,6 +1735,9 @@ type ServerInterface interface {
 	// Create a credit note (line-based, or commit relief)
 	// (POST /v1/credit-notes)
 	PostV1CreditNotes(w http.ResponseWriter, r *http.Request)
+	// Email the credit-note document (PDF attached)
+	// (POST /v1/credit-notes/{id}/send)
+	PostV1CreditNotesIdSend(w http.ResponseWriter, r *http.Request, id string)
 	// Get customer credit balance
 	// (GET /v1/credits/balance/{customer_id})
 	GetV1CreditsBalanceCustomerId(w http.ResponseWriter, r *http.Request, customerId string)
@@ -1749,6 +1777,9 @@ type ServerInterface interface {
 	// Retry tax calculation on a deferred invoice
 	// (POST /v1/invoices/{id}/retry-tax)
 	PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string)
+	// Email the invoice (PDF attached) to a recipient
+	// (POST /v1/invoices/{id}/send)
+	PostV1InvoicesIdSend(w http.ResponseWriter, r *http.Request, id string)
 	// List workspace members and invitations
 	// (GET /v1/members/)
 	GetV1Members(w http.ResponseWriter, r *http.Request)
@@ -1923,6 +1954,12 @@ func (_ Unimplemented) PostV1CreditNotes(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Email the credit-note document (PDF attached)
+// (POST /v1/credit-notes/{id}/send)
+func (_ Unimplemented) PostV1CreditNotesIdSend(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Get customer credit balance
 // (GET /v1/credits/balance/{customer_id})
 func (_ Unimplemented) GetV1CreditsBalanceCustomerId(w http.ResponseWriter, r *http.Request, customerId string) {
@@ -1998,6 +2035,12 @@ func (_ Unimplemented) GetV1InvoicesIdPdf(w http.ResponseWriter, r *http.Request
 // Retry tax calculation on a deferred invoice
 // (POST /v1/invoices/{id}/retry-tax)
 func (_ Unimplemented) PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Email the invoice (PDF attached) to a recipient
+// (POST /v1/invoices/{id}/send)
+func (_ Unimplemented) PostV1InvoicesIdSend(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2441,6 +2484,37 @@ func (siw *ServerInterfaceWrapper) PostV1CreditNotes(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1CreditNotes(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1CreditNotesIdSend operation middleware
+func (siw *ServerInterfaceWrapper) PostV1CreditNotesIdSend(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1CreditNotesIdSend(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3005,6 +3079,37 @@ func (siw *ServerInterfaceWrapper) PostV1InvoicesIdRetryTax(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1InvoicesIdRetryTax(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1InvoicesIdSend operation middleware
+func (siw *ServerInterfaceWrapper) PostV1InvoicesIdSend(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1InvoicesIdSend(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4082,6 +4187,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/credit-notes", wrapper.PostV1CreditNotes)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/credit-notes/{id}/send", wrapper.PostV1CreditNotesIdSend)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/credits/balance/{customer_id}", wrapper.GetV1CreditsBalanceCustomerId)
 	})
 	r.Group(func(r chi.Router) {
@@ -4119,6 +4227,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/invoices/{id}/retry-tax", wrapper.PostV1InvoicesIdRetryTax)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/invoices/{id}/send", wrapper.PostV1InvoicesIdSend)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/members/", wrapper.GetV1Members)

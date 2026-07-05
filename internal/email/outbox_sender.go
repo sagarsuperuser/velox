@@ -37,6 +37,10 @@ const (
 	TypePaymentSetupLink = "payment_setup_link"
 	TypePasswordReset    = "password_reset"
 	TypeMemberInvite     = "member_invite"
+	// TypeCreditNote is the operator-initiated credit-note document
+	// email (ADR-082 rider). No CHECK constraint exists on
+	// email_outbox.email_type, so appending a type needs no migration.
+	TypeCreditNote = "credit_note"
 )
 
 // outboxMessage is the union payload persisted to email_outbox.payload. Each
@@ -45,16 +49,23 @@ const (
 // serialisation ceremony — the dispatcher reads the type tag and knows which
 // fields are meaningful.
 type outboxMessage struct {
-	To            string `json:"to"`
-	CustomerName  string `json:"customer_name,omitempty"`
-	InvoiceNumber string `json:"invoice_number,omitempty"`
-	AmountCents   int64  `json:"amount_cents,omitempty"`
-	Currency      string `json:"currency,omitempty"`
-	AttemptNumber int    `json:"attempt_number,omitempty"`
-	MaxAttempts   int    `json:"max_attempts,omitempty"`
-	NextRetryDate string `json:"next_retry_date,omitempty"`
-	Action        string `json:"action,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	To string `json:"to"`
+	// Cc carries the additional billing recipients (ADR-082) for the
+	// CC-eligible types. Old rows without the key decode to nil —
+	// primary-only delivery, degraded-but-correct during binary skew.
+	Cc            []string `json:"cc,omitempty"`
+	CustomerName  string   `json:"customer_name,omitempty"`
+	InvoiceNumber string   `json:"invoice_number,omitempty"`
+	// CreditNoteNumber names the CN document on TypeCreditNote rows
+	// (InvoiceNumber then carries the APPLIED invoice for the body copy).
+	CreditNoteNumber string `json:"credit_note_number,omitempty"`
+	AmountCents      int64  `json:"amount_cents,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	AttemptNumber    int    `json:"attempt_number,omitempty"`
+	MaxAttempts      int    `json:"max_attempts,omitempty"`
+	NextRetryDate    string `json:"next_retry_date,omitempty"`
+	Action           string `json:"action,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 	// FailureReason carries the latest decline-or-error message for
 	// dunning_warning + payment_failed templates. Surfaced inline so
 	// the customer can act (insufficient_funds → top up; lost_card →
@@ -153,9 +164,10 @@ func (s *OutboxSender) enqueue(ctx context.Context, tenantID, emailType string, 
 }
 
 // SendInvoice enqueues an invoice email. Satisfies invoice.EmailSender.
-func (s *OutboxSender) SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
+func (s *OutboxSender) SendInvoice(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
 	return s.enqueue(ctx, tenantID, TypeInvoice, outboxMessage{
 		To:            to,
+		Cc:            cc,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		AmountCents:   totalCents,
@@ -166,9 +178,10 @@ func (s *OutboxSender) SendInvoice(ctx context.Context, tenantID, to, customerNa
 }
 
 // SendPaymentReceipt enqueues a receipt email. Satisfies payment.EmailReceipt.
-func (s *OutboxSender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
+func (s *OutboxSender) SendPaymentReceipt(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
 	return s.enqueue(ctx, tenantID, TypePaymentReceipt, outboxMessage{
 		To:            to,
+		Cc:            cc,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		AmountCents:   amountCents,
@@ -178,9 +191,10 @@ func (s *OutboxSender) SendPaymentReceipt(ctx context.Context, tenantID, to, cus
 }
 
 // SendDunningWarning enqueues a dunning-warning email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
+func (s *OutboxSender) SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
 	return s.enqueue(ctx, tenantID, TypeDunningWarning, outboxMessage{
 		To:            to,
+		Cc:            cc,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		AttemptNumber: attemptNumber,
@@ -192,9 +206,10 @@ func (s *OutboxSender) SendDunningWarning(ctx context.Context, tenantID, to, cus
 }
 
 // SendDunningEscalation enqueues a dunning-escalation email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
+func (s *OutboxSender) SendDunningEscalation(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, action, publicToken string) error {
 	return s.enqueue(ctx, tenantID, TypeDunningEscalation, outboxMessage{
 		To:            to,
+		Cc:            cc,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		Action:        action,
@@ -203,9 +218,10 @@ func (s *OutboxSender) SendDunningEscalation(ctx context.Context, tenantID, to, 
 }
 
 // SendPaymentFailed enqueues a payment-failed email. Satisfies dunning.EmailNotifier.
-func (s *OutboxSender) SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
+func (s *OutboxSender) SendPaymentFailed(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, reason, publicToken string) error {
 	return s.enqueue(ctx, tenantID, TypePaymentFailed, outboxMessage{
 		To:            to,
+		Cc:            cc,
 		CustomerName:  customerName,
 		InvoiceNumber: invoiceNumber,
 		Reason:        reason,
@@ -252,6 +268,23 @@ func (s *OutboxSender) SendPaymentSetupLink(ctx context.Context, tenantID, to, c
 		CustomerName: customerName,
 		OperatorNote: operatorNote,
 		SetupURL:     setupURL,
+	})
+}
+
+// SendCreditNote enqueues a credit-note document email (ADR-082
+// rider). invoiceNumber is the APPLIED invoice — named in the body so
+// finance can match the credit to the bill it adjusts. No CTA link: no
+// hosted CN page exists, the PDF is the document.
+func (s *OutboxSender) SendCreditNote(ctx context.Context, tenantID, to string, cc []string, customerName, creditNoteNumber, invoiceNumber string, amountCents int64, currency string, pdfBytes []byte) error {
+	return s.enqueue(ctx, tenantID, TypeCreditNote, outboxMessage{
+		To:               to,
+		Cc:               cc,
+		CustomerName:     customerName,
+		CreditNoteNumber: creditNoteNumber,
+		InvoiceNumber:    invoiceNumber,
+		AmountCents:      amountCents,
+		Currency:         currency,
+		PDF:              pdfBytes,
 	})
 }
 

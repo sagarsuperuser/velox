@@ -131,7 +131,7 @@ export const api = {
     apiRequest<{ data: Customer[]; total: number }>('GET', `/customers${params ? '?' + params : ''}`),
   getCustomer: (id: string) =>
     apiRequest<Customer>('GET', `/customers/${id}`),
-  createCustomer: (data: { external_id: string; display_name: string; email?: string; test_clock_id?: string }) =>
+  createCustomer: (data: { external_id: string; display_name: string; email?: string; additional_emails?: string[]; test_clock_id?: string }) =>
     apiRequest<Customer>('POST', '/customers', data),
   rotateCostDashboardToken: (customerId: string) =>
     apiRequest<{ token: string; public_url: string }>('POST', `/customers/${customerId}/rotate-cost-dashboard-token`),
@@ -235,8 +235,17 @@ export const api = {
     apiRequest<Invoice>('POST', `/invoices/${id}/retry-tax`),
   collectPayment: (id: string) =>
     apiRequest<Invoice>('POST', `/invoices/${id}/collect`),
-  sendInvoiceEmail: (invoiceId: string, email: string) =>
-    apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/send`, { email }),
+  // additionalEmails tri-state (ADR-082): undefined → server CCs the
+  // customer's stored additional_emails; [] → primary only; list →
+  // exact override.
+  sendInvoiceEmail: (invoiceId: string, email: string, additionalEmails?: string[]) =>
+    apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/send`,
+      additionalEmails === undefined ? { email } : { email, additional_emails: additionalEmails }),
+
+  // Credit-note document email (ADR-082 rider) — same recipient contract.
+  sendCreditNoteEmail: (creditNoteId: string, email: string, additionalEmails?: string[]) =>
+    apiRequest<{ status: string }>('POST', `/credit-notes/${creditNoteId}/send`,
+      additionalEmails === undefined ? { email } : { email, additional_emails: additionalEmails }),
   // Resends the payment-METHOD setup link email (Stripe Checkout in setup
   // mode) for a finalized, unpaid invoice with no card on file — the
   // no_payment_method attention card's "Resend setup link" nudge. Distinct
@@ -324,7 +333,7 @@ export const api = {
     ),
 
   // Customer updates
-  updateCustomer: (id: string, data: { display_name?: string; email?: string; dunning_policy_id?: string }) =>
+  updateCustomer: (id: string, data: { display_name?: string; email?: string; additional_emails?: string[]; dunning_policy_id?: string }) =>
     apiRequest<Customer>('PATCH', `/customers/${id}`, data),
 
   // Subscription detail
@@ -566,6 +575,9 @@ export interface Customer {
   external_id: string
   display_name: string
   email: string
+  // CC'd on billing emails (invoices, receipts, credit notes,
+  // payment-issue notices). ADR-082.
+  additional_emails?: string[]
   status: string
   created_at: string
   // Deliverability signal populated by the email bounce-capture hook

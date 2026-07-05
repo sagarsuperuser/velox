@@ -88,6 +88,17 @@ components:
           type: string
         email:
           type: string
+        additional_emails:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+          description: |
+            CC'd on billing documents and billing-state emails (invoice,
+            receipt, dunning, payment failed, credit note) — never on
+            credential-bearing emails (setup links, resets, invites).
+            Normalized to lowercase bare addresses, deduped, capped at 10,
+            never equal to the primary email. Stored encrypted at rest.
         status:
           type: string
           enum: [active, archived]
@@ -866,6 +877,11 @@ paths:
                   type: string
                 email:
                   type: string
+                additional_emails:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
       responses:
         "201":
           description: Customer created
@@ -1789,6 +1805,88 @@ paths:
           description: PDF file
           content:
             application/pdf: {}
+
+  /v1/invoices/{id}/send:
+    post:
+      tags: [Invoices]
+      summary: Email the invoice (PDF attached) to a recipient
+      description: |
+        Sends the invoice document email. `additional_emails` is
+        tri-state (ADR-082): absent → the customer's stored
+        additional_emails are CC'd (so legacy `{email}`-only bodies now
+        CC by default); explicit `[]` → primary only for this send;
+        explicit list → validated exact override (same rules as the
+        customer field — normalize, dedupe, not-the-recipient, cap 10).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                additional_emails:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Email enqueued
+        "404":
+          description: Invoice not found
+        "422":
+          description: Invalid recipient or CC entry
+
+  /v1/credit-notes/{id}/send:
+    post:
+      tags: [Credit Notes]
+      summary: Email the credit-note document (PDF attached)
+      description: |
+        Sends the credit-note PDF to the customer (ADR-082 rider — CNs
+        previously had no send surface at all). Issued credit notes
+        only: drafts and voided CNs return 422. Recipient contract
+        matches the invoice send (`email` + tri-state
+        `additional_emails`). The send is recorded on the applied
+        invoice's timeline and the customer's Sent-emails section.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                additional_emails:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Email enqueued
+        "404":
+          description: Credit note not found
+        "422":
+          description: Not issued (draft/voided), or invalid recipient
 
   /v1/invoices/{id}/finalize:
     post:

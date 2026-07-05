@@ -37,7 +37,7 @@ func TestOutboxSender_RequiresTenantID(t *testing.T) {
 	// access, so we never reach the store call.
 	s := NewOutboxSender(nil)
 
-	err := s.SendInvoice(context.Background(), "", "to@x.com", "n", "inv", 1, "USD", nil, "")
+	err := s.SendInvoice(context.Background(), "", "to@x.com", nil, "n", "inv", 1, "USD", nil, "")
 	if err == nil {
 		t.Error("SendInvoice with empty tenantID should error")
 	}
@@ -52,7 +52,7 @@ func TestOutboxSender_SuppressedRecipient(t *testing.T) {
 	s := NewOutboxSender(nil)
 	s.SetSuppressionChecker(suppressionFake{suppressed: true, reason: "bounced: 550 user unknown"})
 
-	err := s.SendInvoice(context.Background(), "tnt_a", "bounced@x.com", "n", "inv", 1, "USD", nil, "")
+	err := s.SendInvoice(context.Background(), "tnt_a", "bounced@x.com", nil, "n", "inv", 1, "USD", nil, "")
 	if !errors.Is(err, ErrRecipientSuppressed) {
 		t.Errorf("expected ErrRecipientSuppressed; got %v", err)
 	}
@@ -72,7 +72,7 @@ func TestOutboxSender_SuppressionCheckerErrorFailsOpen(t *testing.T) {
 	s := NewOutboxSender(nil) // nil store will panic on enqueue
 	s.SetSuppressionChecker(suppressionFake{err: errors.New("db down")})
 
-	_ = s.SendInvoice(context.Background(), "tnt_a", "ok@x.com", "n", "inv", 1, "USD", nil, "")
+	_ = s.SendInvoice(context.Background(), "tnt_a", "ok@x.com", nil, "n", "inv", 1, "USD", nil, "")
 	t.Error("expected the nil-store panic confirming fail-open path")
 }
 

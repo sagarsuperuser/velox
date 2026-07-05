@@ -63,7 +63,9 @@ type InvoiceGetter interface {
 
 // CustomerEmailFetcher resolves customer contact info for email notifications.
 type CustomerEmailFetcher interface {
-	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, err error)
+	// GetCustomerEmail returns the primary recipient, display name, and
+	// the additional-emails CC list (ADR-082).
+	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, additionalEmails []string, err error)
 }
 
 // EmailNotifier sends dunning-related emails. publicToken is the
@@ -71,7 +73,7 @@ type CustomerEmailFetcher interface {
 // (drafts, pre-addendum invoices); the sender gracefully omits the CTA.
 // ctx carries livemode for the underlying enqueue / brand lookup.
 type EmailNotifier interface {
-	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
+	SendPaymentFailed(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, reason, publicToken string) error
 	// SendDunningWarning emails the customer about a failed retry.
 	// failureReason is the latest decline reason (from the retrier's
 	// error message) — surfaced inline so customers can act
@@ -79,8 +81,8 @@ type EmailNotifier interface {
 	// reason renders without the diagnostic block. The template
 	// branches on attemptNumber == maxAttempts for "Last attempt"
 	// urgency tone.
-	SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
-	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
+	SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
+	SendDunningEscalation(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, action, publicToken string) error
 }
 
 // CustomerPolicyReader returns a customer's assigned dunning_policy_id
@@ -1096,7 +1098,7 @@ func (s *Service) GetStats(ctx context.Context, tenantID string) (Stats, error) 
 // on its own long-lived ctx. Errors are logged (best-effort); they do
 // NOT roll back the dunning state transition.
 func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy, retryErrMsg string) {
-	email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
+	email, name, cc, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
 	if err != nil || email == "" {
 		slog.Warn("skip dunning warning email — cannot resolve customer email",
 			"run_id", run.ID, "customer_id", run.CustomerID, "error", err)
@@ -1120,7 +1122,7 @@ func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, ru
 		// deployment (ADR-075 audit).
 		nextRetry = run.NextActionAt.In(domain.LoadLocationOrUTC(billTZ)).Format("January 2, 2006")
 	}
-	if err := s.emailNotifier.SendDunningWarning(ctx, tenantID, email, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErrMsg, publicToken); err != nil {
+	if err := s.emailNotifier.SendDunningWarning(ctx, tenantID, email, cc, name, invoiceNumber, run.AttemptCount, policy.MaxRetryAttempts, nextRetry, retryErrMsg, publicToken); err != nil {
 		slog.Error("failed to enqueue dunning warning email",
 			"run_id", run.ID, "email", email, "error", err)
 	}
@@ -1129,7 +1131,7 @@ func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, ru
 // enqueueDunningEscalation is the escalation-email counterpart to
 // enqueueDunningWarning. Same synchronous-enqueue rationale.
 func (s *Service) enqueueDunningEscalation(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy) {
-	email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
+	email, name, cc, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
 	if err != nil || email == "" {
 		slog.Warn("skip dunning escalation email — cannot resolve customer email",
 			"run_id", run.ID, "customer_id", run.CustomerID, "error", err)
@@ -1143,7 +1145,7 @@ func (s *Service) enqueueDunningEscalation(ctx context.Context, tenantID string,
 			publicToken = inv.PublicToken
 		}
 	}
-	if err := s.emailNotifier.SendDunningEscalation(ctx, tenantID, email, name, invoiceNumber, string(policy.FinalAction), publicToken); err != nil {
+	if err := s.emailNotifier.SendDunningEscalation(ctx, tenantID, email, cc, name, invoiceNumber, string(policy.FinalAction), publicToken); err != nil {
 		slog.Error("failed to enqueue dunning escalation email",
 			"run_id", run.ID, "email", email, "error", err)
 	}

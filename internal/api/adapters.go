@@ -515,10 +515,10 @@ type customerEmailFetcherAdapter struct {
 	store *customer.PostgresStore
 }
 
-func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tenantID, customerID string) (string, string, error) {
+func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tenantID, customerID string) (string, string, []string, error) {
 	cust, err := a.store.Get(ctx, tenantID, customerID)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	email := cust.Email
 	name := cust.DisplayName
@@ -531,7 +531,10 @@ func (a *customerEmailFetcherAdapter) GetCustomerEmail(ctx context.Context, tena
 			name = bp.LegalName
 		}
 	}
-	return email, name, nil
+	// AdditionalEmails ride the same row read — zero extra queries. CC'd
+	// on the billing-state emails (dunning, receipt, payment failed) per
+	// the ADR-082 coverage matrix.
+	return email, name, cust.AdditionalEmails, nil
 }
 
 // passwordResetEmailAdapter bridges email.OutboxSender (or the
@@ -658,7 +661,10 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 		// emailing the customer a permanently-broken link.
 		return errors.New("payment update TokenService not wired")
 	}
-	to, name, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+	// CC list deliberately discarded: payment_setup_request carries a
+	// single-use tokenized payment-credential URL — never-CC by
+	// construction (ADR-082 coverage matrix).
+	to, name, _, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 	if err != nil || to == "" {
 		// Missing email is a delivery gap, not a billing failure.
 		// Engine logs the warning and continues.

@@ -44,12 +44,19 @@ const (
 )
 
 type Customer struct {
-	ID          string         `json:"id"`
-	TenantID    string         `json:"tenant_id,omitempty"`
-	ExternalID  string         `json:"external_id"`
-	DisplayName string         `json:"display_name"`
-	Email       string         `json:"email,omitempty"`
-	Status      CustomerStatus `json:"status"`
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	ExternalID  string `json:"external_id"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email,omitempty"`
+	// AdditionalEmails are CC'd on billing documents and billing-state
+	// emails (invoice, receipt, dunning, payment failed, credit note) —
+	// never on credential-bearing emails (setup links, resets, invites).
+	// Stored encrypted alongside email (JSON array under the same
+	// encryptor, migration 0140); normalized lowercase addr-specs, cap
+	// 10, validated in the service. ADR-082.
+	AdditionalEmails []string       `json:"additional_emails,omitempty"`
+	Status           CustomerStatus `json:"status"`
 	// Email deliverability signal populated by bounce-capture hooks.
 	// Most rows stay 'unknown' until a send outcome is observed; partners
 	// that never send stay at default forever.
@@ -109,8 +116,10 @@ type CustomerBillingProfile struct {
 	// duplicated customers.email and broke the bounce-tracking key
 	// once they diverged. Phase 1 of the dual-email collapse:
 	// customers.email is the single canonical recipient. Phase 2
-	// (when a DP asks for multi-recipient) adds a
-	// customer_email_contacts table as an additive layer.
+	// SHIPPED 2026-07-06 (ADR-082): customers.additional_emails CC list.
+	// Phase 3 (a customer_email_contacts table — per-contact names,
+	// per-type routing, per-contact deliverability) triggers when a DP
+	// asks for per-recipient preferences.
 	Phone        string `json:"phone,omitempty"`
 	AddressLine1 string `json:"address_line1,omitempty"`
 	AddressLine2 string `json:"address_line2,omitempty"`

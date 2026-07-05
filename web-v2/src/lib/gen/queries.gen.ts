@@ -59,10 +59,12 @@ import type {
   PostV1AuthPasswordResetRequestBody,
   PostV1BillingRun200,
   PostV1CreditNotesBody,
+  PostV1CreditNotesIdSendBody,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
   PostV1CustomersIdRotateCostDashboardToken200,
   PostV1InvoicesCreatePreviewBody,
+  PostV1InvoicesIdSendBody,
   PostV1MembersInviteBody,
   PostV1MetersBody,
   PostV1PlansBody,
@@ -2743,6 +2745,164 @@ export function useGetV1InvoicesIdPdf<TData = Awaited<ReturnType<typeof getV1Inv
 
 
 
+
+/**
+ * Sends the invoice document email. `additional_emails` is
+tri-state (ADR-082): absent → the customer's stored
+additional_emails are CC'd (so legacy `{email}`-only bodies now
+CC by default); explicit `[]` → primary only for this send;
+explicit list → validated exact override (same rules as the
+customer field — normalize, dedupe, not-the-recipient, cap 10).
+
+ * @summary Email the invoice (PDF attached) to a recipient
+ */
+export const getPostV1InvoicesIdSendUrl = (id: string,) => {
+
+
+
+
+  return `/v1/invoices/${id}/send`
+}
+
+export const postV1InvoicesIdSend = async (id: string,
+    postV1InvoicesIdSendBody: PostV1InvoicesIdSendBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1InvoicesIdSendUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1InvoicesIdSendBody,)
+  }
+);}
+
+
+
+
+export const getPostV1InvoicesIdSendMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdSend>>, TError,{id: string;data: PostV1InvoicesIdSendBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdSend>>, TError,{id: string;data: PostV1InvoicesIdSendBody}, TContext> => {
+
+const mutationKey = ['postV1InvoicesIdSend'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1InvoicesIdSend>>, {id: string;data: PostV1InvoicesIdSendBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postV1InvoicesIdSend(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1InvoicesIdSendMutationResult = NonNullable<Awaited<ReturnType<typeof postV1InvoicesIdSend>>>
+    export type PostV1InvoicesIdSendMutationBody = PostV1InvoicesIdSendBody
+    export type PostV1InvoicesIdSendMutationError = void
+
+    /**
+ * @summary Email the invoice (PDF attached) to a recipient
+ */
+export const usePostV1InvoicesIdSend = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1InvoicesIdSend>>, TError,{id: string;data: PostV1InvoicesIdSendBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1InvoicesIdSend>>,
+        TError,
+        {id: string;data: PostV1InvoicesIdSendBody},
+        TContext
+      > => {
+      return useMutation(getPostV1InvoicesIdSendMutationOptions(options), queryClient);
+    }
+
+/**
+ * Sends the credit-note PDF to the customer (ADR-082 rider — CNs
+previously had no send surface at all). Issued credit notes
+only: drafts and voided CNs return 422. Recipient contract
+matches the invoice send (`email` + tri-state
+`additional_emails`). The send is recorded on the applied
+invoice's timeline and the customer's Sent-emails section.
+
+ * @summary Email the credit-note document (PDF attached)
+ */
+export const getPostV1CreditNotesIdSendUrl = (id: string,) => {
+
+
+
+
+  return `/v1/credit-notes/${id}/send`
+}
+
+export const postV1CreditNotesIdSend = async (id: string,
+    postV1CreditNotesIdSendBody: PostV1CreditNotesIdSendBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1CreditNotesIdSendUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1CreditNotesIdSendBody,)
+  }
+);}
+
+
+
+
+export const getPostV1CreditNotesIdSendMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotesIdSend>>, TError,{id: string;data: PostV1CreditNotesIdSendBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotesIdSend>>, TError,{id: string;data: PostV1CreditNotesIdSendBody}, TContext> => {
+
+const mutationKey = ['postV1CreditNotesIdSend'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1CreditNotesIdSend>>, {id: string;data: PostV1CreditNotesIdSendBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  postV1CreditNotesIdSend(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1CreditNotesIdSendMutationResult = NonNullable<Awaited<ReturnType<typeof postV1CreditNotesIdSend>>>
+    export type PostV1CreditNotesIdSendMutationBody = PostV1CreditNotesIdSendBody
+    export type PostV1CreditNotesIdSendMutationError = void
+
+    /**
+ * @summary Email the credit-note document (PDF attached)
+ */
+export const usePostV1CreditNotesIdSend = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotesIdSend>>, TError,{id: string;data: PostV1CreditNotesIdSendBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1CreditNotesIdSend>>,
+        TError,
+        {id: string;data: PostV1CreditNotesIdSendBody},
+        TContext
+      > => {
+      return useMutation(getPostV1CreditNotesIdSendMutationOptions(options), queryClient);
+    }
 
 /**
  * @summary Finalize draft invoice

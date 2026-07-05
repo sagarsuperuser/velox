@@ -133,6 +133,9 @@ function aggregateTaxByJurisdiction(items: LineItem[]): { label: string; amount:
 
 const emailSchema = z.object({
   email: z.string().min(1, 'Email is required').email('Invalid email address'),
+  // Comma-separated CC list (ADR-082). Cleared field = primary only;
+  // server validates each address and caps at 10.
+  additional_emails: z.string(),
 })
 type EmailFormData = z.infer<typeof emailSchema>
 
@@ -1386,6 +1389,7 @@ export default function InvoiceDetailPage() {
         <EmailInvoiceDialog
           invoiceId={invoice.id}
           defaultEmail={customer?.email || ''}
+          defaultCc={customer?.additional_emails || []}
           onClose={() => setShowEmailModal(false)}
           onSent={() => { setShowEmailModal(false); toast.success('Invoice email sent') }}
         />
@@ -1653,21 +1657,24 @@ function AddLineItemDialog({ invoiceId, onClose, onAdded }: {
   )
 }
 
-function EmailInvoiceDialog({ invoiceId, defaultEmail, onClose, onSent }: {
-  invoiceId: string; defaultEmail: string; onClose: () => void; onSent: () => void
+function EmailInvoiceDialog({ invoiceId, defaultEmail, defaultCc, onClose, onSent }: {
+  invoiceId: string; defaultEmail: string; defaultCc: string[]; onClose: () => void; onSent: () => void
 }) {
   const form = useForm<EmailFormData>({
     resolver: zodResolver(emailSchema),
-    defaultValues: { email: defaultEmail },
+    defaultValues: { email: defaultEmail, additional_emails: defaultCc.join(', ') },
   })
   const { register, handleSubmit, formState: { errors, isSubmitting } } = form
 
   const onSubmit = handleSubmit(async (data) => {
     try {
-      await api.sendInvoiceEmail(invoiceId, data.email)
+      // Always send the explicit list the operator sees in the field —
+      // an emptied field means "primary only" (ADR-082 tri-state).
+      const cc = data.additional_emails.split(',').map(s => s.trim()).filter(Boolean)
+      await api.sendInvoiceEmail(invoiceId, data.email, cc)
       onSent()
     } catch (err) {
-      applyApiError(form, err, ['email'], { toastTitle: 'Failed to send email' })
+      applyApiError(form, err, ['email', 'additional_emails'], { toastTitle: 'Failed to send email' })
     }
   })
 
@@ -1682,6 +1689,12 @@ function EmailInvoiceDialog({ invoiceId, defaultEmail, onClose, onSent }: {
             <Label htmlFor="email">Recipient Email</Label>
             <Input id="email" type="email" placeholder="customer@example.com" maxLength={254} {...register('email')} />
             {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="additional_emails">CC</Label>
+            <Input id="additional_emails" placeholder="finance@customer.com, ap@customer.com" {...register('additional_emails')} />
+            <p className="text-xs text-muted-foreground">Separate with commas. Clear the field to email only the recipient.</p>
+            {errors.additional_emails && <p className="text-xs text-destructive">{errors.additional_emails.message}</p>}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

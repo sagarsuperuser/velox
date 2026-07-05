@@ -14,6 +14,16 @@ export interface Customer {
   external_id?: string;
   display_name?: string;
   email?: string;
+  /**
+     * CC'd on billing documents and billing-state emails (invoice,
+  receipt, dunning, payment failed, credit note) — never on
+  credential-bearing emails (setup links, resets, invites).
+  Normalized to lowercase bare addresses, deduped, capped at 10,
+  never equal to the primary email. Stored encrypted at rest.
+
+     * @maxItems 10
+     */
+  additional_emails?: string[];
   status?: CustomerStatus;
   created_at?: string;
   /** Test clock this customer is pinned to (test mode only). When set,

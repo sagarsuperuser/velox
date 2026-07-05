@@ -49,11 +49,12 @@ type DispatchLocker interface {
 // Dispatcher.handle from the email_outbox row) so brand lookups inside
 // the Sender resolve against the correct tenant_settings row.
 type EmailDeliverer interface {
-	SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
-	SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
-	SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
-	SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error
-	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
+	SendInvoice(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
+	SendPaymentReceipt(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
+	SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
+	SendDunningEscalation(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, action, publicToken string) error
+	SendPaymentFailed(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, reason, publicToken string) error
+	SendCreditNote(ctx context.Context, tenantID, to string, cc []string, customerName, creditNoteNumber, invoiceNumber string, amountCents int64, currency string, pdfBytes []byte) error
 	SendPaymentSetupRequest(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountDueCents int64, currency, updateURL string) error
 	SendPaymentSetupLink(ctx context.Context, tenantID, to, customerName, operatorNote, setupURL string) error
 	SendPasswordReset(ctx context.Context, tenantID, to, displayName, resetURL string) error
@@ -158,19 +159,19 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 
 	switch row.EmailType {
 	case TypeInvoice:
-		return d.sender.SendInvoice(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendInvoice(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.PDF, msg.PublicToken)
 	case TypePaymentReceipt:
-		return d.sender.SendPaymentReceipt(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendPaymentReceipt(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName, msg.InvoiceNumber,
 			msg.AmountCents, msg.Currency, msg.PublicToken)
 	case TypeDunningWarning:
-		return d.sender.SendDunningWarning(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendDunningWarning(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName, msg.InvoiceNumber,
 			msg.AttemptNumber, msg.MaxAttempts, msg.NextRetryDate, msg.FailureReason, msg.PublicToken)
 	case TypeDunningEscalation:
-		return d.sender.SendDunningEscalation(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendDunningEscalation(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName, msg.InvoiceNumber,
 			msg.Action, msg.PublicToken)
 	case TypePaymentFailed:
-		return d.sender.SendPaymentFailed(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
+		return d.sender.SendPaymentFailed(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName, msg.InvoiceNumber,
 			msg.Reason, msg.PublicToken)
 	case TypePaymentSetupRequest:
 		return d.sender.SendPaymentSetupRequest(ctx, row.TenantID, msg.To, msg.CustomerName, msg.InvoiceNumber,
@@ -182,6 +183,9 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 		return d.sender.SendPasswordReset(ctx, row.TenantID, msg.To, msg.CustomerName, msg.PasswordResetURL)
 	case TypeMemberInvite:
 		return d.sender.SendMemberInvite(ctx, row.TenantID, msg.To, msg.InviterEmail, msg.TenantName, msg.InviteURL)
+	case TypeCreditNote:
+		return d.sender.SendCreditNote(ctx, row.TenantID, msg.To, msg.Cc, msg.CustomerName,
+			msg.CreditNoteNumber, msg.InvoiceNumber, msg.AmountCents, msg.Currency, msg.PDF)
 	default:
 		return fmt.Errorf("%w: unknown email_type %q", ErrPayloadDecode, row.EmailType)
 	}

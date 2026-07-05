@@ -1587,6 +1587,16 @@ Setup: `DASHBOARD_BASE_URL` set (invites refuse to mint without it), Mailpit up.
 - [ ] Remove the invitee (confirm dialog warns they're signed out everywhere) → their session is dead on next request; re-inviting them works and accept says "You already have a Velox account" (no password form; attach only, then sign in at /login).
 - [ ] Remove yourself → blocked; remove the last member → blocked. *(automated: `internal/dashmembers` integration tests — golden path, existing-user attach, gates, revoked/expired tokens, session revocation, concurrent accept)*
 
+## FLOW E1: Additional billing emails + credit-note send (ADR-082, 2026-07-06)
+
+Setup: Mailpit up, a customer with a paid invoice.
+
+- [ ] Customer → Edit: set Additional billing emails to `finance@x.test, eng@x.test` → save; reopen shows both (lowercased). Setting 11 addresses or repeating the primary → inline 422.
+- [ ] Invoice → Send Email: CC field prefilled with both addresses → send → Mailpit shows ONE message with To=primary, Cc listing both; all three mailboxes received it.
+- [ ] Send again with the CC field CLEARED → only the primary mailbox receives (explicit `[]` = primary only).
+- [ ] Issue a credit note on the invoice → Credit Notes → Send on the issued row → branded credit-note email with PDF attached arrives at the same recipient set; the send appears on the invoice timeline and the customer's Sent emails as "Credit note". Draft/voided CN → Send returns 422.
+- [ ] Legacy API body `POST /v1/invoices/{id}/send {"email": ...}` (no additional_emails key) → CCs the stored list (the Orb-parity default). *(automated: `TestCC_*` transport pins — RCPT set, misattribution, transport-abort, suppression; outbox cc round-trips; customer store encryption round-trip; tri-state handler tests; CN send guards)*
+
 ## FLOW X3: Rate limiting
 
 - [ ] 100+ concurrent CRUD requests (e.g. `GET /v1/customers`) → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
