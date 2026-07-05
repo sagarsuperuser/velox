@@ -140,6 +140,16 @@ func serve() {
 
 	db := postgres.NewDB(appPool, cfg.DB.QueryTimeout)
 
+	// Refuse to start behind a transaction-mode pooler: session advisory
+	// locks (billing/dunning/outbox/webhook leader gates) silently strand
+	// there — the first Release lands on the wrong server session, the
+	// lock never frees, and every replica skips every tick forever. A
+	// week of missing invoices with zero errors; a boot failure instead.
+	if err := db.VerifyAdvisoryLockTopology(context.Background()); err != nil {
+		slog.Error("connection topology check failed", "error", err)
+		os.Exit(1)
+	}
+
 	server := api.NewServer(db, nil)
 
 	billingInterval := 1 * time.Hour

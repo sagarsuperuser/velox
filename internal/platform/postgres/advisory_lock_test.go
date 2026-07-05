@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
@@ -86,4 +87,33 @@ func TestAdvisoryLock_ReleaseIdempotent(t *testing.T) {
 	}
 	lock.Release()
 	lock.Release() // second call must be a silent no-op
+}
+
+// TestVerifyAdvisoryLockTopology_DirectConnection proves the boot probe
+// passes cleanly on the supported topology (direct connections / session
+// pooling: each client conn is one server session) and leaves no probe
+// lock behind. The failure legs (transaction-mode PgBouncer) can't run in
+// CI without a pooler container — the probe's positive detections are
+// each derived from a Postgres invariant (PID stability per session,
+// same-session lock reentrancy, unlock ownership), asserted here on the
+// truthful side.
+func TestVerifyAdvisoryLockTopology_DirectConnection(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.VerifyAdvisoryLockTopology(ctx); err != nil {
+		t.Fatalf("topology check must pass on direct connections: %v", err)
+	}
+
+	// The probe must release its own key — a second run reacquires it,
+	// and the scheduler-facing TryAdvisoryLock still works after.
+	if err := db.VerifyAdvisoryLockTopology(ctx); err != nil {
+		t.Fatalf("second run must pass (probe lock released): %v", err)
+	}
+	lock, ok, err := db.TryAdvisoryLock(ctx, postgres.LockKeyTopologyCheck)
+	if err != nil || !ok {
+		t.Fatalf("probe key must be free after the check: err=%v ok=%v", err, ok)
+	}
+	lock.Release()
 }

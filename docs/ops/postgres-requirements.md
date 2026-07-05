@@ -80,25 +80,37 @@ Velox's defaults (env-overridable):
 For a single-tenant deployment running ~50 RPS, 20 open connections
 is comfortable. For multi-tenant deployments, scale linearly with
 tenant count up to your Postgres `max_connections` ceiling. Use
-PgBouncer in front of Postgres if you exceed ~100 application-side
-pool size.
+PgBouncer **in session mode** in front of Postgres if you exceed ~100
+application-side pool size (transaction mode is unsupported — see
+below).
 
 ## PgBouncer compatibility
 
-Velox is **session-pooler safe** (default), and **transaction-pooler
-safe with caveats**:
+Velox is **session-pooler safe** (PgBouncer session mode, or direct
+connections). Velox is **NOT transaction-pooler safe** — PgBouncer
+transaction/statement mode and RDS Proxy (which multiplexes at
+transaction granularity) are unsupported, and the server **refuses to
+boot** behind them:
 
-- Velox uses session-scoped GUCs (`app.tenant_id`, `app.bypass_rls`)
-  set with `set_config(.., true)` — the `true` flag scopes to the
-  current transaction, so transaction-pooling works.
-- Velox does NOT use prepared statements that would break under
-  transaction pooling.
-- Long-running transactions are bounded (default 5s query timeout
-  via `postgres.NewDB`).
+- Velox's singleton workers (billing scheduler, dunning, webhook +
+  email outbox dispatchers, webhook retry) elect a leader via
+  **session-scoped advisory locks** (`pg_try_advisory_lock` held on a
+  pinned connection for the tick's duration). Under transaction
+  pooling, consecutive statements on one client connection can run on
+  DIFFERENT server sessions: the unlock lands on a session that never
+  took the lock, the original server session holds it forever, and
+  every future tick on every replica skips as "another leader is
+  running". Billing halts silently — no error is ever raised.
+- Boot runs `VerifyAdvisoryLockTopology` (two-connection lock/contend/
+  release probe + backend-PID stability). Definite transaction-pooling
+  evidence → the process exits with an actionable error instead of
+  starting a server that would stop invoicing.
 
-If you run PgBouncer in transaction mode, lower
-`DB_CONN_MAX_LIFETIME_MIN` to 5 to encourage connection churn so
-PgBouncer doesn't hand out stale server-side state.
+Within a supported topology the rest of the stack is unremarkable:
+session GUCs (`app.tenant_id`, `app.bypass_rls`) are set with
+`set_config(.., true)` (transaction-scoped), no session-lifetime
+prepared statements, and transactions are bounded by the default 5s
+query timeout via `postgres.NewDB`.
 
 ## Schema sizing
 
