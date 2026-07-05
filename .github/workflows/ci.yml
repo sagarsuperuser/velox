@@ -78,6 +78,64 @@ jobs:
           file: coverage.out
         continue-on-error: true
 
+  # Golden path: the README quickstart + scripts/demo.sh, executed for real.
+  # This is the whole wedge chain in one run — recipe → test-clock customer →
+  # LiteLLM-shaped token ingest → provider cost rates → simulated month →
+  # finalized invoice with per-(model, token_type) lines + PDF → margin
+  # report. demo.sh fails loudly at the first API mismatch, so this job is
+  # what keeps the front door structurally unable to lie again (it rotted
+  # silently for months once — front-door audit 2026-07-05, PR #374).
+  golden-path:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: velox
+          POSTGRES_USER: velox
+          POSTGRES_PASSWORD: velox
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://velox:velox@localhost:5432/velox?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.11'
+
+      - name: Create app role (migrations GRANT to it)
+        run: |
+          PGPASSWORD=velox psql -h localhost -U velox -d velox             -c "CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';"             -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+      - name: Bootstrap (migrations + demo tenant + keys)
+        run: |
+          go run ./cmd/velox-bootstrap | tee bootstrap.out
+          grep -oE 'vlx_secret_test_[a-f0-9]+' bootstrap.out | head -1 > secret.key
+          test -s secret.key
+
+      - name: Start API
+        run: |
+          nohup go run ./cmd/velox > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/health >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "server never became healthy"; tail -50 server.log; exit 1
+
+      - name: Run the golden path (scripts/demo.sh)
+        run: ./scripts/demo.sh "$(cat secret.key)"
+
+      - name: Server log on failure
+        if: failure()
+        run: tail -100 server.log || true
+
   lint:
     runs-on: ubuntu-latest
     steps:
