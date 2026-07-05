@@ -32,6 +32,7 @@ export * from './getV1TestClocks200DataItem';
 export * from './getV1TestClocksId200';
 export * from './getV1TestClocksIdSubscriptions200';
 export * from './getV1TestClocksIdSubscriptions200DataItem';
+export * from './getV1UsageEventsParams';
 export * from './getV1Whoami200';
 export * from './getV1Whoami200KeyType';
 export * from './invoice';

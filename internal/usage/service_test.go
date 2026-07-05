@@ -487,3 +487,33 @@ func TestBatchIngest_ReplayCountsAsDeduped(t *testing.T) {
 		t.Fatalf("store has %d events, want 2 (no duplicate row)", len(store.events))
 	}
 }
+
+// parseDimensionsParam: the server half of the dashboard's dimension
+// filter. Typing must match ingest storage (JSON literals for bool/number,
+// strings otherwise) and malformed input must ERROR — pre-2026-07-05 the
+// server silently ignored the param entirely, rendering unfiltered data
+// as filtered.
+func TestParseDimensionsParam(t *testing.T) {
+	dims, err := parseDimensionsParam("model=gpt-4o,cached=true,attempt=2")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if dims["model"] != "gpt-4o" {
+		t.Errorf("model: got %#v, want string gpt-4o", dims["model"])
+	}
+	if dims["cached"] != true {
+		t.Errorf("cached: got %#v, want boolean true (JSONB-typed match)", dims["cached"])
+	}
+	if dims["attempt"] != float64(2) {
+		t.Errorf("attempt: got %#v, want number 2", dims["attempt"])
+	}
+
+	if d, err := parseDimensionsParam("  "); err != nil || d != nil {
+		t.Errorf("blank param: got (%v, %v), want (nil, nil)", d, err)
+	}
+	for _, bad := range []string{"model", "=gpt-4", "model="} {
+		if _, err := parseDimensionsParam(bad); err == nil {
+			t.Errorf("malformed %q must error (silently dropping a filter shows unfiltered data as filtered)", bad)
+		}
+	}
+}

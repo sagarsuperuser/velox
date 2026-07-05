@@ -696,6 +696,16 @@ func buildUsageWhere(f ListFilter) (string, []any) {
 	if f.To != nil {
 		clauses = append(clauses, fmt.Sprintf("timestamp < $%d", idx))
 		args = append(args, *f.To)
+		idx++
+	}
+	if len(f.Dimensions) > 0 {
+		// One containment doc carrying ALL pairs — JSONB @> on a
+		// multi-key object is AND semantics, and the GIN index on
+		// properties (migration 0062) serves it. Marshal cannot fail
+		// for a map built from query-string scalars.
+		doc, _ := json.Marshal(f.Dimensions)
+		clauses = append(clauses, fmt.Sprintf("properties @> $%d::jsonb", idx))
+		args = append(args, string(doc))
 	}
 
 	if len(clauses) == 0 {

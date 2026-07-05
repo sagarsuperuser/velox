@@ -263,6 +263,16 @@ func parseListFilter(r *http.Request) ListFilter {
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	filter := parseListFilter(r)
+	dims, err := parseDimensionsParam(r.URL.Query().Get("dimensions"))
+	if err != nil {
+		// Unlike the other list params, a malformed dimension filter is a
+		// hard 422, not treated-as-absent — silently dropping it would
+		// render UNfiltered data as filtered (the exact bug this param's
+		// server side shipped with).
+		respond.Validation(w, r, err.Error())
+		return
+	}
+	filter.Dimensions = dims
 	events, total, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
@@ -305,6 +315,14 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 // authoritative count, and ByMeter is the full filtered breakdown.
 func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request) {
 	filter := parseListFilter(r)
+	dims, err := parseDimensionsParam(r.URL.Query().Get("dimensions"))
+	if err != nil {
+		// Hard 422 — same rationale as list: a dropped filter shows
+		// unfiltered totals as filtered.
+		respond.Validation(w, r, err.Error())
+		return
+	}
+	filter.Dimensions = dims
 	// Limit/offset only matter for paginated reads. Zero them out so
 	// it's obvious from a debug log that the aggregate scanned the full
 	// filtered set, not a 100-row page.
@@ -395,6 +413,46 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		"deduplicated": deduped,
 		"total":        len(events),
 	})
+}
+
+// parseDimensionsParam parses the `dimensions` query param: comma-
+// separated key=value pairs ("model=gpt-4o,token_type=input"). Values
+// that parse as JSON booleans or numbers are typed accordingly
+// ("cached=true" matches the JSONB boolean true, "attempt=2" the number
+// 2) — matching how ingest stored them; everything else matches as a
+// string. Malformed pairs are an ERROR, never treated-as-absent: the
+// callers 422 so a broken filter can't render unfiltered data as
+// filtered.
+func parseDimensionsParam(raw string) (map[string]any, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	dims := make(map[string]any)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if !ok || k == "" || v == "" {
+			return nil, fmt.Errorf("dimension filter %q must be key=value (e.g. model=gpt-4o)", pair)
+		}
+		var typed any = v
+		var lit any
+		if err := json.Unmarshal([]byte(v), &lit); err == nil {
+			switch lit.(type) {
+			case bool, float64:
+				typed = lit
+			}
+		}
+		dims[k] = typed
+	}
+	if len(dims) == 0 {
+		return nil, nil
+	}
+	return dims, nil
 }
 
 func parseTimestamp(s string) (time.Time, error) {

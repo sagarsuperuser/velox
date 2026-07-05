@@ -38,6 +38,7 @@ import type {
   GetV1TestClocks200,
   GetV1TestClocksId200,
   GetV1TestClocksIdSubscriptions200,
+  GetV1UsageEventsParams,
   GetV1Whoami200,
   Invoice,
   InvoiceWithLineItems,
@@ -1380,17 +1381,24 @@ export const usePostV1UsageEvents = <TError = unknown,
 /**
  * @summary List usage events
  */
-export const getGetV1UsageEventsUrl = () => {
+export const getGetV1UsageEventsUrl = (params?: GetV1UsageEventsParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/v1/usage-events`
+  return stringifiedParams.length > 0 ? `/v1/usage-events?${stringifiedParams}` : `/v1/usage-events`
 }
 
-export const getV1UsageEvents = async ( options?: RequestInit): Promise<void> => {
+export const getV1UsageEvents = async (params?: GetV1UsageEventsParams, options?: RequestInit): Promise<void> => {
 
-  return orvalClient<void>(getGetV1UsageEventsUrl(),
+  return orvalClient<void>(getGetV1UsageEventsUrl(params),
   {
     ...options,
     method: 'GET'
@@ -1403,23 +1411,23 @@ export const getV1UsageEvents = async ( options?: RequestInit): Promise<void> =>
 
 
 
-export const getGetV1UsageEventsQueryKey = () => {
+export const getGetV1UsageEventsQueryKey = (params?: GetV1UsageEventsParams,) => {
     return [
-    `/v1/usage-events`
+    `/v1/usage-events`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getGetV1UsageEventsQueryOptions = <TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+export const getGetV1UsageEventsQueryOptions = <TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = void>(params?: GetV1UsageEventsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetV1UsageEventsQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getGetV1UsageEventsQueryKey(params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1UsageEvents>>> = () => getV1UsageEvents(requestOptions);
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1UsageEvents>>> = () => getV1UsageEvents(params, requestOptions);
 
 
 
@@ -1429,11 +1437,11 @@ const {query: queryOptions, request: requestOptions} = options ?? {};
 }
 
 export type GetV1UsageEventsQueryResult = NonNullable<Awaited<ReturnType<typeof getV1UsageEvents>>>
-export type GetV1UsageEventsQueryError = unknown
+export type GetV1UsageEventsQueryError = void
 
 
-export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = unknown>(
-  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>> & Pick<
+export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = void>(
+ params: undefined |  GetV1UsageEventsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof getV1UsageEvents>>,
           TError,
@@ -1442,8 +1450,8 @@ export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1Usage
       >, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>> & Pick<
+export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = void>(
+ params?: GetV1UsageEventsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof getV1UsageEvents>>,
           TError,
@@ -1452,20 +1460,20 @@ export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1Usage
       >, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = void>(
+ params?: GetV1UsageEventsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
  * @summary List usage events
  */
 
-export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1UsageEvents>>, TError = void>(
+ params?: GetV1UsageEventsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1UsageEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getGetV1UsageEventsQueryOptions(options)
+  const queryOptions = getGetV1UsageEventsQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
