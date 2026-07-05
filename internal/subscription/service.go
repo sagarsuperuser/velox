@@ -1836,8 +1836,16 @@ func (s *Service) PauseCollection(ctx context.Context, tenantID, id string, inpu
 		return domain.Subscription{}, errs.Invalid("behavior", "behavior is required")
 	}
 	if input.Behavior != domain.PauseCollectionKeepAsDraft {
+		// The old message claimed uncollectible "does not yet exist" —
+		// false since ADR-064 shipped mark-uncollectible as a live endpoint
+		// AND a dunning final action; the API was lying about the product
+		// to exactly the API-first engineers evaluating it (2026-07-06
+		// truth pass). The honest reason the other behaviors are deferred:
+		// pause-time auto-void / auto-mark-uncollectible of each cycle's
+		// draft touches five invoice-writer sites and no design partner has
+		// asked for Stripe's void/mark_uncollectible pause flavors yet.
 		return domain.Subscription{}, errs.Invalid("behavior",
-			"only 'keep_as_draft' is supported in v1; mark_uncollectible and void require an uncollectible invoice status that does not yet exist")
+			"only 'keep_as_draft' is supported today — paused cycles keep drafting invoices without collecting; the 'void' and 'mark_uncollectible' pause behaviors (auto-resolving each cycle's draft) are not implemented yet")
 	}
 
 	// Bind to the sub pin upfront so the store's sub.UpdatedAt stamp +
