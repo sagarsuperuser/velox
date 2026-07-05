@@ -2,8 +2,8 @@ package litellm
 
 import (
 	"fmt"
-	"sort"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
