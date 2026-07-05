@@ -357,11 +357,15 @@ export const api = {
   extendSubscriptionTrial: (id: string, body: { trial_end: string }) =>
     apiRequest<Subscription>('POST', `/subscriptions/${id}/extend-trial`, body),
   // Item CRUD. PATCH body is either `{quantity}` or `{new_plan_id, immediate}`,
-  // never both — mirrors the backend's UpdateItemInput guard.
-  addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }) =>
-    apiRequest<SubscriptionItem>('POST', `/subscriptions/${id}/items`, data),
-  updateSubscriptionItem: (id: string, itemID: string, data: { quantity?: number; new_plan_id?: string; immediate?: boolean }) =>
-    apiRequest<ItemChangeResult>('PATCH', `/subscriptions/${id}/items/${itemID}`, data),
+  // never both — mirrors the backend's UpdateItemInput guard. Both mutations
+  // take an Idempotency-Key (same contract as the credits calls): item
+  // changes fire prorations and — for cross-interval swaps — refund credit
+  // notes, so a network-level retry must replay the original response, not
+  // re-run the money effects.
+  addSubscriptionItem: (id: string, data: { plan_id: string; quantity?: number }, idempotencyKey?: string) =>
+    apiRequest<SubscriptionItem>('POST', `/subscriptions/${id}/items`, data, { idempotencyKey }),
+  updateSubscriptionItem: (id: string, itemID: string, data: { quantity?: number; new_plan_id?: string; immediate?: boolean }, idempotencyKey?: string) =>
+    apiRequest<ItemChangeResult>('PATCH', `/subscriptions/${id}/items/${itemID}`, data, { idempotencyKey }),
   removeSubscriptionItem: (id: string, itemID: string) =>
     apiRequest<{ status: string }>('DELETE', `/subscriptions/${id}/items/${itemID}`),
   cancelPendingItemChange: (id: string, itemID: string) =>

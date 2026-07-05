@@ -1399,6 +1399,10 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
   const [selectedPlan, setSelectedPlan] = useState('')
   const [quantity, setQuantity] = useState('1')
   const [submitting, setSubmitting] = useState(false)
+  // One idempotency key per dialog open (same contract as the credit
+  // dialogs): item adds fire prorations, so a transient-failure retry must
+  // replay the original response, not add a second item's worth of charges.
+  const [idemKey] = useState(() => crypto.randomUUID())
 
   const availablePlans = plans.filter(p => p.status === 'active' && !existingPlanIDs.includes(p.id))
 
@@ -1412,7 +1416,7 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
     }
     setSubmitting(true)
     try {
-      await api.addSubscriptionItem(subscription.id, { plan_id: selectedPlan, quantity: qty })
+      await api.addSubscriptionItem(subscription.id, { plan_id: selectedPlan, quantity: qty }, idemKey)
       onAdded()
     } catch (err) {
       showApiError(err, 'Failed to add item')
@@ -1493,6 +1497,11 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
   const [selectedPlan, setSelectedPlan] = useState('')
   const [immediate, setImmediate] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // One idempotency key per dialog open: a plan change fires prorations and
+  // (cross-interval) refund credit notes — a retry after a dropped response
+  // must replay, not re-credit. The retry would otherwise 400 on the
+  // same-plan guard while leaving the operator unsure what happened.
+  const [idemKey] = useState(() => crypto.randomUUID())
 
   // Candidates: active plans that aren't the current item's plan and that
   // aren't already attached to another item on this subscription (the backend
@@ -1510,7 +1519,7 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
       const res = await api.updateSubscriptionItem(subscriptionID, item.id, {
         new_plan_id: selectedPlan,
         immediate,
-      })
+      }, idemKey)
       onChanged(res)
     } catch (err) {
       showApiError(err, 'Failed to change plan')
@@ -1601,6 +1610,9 @@ function ChangeItemQuantityDialog({ subscriptionID, item, plan, onClose, onChang
 }) {
   const [quantity, setQuantity] = useState(String(item.quantity))
   const [submitting, setSubmitting] = useState(false)
+  // One idempotency key per dialog open — quantity changes fire prorations;
+  // a retry must replay, not re-prorate.
+  const [idemKey] = useState(() => crypto.randomUUID())
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1615,7 +1627,7 @@ function ChangeItemQuantityDialog({ subscriptionID, item, plan, onClose, onChang
     }
     setSubmitting(true)
     try {
-      const res = await api.updateSubscriptionItem(subscriptionID, item.id, { quantity: qty })
+      const res = await api.updateSubscriptionItem(subscriptionID, item.id, { quantity: qty }, idemKey)
       onChanged(res)
     } catch (err) {
       showApiError(err, 'Failed to change quantity')

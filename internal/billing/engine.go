@@ -4433,6 +4433,41 @@ type cancelCreditInputs struct {
 	Desc                             string
 }
 
+// unusedBaseForPeriod is the single source of the mid-period unused-base
+// arithmetic shared by the cancel and plan-swap refund paths (both the
+// in-tx draft halves and the post-commit fallbacks). Day-based math to
+// avoid int64 overflow — nanosecond math overflows for ~$36+ base fees on
+// a full-month proration. Denominator is the FULL plan-interval cycle (not
+// the current period's length), since the customer paid
+// baseFee × periodDays/fullCycleDays for a stub period; using periodDays
+// as the denominator over-refunds whenever periodDays < fullCycleDays.
+// Same pattern as emitBaseSegmentLine.
+func (e *Engine) unusedBaseForPeriod(ctx context.Context, sub domain.Subscription, periodStart, periodEnd, at time.Time) (int64, error) {
+	unusedDays := roundDays(periodEnd.Sub(at))
+	if unusedDays <= 0 {
+		return 0, nil
+	}
+	totalUnused := int64(0)
+	for _, it := range sub.Items {
+		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
+		if err != nil {
+			return 0, fmt.Errorf("get plan %s: %w", it.PlanID, err)
+		}
+		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
+			continue
+		}
+		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
+		if fullCycleDays <= 0 {
+			continue
+		}
+		baseFee := plan.BaseAmountCents * it.Quantity
+		if unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(fullCycleDays)); unused > 0 {
+			totalUnused += unused
+		}
+	}
+	return totalUnused, nil
+}
+
 // prepareCancelCredit runs the guards + day-based unused-base math for a
 // mid-period cancel. ok=false means there is nothing to credit (credits unwired,
 // not canceled, clean cancel at/after period end, no in_advance items, or zero
@@ -4463,37 +4498,10 @@ func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscriptio
 		return cancelCreditInputs{}, false, nil
 	}
 
-	// Day-based math to avoid int64 overflow. Nanosecond math overflows
-	// for ~$36+ base fees on a full-month proration. Same pattern as
-	// emitBaseSegmentLine — denominator is the FULL plan-interval cycle
-	// (not the current period's length), since the customer paid
-	// baseFee × periodDays/fullCycleDays for a stub. Using periodDays
-	// as the denominator over-refunds whenever periodDays<fullCycleDays.
-	unusedDays := roundDays(periodEnd.Sub(cancelAt))
-	if unusedDays <= 0 {
-		return cancelCreditInputs{}, false, nil
+	totalUnused, err := e.unusedBaseForPeriod(ctx, sub, periodStart, periodEnd, cancelAt)
+	if err != nil {
+		return cancelCreditInputs{}, false, err
 	}
-
-	totalUnused := int64(0)
-	for _, it := range sub.Items {
-		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
-		if err != nil {
-			return cancelCreditInputs{}, false, fmt.Errorf("get plan %s: %w", it.PlanID, err)
-		}
-		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
-			continue
-		}
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
-		if fullCycleDays <= 0 {
-			continue
-		}
-		baseFee := plan.BaseAmountCents * it.Quantity
-		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(fullCycleDays))
-		if unused > 0 {
-			totalUnused += unused
-		}
-	}
-
 	if totalUnused <= 0 {
 		return cancelCreditInputs{}, false, nil
 	}
@@ -4543,6 +4551,86 @@ func (e *Engine) BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domai
 	if !ok {
 		return nil, 0, true, nil // nothing to credit — handled no-op
 	}
+	return e.createUnusedDraftsTx(ctx, tx, sub, in, "subscription_cancellation", "cancel proration")
+}
+
+// BillOnPlanSwapDraftsTx is the ATOMIC half of the cross-interval plan-swap
+// refund — the same folded-write shape as BillOnCancelDraftsTx (deferred
+// Bug B, closed 2026-07-05). Pre-fix the ENTIRE swap refund ran post-commit
+// via BillOnPlanSwapImmediate on the request ctx: a crash or disconnect
+// between the swap commit and the refund permanently lost the customer's
+// unused prepayment — the retry 400s on the same-plan guard, and no
+// reconciler re-derives a missed swap refund. Now, when every funding
+// invoice for the OLD period is PAID (the dominant case), the credit-note
+// drafts commit ON the swap tx (issue_pending), post-commit Issue relays the
+// external legs, and a never-issued draft is recovered by
+// RetryPendingClawbackIssue — reason-agnostic, so swap drafts ride the same
+// sweep as cancel drafts.
+//
+// handled=false declines to the post-commit BillOnPlanSwapImmediate exactly
+// as the cancel path declines to BillOnCancel: any UNPAID funding source
+// (relief routes through relieveUnpaidPrebill there), a transient lookup
+// blip, or an allocation fault. A draft-create failure returns an error →
+// the caller rolls the whole swap back (never a swapped sub with a
+// silently-lost refund). sub is the PRE-swap snapshot; at is the swap
+// instant.
+func (e *Engine) BillOnPlanSwapDraftsTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription, at time.Time) (ids []string, creditedCents int64, handled bool, err error) {
+	in, ok, perr := e.prepareSwapCredit(ctx, sub, at)
+	if perr != nil {
+		return nil, 0, false, perr // plan lookup failure → roll the swap back
+	}
+	if !ok {
+		return nil, 0, true, nil // nothing to credit (in_arrears, boundary swap) — handled no-op
+	}
+	return e.createUnusedDraftsTx(ctx, tx, sub, in, "subscription_plan_change", "plan-swap refund")
+}
+
+// prepareSwapCredit mirrors prepareCancelCredit for the mid-period plan
+// swap: same guards, same day-based unused-base math over in_advance items
+// (the shared arithmetic lives in unusedBaseForPeriod), swap-flavored
+// description. ok=false = nothing to credit.
+func (e *Engine) prepareSwapCredit(ctx context.Context, sub domain.Subscription, at time.Time) (cancelCreditInputs, bool, error) {
+	if e.creditGranter == nil {
+		return cancelCreditInputs{}, false, nil
+	}
+	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
+		return cancelCreditInputs{}, false, nil
+	}
+	periodStart := *sub.CurrentBillingPeriodStart
+	periodEnd := *sub.CurrentBillingPeriodEnd
+	if !at.Before(periodEnd) || !at.After(periodStart) {
+		return cancelCreditInputs{}, false, nil
+	}
+
+	totalUnused, err := e.unusedBaseForPeriod(ctx, sub, periodStart, periodEnd, at)
+	if err != nil {
+		return cancelCreditInputs{}, false, err
+	}
+	if totalUnused <= 0 {
+		return cancelCreditInputs{}, false, nil
+	}
+
+	loc := e.tenantLocation(ctx, sub.TenantID)
+	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
+		sub.Code,
+		periodStart.In(loc).Format("2006-01-02"),
+		periodEnd.In(loc).Format("2006-01-02"),
+		at.In(loc).Format("2006-01-02"))
+
+	return cancelCreditInputs{
+		PeriodStart: periodStart,
+		PeriodEnd:   periodEnd,
+		CancelAt:    at,
+		TotalUnused: totalUnused,
+		Desc:        desc,
+	}, true, nil
+}
+
+// createUnusedDraftsTx is the shared in-tx trunk of BillOnCancelDraftsTx and
+// BillOnPlanSwapDraftsTx: funding lookup → all-paid gate → allocation →
+// issue_pending drafts on the caller's tx. what labels log lines ("cancel
+// proration" / "plan-swap refund").
+func (e *Engine) createUnusedDraftsTx(ctx context.Context, tx *sql.Tx, sub domain.Subscription, in cancelCreditInputs, reason, what string) (ids []string, creditedCents int64, handled bool, err error) {
 	if e.invoices == nil || e.creditNoteAdjuster == nil {
 		return nil, 0, false, nil // unwired (narrow tests) → post-commit fallback
 	}
@@ -4550,19 +4638,19 @@ func (e *Engine) BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domai
 	sources, lookupErr := e.invoices.FindFundingInvoicesForPeriod(ctx, sub.TenantID, sub.ID, in.PeriodStart, in.PeriodEnd)
 	if errors.Is(lookupErr, errs.ErrNotFound) {
 		// No in_advance invoice funded this period (e.g. trial cancel) — nothing
-		// to credit. Mirror BillOnCancel's trace so the case stays observable.
-		slog.InfoContext(ctx, "cancel proration: no in_advance invoice for period; no relief to apply",
+		// to credit. Mirror the post-commit paths' trace so the case stays observable.
+		slog.InfoContext(ctx, what+": no in_advance invoice for period; no relief to apply",
 			"subscription_id", sub.ID, "customer_id", sub.CustomerID, "period_start", in.PeriodStart)
 		return nil, 0, true, nil
 	}
 	if lookupErr != nil {
-		return nil, 0, false, nil // transient lookup blip → BillOnCancel re-handles loudly
+		return nil, 0, false, nil // transient lookup blip → the post-commit path re-handles loudly
 	}
 
 	// All-paid gate. CreditedCents counts non-voided notes INCLUDING drafts, so
-	// the coupled allocator can't be safely re-run post-commit; PR1 therefore
-	// takes the atomic path only when the whole funding set is paid (the dominant
-	// case) and declines the rest to the post-commit BillOnCancel.
+	// the coupled allocator can't be safely re-run post-commit; the atomic path
+	// therefore runs only when the whole funding set is paid (the dominant
+	// case) and declines the rest to the post-commit fallback.
 	for _, src := range sources {
 		if src.PaymentStatus != domain.PaymentSucceeded {
 			return nil, 0, false, nil
@@ -4573,7 +4661,7 @@ func (e *Engine) BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domai
 	if aerr != nil {
 		// Allocation fault (e.g. all-paid headroom can't absorb): decline to the
 		// post-commit path, which surfaces the same loud ERROR without blocking
-		// the cancel — preserving today's non-fatal behavior for this fault class.
+		// the terminal write — preserving the non-fatal behavior for this fault class.
 		return nil, 0, false, nil
 	}
 
@@ -4581,19 +4669,19 @@ func (e *Engine) BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domai
 		if sh.GrossCents <= 0 {
 			continue
 		}
-		cn, cerr := e.creditNoteAdjuster.CreateAdjustmentDraftTx(ctx, tx, sub.TenantID, sh.Source.ID, sh.GrossCents, "subscription_cancellation", in.Desc)
+		cn, cerr := e.creditNoteAdjuster.CreateAdjustmentDraftTx(ctx, tx, sub.TenantID, sh.Source.ID, sh.GrossCents, reason, in.Desc)
 		if cerr != nil {
-			// Draft create failed → roll the WHOLE cancel back (the atomic
-			// guarantee: never a canceled sub with a silently-lost credit).
+			// Draft create failed → roll the WHOLE terminal write back (the atomic
+			// guarantee: never a canceled/swapped sub with a silently-lost credit).
 			// Deliberately atomic-refuse for ANY draft-create failure, including a
 			// credit-note cap rejection from a concurrent operator CN shrinking the
 			// source's headroom AFTER the off-tx CreditedCents read — the operator's
 			// retry self-heals (allocate re-reads the smaller headroom and sizes a
 			// fitting share). This is stricter than the pre-fix post-commit path
-			// (which logged + let the cancel proceed with the credit stranded);
+			// (which logged + let the write proceed with the credit stranded);
 			// refusing-and-retrying is the more correct money behavior. Distinct
-			// from an UNPAID source (handled=false above → post-commit BillOnCancel).
-			return nil, 0, false, fmt.Errorf("cancel proration draft on %s: %w", sh.Source.ID, cerr)
+			// from an UNPAID source (handled=false above → post-commit fallback).
+			return nil, 0, false, fmt.Errorf("%s draft on %s: %w", what, sh.Source.ID, cerr)
 		}
 		ids = append(ids, cn.ID)
 		creditedCents += sh.GrossCents
@@ -4607,6 +4695,16 @@ func (e *Engine) BillOnCancelDraftsTx(ctx context.Context, tx *sql.Tx, sub domai
 // status='draft' + issue_pending for RetryPendingClawbackIssue to re-issue (the
 // credit is already durable). Mirrors FinalizeOnCreateInvoice.
 func (e *Engine) IssueCancelDrafts(ctx context.Context, sub domain.Subscription, ids []string) {
+	e.issueDrafts(ctx, sub, ids, "cancel proration")
+}
+
+// IssueSwapDrafts is the plan-swap twin — issues the drafts created in-tx by
+// BillOnPlanSwapDraftsTx after the swap tx commits.
+func (e *Engine) IssueSwapDrafts(ctx context.Context, sub domain.Subscription, ids []string) {
+	e.issueDrafts(ctx, sub, ids, "plan-swap refund")
+}
+
+func (e *Engine) issueDrafts(ctx context.Context, sub domain.Subscription, ids []string, what string) {
 	if e.creditNoteAdjuster == nil {
 		return
 	}
@@ -4620,7 +4718,7 @@ func (e *Engine) IssueCancelDrafts(ctx context.Context, sub domain.Subscription,
 			// external leg failed (refund → RetryRefund; tax reversal →
 			// RetryPendingCreditNoteTaxReversal). The credit is durable; no manual
 			// reconcile, and no post-flip orphan window (closed by ADR-061).
-			slog.ErrorContext(ctx, "cancel proration draft issue failed post-commit; self-heals via reconciler (no manual reconcile needed)",
+			slog.ErrorContext(ctx, what+" draft issue failed post-commit; self-heals via reconciler (no manual reconcile needed)",
 				"subscription_id", sub.ID, "credit_note_id", id, "error", err)
 		}
 	}
@@ -5004,36 +5102,10 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 		return 0, nil
 	}
 
-	// Denominator is the FULL plan-interval cycle (mirrors
-	// emitBaseSegmentLine / BillOnCancel). On a stub period the
-	// customer paid baseFee × periodDays/fullCycleDays, so refunding
-	// baseFee × unusedDays/periodDays over-credits whenever
-	// periodDays<fullCycleDays.
-	unusedDays := roundDays(periodEnd.Sub(at))
-	if unusedDays <= 0 {
-		return 0, nil
+	totalUnused, err := e.unusedBaseForPeriod(ctx, sub, periodStart, periodEnd, at)
+	if err != nil {
+		return 0, err
 	}
-
-	totalUnused := int64(0)
-	for _, it := range sub.Items {
-		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
-		if err != nil {
-			return 0, fmt.Errorf("get plan %s: %w", it.PlanID, err)
-		}
-		if plan.BaseBillTiming != domain.BillInAdvance || plan.BaseAmountCents <= 0 {
-			continue
-		}
-		fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(periodStart))
-		if fullCycleDays <= 0 {
-			continue
-		}
-		baseFee := plan.BaseAmountCents * it.Quantity
-		unused := money.RoundHalfToEven(baseFee*int64(unusedDays), int64(fullCycleDays))
-		if unused > 0 {
-			totalUnused += unused
-		}
-	}
-
 	if totalUnused <= 0 {
 		return 0, nil
 	}
