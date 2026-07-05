@@ -772,7 +772,9 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 - [ ] `POST /v1/usage-events` with dimensions `{model, operation, cached, tier}` → 201; value stored as NUMERIC.
 - [ ] Decimal preserved end-to-end (`10000.5` round-trips).
-- [ ] Replay same idempotency_key → 409 Conflict (`invalid_request_error`), no duplicate (the duplicate-key error propagates; there's no fetch-original-on-replay).
+- [ ] Replay same idempotency_key → **200 + the ORIGINAL event** with `Idempotent-Replayed: true` header, no duplicate row (Stripe idempotency shape; pre-2026-07-05 this was a bare 409).
+- [ ] `POST /v1/usage-events/batch` with one invalid row → 422 `batch_rejected`, `errors[]` indexed per row, **zero events written** (all-or-nothing — a retry can never double-ingest a committed prefix). Replay a fully-committed keyed batch → 201 `{ingested: 0, deduplicated: N}`, no error rows.
+- [ ] Batch body over the 1MB cap → 413 `batch_too_large` (not a misleading 400 "expected JSON array").
 - [ ] Rule with `dimension_match={"token_type":"input"}` claims only input events; `{"token_type":"cache_read"}` claims only cache-read events. Token roles are DISJOINT (ADR-044), so each `{model, token_type}` matches exactly one rule — no priority tie-break needed (the old boolean `cached` + priority-wins model is gone).
 - [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
 - [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.

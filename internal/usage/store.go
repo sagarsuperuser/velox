@@ -11,6 +11,15 @@ import (
 
 type Store interface {
 	Ingest(ctx context.Context, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error)
+	// IngestBatch writes every event in ONE transaction — all-or-nothing,
+	// so a client retry after a mid-batch abort never re-ingests a
+	// committed prefix. Idempotency replays are counted in deduped, not
+	// errors. Returns (inserted, deduped, err).
+	IngestBatch(ctx context.Context, tenantID string, events []domain.UsageEvent) (int, int, error)
+	// GetByIdempotencyKey returns the event a replayed key originally
+	// wrote (errs.ErrNotFound when absent). Backs replay-as-success on
+	// the public ingest door.
+	GetByIdempotencyKey(ctx context.Context, tenantID, key string) (domain.UsageEvent, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.UsageEvent, int, error)
 	Aggregate(ctx context.Context, filter ListFilter) (Aggregate, error)
 	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error)

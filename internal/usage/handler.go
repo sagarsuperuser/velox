@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -159,11 +160,30 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 
 	event, err := h.svc.Ingest(r.Context(), tenantID, input)
 	if err != nil {
-		respond.FromError(w, r, err, "usage_event")
+		h.respondIngestError(w, r, tenantID, input.IdempotencyKey, err)
 		return
 	}
 
 	respond.JSON(w, r, http.StatusCreated, event)
+}
+
+// respondIngestError translates ingest failures, treating an idempotency
+// replay as SUCCESS: 200 + the ORIGINAL event + Idempotent-Replayed
+// header (Stripe idempotency shape, and the same header the API-wide
+// Idempotency-Key middleware sets). Pre-fix a replay got a bare 409 with
+// no fetch-original — retry middleware doing at-least-once delivery read
+// healthy dedup as failure, inconsistent with the LiteLLM door's
+// silent-success contract. Falls back to the plain error mapping if the
+// original row can't be read.
+func (h *Handler) respondIngestError(w http.ResponseWriter, r *http.Request, tenantID, idempotencyKey string, err error) {
+	if errors.Is(err, errs.ErrDuplicateKey) && idempotencyKey != "" {
+		if original, gerr := h.svc.GetByIdempotencyKey(r.Context(), tenantID, idempotencyKey); gerr == nil {
+			w.Header().Set("Idempotent-Replayed", "true")
+			respond.JSON(w, r, http.StatusOK, original)
+			return
+		}
+	}
+	respond.FromError(w, r, err, "usage_event")
 }
 
 // backfill ingests a historical usage event — same payload shape as POST /
@@ -190,7 +210,9 @@ func (h *Handler) backfill(w http.ResponseWriter, r *http.Request) {
 
 	event, err := h.svc.Backfill(r.Context(), tenantID, input)
 	if err != nil {
-		respond.FromError(w, r, err, "usage_event")
+		// Same replay-as-success contract as live ingest — backfill
+		// shares the idempotency-key space.
+		h.respondIngestError(w, r, tenantID, input.IdempotencyKey, err)
 		return
 	}
 
@@ -298,11 +320,30 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, agg)
 }
 
+// batchIngest is ALL-OR-NOTHING: every event validates, then the whole
+// batch commits in one transaction. Pre-fix each event committed in its
+// own tx and a mid-batch abort (client timeout, dropped connection) left
+// a committed prefix — the standard retry-the-batch response re-ingested
+// it, double-billing every event without an idempotency key. Replays of
+// already-ingested keys are SUCCESS (counted in "deduplicated"), not
+// error rows — an at-least-once delivery pipeline retrying a committed
+// batch must not trip its alerting on HTTP 206 + 1000 'duplicate key'
+// strings (and the LiteLLM door already treats dupes as success; two
+// front doors, one contract).
 func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
 	var events []apiEvent
 	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
+		// The router caps request bodies via MaxBytesReader; a too-big
+		// batch must read as "split your batch" (413), not as malformed
+		// JSON (400) — the byte cap fires mid-array on valid JSON.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			respond.Error(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "batch_too_large",
+				fmt.Sprintf("request body exceeds %d bytes — send smaller batches", maxErr.Limit))
+			return
+		}
 		respond.BadRequest(w, r, "expected JSON array of events")
 		return
 	}
@@ -320,28 +361,39 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 	for i, evt := range events {
 		input, err := h.resolve(r.Context(), tenantID, evt)
 		if err != nil {
-			respond.Validation(w, r, fmt.Sprintf("event[%d]: %s", i, err.Error()))
+			respond.Validation(w, r, fmt.Sprintf("event[%d]: %s (nothing was ingested)", i, err.Error()))
 			return
 		}
 		inputs = append(inputs, input)
 	}
 
-	ingested, errs := h.svc.BatchIngest(r.Context(), tenantID, inputs)
+	inserted, deduped, ingestErrs := h.svc.BatchIngest(r.Context(), tenantID, inputs)
 
-	errStrings := make([]string, len(errs))
-	for i, e := range errs {
-		errStrings[i] = e.Error()
+	if len(ingestErrs) > 0 {
+		errStrings := make([]string, len(ingestErrs))
+		for i, e := range ingestErrs {
+			errStrings[i] = e.Error()
+		}
+		// Every failing index in one response (a bare first-error made
+		// 500-event batches undebuggable), and an explicit marker that
+		// the batch wrote nothing.
+		respond.JSON(w, r, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{
+				"type":    "invalid_request_error",
+				"code":    "batch_rejected",
+				"message": "batch rejected — nothing was ingested; fix the listed events and retry the whole batch",
+			},
+			"errors":   errStrings,
+			"ingested": 0,
+			"total":    len(events),
+		})
+		return
 	}
 
-	status := http.StatusCreated
-	if len(errs) > 0 {
-		status = http.StatusPartialContent
-	}
-
-	respond.JSON(w, r, status, map[string]any{
-		"ingested": ingested,
-		"errors":   errStrings,
-		"total":    len(events),
+	respond.JSON(w, r, http.StatusCreated, map[string]any{
+		"ingested":     inserted,
+		"deduplicated": deduped,
+		"total":        len(events),
 	})
 }
 

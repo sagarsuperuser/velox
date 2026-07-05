@@ -61,6 +61,7 @@ import type {
   PostV1TestClocksBody,
   PostV1TestClocksIdAdvance200,
   PostV1TestClocksIdAdvanceBody,
+  PostV1UsageEventsBatch201,
   PostV1UsageEventsBatchBodyItem,
   PostV1UsageEventsBody,
   ProviderCostRate,
@@ -1478,7 +1479,13 @@ export function useGetV1UsageEvents<TData = Awaited<ReturnType<typeof getV1Usage
 
 
 /**
- * @summary Batch ingest usage events (max 1000)
+ * The batch is atomic: every event validates, then all of them
+commit in one transaction. On any validation failure NOTHING is
+ingested, so retrying the whole batch is always safe — including
+for events without idempotency keys. Replays of already-ingested
+keys are counted in `deduplicated` and are NOT errors.
+
+ * @summary Batch ingest usage events (max 1000, all-or-nothing)
  */
 export const getPostV1UsageEventsBatchUrl = () => {
 
@@ -1488,9 +1495,9 @@ export const getPostV1UsageEventsBatchUrl = () => {
   return `/v1/usage-events/batch`
 }
 
-export const postV1UsageEventsBatch = async (postV1UsageEventsBatchBodyItem: PostV1UsageEventsBatchBodyItem[], options?: RequestInit): Promise<void> => {
+export const postV1UsageEventsBatch = async (postV1UsageEventsBatchBodyItem: PostV1UsageEventsBatchBodyItem[], options?: RequestInit): Promise<PostV1UsageEventsBatch201> => {
 
-  return orvalClient<void>(getPostV1UsageEventsBatchUrl(),
+  return orvalClient<PostV1UsageEventsBatch201>(getPostV1UsageEventsBatchUrl(),
   {
     ...options,
     method: 'POST',
@@ -1503,7 +1510,7 @@ export const postV1UsageEventsBatch = async (postV1UsageEventsBatchBodyItem: Pos
 
 
 
-export const getPostV1UsageEventsBatchMutationOptions = <TError = unknown,
+export const getPostV1UsageEventsBatchMutationOptions = <TError = void,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1UsageEventsBatch>>, TError,{data: PostV1UsageEventsBatchBodyItem[]}, TContext>, request?: SecondParameter<typeof orvalClient>}
 ): UseMutationOptions<Awaited<ReturnType<typeof postV1UsageEventsBatch>>, TError,{data: PostV1UsageEventsBatchBodyItem[]}, TContext> => {
 
@@ -1532,12 +1539,12 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
     export type PostV1UsageEventsBatchMutationResult = NonNullable<Awaited<ReturnType<typeof postV1UsageEventsBatch>>>
     export type PostV1UsageEventsBatchMutationBody = PostV1UsageEventsBatchBodyItem[]
-    export type PostV1UsageEventsBatchMutationError = unknown
+    export type PostV1UsageEventsBatchMutationError = void
 
     /**
- * @summary Batch ingest usage events (max 1000)
+ * @summary Batch ingest usage events (max 1000, all-or-nothing)
  */
-export const usePostV1UsageEventsBatch = <TError = unknown,
+export const usePostV1UsageEventsBatch = <TError = void,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1UsageEventsBatch>>, TError,{data: PostV1UsageEventsBatchBodyItem[]}, TContext>, request?: SecondParameter<typeof orvalClient>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof postV1UsageEventsBatch>>,
