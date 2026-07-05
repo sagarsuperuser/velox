@@ -1504,6 +1504,21 @@ type PostV1UsageEventsBatchJSONBody_Quantity struct {
 	union json.RawMessage
 }
 
+// PostV1WebhookEndpointsEndpointsJSONBody defines parameters for PostV1WebhookEndpointsEndpoints.
+type PostV1WebhookEndpointsEndpointsJSONBody struct {
+	Description string   `json:"description,omitempty"`
+	Events      []string `json:"events,omitempty"`
+	Url         string   `json:"url"`
+}
+
+// PatchV1WebhookEndpointsEndpointsIdJSONBody defines parameters for PatchV1WebhookEndpointsEndpointsId.
+type PatchV1WebhookEndpointsEndpointsIdJSONBody struct {
+	Active      bool     `json:"active,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Events      []string `json:"events,omitempty"`
+	Url         string   `json:"url,omitempty"`
+}
+
 // PostV1AuthLoginJSONRequestBody defines body for PostV1AuthLogin for application/json ContentType.
 type PostV1AuthLoginJSONRequestBody PostV1AuthLoginJSONBody
 
@@ -1554,6 +1569,12 @@ type PostV1UsageEventsJSONRequestBody PostV1UsageEventsJSONBody
 
 // PostV1UsageEventsBatchJSONRequestBody defines body for PostV1UsageEventsBatch for application/json ContentType.
 type PostV1UsageEventsBatchJSONRequestBody = PostV1UsageEventsBatchJSONBody
+
+// PostV1WebhookEndpointsEndpointsJSONRequestBody defines body for PostV1WebhookEndpointsEndpoints for application/json ContentType.
+type PostV1WebhookEndpointsEndpointsJSONRequestBody PostV1WebhookEndpointsEndpointsJSONBody
+
+// PatchV1WebhookEndpointsEndpointsIdJSONRequestBody defines body for PatchV1WebhookEndpointsEndpointsId for application/json ContentType.
+type PatchV1WebhookEndpointsEndpointsIdJSONRequestBody PatchV1WebhookEndpointsEndpointsIdJSONBody
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -1686,6 +1707,24 @@ type ServerInterface interface {
 	// Batch ingest usage events (max 1000, all-or-nothing)
 	// (POST /v1/usage-events/batch)
 	PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request)
+	// List webhook endpoints
+	// (GET /v1/webhook-endpoints/endpoints)
+	GetV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request)
+	// Create webhook endpoint
+	// (POST /v1/webhook-endpoints/endpoints)
+	PostV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request)
+	// Delete (disable) webhook endpoint
+	// (DELETE /v1/webhook-endpoints/endpoints/{id})
+	DeleteV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request, id string)
+	// Update webhook endpoint (no secret rotation)
+	// (PATCH /v1/webhook-endpoints/endpoints/{id})
+	PatchV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request, id string)
+	// Rotate signing secret (72h dual-signing grace)
+	// (POST /v1/webhook-endpoints/endpoints/{id}/rotate-secret)
+	PostV1WebhookEndpointsEndpointsIdRotateSecret(w http.ResponseWriter, r *http.Request, id string)
+	// List recent outbound events (newest 50)
+	// (GET /v1/webhook-endpoints/events)
+	GetV1WebhookEndpointsEvents(w http.ResponseWriter, r *http.Request)
 	// Resolve the current credential to its tenant context
 	// (GET /v1/whoami)
 	GetV1Whoami(w http.ResponseWriter, r *http.Request)
@@ -1950,6 +1989,42 @@ func (_ Unimplemented) PostV1UsageEvents(w http.ResponseWriter, r *http.Request)
 // Batch ingest usage events (max 1000, all-or-nothing)
 // (POST /v1/usage-events/batch)
 func (_ Unimplemented) PostV1UsageEventsBatch(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List webhook endpoints
+// (GET /v1/webhook-endpoints/endpoints)
+func (_ Unimplemented) GetV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create webhook endpoint
+// (POST /v1/webhook-endpoints/endpoints)
+func (_ Unimplemented) PostV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete (disable) webhook endpoint
+// (DELETE /v1/webhook-endpoints/endpoints/{id})
+func (_ Unimplemented) DeleteV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update webhook endpoint (no secret rotation)
+// (PATCH /v1/webhook-endpoints/endpoints/{id})
+func (_ Unimplemented) PatchV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Rotate signing secret (72h dual-signing grace)
+// (POST /v1/webhook-endpoints/endpoints/{id}/rotate-secret)
+func (_ Unimplemented) PostV1WebhookEndpointsEndpointsIdRotateSecret(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List recent outbound events (newest 50)
+// (GET /v1/webhook-endpoints/events)
+func (_ Unimplemented) GetV1WebhookEndpointsEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3301,6 +3376,159 @@ func (siw *ServerInterfaceWrapper) PostV1UsageEventsBatch(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// GetV1WebhookEndpointsEndpoints operation middleware
+func (siw *ServerInterfaceWrapper) GetV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1WebhookEndpointsEndpoints(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1WebhookEndpointsEndpoints operation middleware
+func (siw *ServerInterfaceWrapper) PostV1WebhookEndpointsEndpoints(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1WebhookEndpointsEndpoints(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteV1WebhookEndpointsEndpointsId operation middleware
+func (siw *ServerInterfaceWrapper) DeleteV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteV1WebhookEndpointsEndpointsId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchV1WebhookEndpointsEndpointsId operation middleware
+func (siw *ServerInterfaceWrapper) PatchV1WebhookEndpointsEndpointsId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchV1WebhookEndpointsEndpointsId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1WebhookEndpointsEndpointsIdRotateSecret operation middleware
+func (siw *ServerInterfaceWrapper) PostV1WebhookEndpointsEndpointsIdRotateSecret(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1WebhookEndpointsEndpointsIdRotateSecret(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1WebhookEndpointsEvents operation middleware
+func (siw *ServerInterfaceWrapper) GetV1WebhookEndpointsEvents(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1WebhookEndpointsEvents(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetV1Whoami operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Whoami(w http.ResponseWriter, r *http.Request) {
 
@@ -3562,6 +3790,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/usage-events/batch", wrapper.PostV1UsageEventsBatch)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/webhook-endpoints/endpoints", wrapper.GetV1WebhookEndpointsEndpoints)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/webhook-endpoints/endpoints", wrapper.PostV1WebhookEndpointsEndpoints)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/webhook-endpoints/endpoints/{id}", wrapper.DeleteV1WebhookEndpointsEndpointsId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/webhook-endpoints/endpoints/{id}", wrapper.PatchV1WebhookEndpointsEndpointsId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/webhook-endpoints/endpoints/{id}/rotate-secret", wrapper.PostV1WebhookEndpointsEndpointsIdRotateSecret)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/webhook-endpoints/events", wrapper.GetV1WebhookEndpointsEvents)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/whoami", wrapper.GetV1Whoami)

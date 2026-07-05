@@ -1032,6 +1032,120 @@ paths:
         "422":
           description: Validation failure (unknown rule id, bad aggregation)
 
+  /v1/webhook-endpoints/endpoints:
+    post:
+      tags: [Webhooks]
+      summary: Create webhook endpoint
+      description: |
+        Returns the endpoint plus its signing secret (shown once). Event
+        names are validated against the emit catalog — subscribing to an
+        event Velox never emits is a 422, not silence. Omitted/empty
+        events = all events ("*"); "invoice.*"-style prefix wildcards are
+        supported.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                description:
+                  type: string
+                events:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "201":
+          description: Endpoint created (response carries the one-time signing secret)
+        "422":
+          description: Invalid URL or unknown event type
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      responses:
+        "200":
+          description: Endpoint list
+
+  /v1/webhook-endpoints/endpoints/{id}:
+    patch:
+      tags: [Webhooks]
+      summary: Update webhook endpoint (no secret rotation)
+      description: |
+        Mutates url / description / events / active WITHOUT rotating the
+        signing secret — the receiver keeps verifying while the target or
+        event set changes. Fields omitted are left unchanged; events are
+        validated against the emit catalog. This is also how a
+        recipe-created endpoint (inactive, placeholder URL) is pointed at
+        a real receiver and activated.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                description:
+                  type: string
+                events:
+                  type: array
+                  items:
+                    type: string
+                active:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated endpoint
+        "404":
+          description: Endpoint not found
+        "422":
+          description: Invalid URL or unknown event type
+    delete:
+      tags: [Webhooks]
+      summary: Delete (disable) webhook endpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Endpoint disabled
+
+  /v1/webhook-endpoints/endpoints/{id}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Rotate signing secret (72h dual-signing grace)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: New secret (old secret keeps verifying during the grace window)
+
+  /v1/webhook-endpoints/events:
+    get:
+      tags: [Webhooks]
+      summary: List recent outbound events (newest 50)
+      responses:
+        "200":
+          description: Event list
+
   /v1/plans:
     post:
       tags: [Pricing]

@@ -43,6 +43,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/endpoints", h.createEndpoint)
 	r.Get("/endpoints", h.listEndpoints)
 	r.Get("/endpoints/stats", h.getEndpointStats)
+	r.Patch("/endpoints/{id}", h.updateEndpoint)
 	r.Delete("/endpoints/{id}", h.deleteEndpoint)
 	r.Post("/endpoints/{id}/rotate-secret", h.rotateSecret)
 	r.Get("/events", h.listEvents)
@@ -158,6 +159,38 @@ func (h *Handler) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// updateEndpoint is the Stripe-shaped PATCH: url / description / events /
+// active mutate WITHOUT rotating the signing secret. Also the surface that
+// makes recipe-created endpoints (inactive + placeholder URL) usable.
+func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input UpdateEndpointInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	ep, err := h.svc.UpdateEndpoint(r.Context(), tenantID, id, input)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "webhook endpoint")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "webhook_endpoint")
+		return
+	}
+
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "webhook_endpoint", id, "", map[string]any{
+			"url": ep.URL, "active": ep.Active, "events": ep.Events,
+		})
+	}
+
+	respond.JSON(w, r, http.StatusOK, ep)
 }
 
 func (h *Handler) rotateSecret(w http.ResponseWriter, r *http.Request) {

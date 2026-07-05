@@ -143,6 +143,54 @@ func (s *PostgresStore) GetEndpoint(ctx context.Context, tenantID, id string) (d
 	return ep, nil
 }
 
+// UpdateEndpoint mutates url / description / events / active WITHOUT
+// touching the signing secret (Stripe's update shape: subscribers change
+// the target or the event set without a receiver redeploy — pre-2026-07-05
+// the only mutation path was delete+recreate, which minted a new secret,
+// and recipe-created endpoints were permanently dead: Active:false with a
+// placeholder URL and no way to fix either). The caller (service) has
+// already validated URL + event names.
+func (s *PostgresStore) UpdateEndpoint(ctx context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	eventsJSON, err := json.Marshal(ep.Events)
+	if err != nil {
+		return domain.WebhookEndpoint{}, fmt.Errorf("marshal events: %w", err)
+	}
+	var out domain.WebhookEndpoint
+	var outEvents []byte
+	var secondaryLast4 sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		UPDATE webhook_endpoints SET
+			url = $1, description = $2, events = $3, active = $4, updated_at = NOW()
+		WHERE id = $5
+		RETURNING id, tenant_id, livemode, url, COALESCE(description,''), secret_last4,
+			secondary_secret_last4, secondary_secret_expires_at,
+			events, active, created_at, updated_at
+	`, ep.URL, ep.Description, eventsJSON, ep.Active, ep.ID).
+		Scan(&out.ID, &out.TenantID, &out.Livemode, &out.URL, &out.Description, &out.SecretLast4,
+			&secondaryLast4, &out.SecondarySecretExpiresAt,
+			&outEvents, &out.Active, &out.CreatedAt, &out.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return domain.WebhookEndpoint{}, errs.ErrNotFound
+	}
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	_ = json.Unmarshal(outEvents, &out.Events)
+	if secondaryLast4.Valid {
+		out.SecondarySecretLast4 = secondaryLast4.String
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

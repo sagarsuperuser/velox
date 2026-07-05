@@ -93,6 +93,7 @@ function EndpointsTab() {
   const [showCreate, setShowCreate] = useState(false)
   const [createdSecret, setCreatedSecret] = useState<{ secret: string; secondary_valid_until?: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebhookEndpoint | null>(null)
+  const [editTarget, setEditTarget] = useState<WebhookEndpoint | null>(null)
   const [rotatingId, setRotatingId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
@@ -229,6 +230,10 @@ function EndpointsTab() {
                           }}>
                           {rotatingId === ep.id ? <><Loader2 size={12} className="animate-spin mr-1" />Rotating…</> : 'Rotate Secret'}
                         </Button>
+                        <Button variant="outline" size="sm" className="h-7 text-xs"
+                          onClick={() => setEditTarget(ep)}>
+                          Edit
+                        </Button>
                         <Button variant="outline" size="sm" className="h-7 text-xs text-destructive hover:text-destructive"
                           onClick={() => setDeleteTarget(ep)}>
                           Delete
@@ -243,6 +248,18 @@ function EndpointsTab() {
           )}
         </CardContent>
       </Card>
+
+      {editTarget && (
+        <EndpointEditDialog
+          endpoint={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => {
+            setEditTarget(null)
+            queryClient.invalidateQueries({ queryKey: ['webhook-endpoints'] })
+            toast.success('Endpoint updated')
+          }}
+        />
+      )}
 
       {showCreate && (
         <CreateEndpointDialog
@@ -395,6 +412,175 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
 
 const ALL_EVENT_TYPES = EVENT_GROUPS.flatMap(g => g.events.map(e => e.type))
 
+/* ─── Shared event picker (create + edit dialogs) ─── */
+
+function EventPicker({ selected, setSelected }: {
+  selected: Set<string>
+  setSelected: React.Dispatch<React.SetStateAction<Set<string>>>
+}) {
+  const toggleEvent = (eventType: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(eventType)) next.delete(eventType)
+      else next.add(eventType)
+      return next
+    })
+  }
+  const toggleGroup = (group: typeof EVENT_GROUPS[number]) => {
+    const groupTypes = group.events.map(e => e.type)
+    const allSelected = groupTypes.every(t => selected.has(t))
+    setSelected(prev => {
+      const next = new Set(prev)
+      groupTypes.forEach(t => allSelected ? next.delete(t) : next.add(t))
+      return next
+    })
+  }
+  return (
+    <div className="border border-border rounded-lg max-h-72 overflow-y-auto">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-muted border-b border-border sticky top-0 z-10">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <Checkbox
+            checked={selected.size === ALL_EVENT_TYPES.length}
+            onCheckedChange={() => {
+              if (selected.size === ALL_EVENT_TYPES.length) setSelected(new Set())
+              else setSelected(new Set(ALL_EVENT_TYPES))
+            }}
+          />
+          <span className="text-sm font-medium">Select all</span>
+        </label>
+        <span className="text-xs text-muted-foreground">{selected.size} of {ALL_EVENT_TYPES.length} selected</span>
+      </div>
+      {EVENT_GROUPS.map(group => {
+        const groupTypes = group.events.map(e => e.type)
+        const selectedCount = groupTypes.filter(t => selected.has(t)).length
+        const allSelected = selectedCount === groupTypes.length
+        return (
+          <div key={group.label} className="border-b border-border last:border-b-0">
+            <div className="flex items-center gap-2 px-4 py-2 bg-background">
+              <Checkbox checked={allSelected} onCheckedChange={() => toggleGroup(group)} />
+              <span className="text-sm font-semibold text-foreground">{group.label}</span>
+              <span className="text-xs text-muted-foreground ml-auto">{selectedCount}/{groupTypes.length}</span>
+            </div>
+            {group.events.map(ev => (
+              <label key={ev.type}
+                className="flex items-start gap-2 px-4 py-1.5 pl-10 cursor-pointer hover:bg-accent transition-colors">
+                <Checkbox
+                  checked={selected.has(ev.type)}
+                  onCheckedChange={() => toggleEvent(ev.type)}
+                  className="mt-0.5 shrink-0"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-mono">{ev.type}</p>
+                  <p className="text-xs text-muted-foreground">{ev.description}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* ─── Edit Endpoint Dialog ─── */
+
+// PATCH without secret rotation — the receiver keeps verifying with the
+// same signing secret while URL / events / active change. Also the surface
+// that brings a recipe-created endpoint (inactive + placeholder URL) live.
+function EndpointEditDialog({ endpoint, onClose, onSaved }: {
+  endpoint: WebhookEndpoint
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const isWildcard = !endpoint.events || endpoint.events.length === 0 || endpoint.events.includes('*')
+  const [url, setUrl] = useState(endpoint.url)
+  const [description, setDescription] = useState(endpoint.description || '')
+  const [active, setActive] = useState(endpoint.active)
+  const [listenMode, setListenMode] = useState<'all' | 'specific'>(isWildcard ? 'all' : 'specific')
+  const [selectedEvents, setSelectedEvents] = useState<Set<string>>(
+    new Set(isWildcard ? [] : endpoint.events),
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const save = async () => {
+    setError('')
+    if (!url.trim()) { setError('URL is required'); return }
+    if (listenMode === 'specific' && selectedEvents.size === 0) {
+      setError('Select at least one event')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.updateWebhookEndpoint(endpoint.id, {
+        url: url.trim(),
+        description: description.trim(),
+        events: listenMode === 'all' ? ['*'] : Array.from(selectedEvents),
+        active,
+      })
+      onSaved()
+    } catch (err) {
+      showApiError(err, 'Failed to update endpoint')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit Webhook Endpoint</DialogTitle>
+          <DialogDescription>
+            URL, events, and status change without rotating the signing secret.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-ep-url">URL</Label>
+            <Input id="edit-ep-url" type="url" maxLength={2048}
+              value={url} onChange={e => setUrl(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-ep-desc">Description</Label>
+            <Input id="edit-ep-desc" maxLength={500}
+              value={description} onChange={e => setDescription(e.target.value)} />
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <Checkbox checked={active} onCheckedChange={v => setActive(v === true)} />
+            <span className="text-sm">Active — deliver events to this endpoint</span>
+          </label>
+          <div>
+            <Label className="mb-2 block">Events to send</Label>
+            <div className="flex gap-4 mb-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="editListenMode" checked={listenMode === 'all'}
+                  onChange={() => setListenMode('all')} className="w-4 h-4 text-primary" />
+                <span className="text-sm">Listen to all events</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="editListenMode" checked={listenMode === 'specific'}
+                  onChange={() => setListenMode('specific')} className="w-4 h-4 text-primary" />
+                <span className="text-sm">Select specific events</span>
+              </label>
+            </div>
+            {listenMode === 'specific' && (
+              <EventPicker selected={selectedEvents} setSelected={setSelectedEvents} />
+            )}
+          </div>
+          {error && <p className="text-destructive text-sm">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button onClick={save} disabled={saving}>
+              {saving ? <><Loader2 size={14} className="animate-spin mr-2" />Saving…</> : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /* ─── Create Endpoint Dialog ─── */
 
 function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (secret: string) => void }) {
@@ -406,25 +592,6 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
     resolver: zodResolver(createEndpointSchema),
     defaultValues: { url: '', description: '' },
   })
-
-  const toggleEvent = (eventType: string) => {
-    setSelectedEvents(prev => {
-      const next = new Set(prev)
-      if (next.has(eventType)) next.delete(eventType)
-      else next.add(eventType)
-      return next
-    })
-  }
-
-  const toggleGroup = (group: typeof EVENT_GROUPS[number]) => {
-    const groupTypes = group.events.map(e => e.type)
-    const allSelected = groupTypes.every(t => selectedEvents.has(t))
-    setSelectedEvents(prev => {
-      const next = new Set(prev)
-      groupTypes.forEach(t => allSelected ? next.delete(t) : next.add(t))
-      return next
-    })
-  }
 
   const onSubmit = form.handleSubmit(async (data) => {
     setEventsError('')
@@ -502,58 +669,7 @@ function CreateEndpointDialog({ onClose, onCreated }: { onClose: () => void; onC
             </div>
 
             {listenMode === 'specific' && (
-              <div className="border border-border rounded-lg max-h-72 overflow-y-auto">
-                {/* Select all bar */}
-                <div className="flex items-center justify-between px-4 py-2.5 bg-muted border-b border-border sticky top-0 z-10">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={selectedEvents.size === ALL_EVENT_TYPES.length}
-                      onCheckedChange={() => {
-                        if (selectedEvents.size === ALL_EVENT_TYPES.length) setSelectedEvents(new Set())
-                        else setSelectedEvents(new Set(ALL_EVENT_TYPES))
-                      }}
-                    />
-                    <span className="text-sm font-medium">Select all</span>
-                  </label>
-                  <span className="text-xs text-muted-foreground">{selectedEvents.size} of {ALL_EVENT_TYPES.length} selected</span>
-                </div>
-
-                {EVENT_GROUPS.map(group => {
-                  const groupTypes = group.events.map(e => e.type)
-                  const selectedCount = groupTypes.filter(t => selectedEvents.has(t)).length
-                  const allSelected = selectedCount === groupTypes.length
-
-                  return (
-                    <div key={group.label} className="border-b border-border last:border-b-0">
-                      {/* Group header */}
-                      <div className="flex items-center gap-2 px-4 py-2 bg-background">
-                        <Checkbox
-                          checked={allSelected}
-                          onCheckedChange={() => toggleGroup(group)}
-                        />
-                        <span className="text-sm font-semibold text-foreground">{group.label}</span>
-                        <span className="text-xs text-muted-foreground ml-auto">{selectedCount}/{groupTypes.length}</span>
-                      </div>
-
-                      {/* Individual events */}
-                      {group.events.map(ev => (
-                        <label key={ev.type}
-                          className="flex items-start gap-2 px-4 py-1.5 pl-10 cursor-pointer hover:bg-accent transition-colors">
-                          <Checkbox
-                            checked={selectedEvents.has(ev.type)}
-                            onCheckedChange={() => toggleEvent(ev.type)}
-                            className="mt-0.5 shrink-0"
-                          />
-                          <div className="min-w-0">
-                            <p className="text-sm font-mono">{ev.type}</p>
-                            <p className="text-xs text-muted-foreground">{ev.description}</p>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  )
-                })}
-              </div>
+              <EventPicker selected={selectedEvents} setSelected={setSelectedEvents} />
             )}
             {eventsError && <p className="text-destructive text-sm mt-2">{eventsError}</p>}
           </div>

@@ -260,6 +260,86 @@ type CreateEndpointInput struct {
 	Events      []string `json:"events"`
 }
 
+// validateEventNames rejects subscriptions to event types the engine never
+// emits. Pre-2026-07-05 any string was accepted and matchesEvent silently
+// skipped unknown names — a subscriber to a Stripe-trained name (e.g.
+// "invoice.payment_failed"; real name payment.failed) got silence forever,
+// and Velox's own recipes shipped two such phantoms. "*" subscribes to
+// everything.
+func validateEventNames(events []string) error {
+	for _, e := range events {
+		if e == "*" {
+			continue
+		}
+		// Prefix wildcards ("invoice.*") are a matchesEvent feature — valid
+		// iff at least one emitted event carries the prefix.
+		if prefix, ok := strings.CutSuffix(e, ".*"); ok {
+			matchesAny := false
+			for known := range domain.KnownWebhookEventTypes {
+				if strings.HasPrefix(known, prefix+".") {
+					matchesAny = true
+					break
+				}
+			}
+			if matchesAny {
+				continue
+			}
+		}
+		if !domain.KnownWebhookEventTypes[e] {
+			return errs.Invalid("events", fmt.Sprintf(
+				"unknown event type %q — Velox never emits it, so this subscription would receive silence; see the event catalog (GET /docs/api or docs/webhooks.md)", e))
+		}
+	}
+	return nil
+}
+
+// UpdateEndpointInput is the PATCH shape: nil = leave unchanged.
+type UpdateEndpointInput struct {
+	URL         *string   `json:"url,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	Events      *[]string `json:"events,omitempty"`
+	Active      *bool     `json:"active,omitempty"`
+}
+
+// UpdateEndpoint mutates url/description/events/active without rotating
+// the signing secret (Stripe's update shape). This is also what makes
+// recipe-created endpoints usable: they are created inactive with a
+// placeholder URL, and this is the "point it at a real URL and activate"
+// surface that previously didn't exist.
+func (s *Service) UpdateEndpoint(ctx context.Context, tenantID, id string, input UpdateEndpointInput) (domain.WebhookEndpoint, error) {
+	ep, err := s.store.GetEndpoint(ctx, tenantID, id)
+	if err != nil {
+		return domain.WebhookEndpoint{}, err
+	}
+	if input.URL != nil {
+		rawURL := strings.TrimSpace(*input.URL)
+		if rawURL == "" {
+			return domain.WebhookEndpoint{}, errs.Required("url")
+		}
+		if err := validateWebhookURL(rawURL); err != nil {
+			return domain.WebhookEndpoint{}, err
+		}
+		ep.URL = rawURL
+	}
+	if input.Description != nil {
+		ep.Description = strings.TrimSpace(*input.Description)
+	}
+	if input.Events != nil {
+		events := *input.Events
+		if len(events) == 0 {
+			events = []string{"*"}
+		}
+		if err := validateEventNames(events); err != nil {
+			return domain.WebhookEndpoint{}, err
+		}
+		ep.Events = events
+	}
+	if input.Active != nil {
+		ep.Active = *input.Active
+	}
+	return s.store.UpdateEndpoint(ctx, tenantID, ep)
+}
+
 type CreateEndpointResult struct {
 	Endpoint domain.WebhookEndpoint `json:"endpoint"`
 	Secret   string                 `json:"secret"` // Shown once
@@ -277,6 +357,9 @@ func (s *Service) CreateEndpoint(ctx context.Context, tenantID string, input Cre
 	events := input.Events
 	if len(events) == 0 {
 		events = []string{"*"}
+	}
+	if err := validateEventNames(events); err != nil {
+		return CreateEndpointResult{}, err
 	}
 
 	// Generate signing secret. A short read from the entropy pool would yield a

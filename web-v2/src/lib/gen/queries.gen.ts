@@ -44,6 +44,7 @@ import type {
   InvoiceWithLineItems,
   MarginReport,
   PatchV1MetersIdBody,
+  PatchV1WebhookEndpointsEndpointsIdBody,
   PostV1AuthLogin200,
   PostV1AuthLoginBody,
   PostV1AuthMode200,
@@ -66,6 +67,7 @@ import type {
   PostV1UsageEventsBatch201,
   PostV1UsageEventsBatchBodyItem,
   PostV1UsageEventsBody,
+  PostV1WebhookEndpointsEndpointsBody,
   ProviderCostRate,
   PutV1ProviderCostsBody
 } from './schemas';
@@ -792,6 +794,504 @@ export const usePatchV1MetersId = <TError = void,
       > => {
       return useMutation(getPatchV1MetersIdMutationOptions(options), queryClient);
     }
+
+/**
+ * Returns the endpoint plus its signing secret (shown once). Event
+names are validated against the emit catalog — subscribing to an
+event Velox never emits is a 422, not silence. Omitted/empty
+events = all events ("*"); "invoice.*"-style prefix wildcards are
+supported.
+
+ * @summary Create webhook endpoint
+ */
+export const getPostV1WebhookEndpointsEndpointsUrl = () => {
+
+
+
+
+  return `/v1/webhook-endpoints/endpoints`
+}
+
+export const postV1WebhookEndpointsEndpoints = async (postV1WebhookEndpointsEndpointsBody: PostV1WebhookEndpointsEndpointsBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1WebhookEndpointsEndpointsUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1WebhookEndpointsEndpointsBody,)
+  }
+);}
+
+
+
+
+export const getPostV1WebhookEndpointsEndpointsMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>, TError,{data: PostV1WebhookEndpointsEndpointsBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>, TError,{data: PostV1WebhookEndpointsEndpointsBody}, TContext> => {
+
+const mutationKey = ['postV1WebhookEndpointsEndpoints'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>, {data: PostV1WebhookEndpointsEndpointsBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1WebhookEndpointsEndpoints(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1WebhookEndpointsEndpointsMutationResult = NonNullable<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>>
+    export type PostV1WebhookEndpointsEndpointsMutationBody = PostV1WebhookEndpointsEndpointsBody
+    export type PostV1WebhookEndpointsEndpointsMutationError = void
+
+    /**
+ * @summary Create webhook endpoint
+ */
+export const usePostV1WebhookEndpointsEndpoints = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>, TError,{data: PostV1WebhookEndpointsEndpointsBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1WebhookEndpointsEndpoints>>,
+        TError,
+        {data: PostV1WebhookEndpointsEndpointsBody},
+        TContext
+      > => {
+      return useMutation(getPostV1WebhookEndpointsEndpointsMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary List webhook endpoints
+ */
+export const getGetV1WebhookEndpointsEndpointsUrl = () => {
+
+
+
+
+  return `/v1/webhook-endpoints/endpoints`
+}
+
+export const getV1WebhookEndpointsEndpoints = async ( options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getGetV1WebhookEndpointsEndpointsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1WebhookEndpointsEndpointsQueryKey = () => {
+    return [
+    `/v1/webhook-endpoints/endpoints`
+    ] as const;
+    }
+
+
+export const getGetV1WebhookEndpointsEndpointsQueryOptions = <TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1WebhookEndpointsEndpointsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>> = () => getV1WebhookEndpointsEndpoints(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1WebhookEndpointsEndpointsQueryResult = NonNullable<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>>
+export type GetV1WebhookEndpointsEndpointsQueryError = unknown
+
+
+export function useGetV1WebhookEndpointsEndpoints<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>,
+          TError,
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1WebhookEndpointsEndpoints<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>,
+          TError,
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1WebhookEndpointsEndpoints<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List webhook endpoints
+ */
+
+export function useGetV1WebhookEndpointsEndpoints<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEndpoints>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1WebhookEndpointsEndpointsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Mutates url / description / events / active WITHOUT rotating the
+signing secret — the receiver keeps verifying while the target or
+event set changes. Fields omitted are left unchanged; events are
+validated against the emit catalog. This is also how a
+recipe-created endpoint (inactive, placeholder URL) is pointed at
+a real receiver and activated.
+
+ * @summary Update webhook endpoint (no secret rotation)
+ */
+export const getPatchV1WebhookEndpointsEndpointsIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/webhook-endpoints/endpoints/${id}`
+}
+
+export const patchV1WebhookEndpointsEndpointsId = async (id: string,
+    patchV1WebhookEndpointsEndpointsIdBody: PatchV1WebhookEndpointsEndpointsIdBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPatchV1WebhookEndpointsEndpointsIdUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      patchV1WebhookEndpointsEndpointsIdBody,)
+  }
+);}
+
+
+
+
+export const getPatchV1WebhookEndpointsEndpointsIdMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>, TError,{id: string;data: PatchV1WebhookEndpointsEndpointsIdBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>, TError,{id: string;data: PatchV1WebhookEndpointsEndpointsIdBody}, TContext> => {
+
+const mutationKey = ['patchV1WebhookEndpointsEndpointsId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>, {id: string;data: PatchV1WebhookEndpointsEndpointsIdBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  patchV1WebhookEndpointsEndpointsId(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchV1WebhookEndpointsEndpointsIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>>
+    export type PatchV1WebhookEndpointsEndpointsIdMutationBody = PatchV1WebhookEndpointsEndpointsIdBody
+    export type PatchV1WebhookEndpointsEndpointsIdMutationError = void
+
+    /**
+ * @summary Update webhook endpoint (no secret rotation)
+ */
+export const usePatchV1WebhookEndpointsEndpointsId = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>, TError,{id: string;data: PatchV1WebhookEndpointsEndpointsIdBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchV1WebhookEndpointsEndpointsId>>,
+        TError,
+        {id: string;data: PatchV1WebhookEndpointsEndpointsIdBody},
+        TContext
+      > => {
+      return useMutation(getPatchV1WebhookEndpointsEndpointsIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary Delete (disable) webhook endpoint
+ */
+export const getDeleteV1WebhookEndpointsEndpointsIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/webhook-endpoints/endpoints/${id}`
+}
+
+export const deleteV1WebhookEndpointsEndpointsId = async (id: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getDeleteV1WebhookEndpointsEndpointsIdUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteV1WebhookEndpointsEndpointsIdMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteV1WebhookEndpointsEndpointsId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteV1WebhookEndpointsEndpointsId(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteV1WebhookEndpointsEndpointsIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>>
+
+    export type DeleteV1WebhookEndpointsEndpointsIdMutationError = unknown
+
+    /**
+ * @summary Delete (disable) webhook endpoint
+ */
+export const useDeleteV1WebhookEndpointsEndpointsId = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteV1WebhookEndpointsEndpointsId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getDeleteV1WebhookEndpointsEndpointsIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary Rotate signing secret (72h dual-signing grace)
+ */
+export const getPostV1WebhookEndpointsEndpointsIdRotateSecretUrl = (id: string,) => {
+
+
+
+
+  return `/v1/webhook-endpoints/endpoints/${id}/rotate-secret`
+}
+
+export const postV1WebhookEndpointsEndpointsIdRotateSecret = async (id: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1WebhookEndpointsEndpointsIdRotateSecretUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getPostV1WebhookEndpointsEndpointsIdRotateSecretMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postV1WebhookEndpointsEndpointsIdRotateSecret'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postV1WebhookEndpointsEndpointsIdRotateSecret(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1WebhookEndpointsEndpointsIdRotateSecretMutationResult = NonNullable<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>>
+
+    export type PostV1WebhookEndpointsEndpointsIdRotateSecretMutationError = unknown
+
+    /**
+ * @summary Rotate signing secret (72h dual-signing grace)
+ */
+export const usePostV1WebhookEndpointsEndpointsIdRotateSecret = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1WebhookEndpointsEndpointsIdRotateSecret>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getPostV1WebhookEndpointsEndpointsIdRotateSecretMutationOptions(options), queryClient);
+    }
+
+/**
+ * @summary List recent outbound events (newest 50)
+ */
+export const getGetV1WebhookEndpointsEventsUrl = () => {
+
+
+
+
+  return `/v1/webhook-endpoints/events`
+}
+
+export const getV1WebhookEndpointsEvents = async ( options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getGetV1WebhookEndpointsEventsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1WebhookEndpointsEventsQueryKey = () => {
+    return [
+    `/v1/webhook-endpoints/events`
+    ] as const;
+    }
+
+
+export const getGetV1WebhookEndpointsEventsQueryOptions = <TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1WebhookEndpointsEventsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>> = () => getV1WebhookEndpointsEvents(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1WebhookEndpointsEventsQueryResult = NonNullable<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>>
+export type GetV1WebhookEndpointsEventsQueryError = unknown
+
+
+export function useGetV1WebhookEndpointsEvents<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>,
+          TError,
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1WebhookEndpointsEvents<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>,
+          TError,
+          Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1WebhookEndpointsEvents<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List recent outbound events (newest 50)
+ */
+
+export function useGetV1WebhookEndpointsEvents<TData = Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1WebhookEndpointsEvents>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1WebhookEndpointsEventsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 /**
  * @summary Create plan
