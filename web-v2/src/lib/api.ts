@@ -277,7 +277,7 @@ export const api = {
     apiRequest<{ data: CreditBalance[] }>('GET', '/credits/balances'),
   getBalance: (customerId: string) =>
     apiRequest<CreditBalance>('GET', `/credits/balance/${customerId}`),
-  grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string }, idempotencyKey?: string) =>
+  grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string; grant_kind?: 'promotional' }, idempotencyKey?: string) =>
     apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data, { idempotencyKey }),
   adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }, idempotencyKey?: string) =>
     apiRequest<CreditLedgerEntry>('POST', '/credits/adjust', data, { idempotencyKey }),
@@ -1011,6 +1011,12 @@ export interface CreditLedgerEntry {
   invoice_id: string
   expires_at?: string
   created_at: string
+  // ADR-078: cost-basis class of a grant. 'commit' = prepaid commit funded
+  // by an invoice; 'promotional' = free marketing credits (drained first);
+  // absent = unclassified (paid class).
+  grant_kind?: string
+  // The invoice that funded a commit grant.
+  source_invoice_id?: string
 }
 
 export interface CustomerOverview {
@@ -1301,6 +1307,9 @@ export interface TenantSettings {
   tax_id: string
   support_url: string
   invoice_footer: string
+  // ADR-078: arms the credit.balance_low webhook — a customer's balance
+  // crossing below this many cents fires the event. null/absent = off.
+  credit_balance_low_threshold_cents?: number | null
 }
 
 export interface StripeProviderCredentials {

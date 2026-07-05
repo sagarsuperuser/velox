@@ -19,6 +19,7 @@ import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Checkbox } from '@/components/ui/checkbox'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -76,6 +77,8 @@ const creditSchema = z.object({
   amount: z.string().min(1, 'Amount is required').refine(v => parseFloat(v) >= 0.01, 'Must be at least 0.01'),
   description: z.string().min(1, 'Description is required'),
   expiresAt: z.string(),
+  // ADR-078: free/marketing credits — drained before paid credits.
+  promotional: z.boolean(),
 })
 
 type CreditFormData = z.infer<typeof creditSchema>
@@ -327,7 +330,13 @@ export default function CreditsPage() {
                     {ledgerPaginated.map(entry => (
                       <TableRow key={entry.id}>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap" title={formatDateTime(entry.created_at)}>{formatDate(entry.created_at)}</TableCell>
-                        <TableCell><Badge variant={entryTypeVariant(entry.entry_type)}>{entryTypeLabel(entry.entry_type)}</Badge></TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5">
+                            <Badge variant={entryTypeVariant(entry.entry_type)}>{entryTypeLabel(entry.entry_type)}</Badge>
+                            {entry.grant_kind === 'commit' && <Badge variant="outline">Commit</Badge>}
+                            {entry.grant_kind === 'promotional' && <Badge variant="secondary">Promo</Badge>}
+                          </span>
+                        </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {(() => {
                             const expired = entry.description?.match(EXPIRED_GRANT_RE)
@@ -559,7 +568,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
 
   const form = useForm<CreditFormData>({
     resolver: zodResolver(creditSchema),
-    defaultValues: { amount: '', description: '', expiresAt: '' },
+    defaultValues: { amount: '', description: '', expiresAt: '', promotional: false },
   })
 
   // One idempotency key per dialog OPEN. Retries on transient failure
@@ -600,6 +609,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
           amount_cents: amountCents,
           description,
           ...(expiresAt ? { expires_at: endOfDayInTZ(expiresAt) } : {}),
+          ...(form.getValues('promotional') ? { grant_kind: 'promotional' as const } : {}),
         }, idemKey)
       }
     },
@@ -712,6 +722,27 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                         minDate={new Date()}
                       />
                       <FormDescription>Leave empty for credits that never expire. Past dates are blocked — a credit that expires before today would be unusable.</FormDescription>
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {!isDeduct && (
+                <FormField
+                  control={form.control}
+                  name="promotional"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-row items-start gap-3 space-y-0 rounded-md border border-border p-3">
+                      <FormControl>
+                        <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <div className="space-y-1 leading-none">
+                        <FormLabel className="font-normal">Promotional credits</FormLabel>
+                        <FormDescription>
+                          Free / marketing credits. They are used up before any purchased or
+                          refunded credits. Leave off for paid-for or goodwill balances.
+                        </FormDescription>
+                      </div>
                     </FormItem>
                   )}
                 />

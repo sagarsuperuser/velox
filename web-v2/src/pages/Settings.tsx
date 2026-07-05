@@ -76,6 +76,10 @@ const settingsSchema = z.object({
     .regex(/^(txcd_\d{8})?$/, 'Must be a Stripe tax code like txcd_10103001, or empty'),
   default_currency: z.string(),
   timezone: z.string(),
+  // Dollar amount (string-bound input); '' = low-balance alerts off.
+  credit_balance_low_threshold: z.string()
+    .regex(/^\d*(\.\d{1,2})?$/, 'Dollar amount like 50 or 50.00')
+    .or(z.literal('')),
 })
 
 type SettingsFormData = z.infer<typeof settingsSchema>
@@ -153,6 +157,7 @@ export default function SettingsPage() {
       tax_provider: 'manual', tax_rate: 0, tax_name: '', tax_inclusive: false,
       default_product_tax_code: '',
       default_currency: '', timezone: '',
+      credit_balance_low_threshold: '',
     },
   })
   const { register, handleSubmit, watch, reset, setValue, formState: { errors: formErrors, isDirty } } = formMethods
@@ -188,6 +193,9 @@ export default function SettingsPage() {
         tax_rate: s.tax_rate || 0, tax_name: s.tax_name || '', tax_inclusive: s.tax_inclusive || false,
         default_product_tax_code: s.default_product_tax_code || '',
         default_currency: s.default_currency || '', timezone: s.timezone ? normalizeTimezone(s.timezone) : '',
+        credit_balance_low_threshold: s.credit_balance_low_threshold_cents != null
+          ? (s.credit_balance_low_threshold_cents / 100).toString()
+          : '',
       }
       reset(f)
       setLoading(false)
@@ -199,7 +207,14 @@ export default function SettingsPage() {
   const handleSave = handleSubmit(async (data) => {
     setSaving(true)
     try {
-      const updated = await api.updateSettings(data)
+      // Dollar string -> cents (null clears the threshold: alerts off).
+      const { credit_balance_low_threshold, ...rest } = data
+      const updated = await api.updateSettings({
+        ...rest,
+        credit_balance_low_threshold_cents: credit_balance_low_threshold === ''
+          ? null
+          : Math.round(parseFloat(credit_balance_low_threshold) * 100),
+      })
       const f = {
         company_name: updated.company_name || '', company_email: updated.company_email || '',
         company_phone: updated.company_phone || '',
@@ -217,6 +232,9 @@ export default function SettingsPage() {
         tax_rate: updated.tax_rate || 0, tax_name: updated.tax_name || '', tax_inclusive: updated.tax_inclusive || false,
         default_product_tax_code: updated.default_product_tax_code || '',
         default_currency: updated.default_currency || '', timezone: updated.timezone ? normalizeTimezone(updated.timezone) : '',
+        credit_balance_low_threshold: updated.credit_balance_low_threshold_cents != null
+          ? (updated.credit_balance_low_threshold_cents / 100).toString()
+          : '',
       }
       reset(f)
       if (updated.default_currency) setActiveCurrency(updated.default_currency)
@@ -564,6 +582,19 @@ export default function SettingsPage() {
                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">days</span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1.5">Days after issue before payment is due</p>
+                  </div>
+                  <div>
+                    <Label>Credit low-balance alert</Label>
+                    <div className="relative mt-1 max-w-[200px]">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">{symbol}</span>
+                      <Input inputMode="decimal"
+                        {...register('credit_balance_low_threshold')}
+                        className={cn('pl-7', formErrors.credit_balance_low_threshold && 'border-destructive')}
+                        placeholder="Off" />
+                    </div>
+                    {formErrors.credit_balance_low_threshold
+                      ? <p className="text-xs text-destructive mt-1">{formErrors.credit_balance_low_threshold.message}</p>
+                      : <p className="text-xs text-muted-foreground mt-1.5">Sends a webhook when a customer's credit balance drops below this amount. Leave blank to turn off. Empty and depleted balances always send their own events.</p>}
                   </div>
                   <div className="md:col-span-2">
                     <Label>Invoice footer</Label>
