@@ -229,13 +229,26 @@ func (s *Service) GrantTx(ctx context.Context, tx *sql.Tx, tenantID string, inpu
 		return domain.CreditLedgerEntry{}, errs.Invalid("expires_at",
 			"must be in the future — a grant that expires at or before now is dead on arrival")
 	}
+	// Same kind gate as Grant — 'commit' stays reserved for the
+	// invoice-finalize funding path (ADR-078).
+	switch input.GrantKind {
+	case "", domain.GrantKindPromotional:
+	default:
+		return domain.CreditLedgerEntry{}, errs.Invalid("grant_kind",
+			"must be empty or 'promotional' — commit grants are created by finalizing a commit invoice")
+	}
 	return s.store.AppendEntryTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:               input.CustomerID,
-		EntryType:                domain.CreditGrant,
-		AmountCents:              input.AmountCents,
-		Description:              desc,
-		InvoiceID:                input.InvoiceID,
-		ExpiresAt:                input.ExpiresAt,
+		CustomerID:  input.CustomerID,
+		EntryType:   domain.CreditGrant,
+		AmountCents: input.AmountCents,
+		Description: desc,
+		InvoiceID:   input.InvoiceID,
+		ExpiresAt:   input.ExpiresAt,
+		// GrantKind was silently dropped here pre-2026-07-05 (the struct
+		// literal omitted the field while Grant carried it), so every
+		// in-tx grant minted a NULL-kind block — misclassified into the
+		// paid drain class and invisible to kind-scoped reporting.
+		GrantKind:                input.GrantKind,
 		SourceSubscriptionID:     input.SourceSubscriptionID,
 		SourceSubscriptionItemID: input.SourceSubscriptionItemID,
 		SourcePlanChangedAt:      input.SourcePlanChangedAt,
