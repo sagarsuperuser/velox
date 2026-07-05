@@ -36,6 +36,21 @@ func TestDunningStarterAdapter_SwallowsDisabled(t *testing.T) {
 	}
 }
 
+// TestDunningStarterAdapter_SwallowsNotConfigured verifies the second
+// deliberate-skip case (Finding 2): a tenant with NO effective policy —
+// StartDunning maps that to InvalidState — is swallowed as a no-op, exactly
+// like disabled, so an unconfigured tenant never poisons the money-path sweep.
+func TestDunningStarterAdapter_SwallowsNotConfigured(t *testing.T) {
+	f := &fakeRunStarter{err: errs.InvalidState("dunning not configured — no policy for tenant")}
+	a := &dunningStarterAdapter{dunning: f}
+	if err := a.StartDunning(context.Background(), "t1", "inv_1", "cus_1", time.Time{}); err != nil {
+		t.Fatalf("no-policy InvalidState should be swallowed, got %v", err)
+	}
+	if f.calls != 1 {
+		t.Fatalf("calls = %d, want 1", f.calls)
+	}
+}
+
 // TestDunningStarterAdapter_PropagatesRealError verifies a genuine failure
 // (e.g. a DB error in CreateRun) is surfaced so the sweep logs it rather
 // than silently dropping the enrollment.

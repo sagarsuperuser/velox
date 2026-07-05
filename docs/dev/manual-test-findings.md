@@ -22,7 +22,7 @@ Status: **FIXED** · **OPEN** (needs decision) · **WONTFIX** (by design).
 | # | Area | Severity | Status | MANUAL_TEST flow |
 |---|---|---|---|---|
 | 1 | Subscription create | Medium | FIXED — re-applied on `qa/manual-test-pass` (conflict-resolved vs ADR-074) | B6 / U1 |
-| 2 | Dunning enrollment | Medium | OPEN — needs decision | Dunning §, S-flows |
+| 2 | Dunning enrollment | Medium | FIXED — ADR-036 amendment (auto-default-first + no-policy→skip), design panel + tests | Dunning §, S-flows |
 | 3 | Docs (B5) | Low | FIXED (doc) | B5 |
 | 4 | Docs (S1.4) | Low | FIXED (doc) | S1.4 |
 | 5 | Auto-charge retry comment | Low | FIXED (comment) | B4 |
@@ -60,7 +60,7 @@ subs created before the fix keep `activated_at = NULL`. If real data existed:
 
 ---
 
-## Finding 2 — unpaid invoice + no dunning policy breaks billing catchup — OPEN (needs decision)
+## Finding 2 — unpaid invoice + no dunning policy breaks billing catchup — FIXED (ADR-036 amendment)
 
 **Surfaced:** manual pass 2026-07-03, test-clock cycle-billing flow.
 
@@ -92,8 +92,32 @@ Decision needed (two legit fixes):
 
 Recommendation: **(B)** as the floor (billing must not fail because dunning is
 unconfigured), optionally + **(A)** if the product wants dunning on-by-default.
-Dunning/state-machine territory → wants a short design panel before building
-(deferred: Fable credits out + review-first).
+Dunning/state-machine territory → wants a short design panel before building.
+
+**RESOLVED 2026-07-05 (ADR-036 amendment).** A divergent design panel sharpened
+the root cause and picked a combination that fixes both the *observed* failure
+and the deeper cluster — the earlier "no policy at all" framing was incomplete:
+the recipe *does* create a policy, it was just never marked default.
+- **(B) money-path resilience (the floor):** `StartDunning` maps **only**
+  `GetEffectivePolicyForCustomer`'s `ErrNotFound` → deliberate-skip `InvalidState`,
+  the same class as a disabled policy (already swallowed by the enrollment
+  adapter). A default-less/zero-policy tenant no longer errors the catchup; a real
+  infra error still fails loud.
+- **Auto-default-first (fixes the real root of the live incident):**
+  `upsertPolicyTx` makes the **first** policy per `(tenant, livemode)` be
+  `is_default=true` — so a recipe/first-create tenant resolves a working default
+  with no operator step. (Chose this over "seed at bootstrap" (A) — a seeded
+  default would shadow recipe policies — and over read-time "resolve-to-sole"
+  which would make `is_default` lie.)
+- Companion: `startDunningWithRetry` short-circuits the deliberate skip (no wasted
+  retries / misleading ERROR).
+
+Note: auto-default-first is write-side, so the pre-existing local `qa-clean`
+policy (already `is_default=false`) is flipped once via `SetDefaultPolicy`; new
+tenants need nothing. Tests: `TestUpsertPolicy_AutoDefaultFirst` (real-PG),
+`TestStartDunning_NoPolicyConfigured`, adapter swallow, retry short-circuit.
+Live re-verified: the S2 clock advance that previously hit `internal_failure`
+now completes clean.
 
 
 ## Finding 3 — MANUAL_TEST B5 said 409 for idempotency-key reuse; correct is 422 — FIXED (doc)

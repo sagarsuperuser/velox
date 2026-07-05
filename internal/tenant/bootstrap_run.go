@@ -173,6 +173,15 @@ func RunBootstrap(ctx context.Context, db *postgres.DB, deps BootstrapDeps, opts
 		return BootstrapResult{}, fmt.Errorf("seed tenant settings: %w", err)
 	}
 
+	// DELIBERATELY no dunning policy is seeded here (ADR-036 amendment). A
+	// generic seeded default would be is_default=true and SHADOW a recipe's
+	// own policy (recipes create theirs via UpsertPolicy → auto-default-first;
+	// a pre-existing bootstrap default would win the unique-index slot and
+	// suppress it) — a silent wrong-policy bug. A genuinely zero-policy tenant
+	// is safe: StartDunning maps "no effective policy" to a deliberate skip, so
+	// the money-path enrollment sweep never errors. The operator's first policy
+	// (recipe or manual) auto-becomes the default. Do not "fix" this by seeding.
+
 	// Mint paired test + live secret keys plus a test publishable key.
 	// Per Stripe's pattern you can't mint cross-mode keys post-auth (a
 	// test-mode caller mints test keys), so the only path to a FIRST

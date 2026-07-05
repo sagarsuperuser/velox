@@ -3,6 +3,7 @@ package dunning
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -326,6 +327,30 @@ func TestStartDunning_DisabledPolicy(t *testing.T) {
 	_, err := svc.StartDunning(context.Background(), "t1", "inv_2", "cus_1", time.Now())
 	if err == nil {
 		t.Fatal("expected error when dunning is disabled")
+	}
+}
+
+// TestStartDunning_NoPolicyConfigured locks the resilience seam (Finding 2):
+// a tenant with NO effective/default policy must yield a DELIBERATE-SKIP
+// ErrInvalidState (the same class as disabled) — NOT a raw ErrNotFound — so the
+// money-path enrollment sweep swallows it instead of poisoning the catchup.
+// Mutation guard: before the fix this returned a fmt.Errorf wrapping ErrNotFound
+// (errors.Is(err, ErrNotFound) == true), which the adapter propagated as a
+// sweep error.
+func TestStartDunning_NoPolicyConfigured(t *testing.T) {
+	store := newMemStore()
+	store.defaultID = "" // no default → GetDefaultPolicy returns ErrNotFound
+	svc := NewService(store, &noopRetrier{}, nil)
+
+	_, err := svc.StartDunning(context.Background(), "t1", "inv_3", "cus_1", time.Now())
+	if err == nil {
+		t.Fatal("expected a deliberate-skip error when no policy is configured")
+	}
+	if !errors.Is(err, errs.ErrInvalidState) {
+		t.Errorf("no-policy must map to ErrInvalidState (deliberate skip); got %v", err)
+	}
+	if errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("no-policy must NOT surface raw ErrNotFound (would poison the sweep); got %v", err)
 	}
 }
 

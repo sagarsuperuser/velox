@@ -251,6 +251,18 @@ func (s *Service) StartDunning(ctx context.Context, tenantID string, invoiceID, 
 
 	policy, err := s.GetEffectivePolicyForCustomer(ctx, tenantID, customerID)
 	if err != nil {
+		// No effective policy (tenant has no default configured) is a DELIBERATE
+		// SKIP, the same class as a disabled policy — an unconfigured optional
+		// feature must never poison the money-path enrollment sweep/catchup (the
+		// SMTP-unset precedent). Map ONLY ErrNotFound to InvalidState so all three
+		// callers (no-payment sweep, inline decline, post-commit settle) treat it
+		// as a no-op via their shared ErrInvalidState swallow. A real infra error
+		// (DB down, etc.) still propagates and fails loud — no silent fallback.
+		if errors.Is(err, errs.ErrNotFound) {
+			slog.WarnContext(ctx, "dunning not configured — no effective policy; skipping enrollment",
+				"tenant_id", tenantID, "invoice_id", invoiceID, "customer_id", customerID)
+			return domain.InvoiceDunningRun{}, errs.InvalidState("dunning not configured — no policy for tenant")
+		}
 		return domain.InvoiceDunningRun{}, fmt.Errorf("get effective dunning policy: %w", err)
 	}
 	if !policy.Enabled {
