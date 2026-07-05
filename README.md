@@ -220,6 +220,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 ### Recently shipped
 
+- **Provider cost tables + margin (Jul 2026, ADR-079)** — enter what you pay LLM providers; every usage event is stamped with its COGS at ingest; per-customer margin report (billed vs cost by model) — the report every other billing engine makes you build in your warehouse
 - **Prepaid commits + drawdown (Jul 2026, ADR-078)** — sell commit + usage: a commit line on an invoice funds a credit block at finalize (fund-once, atomic), promotional credits drain before paid, balance-threshold webhooks (`credit.balance_low/depleted/recovered`), void retires the unfunded remainder
 - **Full-product audit hardening (Jul 2026)** — a 117-finding end-to-end audit remediated in 13 gated PRs: threshold billing exactness, checkout/trial state-machine races, credit expiry atomicity, price-change semantics (pinned per-period resolution), transport delivery leases (no more duplicate emails/webhooks under load), self-host truth (one bootstrap, real `APP_DATABASE_URL`, race-safe migrations), and honest MRR analytics
 - **Operator search that actually searches** — server-side `?search=` on customers (matches encrypted name/email post-decryption), invoices, and subscriptions; invoice date-range + past-due filters; ⌘K palette queries the full dataset

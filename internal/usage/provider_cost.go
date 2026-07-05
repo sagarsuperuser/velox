@@ -190,11 +190,11 @@ type MarginReport struct {
 	CostMicros   int64 `json:"cost_micros"`
 	// MarginBps = (revenue − cost) / revenue in basis points; omitted
 	// when revenue is 0.
-	MarginBps              *int64           `json:"margin_bps,omitempty"`
-	ByModel                []MarginModelRow `json:"by_model"`
-	UnattributedRevenueCents int64          `json:"unattributed_revenue_cents"`
-	UnresolvedEvents       int64            `json:"unresolved_events"`
-	CacheWriteExcluded     bool             `json:"cache_write_excluded"`
+	MarginBps                *int64           `json:"margin_bps,omitempty"`
+	ByModel                  []MarginModelRow `json:"by_model"`
+	UnattributedRevenueCents int64            `json:"unattributed_revenue_cents"`
+	UnresolvedEvents         int64            `json:"unresolved_events"`
+	CacheWriteExcluded       bool             `json:"cache_write_excluded"`
 }
 
 // MarginAssembler joins stamped COGS with rated usage revenue.
@@ -266,8 +266,8 @@ func (a *MarginAssembler) Get(ctx context.Context, tenantID, customerID string, 
 // ProviderCostHandler is the operator surface: rate CRUD + margin report.
 // Operator-auth only — COGS never renders on customer-facing pages.
 type ProviderCostHandler struct {
-	store    *PostgresStore
-	margin   *MarginAssembler
+	store  *PostgresStore
+	margin *MarginAssembler
 }
 
 func NewProviderCostHandler(store *PostgresStore, margin *MarginAssembler) *ProviderCostHandler {

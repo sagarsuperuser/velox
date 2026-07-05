@@ -1422,6 +1422,170 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/provider-costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List provider cost rates
+         * @description The operator's COGS table (ADR-079): what THEY pay LLM providers per
+         *     token, keyed by provider/model/token_type. Current-rate semantics —
+         *     one row per key, edited in place; per-event stamps are the history.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Rates */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data?: components["schemas"]["ProviderCostRate"][];
+                        };
+                    };
+                };
+            };
+        };
+        /** Create or update a provider cost rate */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        provider: string;
+                        /** @description Model family token or raw snapshot id — raw ids match first at ingest. */
+                        model: string;
+                        /** @description ADR-044 role — input / output / cache_read. */
+                        token_type: string;
+                        /** @description Decimal dollars per token (e.g. "0.000003"). */
+                        cost_per_token: string;
+                        /** @default USD */
+                        currency?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Upserted rate */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProviderCostRate"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/provider-costs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a provider cost rate
+         * @description Stamped events keep their snapshot — deletion never rewrites history.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/customers/{id}/margin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-customer margin report (operator only)
+         * @description Rated usage revenue vs stamped provider COGS for a window (ADR-079).
+         *     A usage unit-economics view — base fees, credits, and taxes are not
+         *     included. Per-model margin renders only where pricing rules pin the
+         *     model; other revenue is reported unattributed, never allocated by
+         *     heuristic.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    from?: string;
+                    to?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Margin report */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MarginReport"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/credits/grant": {
         parameters: {
             query?: never;
@@ -2210,6 +2374,58 @@ export interface components {
              *     never expire (the default).
              */
             commit_expires_at?: string | null;
+        };
+        ProviderCostRate: {
+            id: string;
+            provider: string;
+            model: string;
+            token_type: string;
+            /** @description Decimal dollars per token. */
+            cost_per_token: string;
+            currency: string;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        MarginReport: {
+            customer_id: string;
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /**
+             * Format: int64
+             * @description Total rated usage revenue in the window.
+             */
+            revenue_cents: number;
+            /**
+             * Format: int64
+             * @description Total stamped provider cost, micro-dollars.
+             */
+            cost_micros: number;
+            /**
+             * Format: int64
+             * @description (revenue − cost) / revenue in basis points. Omitted when revenue is 0.
+             */
+            margin_bps?: number;
+            by_model: {
+                model: string;
+                /** Format: int64 */
+                cost_micros: number;
+                /** Format: int64 */
+                revenue_cents?: number;
+                /** @description True only when a pricing rule pins this model — margin is never heuristically allocated. */
+                attributed: boolean;
+            }[];
+            /** Format: int64 */
+            unattributed_revenue_cents: number;
+            /**
+             * Format: int64
+             * @description Token events with costable dims but no matching rate — add a rate to cost new events.
+             */
+            unresolved_events: number;
+            cache_write_excluded?: boolean;
         };
         /**
          * @description Response shape for `GET /v1/invoices/{id}`. The handler returns the
