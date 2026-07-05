@@ -66,7 +66,7 @@ import {
 } from '@/components/ui/form'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, FileMinus } from 'lucide-react'
+import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, FileMinus, Mail } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 
 const creditNoteSchema = z.object({
@@ -108,6 +108,7 @@ export default function CreditNotesPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [confirmIssue, setConfirmIssue] = useState<string | null>(null)
   const [confirmVoid, setConfirmVoid] = useState<string | null>(null)
+  const [sendTarget, setSendTarget] = useState<CreditNote | null>(null)
   const [urlState, setUrlState] = useUrlState({
     search: '',
     status: '',
@@ -502,6 +503,9 @@ export default function CreditNotesPage() {
                                 >
                                   <Download size={14} className="mr-1.5" /> PDF
                                 </Button>
+                                <Button variant="outline" size="sm" onClick={() => setSendTarget(note)}>
+                                  <Mail size={14} className="mr-1.5" /> Send
+                                </Button>
                               </div>
                             )}
                           </div>
@@ -612,7 +616,88 @@ export default function CreditNotesPage() {
         onConfirm={() => { if (confirmVoid) voidMutation.mutate(confirmVoid); setConfirmVoid(null) }}
         loading={voidMutation.isPending}
       />
+
+      {/* Send credit-note email */}
+      {sendTarget && (
+        <SendCreditNoteDialog
+          note={sendTarget}
+          onClose={() => setSendTarget(null)}
+          onSent={() => { setSendTarget(null); toast.success('Credit note email sent') }}
+        />
+      )}
     </Layout>
+  )
+}
+
+// --- Send Credit Note Email Dialog (ADR-082) ---
+
+function SendCreditNoteDialog({ note, onClose, onSent }: {
+  note: CreditNote; onClose: () => void; onSent: () => void
+}) {
+  // Fetch the full customer for the recipient + CC prefill — the list
+  // rows the page already holds don't carry additional_emails.
+  const { data: cust } = useQuery({
+    queryKey: ['customer', note.customer_id],
+    queryFn: () => api.getCustomer(note.customer_id),
+  })
+  const [email, setEmail] = useState('')
+  const [cc, setCc] = useState('')
+  const [touched, setTouched] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+
+  // Prefill once the customer loads (unless the operator already typed).
+  if (cust && !touched && email === '' && (cust.email || (cust.additional_emails || []).length > 0)) {
+    setEmail(cust.email || '')
+    setCc((cust.additional_emails || []).join(', '))
+  }
+
+  const handleSend = async () => {
+    if (!email.trim() || sending) return
+    setSending(true)
+    setError('')
+    try {
+      const ccList = cc.split(',').map(s => s.trim()).filter(Boolean)
+      await api.sendCreditNoteEmail(note.id, email.trim(), ccList)
+      onSent()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Email Credit Note {note.credit_note_number}</DialogTitle>
+          <DialogDescription>Sends the credit note PDF to your customer.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label htmlFor="cn-email" className="text-sm font-medium">Recipient Email</label>
+            <Input id="cn-email" type="email" value={email}
+              onChange={e => { setEmail(e.target.value); setTouched(true) }}
+              placeholder="customer@example.com" />
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="cn-cc" className="text-sm font-medium">CC</label>
+            <Input id="cn-cc" value={cc}
+              onChange={e => { setCc(e.target.value); setTouched(true) }}
+              placeholder="finance@customer.com, ap@customer.com" />
+            <p className="text-xs text-muted-foreground">Separate with commas. Clear the field to email only the recipient.</p>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSend} disabled={sending || !email.trim()}>
+              {sending ? <><Loader2 size={14} className="animate-spin mr-2" />Sending...</> : 'Send Email'}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

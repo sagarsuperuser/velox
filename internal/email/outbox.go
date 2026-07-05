@@ -440,7 +440,7 @@ func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber
 		FROM email_outbox
 		WHERE email_type IN ('invoice', 'payment_receipt', 'payment_failed',
 		                     'payment_setup_request', 'dunning_warning',
-		                     'dunning_escalation')
+		                     'dunning_escalation', 'credit_note')
 		  AND payload->>'invoice_number' = $1
 		ORDER BY created_at ASC
 	`, invoiceNumber)
@@ -498,7 +498,7 @@ func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID s
 		 AND i.invoice_number = eo.payload->>'invoice_number'
 		WHERE eo.email_type IN ('invoice', 'payment_receipt', 'payment_failed',
 		                        'payment_setup_request', 'dunning_warning',
-		                        'dunning_escalation')
+		                        'dunning_escalation', 'credit_note')
 		  AND i.customer_id = $1
 		  AND eo.created_at >= now() - interval '30 days'
 		ORDER BY eo.created_at DESC

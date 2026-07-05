@@ -61,8 +61,16 @@ const statusVariant = statusBadgeVariant
 const editCustomerSchema = z.object({
   display_name: z.string().min(1, 'Display name is required'),
   email: z.string().email('Invalid email address').or(z.literal('')),
+  // Comma-separated in the form; split/trimmed before submit. Server
+  // validates each address, dedupes, and caps at 10 (ADR-082).
+  additional_emails: z.string(),
 })
 type EditCustomerData = z.infer<typeof editCustomerSchema>
+
+// splitEmails turns the comma-separated form value into the API list.
+function splitEmails(value: string): string[] {
+  return value.split(',').map(s => s.trim()).filter(Boolean)
+}
 
 const billingProfileSchema = z.object({
   legal_name: z.string(),
@@ -91,6 +99,7 @@ function sentEmailLabel(emailType: string): string {
     case 'payment_setup_request': return 'Payment method requested'
     case 'dunning_warning': return 'Payment retry — action required'
     case 'dunning_escalation': return 'Retries exhausted'
+    case 'credit_note': return 'Credit note'
     default: return emailType
   }
 }
@@ -1211,17 +1220,25 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
 }) {
   const form = useForm<EditCustomerData>({
     resolver: zodResolver(editCustomerSchema),
-    defaultValues: { display_name: customer.display_name, email: customer.email || '' },
+    defaultValues: {
+      display_name: customer.display_name,
+      email: customer.email || '',
+      additional_emails: (customer.additional_emails || []).join(', '),
+    },
   })
   const { register, handleSubmit, formState: { errors, isSubmitting, isDirty } } = form
 
   const onSubmit = handleSubmit(async (data) => {
     if (!isDirty) return
     try {
-      await api.updateCustomer(customer.id, data)
+      await api.updateCustomer(customer.id, {
+        display_name: data.display_name,
+        email: data.email,
+        additional_emails: splitEmails(data.additional_emails),
+      })
       onSaved()
     } catch (err) {
-      applyApiError(form, err, ['display_name', 'email'], { toastTitle: 'Failed to update customer' })
+      applyApiError(form, err, ['display_name', 'email', 'additional_emails'], { toastTitle: 'Failed to update customer' })
     }
   })
 
@@ -1241,6 +1258,14 @@ function EditCustomerDialog({ customer, onClose, onSaved }: {
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" maxLength={254} {...register('email')} />
             {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="additional_emails">Additional billing emails</Label>
+            <Input id="additional_emails" placeholder="ap@customer.com, finance@customer.com" {...register('additional_emails')} />
+            <p className="text-xs text-muted-foreground">
+              CC&apos;d on invoices, receipts, credit notes and payment-issue emails. Separate with commas (up to 10).
+            </p>
+            {errors.additional_emails && <p className="text-xs text-destructive">{errors.additional_emails.message}</p>}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -45,11 +47,18 @@ type HandlerDeps struct {
 	Invoices  InvoiceGetter
 }
 
+// EmailSender enqueues the credit-note document email (ADR-082 rider).
+// Satisfied by *email.OutboxSender.
+type EmailSender interface {
+	SendCreditNote(ctx context.Context, tenantID, to string, cc []string, customerName, creditNoteNumber, invoiceNumber string, amountCents int64, currency string, pdfBytes []byte) error
+}
+
 type Handler struct {
 	svc         *Service
 	customers   CustomerGetter
 	settings    SettingsGetter
 	invoices    InvoiceGetter
+	emailSender EmailSender
 	auditLogger *audit.Logger
 }
 
@@ -66,6 +75,11 @@ func NewHandler(svc *Service, deps ...HandlerDeps) *Handler {
 // SetAuditLogger configures audit logging for financial operations.
 func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 
+// SetEmailSender wires the outbox-backed CN email path. Without it the
+// send endpoint returns 503 email-not-configured semantics (loud, not
+// silent).
+func (h *Handler) SetEmailSender(s EmailSender) { h.emailSender = s }
+
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.create)
@@ -75,6 +89,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/{id}/issue", h.issue)
 	r.Post("/{id}/void", h.void)
 	r.Post("/{id}/retry-refund", h.retryRefund)
+	r.Post("/{id}/send", h.sendEmail)
 	return r
 }
 
@@ -247,29 +262,20 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, cn)
 }
 
-func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	cn, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, id)
-	if errors.Is(err, errs.ErrNotFound) {
-		respond.NotFound(w, r, "credit note")
-		return
-	}
-	if err != nil {
-		respond.InternalError(w, r)
-		return
-	}
-
+// assemblePDFContext gathers the Bill-To, company, and original-invoice
+// blocks shared by the download and email paths — extracted (ADR-082)
+// so the emailed document can never diverge from the downloaded one,
+// the exact drift the invoice send path once had.
+func (h *Handler) assemblePDFContext(ctx context.Context, tenantID string, cn domain.CreditNote) (BillToInfo, CompanyInfo, OriginalInvoiceInfo) {
 	// Bill-To: prefer billing profile (legal name + full address for tax
 	// compliance) and fall back to the customer record.
 	bt := BillToInfo{Name: cn.CustomerID}
 	if h.customers != nil {
-		if cust, err := h.customers.Get(r.Context(), tenantID, cn.CustomerID); err == nil {
+		if cust, err := h.customers.Get(ctx, tenantID, cn.CustomerID); err == nil {
 			bt.Name = cust.DisplayName
 			bt.Email = cust.Email
 		}
-		if bp, err := h.customers.GetBillingProfile(r.Context(), tenantID, cn.CustomerID); err == nil {
+		if bp, err := h.customers.GetBillingProfile(ctx, tenantID, cn.CustomerID); err == nil {
 			if bp.LegalName != "" {
 				bt.Name = bp.LegalName
 			}
@@ -288,7 +294,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	// Company header from tenant settings.
 	var ci CompanyInfo
 	if h.settings != nil {
-		if ts, err := h.settings.Get(r.Context(), tenantID); err == nil {
+		if ts, err := h.settings.Get(ctx, tenantID); err == nil {
 			ci = CompanyInfo{
 				Name:         ts.CompanyName,
 				Email:        ts.CompanyEmail,
@@ -309,7 +315,7 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	// is lost in that path.
 	var orig OriginalInvoiceInfo
 	if h.invoices != nil {
-		if inv, err := h.invoices.Get(r.Context(), tenantID, cn.InvoiceID); err == nil {
+		if inv, err := h.invoices.Get(ctx, tenantID, cn.InvoiceID); err == nil {
 			orig = OriginalInvoiceInfo{
 				Number:          inv.InvoiceNumber,
 				IssuedAt:        inv.IssuedAt,
@@ -323,6 +329,24 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	return bt, ci, orig
+}
+
+func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	cn, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "credit note")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+
+	bt, ci, orig := h.assemblePDFContext(r.Context(), tenantID, cn)
 
 	pdfBytes, err := RenderPDF(r.Context(), cn, items, orig, bt, ci)
 	if err != nil {
@@ -339,6 +363,100 @@ func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", "inline; filename=\""+filename+".pdf\"")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(pdfBytes)
+}
+
+// sendEmail emails the credit-note document with PDF attached (ADR-082
+// rider — CNs previously had NO send surface at all: engine-auto-issued
+// clawback CNs and card-refund CNs moved real money with no document
+// reaching the customer). Issued-only: drafts aren't final documents
+// and voided CNs are retracted ones.
+func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if h.emailSender == nil {
+		respond.FromError(w, r, errs.InvalidState("credit-note email is not configured on this deployment"), "credit_note_email")
+		return
+	}
+
+	var body struct {
+		Email string `json:"email"`
+		// AdditionalEmails: tri-state override, same contract as the
+		// invoice send (absent → customer's stored list; [] → primary
+		// only; list → validated exact override).
+		AdditionalEmails *[]string `json:"additional_emails,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
+		respond.BadRequest(w, r, "email is required")
+		return
+	}
+
+	cn, items, err := h.svc.GetWithLineItems(r.Context(), tenantID, id)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "credit note")
+		return
+	}
+	if err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+	switch cn.Status {
+	case domain.CreditNoteIssued:
+		// sendable
+	case domain.CreditNoteDraft:
+		respond.Validation(w, r, "issue the credit note before sending — drafts are not final documents")
+		return
+	default:
+		respond.Validation(w, r, "a voided credit note cannot be sent")
+		return
+	}
+
+	// CC resolution (ADR-082 tri-state).
+	var cc []string
+	if body.AdditionalEmails != nil {
+		cc, err = domain.NormalizeAdditionalEmails(*body.AdditionalEmails, body.Email)
+		if err != nil {
+			respond.FromError(w, r, err, "credit_note_email")
+			return
+		}
+	} else if h.customers != nil {
+		cust, err := h.customers.Get(r.Context(), tenantID, cn.CustomerID)
+		if err != nil {
+			respond.FromError(w, r, fmt.Errorf("resolve customer additional emails: %w", err), "credit_note_email")
+			return
+		}
+		for _, a := range cust.AdditionalEmails {
+			if !strings.EqualFold(a, strings.TrimSpace(body.Email)) {
+				cc = append(cc, a)
+			}
+		}
+	}
+
+	bt, ci, orig := h.assemblePDFContext(r.Context(), tenantID, cn)
+	pdfBytes, err := RenderPDF(r.Context(), cn, items, orig, bt, ci)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "render credit note pdf for email", "credit_note_id", id, "error", err)
+		respond.InternalError(w, r)
+		return
+	}
+
+	if err := h.emailSender.SendCreditNote(r.Context(), tenantID, body.Email, cc,
+		bt.Name, cn.CreditNoteNumber, orig.Number, cn.TotalCents, cn.Currency, pdfBytes); err != nil {
+		respond.FromError(w, r, err, "credit_note_email")
+		return
+	}
+
+	// Same GDPR convention as the invoice send: record THAT it was sent,
+	// never the recipient addresses (audit_log is append-only).
+	if h.auditLogger != nil {
+		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "credit_note", cn.ID, cn.CreditNoteNumber, map[string]any{
+			"credit_note_number": cn.CreditNoteNumber,
+			"invoice_id":         cn.InvoiceID,
+			"customer_id":        cn.CustomerID,
+		})
+	}
+
+	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 // auditLogCreditNote logs a credit note issue event. Shared by issue and auto-issue paths.

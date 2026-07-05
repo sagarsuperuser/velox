@@ -570,6 +570,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	invoiceH.SetAuditLogger(auditLogger)
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
+	// CN document email (ADR-082 rider) rides the transactional outbox
+	// like every other customer email.
+	creditNoteH.SetEmailSender(outboxSender)
 	// Wire audit on paymentmethods.Service so attach/setDefault/detach
 	// surface in the operator Activity feed + AuditLog page. Without
 	// this, customer-driven card mutations are invisible to operators.

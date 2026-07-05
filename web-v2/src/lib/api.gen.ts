@@ -97,6 +97,7 @@ export interface paths {
                         external_id: string;
                         display_name: string;
                         email?: string;
+                        additional_emails?: string[];
                     };
                 };
             };
@@ -1403,6 +1404,138 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invoices/{id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email the invoice (PDF attached) to a recipient
+         * @description Sends the invoice document email. `additional_emails` is
+         *     tri-state (ADR-082): absent → the customer's stored
+         *     additional_emails are CC'd (so legacy `{email}`-only bodies now
+         *     CC by default); explicit `[]` → primary only for this send;
+         *     explicit list → validated exact override (same rules as the
+         *     customer field — normalize, dedupe, not-the-recipient, cap 10).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                        additional_emails?: string[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Email enqueued */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Invoice not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Invalid recipient or CC entry */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/credit-notes/{id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email the credit-note document (PDF attached)
+         * @description Sends the credit-note PDF to the customer (ADR-082 rider — CNs
+         *     previously had no send surface at all). Issued credit notes
+         *     only: drafts and voided CNs return 422. Recipient contract
+         *     matches the invoice send (`email` + tri-state
+         *     `additional_emails`). The send is recorded on the applied
+         *     invoice's timeline and the customer's Sent-emails section.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                        additional_emails?: string[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Email enqueued */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Credit note not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not issued (draft/voided), or invalid recipient */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -2859,6 +2992,14 @@ export interface components {
             external_id?: string;
             display_name?: string;
             email?: string;
+            /**
+             * @description CC'd on billing documents and billing-state emails (invoice,
+             *     receipt, dunning, payment failed, credit note) — never on
+             *     credential-bearing emails (setup links, resets, invites).
+             *     Normalized to lowercase bare addresses, deduped, capped at 10,
+             *     never equal to the primary email. Stored encrypted at rest.
+             */
+            additional_emails?: string[];
             /** @enum {string} */
             status?: "active" | "archived";
             /** Format: date-time */

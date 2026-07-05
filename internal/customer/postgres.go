@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -80,6 +81,50 @@ func (s *PostgresStore) decryptCustomer(c domain.Customer) (domain.Customer, err
 	return c, nil
 }
 
+// additionalEmailsStored serializes the CC list for the
+// additional_emails column: JSON array, encrypted under the same
+// encryptor as the sibling email column (plaintext JSON when no
+// encryptor is configured), ” for an empty list. A DB-level shape
+// check is impossible on ciphertext — the service layer owns
+// validation and the cap.
+func (s *PostgresStore) additionalEmailsStored(list []string) (string, error) {
+	if len(list) == 0 {
+		return "", nil
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return "", fmt.Errorf("marshal additional_emails: %w", err)
+	}
+	if s.enc == nil {
+		return string(raw), nil
+	}
+	ct, err := s.enc.Encrypt(string(raw))
+	if err != nil {
+		return "", fmt.Errorf("encrypt additional_emails: %w", err)
+	}
+	return ct, nil
+}
+
+// additionalEmailsLoaded is the read-side inverse (Decrypt passes
+// plaintext values through, same backward-compat as email).
+func (s *PostgresStore) additionalEmailsLoaded(stored string) ([]string, error) {
+	if stored == "" {
+		return nil, nil
+	}
+	if s.enc != nil {
+		pt, err := s.enc.Decrypt(stored)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt additional_emails: %w", err)
+		}
+		stored = pt
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(stored), &out); err != nil {
+		return nil, fmt.Errorf("decode additional_emails: %w", err)
+	}
+	return out, nil
+}
+
 // encryptBillingProfile encrypts PII fields on a BillingProfile before writing.
 func (s *PostgresStore) encryptBillingProfile(bp domain.CustomerBillingProfile) (domain.CustomerBillingProfile, error) {
 	if s.enc == nil {
@@ -131,12 +176,16 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	id := postgres.NewID("vlx_cus")
 	now := clock.Now(ctx)
 
+	storedCC, err := s.additionalEmailsStored(c.AdditionalEmails)
+	if err != nil {
+		return domain.Customer{}, err
+	}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, status, test_clock_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, NULLIF($8,''), $9, $9)
+		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, additional_emails, status, test_clock_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, NULLIF($9,''), $10, $10)
 		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), created_at, updated_at
 	`, id, tenantID, c.ExternalID, enc.DisplayName, enc.Email,
-		s.emailBlindIndex(c.Email), domain.CustomerStatusActive, c.TestClockID, now,
+		s.emailBlindIndex(c.Email), storedCC, domain.CustomerStatusActive, c.TestClockID, now,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err != nil {
@@ -165,6 +214,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 	defer postgres.Rollback(tx)
 
 	var c domain.Customer
+	var storedCC string
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
@@ -172,6 +222,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 			COALESCE(test_clock_id, ''),
 			COALESCE(dunning_policy_id, ''),
 			COALESCE(stripe_customer_id, ''),
+			additional_emails,
 			created_at, updated_at
 		FROM customers WHERE id = $1
 	`, id).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
@@ -180,12 +231,16 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 		&c.TestClockID,
 		&c.DunningPolicyID,
 		&c.StripeCustomerID,
+		&storedCC,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound
 	}
 	if err != nil {
+		return domain.Customer{}, err
+	}
+	if c.AdditionalEmails, err = s.additionalEmailsLoaded(storedCC); err != nil {
 		return domain.Customer{}, err
 	}
 	return s.decryptCustomer(c)
@@ -299,12 +354,14 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 	defer postgres.Rollback(tx)
 
 	var c domain.Customer
+	var storedCC string
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''), status,
 			email_status, email_last_bounced_at, COALESCE(email_bounce_reason,''),
 			COALESCE(cost_dashboard_token, ''),
 			COALESCE(test_clock_id, ''),
 			COALESCE(dunning_policy_id, ''),
+			additional_emails,
 			created_at, updated_at
 		FROM customers WHERE external_id = $1
 	`, externalID).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status,
@@ -312,12 +369,16 @@ func (s *PostgresStore) GetByExternalID(ctx context.Context, tenantID, externalI
 		&c.CostDashboardToken,
 		&c.TestClockID,
 		&c.DunningPolicyID,
+		&storedCC,
 		&c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return domain.Customer{}, errs.ErrNotFound
 	}
 	if err != nil {
+		return domain.Customer{}, err
+	}
+	if c.AdditionalEmails, err = s.additionalEmailsLoaded(storedCC); err != nil {
 		return domain.Customer{}, err
 	}
 	return s.decryptCustomer(c)
@@ -734,16 +795,20 @@ func (s *PostgresStore) Update(ctx context.Context, tenantID string, c domain.Cu
 	defer postgres.Rollback(tx)
 
 	now := clock.Now(ctx)
+	storedCC, err := s.additionalEmailsStored(c.AdditionalEmails)
+	if err != nil {
+		return domain.Customer{}, err
+	}
 	// Update intentionally does NOT touch test_clock_id — Stripe parity:
 	// once a customer is attached to a clock at create time, they're
 	// pinned for life. To switch clocks, delete + recreate. The column
 	// is read back into the result so callers see the unchanged value.
 	err = tx.QueryRowContext(ctx, `
 		UPDATE customers SET display_name = $1, email = $2, email_bidx = NULLIF($3,''),
-			status = $4, dunning_policy_id = NULLIF($5,''), updated_at = $6
-		WHERE id = $7
+			additional_emails = $4, status = $5, dunning_policy_id = NULLIF($6,''), updated_at = $7
+		WHERE id = $8
 		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), COALESCE(dunning_policy_id,''), created_at, updated_at
-	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), c.Status, c.DunningPolicyID, now, c.ID,
+	`, enc.DisplayName, enc.Email, s.emailBlindIndex(c.Email), storedCC, c.Status, c.DunningPolicyID, now, c.ID,
 	).Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email, &c.Status, &c.TestClockID, &c.DunningPolicyID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err == sql.ErrNoRows {

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"strings"
 	"time"
@@ -152,7 +153,7 @@ func NewTestSender(host, port, tlsMode string, prodEnv bool) *Sender {
 
 // DeliverForTest exposes deliver() to tests in this module.
 func (s *Sender) DeliverForTest(ctx context.Context, to string, body []byte) error {
-	return s.deliver(ctx, to, body)
+	return s.deliver(ctx, "", to, nil, body)
 }
 
 func (s *Sender) IsConfigured() bool { return s.host != "" }
@@ -397,7 +398,7 @@ func (s *Sender) hostedInvoiceURL(publicToken string) string {
 // ctx must carry livemode for the branding lookup; the request handler
 // sets it via auth middleware, the outbox dispatcher derives it from
 // the email_outbox row.
-func (s *Sender) SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
+func (s *Sender) SendInvoice(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 	amount := formatAmount(totalCents, currency)
@@ -417,6 +418,7 @@ func (s *Sender) SendInvoice(ctx context.Context, tenantID, to, customerName, in
 	return s.sendRich(ctx, richMessage{
 		TenantID:       tenantID,
 		To:             to,
+		Cc:             cc,
 		Subject:        subject,
 		TextBody:       textBody,
 		HTMLBody:       htmlBody,
@@ -427,7 +429,7 @@ func (s *Sender) SendInvoice(ctx context.Context, tenantID, to, customerName, in
 }
 
 // SendPaymentReceipt sends a receipt after successful payment.
-func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
+func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 	amount := formatAmount(amountCents, currency)
@@ -444,7 +446,7 @@ func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerN
 	textBody := receiptTextBody(customerName, invoiceNumber, amount, hostedURL)
 
 	return s.sendRich(ctx, richMessage{
-		TenantID: tenantID, To: to, Subject: subject,
+		TenantID: tenantID, To: to, Cc: cc, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
 }
@@ -455,7 +457,7 @@ func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to, customerN
 // tone on the final attempt ("Last attempt before service impact").
 // CTA is a "Pay invoice" button on the hosted invoice page (Stripe
 // Checkout there handles both PM update and pay).
-func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
+func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
@@ -471,13 +473,13 @@ func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to, customerN
 	textBody := dunningWarningTextBody(customerName, invoiceNumber, attemptNumber, maxAttempts, nextRetryDate, failureReason, hostedURL)
 
 	return s.sendRich(ctx, richMessage{
-		TenantID: tenantID, To: to, Subject: subject,
+		TenantID: tenantID, To: to, Cc: cc, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
 }
 
 // SendDunningEscalation emails the "retries exhausted" escalation.
-func (s *Sender) SendDunningEscalation(ctx context.Context, tenantID, to, customerName, invoiceNumber, action, publicToken string) error {
+func (s *Sender) SendDunningEscalation(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, action, publicToken string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
@@ -493,13 +495,13 @@ func (s *Sender) SendDunningEscalation(ctx context.Context, tenantID, to, custom
 	textBody := dunningEscalationTextBody(customerName, invoiceNumber, action, hostedURL)
 
 	return s.sendRich(ctx, richMessage{
-		TenantID: tenantID, To: to, Subject: subject,
+		TenantID: tenantID, To: to, Cc: cc, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
 }
 
 // SendPaymentFailed notifies a customer about a failed charge.
-func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error {
+func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, reason, publicToken string) error {
 	brand := s.brandingFor(ctx, tenantID)
 	hostedURL := s.hostedInvoiceURL(publicToken)
 
@@ -515,7 +517,7 @@ func (s *Sender) SendPaymentFailed(ctx context.Context, tenantID, to, customerNa
 	textBody := paymentFailedTextBody(customerName, invoiceNumber, reason, hostedURL)
 
 	return s.sendRich(ctx, richMessage{
-		TenantID: tenantID, To: to, Subject: subject,
+		TenantID: tenantID, To: to, Cc: cc, Subject: subject,
 		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
 	})
 }
@@ -594,6 +596,33 @@ func (s *Sender) SendPaymentSetupRequest(ctx context.Context, tenantID, to, cust
 	})
 }
 
+// SendCreditNote emails the credit-note document (ADR-082 rider).
+// invoiceNumber is the APPLIED invoice, named in the body so finance
+// can match the credit against the bill it adjusts. No CTA — no hosted
+// CN page exists; the attached PDF is the document.
+func (s *Sender) SendCreditNote(ctx context.Context, tenantID, to string, cc []string, customerName, creditNoteNumber, invoiceNumber string, amountCents int64, currency string, pdfBytes []byte) error {
+	brand := s.brandingFor(ctx, tenantID)
+	amount := formatAmount(amountCents, currency)
+
+	subject, contentHTML := renderCreditNoteHTML(customerName, creditNoteNumber, invoiceNumber, amount, brand.CompanyName)
+	htmlBody, err := renderLayout(layoutInputs{
+		Subject: subject, CompanyName: brand.CompanyName, LogoURL: brand.LogoURL,
+		BrandColor: brand.BrandColor, SupportURL: brand.SupportURL,
+		Content: template.HTML(contentHTML),
+	})
+	if err != nil {
+		return fmt.Errorf("render credit note html: %w", err)
+	}
+	textBody := creditNoteTextBody(customerName, creditNoteNumber, invoiceNumber, amount)
+
+	return s.sendRich(ctx, richMessage{
+		TenantID: tenantID, To: to, Cc: cc, Subject: subject,
+		TextBody: textBody, HTMLBody: htmlBody, FromName: brand.CompanyName,
+		AttachmentName: creditNoteNumber + ".pdf",
+		AttachmentData: pdfBytes,
+	})
+}
+
 // ---- Operator-facing emails (plain text; carry security tokens, no
 // tenant branding context) ----
 
@@ -622,7 +651,7 @@ func (s *Sender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmai
 	subject := fmt.Sprintf("You've been invited to %s on Velox", tenantName)
 	body := fmt.Sprintf(`Hi,
 
-%s invited you to join %s on Velox. Click the link below within the next 72 hours to set up your account:
+%s invited you to join %s on Velox. Click the link below within the next 7 days to set up your account:
 
 %s
 
@@ -728,8 +757,13 @@ The link expires in 24 hours and can only be used once.
 // a multipart/alternative (text+html) part plus the attachment; otherwise
 // it's multipart/alternative directly.
 type richMessage struct {
-	TenantID       string
-	To             string
+	TenantID string
+	To       string
+	// Cc are the additional billing recipients (ADR-082) — rendered as a
+	// visible Cc: header and RCPT'd in the same SMTP transaction. Only
+	// billing-document/billing-state emails populate it; the
+	// credential-bearing types have no cc parameter by construction.
+	Cc             []string
 	Subject        string
 	TextBody       string
 	HTMLBody       string
@@ -743,12 +777,26 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 		return ErrSMTPNotConfigured
 	}
 	if err := s.checkSuppression(ctx, msg.TenantID, msg.To); err != nil {
+		// Primary suppressed = the whole send is blocked, never
+		// downgraded to a CC-only delivery — the CC list is an audience,
+		// not an alternate recipient.
 		return err
 	}
+	cc := s.filterSuppressedCC(ctx, msg.TenantID, msg.Cc)
 
 	var body strings.Builder
 	fmt.Fprintf(&body, "From: %s\r\n", fromHeaderValue(msg.FromName, s.from))
 	fmt.Fprintf(&body, "To: %s\r\n", msg.To)
+	if len(cc) > 0 {
+		// Visible CC (Orb/Stripe semantics). Each address rendered via
+		// mail.Address so a CRLF-bearing value can never smuggle a raw
+		// header line — same neutralization as fromHeaderValue.
+		rendered := make([]string, len(cc))
+		for i, a := range cc {
+			rendered[i] = (&mail.Address{Address: a}).String()
+		}
+		fmt.Fprintf(&body, "Cc: %s\r\n", strings.Join(rendered, ", "))
+	}
 	fmt.Fprintf(&body, "Subject: %s\r\n", encodeHeader(msg.Subject))
 	body.WriteString("MIME-Version: 1.0\r\n")
 
@@ -789,13 +837,48 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 		fmt.Fprintf(&body, "\r\n--%s--\r\n", mixedBoundary)
 	}
 
-	if err := s.deliver(ctx, msg.To, []byte(body.String())); err != nil {
+	if err := s.deliver(ctx, msg.TenantID, msg.To, cc, []byte(body.String())); err != nil {
+		// deliver never returns a CC-only rejection (those are handled
+		// and bounce-attributed internally), so attributing this error's
+		// bounce to the PRIMARY recipient stays correct.
 		slog.Error("send email failed", "to", msg.To, "subject", msg.Subject, "error", err)
 		s.reportBounceIfPermanent(ctx, msg.TenantID, msg.To, err)
 		return fmt.Errorf("send email: %w", err)
 	}
-	slog.Info("email sent", "to", msg.To, "subject", msg.Subject, "html", true)
+	slog.Info("email sent", "to", msg.To, "cc_count", len(cc), "subject", msg.Subject, "html", true)
 	return nil
+}
+
+// filterSuppressedCC drops suppressed addresses from the CC list —
+// dispatch-time so a bounce recorded between enqueue and send is still
+// honored. Drops are logged, never errors: a dead CC must not block the
+// primary recipient's billing email (and failing the outbox row would
+// re-deliver to the primary on retry). One shared timeout bounds the
+// whole set so a slow lookup can't multiply into the per-row budget.
+func (s *Sender) filterSuppressedCC(ctx context.Context, tenantID string, cc []string) []string {
+	if len(cc) == 0 || s.suppression == nil || tenantID == "" {
+		return cc
+	}
+	supCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	kept := make([]string, 0, len(cc))
+	for _, addr := range cc {
+		suppressed, reason, err := s.suppression.IsSuppressed(supCtx, tenantID, addr)
+		if err != nil {
+			// Fail-open per address, same posture as the primary check.
+			slog.Warn("cc suppression check failed; keeping recipient",
+				"tenant_id", tenantID, "cc", addr, "error", err)
+			kept = append(kept, addr)
+			continue
+		}
+		if suppressed {
+			slog.Info("cc recipient suppressed — dropped from send",
+				"tenant_id", tenantID, "cc", addr, "reason", reason)
+			continue
+		}
+		kept = append(kept, addr)
+	}
+	return kept
 }
 
 // deliver dispatches the rendered RFC-5322 message via SMTP. ONE code
@@ -815,7 +898,17 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 //   - AUTH: only when credentials are configured AND the server
 //     advertises AUTH (Mailpit and friends advertise none — the old
 //     implicit path always authed and broke no-auth sandboxes).
-func (s *Sender) deliver(ctx context.Context, to string, body []byte) error {
+//
+// Per-recipient policy (ADR-082): the primary `to` RCPT keeps today's
+// semantics — any rejection is a hard error (sendRich attributes its
+// bounce to the primary). A CC RCPT *protocol* rejection (a
+// *textproto.Error reply) is handled INTERNALLY: WARN + bounce-report
+// for the FAILING address, drop it, continue — it must never surface as
+// deliver's return error or the primary customer would be wrongly
+// flipped to bounced. A CC *transport* error (dial/deadline/IO) aborts
+// the whole send: DATA hasn't been sent yet, so the retry is safe and
+// nothing was delivered.
+func (s *Sender) deliver(ctx context.Context, tenantID, to string, cc []string, body []byte) error {
 	if s.tlsMode == "none" && s.prodEnv {
 		return fmt.Errorf("SMTP_TLS=none is forbidden in production — use starttls or implicit")
 	}
@@ -875,6 +968,24 @@ func (s *Sender) deliver(ctx context.Context, to string, body []byte) error {
 	if err := c.Rcpt(to); err != nil {
 		return fmt.Errorf("smtp rcpt to: %w", err)
 	}
+	for _, addr := range cc {
+		if err := c.Rcpt(addr); err != nil {
+			var proto *textproto.Error
+			if errors.As(err, &proto) {
+				// The server REPLIED rejecting this one recipient — the
+				// transaction is intact and the remaining recipients
+				// still receive. Attribute the bounce to the CC address,
+				// never to the primary.
+				slog.Warn("smtp rcpt rejected for cc recipient — dropped from this send",
+					"cc", addr, "code", proto.Code, "error", err)
+				s.reportBounceIfPermanent(ctx, tenantID, addr, err)
+				continue
+			}
+			// Transport/IO failure: nothing has been delivered (DATA not
+			// sent) — abort so the outbox retry re-drives the whole send.
+			return fmt.Errorf("smtp rcpt cc: %w", err)
+		}
+	}
 	w, err := c.Data()
 	if err != nil {
 		return fmt.Errorf("smtp data: %w", err)
@@ -905,7 +1016,7 @@ func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject,
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	msg.WriteString(body)
 
-	if err := s.deliver(ctx, to, []byte(msg.String())); err != nil {
+	if err := s.deliver(ctx, tenantID, to, nil, []byte(msg.String())); err != nil {
 		slog.Error("send email failed", "to", to, "subject", subject, "error", err)
 		s.reportBounceIfPermanent(ctx, tenantID, to, err)
 		return fmt.Errorf("send email: %w", err)
@@ -968,4 +1079,15 @@ func envOr(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func creditNoteTextBody(customerName, creditNoteNumber, invoiceNumber, amount string) string {
+	return fmt.Sprintf(`Hi %s,
+
+Credit note %s has been issued against invoice %s.
+
+Amount credited: %s
+
+The credit note PDF is attached for your records.
+`, customerName, creditNoteNumber, invoiceNumber, amount)
 }

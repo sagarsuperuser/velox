@@ -88,7 +88,7 @@ type DunningTimelineFetcher interface {
 // (set by auth middleware) so the underlying enqueue / brand lookup
 // stamps the right tenant_settings + email_outbox row.
 type EmailSender interface {
-	SendInvoice(ctx context.Context, tenantID, to, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
+	SendInvoice(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, totalCents int64, currency string, pdfBytes []byte, publicToken string) error
 }
 
 // EmailEventLister surfaces customer-notification email rows
@@ -754,6 +754,12 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 
 	var body struct {
 		Email string `json:"email"`
+		// AdditionalEmails overrides the CC list for THIS send
+		// (ADR-082): absent → the customer's stored additional_emails;
+		// explicit [] → primary only; explicit list → validated exact
+		// override. Legacy {email}-only bodies therefore now CC the
+		// stored list — the Orb-parity default.
+		AdditionalEmails *[]string `json:"additional_emails,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
 		respond.BadRequest(w, r, "email is required")
@@ -767,6 +773,12 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		respond.InternalError(w, r)
+		return
+	}
+
+	cc, err := resolveSendCC(r.Context(), h.customers, tenantID, inv.CustomerID, body.Email, body.AdditionalEmails)
+	if err != nil {
+		respond.FromError(w, r, err, "invoice_email")
 		return
 	}
 
@@ -785,7 +797,7 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	// AmountDueCents, not Total: the email template labels this figure
 	// "Amount due", and credits/partial payments make the two differ —
 	// telling a customer they owe the pre-credit total is wrong.
-	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, bt.Name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
+	if err := h.emailSender.SendInvoice(r.Context(), tenantID, body.Email, cc, bt.Name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, pdfBytes, inv.PublicToken); err != nil {
 		// Sanitize at the boundary — SMTP errors / outbox-store errors
 		// would otherwise leak to the operator toast. ADR-026.
 		respond.FromError(w, r, err, "invoice_email")
@@ -804,6 +816,40 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+// resolveSendCC resolves the CC list for an operator-initiated document
+// send (ADR-082 tri-state): nil override → the customer's stored
+// additional_emails; explicit list (incl. empty) → validated exact
+// override against the To address. Exported to the creditnote handler's
+// twin via the shared domain.NormalizeAdditionalEmails; kept here as a
+// helper because both send handlers in this package family need it.
+func resolveSendCC(ctx context.Context, customers CustomerGetter, tenantID, customerID, to string, override *[]string) ([]string, error) {
+	if override != nil {
+		return domain.NormalizeAdditionalEmails(*override, to)
+	}
+	if customers == nil {
+		// JSON-only handler wiring (tests) — no stored list to default
+		// from. Production always wires the customer getter.
+		return nil, nil
+	}
+	cust, err := customers.Get(ctx, tenantID, customerID)
+	if err != nil {
+		// The stored list is a default, not a hard dependency — but a
+		// failed lookup means we can't honor the operator's configured
+		// recipients, and silently sending primary-only would be a
+		// silent drop. Fail loud; the operator retries.
+		return nil, fmt.Errorf("resolve customer additional emails: %w", err)
+	}
+	// Stored entries equal to the To address are skipped (the operator
+	// may have typed one of the CC addresses as the To override).
+	kept := cust.AdditionalEmails[:0:0]
+	for _, a := range cust.AdditionalEmails {
+		if !strings.EqualFold(a, strings.TrimSpace(to)) {
+			kept = append(kept, a)
+		}
+	}
+	return kept, nil
 }
 
 func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {

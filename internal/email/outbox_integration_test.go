@@ -264,7 +264,7 @@ func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	sender := email.NewOutboxSender(store)
 
 	pdf := []byte("%PDF-fake")
-	if err := sender.SendInvoice(ctx, tenantID, "ada@example.com", "Ada", "VLX-7", 25_000, "USD", pdf, "vlx_pinv_roundtrip"); err != nil {
+	if err := sender.SendInvoice(ctx, tenantID, "ada@example.com", []string{"finance@example.com"}, "Ada", "VLX-7", 25_000, "USD", pdf, "vlx_pinv_roundtrip"); err != nil {
 		t.Fatalf("enqueue SendInvoice: %v", err)
 	}
 
@@ -298,6 +298,64 @@ func TestEmailOutbox_OutboxSender_RoundTrip(t *testing.T) {
 	if fake.lastTo != "ada@example.com" || fake.lastAmount != 25_000 || fake.lastCurrency != "USD" {
 		t.Errorf("args not round-tripped: to=%q amount=%d currency=%q",
 			fake.lastTo, fake.lastAmount, fake.lastCurrency)
+	}
+	// CC survives the payload round trip (ADR-082 — the SetupURL bug
+	// class: a struct field silently dropped between enqueue and
+	// dispatch means the operator's configured recipients never receive).
+	if len(fake.lastCc) != 1 || fake.lastCc[0] != "finance@example.com" {
+		t.Errorf("cc not round-tripped: got %v, want [finance@example.com]", fake.lastCc)
+	}
+}
+
+// TestEmailOutbox_CreditNote_RoundTrip: the new credit_note type (ADR-082
+// rider) round-trips — number, applied invoice, amount, PDF, and cc all
+// reach the deliverer; legacy rows WITHOUT a cc key dispatch with nil cc
+// (binary-skew / rollback compat).
+func TestEmailOutbox_CreditNote_RoundTrip(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 15*time.Second)
+	defer cancel()
+
+	tenantID := testutil.CreateTestTenant(t, db, "Email Outbox CN RoundTrip")
+	store := email.NewOutboxStore(db)
+	sender := email.NewOutboxSender(store)
+
+	pdf := []byte("%PDF-cn")
+	if err := sender.SendCreditNote(ctx, tenantID, "ada@example.com", []string{"finance@example.com"},
+		"Ada", "CN-0001", "VLX-7", 5_400, "USD", pdf); err != nil {
+		t.Fatalf("enqueue SendCreditNote: %v", err)
+	}
+	// Legacy-shape row: no cc key at all (written by an older binary).
+	if _, err := store.EnqueueStandalone(ctx, tenantID, email.TypeCreditNote, map[string]any{
+		"to": "old@example.com", "customer_name": "Old", "credit_note_number": "CN-0002",
+		"invoice_number": "VLX-8", "amount_cents": 100, "currency": "USD",
+	}); err != nil {
+		t.Fatalf("enqueue legacy row: %v", err)
+	}
+
+	fake := &fakeDeliverer{}
+	seen := map[string][]string{}
+	n, err := store.ProcessBatch(ctx, 10, func(c context.Context, row email.OutboxRow) error {
+		if err := callDeliverer(c, fake, row); err != nil {
+			return err
+		}
+		seen[fake.lastTo] = fake.lastCc
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("processed: got %d, want 2", n)
+	}
+	if fake.lastType != email.TypeCreditNote {
+		t.Errorf("type: got %q, want %q", fake.lastType, email.TypeCreditNote)
+	}
+	if cc := seen["ada@example.com"]; len(cc) != 1 || cc[0] != "finance@example.com" {
+		t.Errorf("CN cc round trip: got %v", cc)
+	}
+	if cc := seen["old@example.com"]; cc != nil {
+		t.Errorf("legacy row without cc key must dispatch with nil cc, got %v", cc)
 	}
 }
 
@@ -355,39 +413,45 @@ type fakeDeliverer struct {
 	lastUpdateURL     string
 	lastPDF           []byte
 	lastPublicToken   string
+	lastCc            []string
 }
 
-func (f *fakeDeliverer) SendInvoice(_ context.Context, tenantID, to, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
+func (f *fakeDeliverer) SendInvoice(_ context.Context, tenantID, to string, cc []string, name, inv string, total int64, cur string, pdf []byte, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeInvoice, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency, f.lastPDF = total, cur, pdf
+	f.lastCc = cc
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentReceipt(_ context.Context, tenantID, to, name, inv string, amount int64, cur, publicToken string) error {
+func (f *fakeDeliverer) SendPaymentReceipt(_ context.Context, tenantID, to string, cc []string, name, inv string, amount int64, cur, publicToken string) error {
 	f.calls++
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentReceipt, tenantID, to, name, inv
 	f.lastAmount, f.lastCurrency = amount, cur
+	f.lastCc = cc
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningWarning(_ context.Context, tenantID, to, name, inv string, n, max int, next, failureReason, publicToken string) error {
+func (f *fakeDeliverer) SendDunningWarning(_ context.Context, tenantID, to string, cc []string, name, inv string, n, max int, next, failureReason, publicToken string) error {
 	f.calls++
+	f.lastCc = cc
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningWarning, tenantID, to, name, inv
 	f.lastAttemptN, f.lastMaxN, f.lastNextDate = n, max, next
 	f.lastFailureReason = failureReason
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendDunningEscalation(_ context.Context, tenantID, to, name, inv, action, publicToken string) error {
+func (f *fakeDeliverer) SendDunningEscalation(_ context.Context, tenantID, to string, cc []string, name, inv, action, publicToken string) error {
 	f.calls++
+	f.lastCc = cc
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeDunningEscalation, tenantID, to, name, inv
 	f.lastAction = action
 	f.lastPublicToken = publicToken
 	return nil
 }
-func (f *fakeDeliverer) SendPaymentFailed(_ context.Context, tenantID, to, name, inv, reason, publicToken string) error {
+func (f *fakeDeliverer) SendPaymentFailed(_ context.Context, tenantID, to string, cc []string, name, inv, reason, publicToken string) error {
 	f.calls++
+	f.lastCc = cc
 	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypePaymentFailed, tenantID, to, name, inv
 	f.lastReason = reason
 	f.lastPublicToken = publicToken
@@ -417,6 +481,13 @@ func (f *fakeDeliverer) SendMemberInvite(_ context.Context, tenantID, to, invite
 	f.lastUpdateURL = url
 	return nil
 }
+func (f *fakeDeliverer) SendCreditNote(_ context.Context, tenantID, to string, cc []string, name, cnNumber, inv string, amount int64, cur string, pdf []byte) error {
+	f.calls++
+	f.lastCc = cc
+	f.lastType, f.lastTenant, f.lastTo, f.lastName, f.lastInvoice = email.TypeCreditNote, tenantID, to, name, inv
+	f.lastAmount, f.lastCurrency, f.lastPDF = amount, cur, pdf
+	return nil
+}
 
 // callDeliverer mirrors the dispatcher's payload decode + switch. The
 // dispatcher's handle method is unexported; re-implementing the decode here
@@ -428,37 +499,41 @@ func callDeliverer(ctx context.Context, d email.EmailDeliverer, row email.Outbox
 		return err
 	}
 	var m struct {
-		To            string `json:"to"`
-		CustomerName  string `json:"customer_name"`
-		InvoiceNumber string `json:"invoice_number"`
-		AmountCents   int64  `json:"amount_cents"`
-		Currency      string `json:"currency"`
-		AttemptNumber int    `json:"attempt_number"`
-		MaxAttempts   int    `json:"max_attempts"`
-		NextRetryDate string `json:"next_retry_date"`
-		Action        string `json:"action"`
-		Reason        string `json:"reason"`
-		FailureReason string `json:"failure_reason"`
-		UpdateURL     string `json:"update_url"`
-		PublicToken   string `json:"public_token"`
-		PDF           []byte `json:"pdf"`
+		To               string   `json:"to"`
+		Cc               []string `json:"cc"`
+		CreditNoteNumber string   `json:"credit_note_number"`
+		CustomerName     string   `json:"customer_name"`
+		InvoiceNumber    string   `json:"invoice_number"`
+		AmountCents      int64    `json:"amount_cents"`
+		Currency         string   `json:"currency"`
+		AttemptNumber    int      `json:"attempt_number"`
+		MaxAttempts      int      `json:"max_attempts"`
+		NextRetryDate    string   `json:"next_retry_date"`
+		Action           string   `json:"action"`
+		Reason           string   `json:"reason"`
+		FailureReason    string   `json:"failure_reason"`
+		UpdateURL        string   `json:"update_url"`
+		PublicToken      string   `json:"public_token"`
+		PDF              []byte   `json:"pdf"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return err
 	}
 	switch row.EmailType {
 	case email.TypeInvoice:
-		return d.SendInvoice(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF, m.PublicToken)
+		return d.SendInvoice(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF, m.PublicToken)
 	case email.TypePaymentReceipt:
-		return d.SendPaymentReceipt(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
+		return d.SendPaymentReceipt(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.PublicToken)
 	case email.TypeDunningWarning:
-		return d.SendDunningWarning(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.FailureReason, m.PublicToken)
+		return d.SendDunningWarning(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.InvoiceNumber, m.AttemptNumber, m.MaxAttempts, m.NextRetryDate, m.FailureReason, m.PublicToken)
 	case email.TypeDunningEscalation:
-		return d.SendDunningEscalation(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
+		return d.SendDunningEscalation(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.InvoiceNumber, m.Action, m.PublicToken)
 	case email.TypePaymentFailed:
-		return d.SendPaymentFailed(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
+		return d.SendPaymentFailed(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.InvoiceNumber, m.Reason, m.PublicToken)
 	case email.TypePaymentSetupRequest:
 		return d.SendPaymentSetupRequest(ctx, row.TenantID, m.To, m.CustomerName, m.InvoiceNumber, m.AmountCents, m.Currency, m.UpdateURL)
+	case email.TypeCreditNote:
+		return d.SendCreditNote(ctx, row.TenantID, m.To, m.Cc, m.CustomerName, m.CreditNoteNumber, m.InvoiceNumber, m.AmountCents, m.Currency, m.PDF)
 	default:
 		return fmt.Errorf("unknown email_type %q", row.EmailType)
 	}

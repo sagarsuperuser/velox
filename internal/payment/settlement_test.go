@@ -99,7 +99,7 @@ func (r *recordingEventDispatcher) Dispatch(_ context.Context, _, eventType stri
 // recordingReceiptEmail counts payment-receipt enqueues.
 type recordingReceiptEmail struct{ sends int }
 
-func (r *recordingReceiptEmail) SendPaymentReceipt(_ context.Context, _, _, _, _ string, _ int64, _, _ string) error {
+func (r *recordingReceiptEmail) SendPaymentReceipt(_ context.Context, _, _ string, _ []string, _, _ string, _ int64, _, _ string) error {
 	r.sends++
 	return nil
 }
@@ -107,15 +107,15 @@ func (r *recordingReceiptEmail) SendPaymentReceipt(_ context.Context, _, _, _, _
 // recordingFailedEmail counts payment-failed enqueues.
 type recordingFailedEmail struct{ sends int }
 
-func (r *recordingFailedEmail) SendPaymentFailed(_ context.Context, _, _, _, _, _, _ string) error {
+func (r *recordingFailedEmail) SendPaymentFailed(_ context.Context, _, _ string, _ []string, _, _, _, _ string) error {
 	r.sends++
 	return nil
 }
 
 type staticCustomerEmail struct{}
 
-func (staticCustomerEmail) GetCustomerEmail(_ context.Context, _, _ string) (string, string, error) {
-	return "buyer@example.com", "Buyer", nil
+func (staticCustomerEmail) GetCustomerEmail(_ context.Context, _, _ string) (string, string, []string, error) {
+	return "buyer@example.com", "Buyer", nil, nil
 }
 
 // TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce locks the H7
@@ -395,7 +395,7 @@ func (c *callSequencer) record(name string, ctx context.Context) {
 
 type sequencedReceiptEmail struct{ seq *callSequencer }
 
-func (r sequencedReceiptEmail) SendPaymentReceipt(ctx context.Context, _, _, _, _ string, _ int64, _, _ string) error {
+func (r sequencedReceiptEmail) SendPaymentReceipt(ctx context.Context, _, _ string, _ []string, _, _ string, _ int64, _, _ string) error {
 	r.seq.record("receipt_enqueue", ctx)
 	return nil
 }
@@ -502,7 +502,7 @@ func TestSettleFailed_EmailEnqueueBeforeDunningStart(t *testing.T) {
 
 type sequencedFailedEmail struct{ seq *callSequencer }
 
-func (r sequencedFailedEmail) SendPaymentFailed(ctx context.Context, _, _, _, _, _, _ string) error {
+func (r sequencedFailedEmail) SendPaymentFailed(ctx context.Context, _, _ string, _ []string, _, _, _, _ string) error {
 	r.seq.record("failed_email_enqueue", ctx)
 	return nil
 }

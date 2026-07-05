@@ -185,11 +185,11 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// an error would make the webhook re-fire the whole event (re-MarkPaid +
 	// double-firing the customer-facing event).
 	if s.emailReceipt != nil && s.customerEmail != nil {
-		email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
+		email, name, cc, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 		if err != nil || email == "" {
 			slog.Warn("skip payment receipt email — cannot resolve customer email",
 				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, name, inv.InvoiceNumber, receiptAmountCents(capturedCents, fresh), inv.Currency, inv.PublicToken); err != nil {
+		} else if err := s.emailReceipt.SendPaymentReceipt(ctx, tenantID, email, cc, name, inv.InvoiceNumber, receiptAmountCents(capturedCents, fresh), inv.Currency, inv.PublicToken); err != nil {
 			slog.Error("failed to enqueue payment receipt email",
 				"invoice_id", inv.ID, "email", email, "error", err)
 		}
@@ -359,10 +359,10 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 		if s.customerEmail == nil {
 			slog.Error("payment failed email — customer email resolver not wired",
 				"invoice_id", inv.ID)
-		} else if email, name, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
+		} else if email, name, cc, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID); err != nil || email == "" {
 			slog.Warn("skip payment failed email — cannot resolve customer email",
 				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
-		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
+		} else if err := s.emailPaymentFailed.SendPaymentFailed(ctx, tenantID, email, cc, name, inv.InvoiceNumber, failureMsg, inv.PublicToken); err != nil {
 			slog.Error("failed to enqueue payment failed email",
 				"invoice_id", inv.ID, "email", email, "error", err)
 		}

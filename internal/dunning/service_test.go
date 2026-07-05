@@ -575,23 +575,23 @@ type recordingEmailNotifier struct {
 	paymentFails int
 }
 
-func (r *recordingEmailNotifier) SendPaymentFailed(context.Context, string, string, string, string, string, string) error {
+func (r *recordingEmailNotifier) SendPaymentFailed(context.Context, string, string, []string, string, string, string, string) error {
 	r.paymentFails++
 	return nil
 }
-func (r *recordingEmailNotifier) SendDunningWarning(context.Context, string, string, string, string, int, int, string, string, string) error {
+func (r *recordingEmailNotifier) SendDunningWarning(context.Context, string, string, []string, string, string, int, int, string, string, string) error {
 	r.warnings++
 	return nil
 }
-func (r *recordingEmailNotifier) SendDunningEscalation(context.Context, string, string, string, string, string, string) error {
+func (r *recordingEmailNotifier) SendDunningEscalation(context.Context, string, string, []string, string, string, string, string) error {
 	r.escalations++
 	return nil
 }
 
 type stubCustomerEmail struct{}
 
-func (stubCustomerEmail) GetCustomerEmail(context.Context, string, string) (string, string, error) {
-	return "test@velox.dev", "Test Co", nil
+func (stubCustomerEmail) GetCustomerEmail(context.Context, string, string) (string, string, []string, error) {
+	return "test@velox.dev", "Test Co", nil, nil
 }
 
 // TestProcessDueRunsForClock_EnqueuesEscalationEmailOnExhaust locks in

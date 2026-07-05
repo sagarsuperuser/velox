@@ -192,6 +192,9 @@ type CreateInput struct {
 	ExternalID  string `json:"external_id"`
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email,omitempty"`
+	// AdditionalEmails are CC'd on billing emails (ADR-082) —
+	// normalized, deduped, capped at 10, never equal to the primary.
+	AdditionalEmails []string `json:"additional_emails,omitempty"`
 	// TestClockID pins this customer to a test clock — Stripe parity,
 	// ADR-027. Test-mode only; rejected on live-mode customers via
 	// the livemode check below. Once attached at create time, every
@@ -240,11 +243,17 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		}
 	}
 
+	cc, err := normalizeAdditionalEmails(input.AdditionalEmails, input.Email)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+
 	return s.store.Create(ctx, tenantID, domain.Customer{
-		ExternalID:  input.ExternalID,
-		DisplayName: input.DisplayName,
-		Email:       input.Email,
-		TestClockID: input.TestClockID,
+		ExternalID:       input.ExternalID,
+		DisplayName:      input.DisplayName,
+		Email:            input.Email,
+		AdditionalEmails: cc,
+		TestClockID:      input.TestClockID,
 	})
 }
 
@@ -305,6 +314,10 @@ type UpdateInput struct {
 	// leave as-is; *"" = clear assignment (fall back to default);
 	// *"vlx_dpol_..." = assign to that policy.
 	DunningPolicyID *string `json:"dunning_policy_id,omitempty"`
+	// AdditionalEmails replaces the CC list (ADR-082). Pointer for the
+	// same omitted-vs-clear distinction: nil = leave as-is; *[] =
+	// clear; *[...] = validated replacement.
+	AdditionalEmails *[]string `json:"additional_emails,omitempty"`
 }
 
 func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateInput) (domain.Customer, error) {
@@ -359,6 +372,24 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, input UpdateI
 	}
 	if input.DunningPolicyID != nil {
 		existing.DunningPolicyID = strings.TrimSpace(*input.DunningPolicyID)
+	}
+	if input.AdditionalEmails != nil {
+		cc, err := normalizeAdditionalEmails(*input.AdditionalEmails, existing.Email)
+		if err != nil {
+			return domain.Customer{}, err
+		}
+		existing.AdditionalEmails = cc
+	} else if existing.Email != prevEmail {
+		// Primary changed without touching the CC list: if the new
+		// primary is already on the stored list it would be both To and
+		// Cc on every send — reject rather than silently rewrite the
+		// operator's list.
+		for _, cc := range existing.AdditionalEmails {
+			if strings.EqualFold(cc, existing.Email) {
+				return domain.Customer{}, errs.Invalid("email",
+					"this address is on the additional-emails list — remove it there first")
+			}
+		}
 	}
 
 	updated, err := s.store.Update(ctx, tenantID, existing)
@@ -577,6 +608,13 @@ func (s *Service) GetBillingProfile(ctx context.Context, tenantID, customerID st
 // like `foo@bar` (no TLD) — fine in RFC terms, useless for actual
 // SMTP delivery, so we still gate on the dot. Tier-1 syntax check;
 // tier-6 (bounce-driven suppression) catches what survives.
+// normalizeAdditionalEmails delegates to the shared canonicalizer so
+// the stored list and the per-send overrides (invoice/CN send
+// handlers) enforce identical rules from one source.
+func normalizeAdditionalEmails(list []string, primaryEmail string) ([]string, error) {
+	return domain.NormalizeAdditionalEmails(list, primaryEmail)
+}
+
 func validateEmail(field, email string) error {
 	addr, err := mail.ParseAddress(email)
 	if err != nil {

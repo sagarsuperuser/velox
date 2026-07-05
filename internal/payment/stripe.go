@@ -67,12 +67,12 @@ type CardFetcher interface {
 // EmailReceipt sends payment receipt emails. ctx carries livemode so
 // the enqueue/brand lookup runs against the right tenant_settings row.
 type EmailReceipt interface {
-	SendPaymentReceipt(ctx context.Context, tenantID, to, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
+	SendPaymentReceipt(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, amountCents int64, currency, publicToken string) error
 }
 
 // CustomerEmailResolver resolves customer contact info for email notifications.
 type CustomerEmailResolver interface {
-	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, err error)
+	GetCustomerEmail(ctx context.Context, tenantID, customerID string) (email, displayName string, additionalEmails []string, err error)
 }
 
 // EmailPaymentFailed sends "your charge was declined" emails. Hits
@@ -81,7 +81,7 @@ type CustomerEmailResolver interface {
 // no PM on file at finalize (no charge was ever attempted). Same
 // signature as dunning.EmailNotifier so OutboxSender satisfies both.
 type EmailPaymentFailed interface {
-	SendPaymentFailed(ctx context.Context, tenantID, to, customerName, invoiceNumber, reason, publicToken string) error
+	SendPaymentFailed(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, reason, publicToken string) error
 }
 
 type Stripe struct {
