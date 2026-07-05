@@ -995,11 +995,17 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+	// amount_cents is what the settle BOOKED — AmountPaidCents on the
+	// post-transition row. MarkPaid flips amount_paid=amount_due and
+	// amount_due=0 in the same statement, so reading AmountDueCents here
+	// (the pre-fix bug) reported amount_cents: 0 on every offline payment
+	// — the audit trail and the invoice.payment_recorded webhook both
+	// told integrators a zero-value payment was recorded.
 	if s.audit != nil {
 		meta := map[string]any{
 			"action":                "payment_recorded",
 			"customer_id":           updated.CustomerID,
-			"amount_cents":          updated.AmountDueCents,
+			"amount_cents":          updated.AmountPaidCents,
 			"currency":              updated.Currency,
 			"recovered_from_status": string(inv.Status),
 		}
@@ -1013,7 +1019,7 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 			"invoice_id":     updated.ID,
 			"invoice_number": updated.InvoiceNumber,
 			"customer_id":    updated.CustomerID,
-			"amount_cents":   updated.AmountDueCents,
+			"amount_cents":   updated.AmountPaidCents,
 			"currency":       updated.Currency,
 			"recovered_from": string(inv.Status),
 			"recorded_at":    now.UTC(),
