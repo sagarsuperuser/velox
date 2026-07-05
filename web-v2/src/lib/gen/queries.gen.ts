@@ -30,8 +30,10 @@ import type {
   CreditBalance,
   Customer,
   Error,
+  GetV1CustomersIdMarginParams,
   GetV1CustomersParams,
   GetV1InvoicesParams,
+  GetV1ProviderCosts200,
   GetV1SubscriptionsParams,
   GetV1TestClocks200,
   GetV1TestClocksId200,
@@ -39,6 +41,7 @@ import type {
   GetV1Whoami200,
   Invoice,
   InvoiceWithLineItems,
+  MarginReport,
   PostV1AuthLogin200,
   PostV1AuthLoginBody,
   PostV1AuthMode200,
@@ -59,7 +62,9 @@ import type {
   PostV1TestClocksIdAdvance200,
   PostV1TestClocksIdAdvanceBody,
   PostV1UsageEventsBatchBodyItem,
-  PostV1UsageEventsBody
+  PostV1UsageEventsBody,
+  ProviderCostRate,
+  PutV1ProviderCostsBody
 } from './schemas';
 
 import { orvalClient } from '../orvalClient';
@@ -2734,6 +2739,375 @@ export function useGetV1BillingPreviewSubscriptionId<TData = Awaited<ReturnType<
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetV1BillingPreviewSubscriptionIdQueryOptions(subscriptionId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * The operator's COGS table (ADR-079): what THEY pay LLM providers per
+token, keyed by provider/model/token_type. Current-rate semantics —
+one row per key, edited in place; per-event stamps are the history.
+
+ * @summary List provider cost rates
+ */
+export const getGetV1ProviderCostsUrl = () => {
+
+
+
+
+  return `/v1/provider-costs`
+}
+
+export const getV1ProviderCosts = async ( options?: RequestInit): Promise<GetV1ProviderCosts200> => {
+
+  return orvalClient<GetV1ProviderCosts200>(getGetV1ProviderCostsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1ProviderCostsQueryKey = () => {
+    return [
+    `/v1/provider-costs`
+    ] as const;
+    }
+
+
+export const getGetV1ProviderCostsQueryOptions = <TData = Awaited<ReturnType<typeof getV1ProviderCosts>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1ProviderCostsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1ProviderCosts>>> = () => getV1ProviderCosts(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1ProviderCostsQueryResult = NonNullable<Awaited<ReturnType<typeof getV1ProviderCosts>>>
+export type GetV1ProviderCostsQueryError = unknown
+
+
+export function useGetV1ProviderCosts<TData = Awaited<ReturnType<typeof getV1ProviderCosts>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1ProviderCosts>>,
+          TError,
+          Awaited<ReturnType<typeof getV1ProviderCosts>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1ProviderCosts<TData = Awaited<ReturnType<typeof getV1ProviderCosts>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1ProviderCosts>>,
+          TError,
+          Awaited<ReturnType<typeof getV1ProviderCosts>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1ProviderCosts<TData = Awaited<ReturnType<typeof getV1ProviderCosts>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List provider cost rates
+ */
+
+export function useGetV1ProviderCosts<TData = Awaited<ReturnType<typeof getV1ProviderCosts>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1ProviderCosts>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1ProviderCostsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Create or update a provider cost rate
+ */
+export const getPutV1ProviderCostsUrl = () => {
+
+
+
+
+  return `/v1/provider-costs`
+}
+
+export const putV1ProviderCosts = async (putV1ProviderCostsBody: PutV1ProviderCostsBody, options?: RequestInit): Promise<ProviderCostRate> => {
+
+  return orvalClient<ProviderCostRate>(getPutV1ProviderCostsUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      putV1ProviderCostsBody,)
+  }
+);}
+
+
+
+
+export const getPutV1ProviderCostsMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putV1ProviderCosts>>, TError,{data: PutV1ProviderCostsBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof putV1ProviderCosts>>, TError,{data: PutV1ProviderCostsBody}, TContext> => {
+
+const mutationKey = ['putV1ProviderCosts'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof putV1ProviderCosts>>, {data: PutV1ProviderCostsBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  putV1ProviderCosts(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PutV1ProviderCostsMutationResult = NonNullable<Awaited<ReturnType<typeof putV1ProviderCosts>>>
+    export type PutV1ProviderCostsMutationBody = PutV1ProviderCostsBody
+    export type PutV1ProviderCostsMutationError = unknown
+
+    /**
+ * @summary Create or update a provider cost rate
+ */
+export const usePutV1ProviderCosts = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putV1ProviderCosts>>, TError,{data: PutV1ProviderCostsBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof putV1ProviderCosts>>,
+        TError,
+        {data: PutV1ProviderCostsBody},
+        TContext
+      > => {
+      return useMutation(getPutV1ProviderCostsMutationOptions(options), queryClient);
+    }
+
+/**
+ * Stamped events keep their snapshot — deletion never rewrites history.
+ * @summary Delete a provider cost rate
+ */
+export const getDeleteV1ProviderCostsIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/provider-costs/${id}`
+}
+
+export const deleteV1ProviderCostsId = async (id: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getDeleteV1ProviderCostsIdUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteV1ProviderCostsIdMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1ProviderCostsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteV1ProviderCostsId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteV1ProviderCostsId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteV1ProviderCostsId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteV1ProviderCostsId(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteV1ProviderCostsIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteV1ProviderCostsId>>>
+
+    export type DeleteV1ProviderCostsIdMutationError = unknown
+
+    /**
+ * @summary Delete a provider cost rate
+ */
+export const useDeleteV1ProviderCostsId = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1ProviderCostsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteV1ProviderCostsId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getDeleteV1ProviderCostsIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * Rated usage revenue vs stamped provider COGS for a window (ADR-079).
+A usage unit-economics view — base fees, credits, and taxes are not
+included. Per-model margin renders only where pricing rules pin the
+model; other revenue is reported unattributed, never allocated by
+heuristic.
+
+ * @summary Per-customer margin report (operator only)
+ */
+export const getGetV1CustomersIdMarginUrl = (id: string,
+    params?: GetV1CustomersIdMarginParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/v1/customers/${id}/margin?${stringifiedParams}` : `/v1/customers/${id}/margin`
+}
+
+export const getV1CustomersIdMargin = async (id: string,
+    params?: GetV1CustomersIdMarginParams, options?: RequestInit): Promise<MarginReport> => {
+
+  return orvalClient<MarginReport>(getGetV1CustomersIdMarginUrl(id,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1CustomersIdMarginQueryKey = (id: string,
+    params?: GetV1CustomersIdMarginParams,) => {
+    return [
+    `/v1/customers/${id}/margin`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetV1CustomersIdMarginQueryOptions = <TData = Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError = unknown>(id: string,
+    params?: GetV1CustomersIdMarginParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1CustomersIdMarginQueryKey(id,params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1CustomersIdMargin>>> = () => getV1CustomersIdMargin(id,params, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1CustomersIdMarginQueryResult = NonNullable<Awaited<ReturnType<typeof getV1CustomersIdMargin>>>
+export type GetV1CustomersIdMarginQueryError = unknown
+
+
+export function useGetV1CustomersIdMargin<TData = Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError = unknown>(
+ id: string,
+    params: undefined |  GetV1CustomersIdMarginParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1CustomersIdMargin>>,
+          TError,
+          Awaited<ReturnType<typeof getV1CustomersIdMargin>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1CustomersIdMargin<TData = Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError = unknown>(
+ id: string,
+    params?: GetV1CustomersIdMarginParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1CustomersIdMargin>>,
+          TError,
+          Awaited<ReturnType<typeof getV1CustomersIdMargin>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1CustomersIdMargin<TData = Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError = unknown>(
+ id: string,
+    params?: GetV1CustomersIdMarginParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Per-customer margin report (operator only)
+ */
+
+export function useGetV1CustomersIdMargin<TData = Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError = unknown>(
+ id: string,
+    params?: GetV1CustomersIdMarginParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CustomersIdMargin>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1CustomersIdMarginQueryOptions(id,params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

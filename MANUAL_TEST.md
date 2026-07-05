@@ -1628,6 +1628,17 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] `RUN_MIGRATIONS_ON_BOOT=true` applies all migrations idempotently (default is `false` — set it explicitly for local dev).
 - [ ] Mail catches at `localhost:8025`.
 
+## FLOW M1: Provider cost tables + margin (ADR-079)
+
+- [ ] Settings → Provider costs (or `PUT /v1/provider-costs`): add a rate `{provider: "anthropic", model: "claude-3.5-sonnet", token_type: "input", cost_per_token: "0.000003"}` → row appears in the table. *(order matters: rates BEFORE usage — events ingested earlier stay honestly uncosted)*
+- [ ] Ingest 1,000 input tokens with dims `{provider, model, token_type}` → `GET /v1/usage-events` shows `provider_cost_micros: 3000`, `provider_cost_source: "table"`. *(automated: `TestProviderCostStamp`)*
+- [ ] Edit the rate to 0.000009 → old events keep 3000 micros; a NEW event stamps 9000 (snapshot semantics).
+- [ ] Ingest a token event for a model with NO rate → `provider_cost_micros` null (uncosted, actionable); a non-token event (no provider/model dims) → `provider_cost_source: "not_applicable"`.
+- [ ] `GET /v1/customers/{id}/margin` → headline revenue vs cost + margin %; per-model rows show margin ONLY for model-pinned pricing rules; flat-rule revenue shows under "not model-attributed"; `unresolved_events` counts only the missing-rate token events. *(automated: `TestMargin_AttributionHonesty`)*
+- [ ] Customer page (operator) shows the margin card; the CUSTOMER-facing hosted cost dashboard shows NO cost/margin data.
+- [ ] Usage CSV export includes `provider_cost_micros` and `provider_cost_source` columns.
+- [ ] Test-mode rate rows don't cost live-mode events (and vice versa). *(automated: `TestProviderCostStamp_LivemodeIsolation`)*
+
 ## FLOW X15: LiteLLM integration (ADR-033)
 
 The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingPayload`, resolves customer + meters, and dedupes replays.

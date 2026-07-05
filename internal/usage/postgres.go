@@ -41,19 +41,56 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 		return domain.UsageEvent{}, err
 	}
 
+	// Provider-cost stamp (ADR-079): COGS attaches at INGEST — the
+	// universal verified snapshot semantic; later rate edits are
+	// non-retroactive by construction. Resolution runs as a scalar
+	// subquery INSIDE this INSERT (every ingest path — live POST, batch,
+	// backfill, LiteLLM — funnels through here, so the site-set is closed
+	// by construction, and it adds zero extra round trips on the hottest
+	// write path; an empty rate table costs ~nothing via the unique
+	// index). Key order per ADR-079 D3: model_raw exact first (raw ids
+	// price per snapshot), then the canonical model family token. Micros
+	// = cost_per_token × quantity × 1e6, ROUND HALF UP. Source semantics:
+	// 'table' when a rate matched; 'not_applicable' when the event has no
+	// costable dims (non-token meters — keeps the honesty counter
+	// meaningful); NULL when costable dims exist but no rate matched
+	// ('unresolved' — the actionable signal).
 	err = tx.QueryRowContext(ctx, `
+		WITH rate AS (
+			SELECT r.cost_per_token
+			FROM provider_cost_rates r
+			WHERE r.tenant_id = $2
+			  AND r.provider = $6::jsonb->>'provider'
+			  AND r.token_type = $6::jsonb->>'token_type'
+			  AND r.model IN ($6::jsonb->>'model_raw', $6::jsonb->>'model')
+			ORDER BY (r.model IS NOT DISTINCT FROM $6::jsonb->>'model_raw') DESC
+			LIMIT 1
+		)
 		INSERT INTO usage_events (id, tenant_id, customer_id, meter_id,
-			quantity, properties, idempotency_key, timestamp, origin)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			quantity, properties, idempotency_key, timestamp, origin,
+			provider_cost_micros, provider_cost_source)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9,
+			CASE WHEN (SELECT COUNT(*) FROM rate) = 1
+				THEN ROUND((SELECT cost_per_token FROM rate) * $5 * 1000000)::BIGINT
+			END,
+			CASE
+				WHEN $6::jsonb->>'provider' IS NULL
+				  OR $6::jsonb->>'token_type' IS NULL
+				  OR ($6::jsonb->>'model' IS NULL AND $6::jsonb->>'model_raw' IS NULL)
+					THEN 'not_applicable'
+				WHEN (SELECT COUNT(*) FROM rate) = 1 THEN 'table'
+			END
 		RETURNING id, tenant_id, customer_id, meter_id,
-			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin
+			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin,
+			provider_cost_micros, COALESCE(provider_cost_source,'')
 	`, id, tenantID, event.CustomerID, event.MeterID,
 		event.Quantity,
 		props, postgres.NullableString(event.IdempotencyKey),
 		event.Timestamp, origin,
 	).Scan(&event.ID, &event.TenantID, &event.CustomerID, &event.MeterID,
 		&event.Quantity, propertiesScanner{&event.Dimensions},
-		&event.IdempotencyKey, &event.Timestamp, &event.Origin)
+		&event.IdempotencyKey, &event.Timestamp, &event.Origin,
+		&event.ProviderCostMicros, &event.ProviderCostSource)
 
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
@@ -131,7 +168,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	}
 	args = append(args, queryLimit)
 	query := `SELECT id, tenant_id, customer_id, meter_id,
-		quantity, properties, COALESCE(idempotency_key,''), timestamp
+		quantity, properties, COALESCE(idempotency_key,''), timestamp,
+		provider_cost_micros, COALESCE(provider_cost_source,'')
 		FROM usage_events` + where + ` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprintf("%d", len(args))
 	if !useCursor {
 		args = append(args, filter.Offset)
@@ -149,7 +187,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
 			&e.Quantity, propertiesScanner{&e.Dimensions},
-			&e.IdempotencyKey, &e.Timestamp); err != nil {
+			&e.IdempotencyKey, &e.Timestamp,
+			&e.ProviderCostMicros, &e.ProviderCostSource); err != nil {
 			return nil, 0, err
 		}
 		events = append(events, e)

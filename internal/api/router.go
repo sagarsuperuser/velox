@@ -193,6 +193,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	usageH := usage.NewHandler(usageSvc, customerStore, pricingSvc)
 	customerUsageSvc := usage.NewCustomerUsageService(usageSvc, customerStore, subStore, pricingSvc)
 	customerUsageH := usage.NewCustomerUsageHandler(customerUsageSvc)
+	// Provider cost rates + margin (ADR-079).
+	providerCostH := usage.NewProviderCostHandler(usageStore, usage.NewMarginAssembler(usageStore, customerUsageSvc))
 	settingsStore := tenant.NewSettingsStore(db)
 	// Wire tenant settings into subscription so period boundaries snap
 	// to start-of-day in the tenant's timezone (day-grade calendar
@@ -1265,6 +1267,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		r.Mount("/customers/{id}/usage", customerUsageH.CustomerUsageRoutes(
 			auth.Require(auth.PermUsageRead),
 		))
+		// Per-customer margin report (ADR-079): rated usage revenue vs
+		// stamped provider COGS. Operator-auth only — COGS never renders
+		// on customer-facing surfaces (the hosted cost dashboard included).
+		r.With(auth.Require(auth.PermUsageRead)).Get("/customers/{id}/margin", providerCostH.Margin)
+		// Provider cost rates CRUD (ADR-079): the operator's COGS table.
+		r.With(auth.RequireMethod(auth.PermUsageRead, auth.PermUsageWrite)).Mount("/provider-costs", providerCostH.Routes())
 		// Operator-side payment-method management. Same Service as the
 		// /v1/me/payment-methods customer-facing surface — only the
 		// auth model + the customer_id source differ. List/setDefault/

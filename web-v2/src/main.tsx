@@ -105,6 +105,7 @@ const InvoicesPage = lazy(() => import('@/pages/Invoices'))
 const SubscriptionsPage = lazy(() => import('@/pages/Subscriptions'))
 const UsageEventsPage = lazy(() => import('@/pages/UsageEvents'))
 const CreditsPage = lazy(() => import('@/pages/Credits'))
+const ProviderCostsPage = lazy(() => import('@/pages/ProviderCosts'))
 const CreditNotesPage = lazy(() => import('@/pages/CreditNotes'))
 const AuditLogPage = lazy(() => import('@/pages/AuditLog'))
 const UpdatePaymentPage = lazy(() => import('@/pages/UpdatePayment'))
@@ -152,6 +153,7 @@ const App = () => (
               <Route path="/subscriptions" element={<ProtectedRoute><SubscriptionsPage /></ProtectedRoute>} />
               <Route path="/usage" element={<ProtectedRoute><UsageEventsPage /></ProtectedRoute>} />
               <Route path="/credits" element={<ProtectedRoute><CreditsPage /></ProtectedRoute>} />
+              <Route path="/provider-costs" element={<ProtectedRoute><ProviderCostsPage /></ProtectedRoute>} />
               <Route path="/credit-notes" element={<ProtectedRoute><CreditNotesPage /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogPage /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />

@@ -998,6 +998,34 @@ type InvoiceWithLineItems struct {
 // share the same `(subscription, item, timestamp)`.
 type ItemChangeType string
 
+// MarginReport defines model for MarginReport.
+type MarginReport struct {
+	ByModel []struct {
+		// Attributed True only when a pricing rule pins this model — margin is never heuristically allocated.
+		Attributed   bool   `json:"attributed"`
+		CostMicros   int64  `json:"cost_micros"`
+		Model        string `json:"model"`
+		RevenueCents int64  `json:"revenue_cents,omitempty"`
+	} `json:"by_model"`
+	CacheWriteExcluded bool `json:"cache_write_excluded,omitempty"`
+
+	// CostMicros Total stamped provider cost, micro-dollars.
+	CostMicros int64     `json:"cost_micros"`
+	CustomerId string    `json:"customer_id"`
+	From       time.Time `json:"from"`
+
+	// MarginBps (revenue − cost) / revenue in basis points. Omitted when revenue is 0.
+	MarginBps int64 `json:"margin_bps,omitempty"`
+
+	// RevenueCents Total rated usage revenue in the window.
+	RevenueCents             int64     `json:"revenue_cents"`
+	To                       time.Time `json:"to"`
+	UnattributedRevenueCents int64     `json:"unattributed_revenue_cents"`
+
+	// UnresolvedEvents Token events with costable dims but no matching rate — add a rate to cost new events.
+	UnresolvedEvents int64 `json:"unresolved_events"`
+}
+
 // Meter defines model for Meter.
 type Meter struct {
 	Aggregation         MeterAggregation `json:"aggregation,omitempty"`
@@ -1042,6 +1070,19 @@ type PlanBillingInterval string
 
 // PlanStatus defines model for Plan.Status.
 type PlanStatus string
+
+// ProviderCostRate defines model for ProviderCostRate.
+type ProviderCostRate struct {
+	// CostPerToken Decimal dollars per token.
+	CostPerToken string    `json:"cost_per_token"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+	Currency     string    `json:"currency"`
+	Id           string    `json:"id"`
+	Model        string    `json:"model"`
+	Provider     string    `json:"provider"`
+	TokenType    string    `json:"token_type"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+}
 
 // RatingRule defines model for RatingRule.
 type RatingRule struct {
@@ -1169,6 +1210,12 @@ type PostV1CustomersJSONBody struct {
 	ExternalId  string `json:"external_id"`
 }
 
+// GetV1CustomersIdMarginParams defines parameters for GetV1CustomersIdMargin.
+type GetV1CustomersIdMarginParams struct {
+	From time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To   time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // GetV1InvoicesParams defines parameters for GetV1Invoices.
 type GetV1InvoicesParams struct {
 	CustomerId     string `form:"customer_id,omitempty" json:"customer_id,omitempty"`
@@ -1259,6 +1306,20 @@ type PostV1PlansJSONBodyBaseBillTiming string
 
 // PostV1PlansJSONBodyBillingInterval defines parameters for PostV1Plans.
 type PostV1PlansJSONBodyBillingInterval string
+
+// PutV1ProviderCostsJSONBody defines parameters for PutV1ProviderCosts.
+type PutV1ProviderCostsJSONBody struct {
+	// CostPerToken Decimal dollars per token (e.g. "0.000003").
+	CostPerToken string `json:"cost_per_token"`
+	Currency     string `json:"currency,omitempty"`
+
+	// Model Model family token or raw snapshot id — raw ids match first at ingest.
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+
+	// TokenType ADR-044 role — input / output / cache_read.
+	TokenType string `json:"token_type"`
+}
 
 // PostV1RatingRulesJSONBody defines parameters for PostV1RatingRules.
 type PostV1RatingRulesJSONBody struct {
@@ -1375,6 +1436,9 @@ type PostV1MetersJSONRequestBody PostV1MetersJSONBody
 // PostV1PlansJSONRequestBody defines body for PostV1Plans for application/json ContentType.
 type PostV1PlansJSONRequestBody PostV1PlansJSONBody
 
+// PutV1ProviderCostsJSONRequestBody defines body for PutV1ProviderCosts for application/json ContentType.
+type PutV1ProviderCostsJSONRequestBody PutV1ProviderCostsJSONBody
+
 // PostV1RatingRulesJSONRequestBody defines body for PostV1RatingRules for application/json ContentType.
 type PostV1RatingRulesJSONRequestBody PostV1RatingRulesJSONBody
 
@@ -1431,6 +1495,9 @@ type ServerInterface interface {
 	// Create customer
 	// (POST /v1/customers)
 	PostV1Customers(w http.ResponseWriter, r *http.Request)
+	// Per-customer margin report (operator only)
+	// (GET /v1/customers/{id}/margin)
+	GetV1CustomersIdMargin(w http.ResponseWriter, r *http.Request, id string, params GetV1CustomersIdMarginParams)
 	// Rotate the public cost-dashboard token (ADR-031)
 	// (POST /v1/customers/{id}/rotate-cost-dashboard-token)
 	PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string)
@@ -1464,6 +1531,15 @@ type ServerInterface interface {
 	// Create plan
 	// (POST /v1/plans)
 	PostV1Plans(w http.ResponseWriter, r *http.Request)
+	// List provider cost rates
+	// (GET /v1/provider-costs)
+	GetV1ProviderCosts(w http.ResponseWriter, r *http.Request)
+	// Create or update a provider cost rate
+	// (PUT /v1/provider-costs)
+	PutV1ProviderCosts(w http.ResponseWriter, r *http.Request)
+	// Delete a provider cost rate
+	// (DELETE /v1/provider-costs/{id})
+	DeleteV1ProviderCostsId(w http.ResponseWriter, r *http.Request, id string)
 	// Public cost-dashboard projection (ADR-031)
 	// (GET /v1/public/cost-dashboard/{token})
 	GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request, token string)
@@ -1590,6 +1666,12 @@ func (_ Unimplemented) PostV1Customers(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Per-customer margin report (operator only)
+// (GET /v1/customers/{id}/margin)
+func (_ Unimplemented) GetV1CustomersIdMargin(w http.ResponseWriter, r *http.Request, id string, params GetV1CustomersIdMarginParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Rotate the public cost-dashboard token (ADR-031)
 // (POST /v1/customers/{id}/rotate-cost-dashboard-token)
 func (_ Unimplemented) PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string) {
@@ -1653,6 +1735,24 @@ func (_ Unimplemented) GetV1Plans(w http.ResponseWriter, r *http.Request) {
 // Create plan
 // (POST /v1/plans)
 func (_ Unimplemented) PostV1Plans(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List provider cost rates
+// (GET /v1/provider-costs)
+func (_ Unimplemented) GetV1ProviderCosts(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create or update a provider cost rate
+// (PUT /v1/provider-costs)
+func (_ Unimplemented) PutV1ProviderCosts(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete a provider cost rate
+// (DELETE /v1/provider-costs/{id})
+func (_ Unimplemented) DeleteV1ProviderCostsId(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2086,6 +2186,56 @@ func (siw *ServerInterfaceWrapper) PostV1Customers(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// GetV1CustomersIdMargin operation middleware
+func (siw *ServerInterfaceWrapper) GetV1CustomersIdMargin(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetV1CustomersIdMarginParams
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1CustomersIdMargin(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PostV1CustomersIdRotateCostDashboardToken operation middleware
 func (siw *ServerInterfaceWrapper) PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request) {
 
@@ -2469,6 +2619,77 @@ func (siw *ServerInterfaceWrapper) PostV1Plans(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1Plans(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1ProviderCosts operation middleware
+func (siw *ServerInterfaceWrapper) GetV1ProviderCosts(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1ProviderCosts(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutV1ProviderCosts operation middleware
+func (siw *ServerInterfaceWrapper) PutV1ProviderCosts(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutV1ProviderCosts(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteV1ProviderCostsId operation middleware
+func (siw *ServerInterfaceWrapper) DeleteV1ProviderCostsId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteV1ProviderCostsId(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3083,6 +3304,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/customers", wrapper.PostV1Customers)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/customers/{id}/margin", wrapper.GetV1CustomersIdMargin)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/customers/{id}/rotate-cost-dashboard-token", wrapper.PostV1CustomersIdRotateCostDashboardToken)
 	})
 	r.Group(func(r chi.Router) {
@@ -3114,6 +3338,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/plans", wrapper.PostV1Plans)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/provider-costs", wrapper.GetV1ProviderCosts)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/provider-costs", wrapper.PutV1ProviderCosts)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/provider-costs/{id}", wrapper.DeleteV1ProviderCostsId)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/public/cost-dashboard/{token}", wrapper.GetV1PublicCostDashboardToken)

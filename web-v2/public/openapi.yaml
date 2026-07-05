@@ -701,6 +701,81 @@ components:
             Expiry of the granted commit block. Absent/null = the credits
             never expire (the default).
 
+    ProviderCostRate:
+      type: object
+      required: [id, provider, model, token_type, cost_per_token, currency]
+      properties:
+        id:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        token_type:
+          type: string
+        cost_per_token:
+          type: string
+          description: Decimal dollars per token.
+        currency:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    MarginReport:
+      type: object
+      required: [customer_id, from, to, revenue_cents, cost_micros, by_model, unattributed_revenue_cents, unresolved_events]
+      properties:
+        customer_id:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        revenue_cents:
+          type: integer
+          format: int64
+          description: Total rated usage revenue in the window.
+        cost_micros:
+          type: integer
+          format: int64
+          description: Total stamped provider cost, micro-dollars.
+        margin_bps:
+          type: integer
+          format: int64
+          description: (revenue − cost) / revenue in basis points. Omitted when revenue is 0.
+        by_model:
+          type: array
+          items:
+            type: object
+            required: [model, cost_micros, attributed]
+            properties:
+              model:
+                type: string
+              cost_micros:
+                type: integer
+                format: int64
+              revenue_cents:
+                type: integer
+                format: int64
+              attributed:
+                type: boolean
+                description: True only when a pricing rule pins this model — margin is never heuristically allocated.
+        unattributed_revenue_cents:
+          type: integer
+          format: int64
+        unresolved_events:
+          type: integer
+          format: int64
+          description: Token events with costable dims but no matching rate — add a rate to cost new events.
+        cache_write_excluded:
+          type: boolean
+
     InvoiceWithLineItems:
       type: object
       description: |
@@ -1641,6 +1716,108 @@ paths:
       responses:
         "200":
           description: Invoice preview
+
+  /v1/provider-costs:
+    get:
+      tags: [ProviderCosts]
+      summary: List provider cost rates
+      description: |
+        The operator's COGS table (ADR-079): what THEY pay LLM providers per
+        token, keyed by provider/model/token_type. Current-rate semantics —
+        one row per key, edited in place; per-event stamps are the history.
+      responses:
+        "200":
+          description: Rates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProviderCostRate"
+    put:
+      tags: [ProviderCosts]
+      summary: Create or update a provider cost rate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, model, token_type, cost_per_token]
+              properties:
+                provider:
+                  type: string
+                model:
+                  type: string
+                  description: Model family token or raw snapshot id — raw ids match first at ingest.
+                token_type:
+                  type: string
+                  description: ADR-044 role — input / output / cache_read.
+                cost_per_token:
+                  type: string
+                  description: Decimal dollars per token (e.g. "0.000003").
+                currency:
+                  type: string
+                  default: USD
+      responses:
+        "200":
+          description: Upserted rate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCostRate"
+
+  /v1/provider-costs/{id}:
+    delete:
+      tags: [ProviderCosts]
+      summary: Delete a provider cost rate
+      description: Stamped events keep their snapshot — deletion never rewrites history.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /v1/customers/{id}/margin:
+    get:
+      tags: [ProviderCosts]
+      summary: Per-customer margin report (operator only)
+      description: |
+        Rated usage revenue vs stamped provider COGS for a window (ADR-079).
+        A usage unit-economics view — base fees, credits, and taxes are not
+        included. Per-model margin renders only where pricing rules pin the
+        model; other revenue is reported unattributed, never allocated by
+        heuristic.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Margin report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarginReport"
 
   /v1/credits/grant:
     post:

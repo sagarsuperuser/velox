@@ -31,6 +31,19 @@ type UsageEvent struct {
 	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 	Timestamp      time.Time        `json:"timestamp"`
 	Origin         UsageEventOrigin `json:"origin,omitempty"`
+
+	// ProviderCostMicros is the COGS stamp (ADR-079): what serving this
+	// event cost the OPERATOR (their provider bill), in micro-dollars
+	// (1e-6), resolved from provider_cost_rates at INGEST time — snapshot
+	// semantics; later rate edits never rewrite it. Nil = unresolved
+	// (costable dims but no matching rate — the actionable "add a rate"
+	// signal) or pre-feature row. Operator-facing only.
+	ProviderCostMicros *int64 `json:"provider_cost_micros,omitempty"`
+	// ProviderCostSource: 'table' (inferred from provider_cost_rates),
+	// 'not_applicable' (no costable dims — non-token meters), 'observed'
+	// (sender-supplied per-half cost — named fast-follow, not yet
+	// written). Empty = unresolved/pre-feature.
+	ProviderCostSource string `json:"provider_cost_source,omitempty"`
 }
 
 type BilledEntrySource string
@@ -49,4 +62,22 @@ type BilledEntry struct {
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Source         BilledEntrySource `json:"source,omitempty"`
 	Timestamp      time.Time         `json:"timestamp"`
+}
+
+// ProviderCostRate is one row of the operator's provider cost table
+// (ADR-079): what THEY pay a provider per token for (provider, model,
+// token_type), in decimal dollars — verified real-world rates reach
+// 1.5e-06/token, so never floats, never cents. CURRENT-rate semantics:
+// one row per key per mode, edited in place; the per-event stamp is the
+// historical snapshot, so edits never rewrite history.
+type ProviderCostRate struct {
+	ID           string          `json:"id"`
+	TenantID     string          `json:"tenant_id,omitempty"`
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	TokenType    string          `json:"token_type"`
+	CostPerToken decimal.Decimal `json:"cost_per_token"`
+	Currency     string          `json:"currency"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
