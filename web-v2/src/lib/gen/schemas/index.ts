@@ -57,6 +57,7 @@ export * from './postV1AuthPasswordResetConfirmBody';
 export * from './postV1AuthPasswordResetRequestBody';
 export * from './postV1BillingRun200';
 export * from './postV1CreditsGrantBody';
+export * from './postV1CreditsGrantBodyGrantKind';
 export * from './postV1CustomersBody';
 export * from './postV1CustomersIdRotateCostDashboardToken200';
 export * from './postV1InvoicesCreatePreviewBody';

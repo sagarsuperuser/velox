@@ -133,4 +133,26 @@ const (
 	EventDunningStarted                     = "dunning.started"
 	EventDunningEscalated                   = "dunning.escalated"
 	EventDunningResolved                    = "dunning.resolved"
+	// Credit balance-VALUE crossing events (ADR-078). Computed on
+	// SUM(amount_cents) before/after inside each ledger-writing tx and
+	// enqueued on the same tx (transactional outbox) — well-ordered per
+	// customer because every balance writer holds the per-customer
+	// advisory lock. Payloads carry customer_id + balance_cents (+
+	// threshold_cents on balance_low) so consumers with heterogeneous
+	// commit sizes can layer per-customer logic without server config.
+	//
+	// EventCreditBalanceLow fires when the balance crosses from >= to
+	// < the tenant's configured threshold (tenant_settings.
+	// credit_balance_low_threshold_cents; unset = never fires).
+	EventCreditBalanceLow = "credit.balance_low"
+	// EventCreditBalanceDepleted fires on the >0 → <=0 crossing. Known
+	// lag: an expired-but-unswept block keeps SUM positive until the
+	// expiry sweep retires it — the sweep's expiry entry produces the
+	// crossing (minutes-scale, matches the expiry discipline).
+	EventCreditBalanceDepleted = "credit.balance_depleted"
+	// EventCreditBalanceRecovered fires on the <=0 → >0 crossing. Kept
+	// not for parity (single-peer, Orb) but as the state-machine
+	// complement of depleted — without it a consumer's depleted state
+	// could never clear.
+	EventCreditBalanceRecovered = "credit.balance_recovered"
 )

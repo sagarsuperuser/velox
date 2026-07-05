@@ -683,6 +683,23 @@ components:
         created_at:
           type: string
           format: date-time
+        commit_granted_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Marks the line as a prepaid-commit purchase (ADR-078): when the
+            invoice finalizes, a credit block of this many cents is granted
+            to the customer. May differ from the line price — discounted
+            commits sell $10k of credits for $9k. add_on lines on manual
+            invoices only, at most one per invoice. Absent on normal lines.
+        commit_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Expiry of the granted commit block. Absent/null = the credits
+            never expire (the default).
 
     InvoiceWithLineItems:
       type: object
@@ -1644,6 +1661,19 @@ paths:
                   format: int64
                 description:
                   type: string
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Optional expiry; must be in the future. Omitted = never expires.
+                grant_kind:
+                  type: string
+                  enum: [promotional]
+                  description: |
+                    Optional cost-basis class (ADR-078). `promotional` marks
+                    free/marketing credits, drained BEFORE all paid-class
+                    blocks. Omitted = unclassified (drains in the paid
+                    class). `commit` is reserved for the invoice-finalize
+                    funding path and rejected here.
       responses:
         "201":
           description: Credits granted

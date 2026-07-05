@@ -248,6 +248,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// finalized→paid transition) so it fires exactly once across every
 	// settlement path. Wire the outbox into the invoice store for that.
 	invoiceStore.SetOutboxEnqueuer(outboxStore)
+	// credit.balance_low / _depleted / _recovered are emitted transactionally
+	// from every ledger-writing tx (ADR-078) — same outbox discipline.
+	creditStore.SetOutboxEnqueuer(outboxStore)
+	// Commit funding at finalize (ADR-078 D2): FinalizeWithDates grants the
+	// commit block in the finalize coordinator tx via credit.Service.
+	invoiceStore.SetCommitFunder(creditSvc)
 	subH.SetEventDispatcher(eventDispatcher)
 	// Trial-expiry phases (catchup orchestrator + wall-clock cron)
 	// fire subscription.trial_ended via the subscription Service —

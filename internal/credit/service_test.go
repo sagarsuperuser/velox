@@ -228,6 +228,30 @@ func (m *memStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, customerI
 	return deduct, nil
 }
 
+func (m *memStore) RetireCommitGrantForInvoiceTx(_ context.Context, _ *sql.Tx, tenantID, invoiceID string) (int64, error) {
+	// Mirror the store contract: find the commit grant funded by the
+	// invoice, retire its remaining balance, append the negative entry.
+	for i := range m.entries {
+		e := &m.entries[i]
+		if e.SourceInvoiceID != invoiceID || e.GrantKind != domain.GrantKindCommit {
+			continue
+		}
+		remaining := e.AmountCents - e.ConsumedCents
+		if remaining <= 0 {
+			return 0, nil
+		}
+		e.ConsumedCents = e.AmountCents
+		m.entries = append(m.entries, domain.CreditLedgerEntry{
+			CustomerID:  e.CustomerID,
+			EntryType:   domain.CreditAdjustment,
+			AmountCents: -remaining,
+			Description: "Commit retired — funding invoice voided",
+		})
+		return remaining, nil
+	}
+	return 0, nil
+}
+
 func (m *memStore) ListEntries(_ context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error) {
 	var result []domain.CreditLedgerEntry
 	for _, e := range m.entries {

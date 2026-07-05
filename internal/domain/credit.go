@@ -64,7 +64,38 @@ type CreditLedgerEntry struct {
 	// hits the index, the store returns ErrAlreadyExists, and ReverseForInvoice
 	// treats it as an idempotent no-op instead of double-crediting.
 	SourceInvoiceReversalID string `json:"source_invoice_reversal_id,omitempty"`
+
+	// GrantKind classifies a grant's cost basis (ADR-078). 'commit' =
+	// purchased prepaid commit (funded by a real invoice); 'promotional' =
+	// explicitly-marked free/marketing credit, drained BEFORE all paid-class
+	// blocks (zero-cost-basis-first). Empty/NULL = legacy/unclassified
+	// (proration credits, CN grants, goodwill) — money-derived liabilities
+	// that drain in the paid class with commits. Only drain order and
+	// reporting read this tag; balance math is kind-blind.
+	GrantKind GrantKind `json:"grant_kind,omitempty"`
+
+	// SourceInvoiceID links a commit grant to the invoice that funds it
+	// (ADR-078). Distinct from InvoiceID (stamped by usage/reversal entries,
+	// many rows per invoice). The partial unique index
+	// idx_credit_ledger_commit_fund_dedup (migration 0136) enforces one
+	// commit grant per (tenant, funding invoice) — a structural backstop
+	// behind the finalize CAS, whose violation inside the finalize
+	// coordinator tx is a broken invariant and aborts loudly (never caught
+	// in-tx: poisoned-tx).
+	SourceInvoiceID string `json:"source_invoice_id,omitempty"`
 }
+
+// GrantKind is the cost-basis class of a credit grant (ADR-078).
+type GrantKind string
+
+const (
+	// GrantKindCommit marks a purchased prepaid commit, funded by a real
+	// invoice (source_invoice_id set). Drains in the paid class.
+	GrantKindCommit GrantKind = "commit"
+	// GrantKindPromotional marks an explicitly-free credit (marketing
+	// spend). Drains before every paid-class block.
+	GrantKindPromotional GrantKind = "promotional"
+)
 
 type CreditBalance struct {
 	CustomerID   string `json:"customer_id"`

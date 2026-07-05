@@ -16,9 +16,10 @@ import (
 )
 
 type PostgresStore struct {
-	db     *postgres.DB
-	enc    *crypto.Encryptor
-	outbox OutboxEnqueuer
+	db           *postgres.DB
+	enc          *crypto.Encryptor
+	outbox       OutboxEnqueuer
+	commitFunder CommitFunder
 }
 
 func NewPostgresStore(db *postgres.DB) *PostgresStore {
@@ -38,6 +39,20 @@ type OutboxEnqueuer interface {
 // fires exactly once regardless of which path settled the invoice). Optional —
 // when unset, no event is enqueued.
 func (s *PostgresStore) SetOutboxEnqueuer(o OutboxEnqueuer) { s.outbox = o }
+
+// CommitFunder grants a prepaid-commit credit block on the caller's tx —
+// FinalizeWithDates calls it inside the finalize coordinator tx so the status
+// flip and the grant are both-or-neither (ADR-078 D2). Satisfied by
+// *credit.Service; declared consumer-side so the invoice store needs no
+// credit import. Unlike the outbox, this dependency is NOT optional when a
+// commit line exists: FinalizeWithDates fails loud on a commit invoice with
+// no funder wired.
+type CommitFunder interface {
+	GrantCommitForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, customerID, invoiceID, invoiceNumber string, amountCents int64, expiresAt *time.Time) (domain.CreditLedgerEntry, error)
+}
+
+// SetCommitFunder wires commit-grant funding at finalize (ADR-078).
+func (s *PostgresStore) SetCommitFunder(f CommitFunder) { s.commitFunder = f }
 
 // SetEncryptor wires AES-256-GCM encryption for the hosted-invoice public_token
 // at rest. When set (non-noop), the raw token is encrypted before storage and
@@ -516,6 +531,16 @@ func (s *PostgresStore) UpdateStatusWithReversal(ctx context.Context, tenantID, 
 // updateStatusInTx is the shared body: the status flip without owning the tx.
 // UpdateStatus opens+commits its own; UpdateStatusWithReversal threads the
 // credit reversal through the same one.
+//
+// The UPDATE carries an in-SQL allowed-source CAS (ADR-078 D5). The service
+// guards (Void's paid/in-flight checks, Finalize's draft check,
+// MarkUncollectible's switch) read an EARLIER snapshot on a different tx —
+// without the predicate, a pay-vs-void race flips paid→voided and retires
+// credits the customer just paid for, and a void-vs-finalize race resurrects
+// an annulled invoice. Allowed sources per target (matching the service-layer
+// state machine): finalized←draft; voided←draft/finalized/uncollectible
+// (never paid — "issue a credit note instead"); uncollectible←finalized.
+// 0 rows → re-read → typed conflict with the actual current status.
 func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id string, status domain.InvoiceStatus) (domain.Invoice, error) {
 	now := clock.Now(ctx)
 	var voidedAt, uncollectibleAt *time.Time
@@ -526,17 +551,42 @@ func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id str
 		uncollectibleAt = &now
 	}
 
+	var allowedSources []string
+	switch status {
+	case domain.InvoiceFinalized:
+		allowedSources = []string{string(domain.InvoiceDraft)}
+	case domain.InvoiceVoided:
+		allowedSources = []string{string(domain.InvoiceDraft), string(domain.InvoiceFinalized), string(domain.InvoiceUncollectible)}
+	case domain.InvoiceUncollectible:
+		allowedSources = []string{string(domain.InvoiceFinalized)}
+	default:
+		// No current caller flips to any other status via this path (paid
+		// is owned by markPaidReportingTransition). Fail loud rather than
+		// allow an unguarded transition to slip in later.
+		return domain.Invoice{}, fmt.Errorf("updateStatusInTx: unsupported target status %q", status)
+	}
+
 	var inv domain.Invoice
 	err := tx.QueryRowContext(ctx, `
 		UPDATE invoices SET status = $1, voided_at = $2,
 			uncollectible_at = COALESCE($3, uncollectible_at), updated_at = $4
-		WHERE id = $5
+		WHERE id = $5 AND status = ANY($6)
 		RETURNING `+invCols,
 		status, postgres.NullableTime(voidedAt), postgres.NullableTime(uncollectibleAt), now, id,
+		postgres.StringArray(allowedSources),
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
+		var cur string
+		rerr := tx.QueryRowContext(ctx, `SELECT status FROM invoices WHERE id = $1`, id).Scan(&cur)
+		if rerr == sql.ErrNoRows {
+			return domain.Invoice{}, errs.ErrNotFound
+		}
+		if rerr != nil {
+			return domain.Invoice{}, rerr
+		}
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"cannot transition invoice to %s from %s", status, cur))
 	}
 	if err != nil {
 		return domain.Invoice{}, err
@@ -558,6 +608,20 @@ func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id str
 // to the finalize moment in one UPDATE — for operator-composed invoices whose
 // draft may have been created on an earlier (test-clock) instant. Cycle
 // invoices use UpdateStatus and keep their build-time dates.
+//
+// The UPDATE carries an `AND status='draft'` CAS (ADR-078 D5): the service's
+// draft guard reads an earlier snapshot, so without the predicate a concurrent
+// void/finalize could flip voided→finalized — resurrecting an annulled invoice
+// and, below, minting its commit grant. 0 rows → typed conflict, no grant.
+//
+// Commit funding (ADR-078 D2): when the invoice carries a commit line, the
+// injected commitFunder grants the credit block IN THIS TX — the status flip
+// and the grant commit or roll back together. The commit line is read in-tx,
+// AFTER the flip (the row UPDATE serializes against AddLineItemAtomic's FOR
+// UPDATE, so a line added concurrently with finalize is either seen here or
+// rejected by its own draft re-check). A funder error fails finalize by
+// design: operator-synchronous, loud, retryable — never weaken to
+// post-commit.
 func (s *PostgresStore) FinalizeWithDates(ctx context.Context, tenantID, id string, issuedAt, dueAt time.Time) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -569,17 +633,58 @@ func (s *PostgresStore) FinalizeWithDates(ctx context.Context, tenantID, id stri
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET status = $1, issued_at = $2, due_at = $3, updated_at = $4
-		WHERE id = $5
+		WHERE id = $5 AND status = 'draft'
 		RETURNING `+invCols,
 		domain.InvoiceFinalized, issuedAt, dueAt, now, id,
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
+		// Missing row or CAS miss — re-read to tell the two apart and to
+		// surface the actual state in the conflict error.
+		var cur string
+		rerr := tx.QueryRowContext(ctx, `SELECT status FROM invoices WHERE id = $1`, id).Scan(&cur)
+		if rerr == sql.ErrNoRows {
+			return domain.Invoice{}, errs.ErrNotFound
+		}
+		if rerr != nil {
+			return domain.Invoice{}, rerr
+		}
+		return domain.Invoice{}, errs.InvalidState(fmt.Sprintf(
+			"can only finalize draft invoices, current status: %s", cur))
 	}
 	if err != nil {
 		return domain.Invoice{}, err
 	}
+
+	// Fund the commit line, if any (at most one — enforced at line create).
+	var (
+		commitCents   sql.NullInt64
+		commitExpires sql.NullTime
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT commit_granted_cents, commit_expires_at
+		FROM invoice_line_items
+		WHERE invoice_id = $1 AND tenant_id = $2 AND commit_granted_cents IS NOT NULL
+	`, id, tenantID).Scan(&commitCents, &commitExpires)
+	if err != nil && err != sql.ErrNoRows {
+		return domain.Invoice{}, fmt.Errorf("read commit line at finalize: %w", err)
+	}
+	if err == nil && commitCents.Valid {
+		if s.commitFunder == nil {
+			// A commit line with no funder wired would finalize a purchase
+			// that never grants — fail loud, never silently skip.
+			return domain.Invoice{}, fmt.Errorf("invoice %s carries a commit line but no commit funder is wired", id)
+		}
+		var expiresAt *time.Time
+		if commitExpires.Valid {
+			expiresAt = &commitExpires.Time
+		}
+		if _, ferr := s.commitFunder.GrantCommitForInvoiceTx(ctx, tx, tenantID,
+			inv.CustomerID, inv.ID, inv.InvoiceNumber, commitCents.Int64, expiresAt); ferr != nil {
+			return domain.Invoice{}, fmt.Errorf("fund commit grant at finalize: %w", ferr)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err
 	}
@@ -1165,7 +1270,8 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at, tax_jurisdiction, tax_code, tax_reason, quantity_decimal
+			metadata, created_at, tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
+			commit_granted_cents, commit_expires_at
 		FROM invoice_line_items WHERE invoice_id = $1
 		ORDER BY created_at ASC
 	`, invoiceID)
@@ -1183,7 +1289,8 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			&item.AmountCents, &item.TaxRate, &item.TaxAmountCents, &item.TotalAmountCents,
 			&item.Currency, &item.PricingMode, &item.RatingRuleVersionID,
 			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
-			&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason, &item.QuantityDecimal); err != nil {
+			&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason, &item.QuantityDecimal,
+			&item.CommitGrantedCents, &item.CommitExpiresAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metaJSON, &item.Metadata)
@@ -1232,13 +1339,14 @@ func (s *PostgresStore) AddLineItemAtomic(
 	defer postgres.Rollback(tx)
 
 	var (
-		status   domain.InvoiceStatus
-		currency string
+		status        domain.InvoiceStatus
+		currency      string
+		billingReason sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, currency FROM invoices WHERE id = $1 FOR UPDATE`,
+		`SELECT status, currency, billing_reason FROM invoices WHERE id = $1 FOR UPDATE`,
 		invoiceID,
-	).Scan(&status, &currency)
+	).Scan(&status, &currency, &billingReason)
 	if err == sql.ErrNoRows {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, errs.ErrNotFound
 	}
@@ -1248,6 +1356,30 @@ func (s *PostgresStore) AddLineItemAtomic(
 	if status != domain.InvoiceDraft {
 		return domain.InvoiceLineItem{}, domain.Invoice{},
 			fmt.Errorf("can only add line items to draft invoices, current status: %s", status)
+	}
+
+	// Invoice-level commit rules (ADR-078), enforced under the row lock so
+	// they can't race a concurrent add: commit lines live only on manual
+	// invoices, at most one per invoice (the per-invoice fund-once index
+	// depends on it).
+	if item.IsCommitLine() {
+		if domain.InvoiceBillingReason(billingReason.String) != domain.BillingReasonManual {
+			return domain.InvoiceLineItem{}, domain.Invoice{},
+				errs.Invalid("commit_granted_cents", "commit purchase lines are only supported on manual invoices")
+		}
+		var hasCommit bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM invoice_line_items
+				WHERE invoice_id = $1 AND tenant_id = $2 AND commit_granted_cents IS NOT NULL
+			)`, invoiceID, tenantID,
+		).Scan(&hasCommit); err != nil {
+			return domain.InvoiceLineItem{}, domain.Invoice{}, fmt.Errorf("check existing commit line: %w", err)
+		}
+		if hasCommit {
+			return domain.InvoiceLineItem{}, domain.Invoice{},
+				errs.Invalid("commit_granted_cents", "invoice already has a commit line — one commit per invoice; use a separate invoice")
+		}
 	}
 
 	item.InvoiceID = invoiceID
@@ -1266,25 +1398,29 @@ func (s *PostgresStore) AddLineItemAtomic(
 			description, quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
-			tax_jurisdiction, tax_code, tax_reason, quantity_decimal)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
+			commit_granted_cents, commit_expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
-			metadata, created_at, tax_jurisdiction, tax_code, tax_reason, quantity_decimal
+			metadata, created_at, tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
+			commit_granted_cents, commit_expires_at
 	`, itemID, invoiceID, tenantID, item.LineType, postgres.NullableString(item.MeterID),
 		item.Description, item.Quantity, item.UnitAmountCents, item.AmountCents,
 		item.TaxRate, item.TaxAmountCents, item.TotalAmountCents, currency,
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
 		metaJSON, now, item.TaxJurisdiction, item.TaxCode, item.TaxabilityReason, item.QuantityDecimal,
+		item.CommitGrantedCents, postgres.NullableTime(item.CommitExpiresAt),
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRate, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
 		&item.PricingMode, &item.RatingRuleVersionID,
 		&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
-		&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason, &item.QuantityDecimal)
+		&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason, &item.QuantityDecimal,
+		&item.CommitGrantedCents, &item.CommitExpiresAt)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
 	}
@@ -1553,6 +1689,23 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 		return domain.Invoice{}, err
 	}
 
+	// Invoice-level commit rules (ADR-078): commit lines live only on
+	// manual invoices, at most one per invoice. Enforced here so the
+	// composer's atomic create-with-lines path carries the same rules as
+	// AddLineItemAtomic (buildLineItem validates only line-local rules).
+	commitLines := 0
+	for i := range items {
+		if items[i].IsCommitLine() {
+			commitLines++
+		}
+	}
+	if commitLines > 0 && inv.BillingReason != domain.BillingReasonManual {
+		return domain.Invoice{}, errs.Invalid("commit_granted_cents", "commit purchase lines are only supported on manual invoices")
+	}
+	if commitLines > 1 {
+		return domain.Invoice{}, errs.Invalid("commit_granted_cents", "invoice already has a commit line — one commit per invoice; use a separate invoice")
+	}
+
 	// Create all line items within the same transaction
 	for i := range items {
 		items[i].InvoiceID = inv.ID
@@ -1567,8 +1720,9 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 				description, quantity, unit_amount_cents, amount_cents, tax_rate,
 				tax_amount_cents, total_amount_cents, currency, pricing_mode,
 				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at,
-				tax_jurisdiction, tax_code, tax_reason, quantity_decimal)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+				tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
+				commit_granted_cents, commit_expires_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		`, itemID, inv.ID, tenantID, items[i].LineType, postgres.NullableString(items[i].MeterID),
 			items[i].Description, items[i].Quantity, items[i].UnitAmountCents, items[i].AmountCents,
 			items[i].TaxRate, items[i].TaxAmountCents, items[i].TotalAmountCents,
@@ -1576,6 +1730,7 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			postgres.NullableString(items[i].RatingRuleVersionID),
 			postgres.NullableTime(items[i].BillingPeriodStart), postgres.NullableTime(items[i].BillingPeriodEnd),
 			itemMetaJSON, now, items[i].TaxJurisdiction, items[i].TaxCode, items[i].TaxabilityReason, items[i].QuantityDecimal,
+			items[i].CommitGrantedCents, postgres.NullableTime(items[i].CommitExpiresAt),
 		)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("create line item %d: %w", i, err)

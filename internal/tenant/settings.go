@@ -126,7 +126,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
-			audit_fail_closed, created_at, updated_at
+			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRate, &ts.TaxName, &ts.TaxInclusive,
@@ -138,7 +138,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
 		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
-		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.AuditFailClosed, &ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		// Synthesize Velox defaults so callers don't have to handle
@@ -174,8 +174,8 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			company_postal_code, company_country,
 			company_email, company_phone,
 			logo_url, brand_color, tax_id, support_url, invoice_footer,
-			audit_fail_closed, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
+			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
@@ -197,6 +197,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			tax_id = EXCLUDED.tax_id, support_url = EXCLUDED.support_url,
 			invoice_footer = EXCLUDED.invoice_footer,
 			audit_fail_closed = EXCLUDED.audit_fail_closed,
+			credit_balance_low_threshold_cents = EXCLUDED.credit_balance_low_threshold_cents,
 			updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix,
 			net_payment_terms, tax_provider, tax_rate, COALESCE(tax_name,''), tax_inclusive,
@@ -208,7 +209,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
-			audit_fail_closed, created_at, updated_at
+			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
 		ts.NetPaymentTerms, ts.TaxProvider, ts.TaxRate, ts.TaxName, ts.TaxInclusive, ts.DefaultProductTaxCode,
 		ts.TaxOnFailure,
@@ -221,7 +222,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		postgres.NullableString(ts.BrandColor),
 		postgres.NullableString(ts.TaxID), postgres.NullableString(ts.SupportURL),
 		postgres.NullableString(ts.InvoiceFooter),
-		ts.AuditFailClosed, now,
+		ts.AuditFailClosed, ts.CreditBalanceLowThresholdCents, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRate, &ts.TaxName, &ts.TaxInclusive,
 		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
@@ -232,7 +233,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
 		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
-		&ts.AuditFailClosed, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.AuditFailClosed, &ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
 		return domain.TenantSettings{}, err
 	}
@@ -534,6 +535,13 @@ func validateSettings(ts *domain.TenantSettings) error {
 	// are invalid.
 	if ts.NetPaymentTerms < 0 {
 		return errs.Invalid("net_payment_terms", "cannot be negative (0 = due immediately)")
+	}
+	// credit.balance_low threshold (ADR-078): must be a positive amount
+	// when set. Explicit null clears it (low alerts off); 0 or negative is
+	// operator confusion — depleted (balance reaches 0) is its own event.
+	if ts.CreditBalanceLowThresholdCents != nil && *ts.CreditBalanceLowThresholdCents <= 0 {
+		return errs.Invalid("credit_balance_low_threshold_cents",
+			"must be greater than 0 when set (send null to turn low-balance alerts off; depletion has its own event)")
 	}
 
 	// Canonical UPPERCASE before persisting — ValidateCurrency accepts

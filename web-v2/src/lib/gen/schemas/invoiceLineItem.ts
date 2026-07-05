@@ -51,4 +51,21 @@ export interface InvoiceLineItem {
   billing_period_end?: string | null;
   metadata?: InvoiceLineItemMetadata;
   created_at: string;
+  /**
+     * Marks the line as a prepaid-commit purchase (ADR-078): when the
+  invoice finalizes, a credit block of this many cents is granted
+  to the customer. May differ from the line price — discounted
+  commits sell $10k of credits for $9k. add_on lines on manual
+  invoices only, at most one per invoice. Absent on normal lines.
+
+     * @nullable
+     */
+  commit_granted_cents?: number | null;
+  /**
+     * Expiry of the granted commit block. Absent/null = the credits
+  never expire (the default).
+
+     * @nullable
+     */
+  commit_expires_at?: string | null;
 }
