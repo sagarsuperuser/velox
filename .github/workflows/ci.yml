@@ -110,9 +110,20 @@ jobs:
         with:
           go-version: '1.25.11'
 
-      - name: Create app role (migrations GRANT to it)
+      - name: Create app role (mirrors deploy/compose/postgres-init.sh)
         run: |
-          PGPASSWORD=velox psql -h localhost -U velox -d velox             -c "CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';"             -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+          # Same grants production init gives the runtime role — without the
+          # DEFAULT PRIVILEGES line, tables created by migrations are
+          # invisible to velox_app and the API 500s (caught by this job's
+          # first run: permission denied for provider_cost_rates).
+          PGPASSWORD=velox psql -v ON_ERROR_STOP=1 -h localhost -U velox -d velox <<'EOSQL'
+          CREATE ROLE velox_app WITH LOGIN PASSWORD 'velox_app';
+          GRANT ALL PRIVILEGES ON DATABASE velox TO velox_app;
+          GRANT ALL ON SCHEMA public TO velox_app;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO velox_app;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO velox_app;
+          CREATE EXTENSION IF NOT EXISTS pgcrypto;
+          EOSQL
 
       - name: Bootstrap (migrations + demo tenant + keys)
         run: |
