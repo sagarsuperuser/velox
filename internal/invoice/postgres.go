@@ -1741,6 +1741,83 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 	return inv, nil
 }
 
+// ClaimAutoCharge takes the per-invoice charge lease (HA hazard #1,
+// migration 0141): a 5-minute CAS claim that admits exactly one sweep
+// leader into the charge leg per invoice per window. The full
+// eligibility predicate is re-asserted so the CAS doubles as a
+// freshness gate — under READ COMMITTED the UPDATE re-evaluates against
+// the latest committed row, so an invoice settled by a webhook (or
+// marked failed/unknown by a rival leader) between list and claim fails
+// the claim rather than being charged stale.
+//
+// Two load-bearing choices:
+//   - updated_at is NOT touched: the Stripe idempotency key derives
+//     from it (payment/stripe.go), and key stability across claim
+//     windows is what makes a re-claimed retry after a stalled leader
+//     converge on the SAME PaymentIntent instead of minting a second.
+//   - DB-side now() on both sides of the lease comparison: test clocks
+//     freeze simulated time, and a simulated-time lease would never
+//     expire on a frozen clock (the catchup path shares this claim).
+//
+// The 5m lease covers ONE invoice's charge iteration (30s Stripe ctx +
+// credit apply + refresh ≈ <60s degraded) with margin, and sits well
+// under the 1h prod tick so a crashed leader's claim self-heals before
+// the next sweep. Deliberately per-invoice, not stamped at list time —
+// a batch-wide lease cannot cover a serial 50-invoice loop, and a
+// claiming LIST would starve dunning enrollment, which shares the list
+// methods (adversarial review, 2026-07-06).
+func (s *PostgresStore) ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoices
+		SET auto_charge_claimed_until = now() + interval '5 minutes'
+		WHERE id = $1
+		  AND auto_charge_pending = TRUE
+		  AND payment_status = 'pending'
+		  AND status = 'finalized'
+		  AND amount_due_cents > 0
+		  AND (auto_charge_claimed_until IS NULL OR auto_charge_claimed_until < now())
+	`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// ReleaseAutoChargeClaim clears the lease on skip paths where the
+// charge call was PROVABLY never made (credit-apply failure, no payment
+// method on file) so the next tick — or the next test-clock Advance —
+// retries immediately instead of waiting out the lease. Never called
+// after ChargeInvoice was attempted: terminal outcomes exit the list
+// predicate on their own, and an ambiguous transient (breaker/timeout)
+// must wait out the lease precisely because the call may have reached
+// Stripe. No updated_at write (see ClaimAutoCharge).
+func (s *PostgresStore) ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE invoices SET auto_charge_claimed_until = NULL WHERE id = $1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SetAutoChargePending marks an invoice for scheduler-based auto-charge retry.
 func (s *PostgresStore) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)

@@ -685,6 +685,17 @@ func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv d
 	return inv, nil
 }
 
+func (m *memStore) ClaimAutoCharge(_ context.Context, _, id string) (bool, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return false, errs.ErrNotFound
+	}
+	return inv.AutoChargePending && inv.PaymentStatus == domain.PaymentPending &&
+		inv.Status == domain.InvoiceFinalized && inv.AmountDueCents > 0, nil
+}
+
+func (m *memStore) ReleaseAutoChargeClaim(_ context.Context, _, _ string) error { return nil }
+
 func (m *memStore) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
 	inv, ok := m.invoices[id]
 	if !ok {

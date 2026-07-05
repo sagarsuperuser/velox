@@ -202,6 +202,14 @@ func (a *invoiceWriterAdapter) SetAutoChargePending(ctx context.Context, tenantI
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
 
+func (a *invoiceWriterAdapter) ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error) {
+	return a.store.ClaimAutoCharge(ctx, tenantID, id)
+}
+
+func (a *invoiceWriterAdapter) ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error {
+	return a.store.ReleaseAutoChargeClaim(ctx, tenantID, id)
+}
+
 func (a *invoiceWriterAdapter) ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error) {
 	return a.store.ListAutoChargePending(ctx, limit)
 }

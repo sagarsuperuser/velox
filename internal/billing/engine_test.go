@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -700,6 +701,8 @@ func (m *mockPricing) ListMeterPricingRulesByMeter(_ context.Context, _, meterID
 }
 
 type mockInvoices struct {
+	mu        sync.Mutex
+	claimed   map[string]bool
 	invoices  []domain.Invoice
 	lineItems []domain.InvoiceLineItem
 	// createErr, when set, is returned by CreateInvoiceWithLineItems[Tx] instead
@@ -787,6 +790,39 @@ func (m *mockInvoices) CreateInvoiceWithLineItems(_ context.Context, tenantID st
 
 func (m *mockInvoices) CreateInvoiceWithLineItemsTx(ctx context.Context, _ *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
 	return m.CreateInvoiceWithLineItems(ctx, tenantID, inv, items)
+}
+
+// ClaimAutoCharge is a FAITHFUL concurrent-resolver fake (playbook
+// pattern): it honors the real CAS semantics — predicate re-check +
+// exactly-one-winner — so engine tests exercising concurrent sweeps
+// prove the claim actually gates the charge leg.
+func (m *mockInvoices) ClaimAutoCharge(_ context.Context, _, id string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.claimed == nil {
+		m.claimed = map[string]bool{}
+	}
+	if m.claimed[id] {
+		return false, nil
+	}
+	for _, inv := range m.invoices {
+		if inv.ID == id {
+			if !inv.AutoChargePending || inv.PaymentStatus != domain.PaymentPending ||
+				inv.Status != domain.InvoiceFinalized || inv.AmountDueCents <= 0 {
+				return false, nil
+			}
+			m.claimed[id] = true
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *mockInvoices) ReleaseAutoChargeClaim(_ context.Context, _, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.claimed, id)
+	return nil
 }
 
 func (m *mockInvoices) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {

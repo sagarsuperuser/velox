@@ -50,6 +50,11 @@ type Store interface {
 	UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error)
 
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	// ClaimAutoCharge / ReleaseAutoChargeClaim: the per-invoice charge
+	// lease (HA hazard #1) — exactly one sweep leader enters the charge
+	// leg per invoice per 5m window.
+	ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error)
+	ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 
 	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
