@@ -345,3 +345,53 @@ func isID(s string) bool {
 	}
 	return false
 }
+
+// schedulerLastRunTimestamp backs the runbook's "scheduler is alive" alert:
+// `time() - velox_scheduler_last_run_timestamp_seconds > 2 * interval`.
+// Pre-2026-07-06 the runbook told operators to alert on scheduler last-run
+// age with NO exported metric (only /health/ready encoded it).
+var schedulerLastRunTimestamp = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "velox_scheduler_last_run_timestamp_seconds",
+		Help: "Unix timestamp of the billing scheduler's last completed tick. Alert when time() - this > 2x the scheduler interval.",
+	},
+)
+
+// RecordSchedulerTick stamps the scheduler-liveness gauge; called by the
+// same hook that feeds /health/ready.
+func RecordSchedulerTick() {
+	schedulerLastRunTimestamp.SetToCurrentTime()
+}
+
+// RegisterQueueDepthGauges exports the queue-depth gauges the shipped
+// Grafana dashboard and runbook alert on. Pre-2026-07-06 the dashboard
+// queried velox_email_outbox_pending / velox_webhook_outbox_pending /
+// velox_dunning_active_runs masked by `OR vector(0)` — gauges the binary
+// never exported, so the panels flatlined at 0 through a real backlog.
+//
+// Gauges resolve at SCRAPE time via one COUNT each (cheap: partial/status
+// indexes; 3s cap). A query failure reports -1 — visibly wrong rather than
+// a healthy-looking 0.
+func RegisterQueueDepthGauges(count func(query string) (float64, error)) {
+	gauge := func(name, help, query string) {
+		promauto.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help}, func() float64 {
+			n, err := count(query)
+			if err != nil {
+				return -1
+			}
+			return n
+		})
+	}
+	gauge("velox_email_outbox_pending",
+		"Emails waiting for the outbox dispatcher (status='pending'). -1 = metric query failed.",
+		`SELECT COUNT(*) FROM email_outbox WHERE status = 'pending'`)
+	gauge("velox_webhook_outbox_pending",
+		"Outbound webhook events waiting for the outbox dispatcher (status='pending'). -1 = metric query failed.",
+		`SELECT COUNT(*) FROM webhook_outbox WHERE status = 'pending'`)
+	gauge("velox_dunning_active_runs",
+		"Dunning runs currently active. -1 = metric query failed.",
+		`SELECT COUNT(*) FROM invoice_dunning_runs WHERE state = 'active'`)
+	gauge("velox_creditnote_pending_issue_drafts",
+		"Clawback credit-note drafts awaiting issue (issue_pending, status='draft') — includes drafts legitimately deferred behind an in-flight source payment (ADR-059); alert on sustained growth/age, not presence. -1 = metric query failed.",
+		`SELECT COUNT(*) FROM credit_notes WHERE issue_pending AND status = 'draft'`)
+}

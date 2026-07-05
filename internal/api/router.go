@@ -56,6 +56,8 @@ var (
 	schedulerMu       sync.RWMutex
 	schedulerLastRun  time.Time
 	schedulerInterval time.Duration
+
+	registerQueueGaugesOnce sync.Once
 )
 
 // RecordSchedulerRun is called by the billing scheduler after each cycle
@@ -64,6 +66,9 @@ func RecordSchedulerRun() {
 	schedulerMu.Lock()
 	schedulerLastRun = time.Now()
 	schedulerMu.Unlock()
+	// Same fact, exported: the runbook's scheduler-liveness alert needs it
+	// on /metrics, not only inside /health/ready.
+	mw.RecordSchedulerTick()
 }
 
 // SetSchedulerInterval stores the configured scheduler interval so the
@@ -246,6 +251,27 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// 2026-05-30 since it voided every retry guarantee and was unreachable
 	// by any operator pressure.
 	outboxStore := webhook.NewOutboxStore(db)
+	// Queue-depth gauges (Grafana/runbook alert on these): counts run on a
+	// BYPASS tx — they are cross-tenant, and the app role's RLS would
+	// report a healthy-looking 0 forever. registerQueueGaugesOnce guards
+	// duplicate promauto registration when NewServer runs twice in-process
+	// (integration tests).
+	registerQueueGaugesOnce.Do(func() {
+		mw.RegisterQueueDepthGauges(func(query string) (float64, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+			if err != nil {
+				return 0, err
+			}
+			defer postgres.Rollback(tx)
+			var n float64
+			if err := tx.QueryRowContext(ctx, query).Scan(&n); err != nil {
+				return 0, err
+			}
+			return n, nil
+		})
+	})
 	eventDispatcher := webhook.NewOutboxDispatcher(outboxStore)
 	// invoice.paid is emitted transactionally from MarkPaid (atomic with the
 	// finalized→paid transition) so it fires exactly once across every

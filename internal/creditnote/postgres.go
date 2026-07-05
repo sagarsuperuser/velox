@@ -153,8 +153,14 @@ func (s *PostgresStore) createUnderInvoiceLockInTx(ctx context.Context, tx *sql.
 // legitimately-deferred draft out of the scan and silently drop the customer's
 // relief. The NOT-EXISTS source-terminal gate is the only eligibility predicate;
 // once a draft's source settles it becomes eligible regardless of draft age.
-// RetryPendingClawbackIssue logs per-row re-issue failures, so a genuinely-stuck
-// draft is surfaced by repeated ERROR logs rather than silently aged out.
+//
+// OBSERVABILITY (2026-07-06 truth pass): a draft deferred behind an
+// in-flight source is EXCLUDED by the NOT-EXISTS above, so it never
+// reaches RetryPendingClawbackIssue's per-row logging — deferred drafts
+// produce NO error logs by design (the prior claim here that
+// repeated ERROR logs surface them was false). The
+// velox_creditnote_pending_issue_drafts gauge is the surface: alert on
+// sustained growth/age (see docs/ops/runbook.md), not presence.
 func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error) {
 	if batch <= 0 {
 		batch = 50
