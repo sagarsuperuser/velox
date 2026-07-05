@@ -311,6 +311,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/meters/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update meter (incl. the default rating-rule binding)
+         * @description Fields omitted are left unchanged. `rating_rule_version_id` sets
+         *     the meter's DEFAULT rating rule — the rate applied to usage no
+         *     dimension pricing rule claims (the remedy for silently-unbilled
+         *     unmatched usage); pass an empty string to clear it. The rule must
+         *     exist on the tenant.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        name?: string;
+                        unit?: string;
+                        /** @enum {string} */
+                        aggregation?: "sum" | "count" | "max" | "last";
+                        /** @description Default rating rule; empty string clears. */
+                        rating_rule_version_id?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Updated meter */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Meter not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure (unknown rule id, bad aggregation) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        trace?: never;
+    };
     "/v1/plans": {
         parameters: {
             query?: never;

@@ -74,6 +74,11 @@ type CostDashboardProjection struct {
 	Usage               []CostDashboardMeter        `json:"usage"`
 	Totals              []CostDashboardTotal        `json:"totals"`
 	ProjectedTotalCents int64                       `json:"projected_total_cents"`
+	// Livemode marks whether this dashboard reflects real-money usage; the
+	// embed shows a "Test mode" banner when false. Shipped in the JSON
+	// contract pre-outreach so partner UIs never face a mid-pilot schema
+	// addition (ADR-032 consumer-ready JSON).
+	Livemode bool `json:"livemode"`
 }
 
 type CostDashboardPeriod struct {
@@ -164,6 +169,7 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 			Subscriptions: []CostDashboardSubscription{},
 			Usage:         []CostDashboardMeter{},
 			Totals:        []CostDashboardTotal{},
+			Livemode:      cust.Livemode,
 		}, nil
 	}
 
@@ -175,6 +181,7 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 	proj := CostDashboardProjection{
 		CustomerID: cust.ID,
 		TenantID:   cust.TenantID,
+		Livemode:   cust.Livemode,
 		BillingPeriod: CostDashboardPeriod{
 			Start:  res.Period.From,
 			End:    res.Period.To,

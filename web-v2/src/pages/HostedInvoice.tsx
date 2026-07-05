@@ -87,6 +87,7 @@ interface HostedInvoicePayload {
     support_url?: string
   }
   pay_enabled: boolean
+  livemode: boolean
 }
 
 const apiBase = import.meta.env.VITE_API_URL || ''
@@ -406,6 +407,20 @@ export default function HostedInvoicePage() {
             className="h-1 w-full rounded-full mb-6"
             style={{ backgroundColor: brandColor }}
           />
+        )}
+
+        {/* Test-mode banner — an unmarked test invoice is indistinguishable
+            from a real one to the customer it reaches (Stripe Checkout
+            self-discloses test mode the same way). */}
+        {data.livemode === false && (
+          <div
+            role="status"
+            className="mb-4 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 px-4 py-3"
+          >
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+              Test mode — this invoice is a test and no real payment will be collected.
+            </p>
+          </div>
         )}
 
         {/* Status banner */}

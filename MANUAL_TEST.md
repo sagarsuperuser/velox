@@ -778,6 +778,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Batch body over the 1MB cap → 413 `batch_too_large` (not a misleading 400 "expected JSON array").
 - [ ] Rule with `dimension_match={"token_type":"input"}` claims only input events; `{"token_type":"cache_read"}` claims only cache-read events. Token roles are DISJOINT (ADR-044), so each `{model, token_type}` matches exactly one rule — no priority tie-break needed (the old boolean `cached` + priority-wins model is gone).
 - [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
+- [ ] **Meter default binding is settable post-create (2026-07-05):** `PATCH /v1/meters/{id} {"rating_rule_version_id": "<rule>"}` → unmatched-dimension usage prices at that default from the next close (the silently-unbilled remedy); a typo'd rule id → 422; `""` clears the binding.
 - [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.
 
 ## FLOW B14: Billing thresholds
@@ -1102,6 +1103,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW I10: Hosted invoice page
 
+- [ ] **Test-mode banner (2026-07-05):** open a hosted invoice minted from a **test-mode** key → amber "Test mode — this invoice is a test and no real payment will be collected." banner above the status banner; the payload carries `livemode: false`. A live-mode invoice shows no banner. The public cost-dashboard JSON (`GET /v1/public/cost-dashboard/{token}`) also carries `livemode` for embed banners.
 - [ ] **One live payment link per invoice (ADR-068):** click Pay twice quickly (or from two browsers) → both land on the SAME Stripe session URL; pay it once → the invoice settles once. `checkout_sessions` shows one open row flipping to `invoice_settled` on payment.
 - [ ] **Stale session dies on settle/void/credit:** open the Pay page (don't pay), then mark the invoice paid offline (or void it, or apply covering credits) → the claim row closes in the same operation, a new POST /checkout 409s (`not_payable`), and the old Stripe session is expired (or dies within 1h).
 - [ ] **Drifted amount never mints blind:** open a session, apply a partial credit note (amount_due drops), click Pay again → a NEW session at the new amount (old superseded). If the customer had already completed the old session, Pay 409s `payment_in_progress` and the settle raises `payment.amount_mismatch` with a Critical banner on the invoice.

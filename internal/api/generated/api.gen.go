@@ -547,6 +547,30 @@ func (e PostV1MetersJSONBodyAggregation) Valid() bool {
 	}
 }
 
+// Defines values for PatchV1MetersIdJSONBodyAggregation.
+const (
+	Count PatchV1MetersIdJSONBodyAggregation = "count"
+	Last  PatchV1MetersIdJSONBodyAggregation = "last"
+	Max   PatchV1MetersIdJSONBodyAggregation = "max"
+	Sum   PatchV1MetersIdJSONBodyAggregation = "sum"
+)
+
+// Valid indicates whether the value is a known member of the PatchV1MetersIdJSONBodyAggregation enum.
+func (e PatchV1MetersIdJSONBodyAggregation) Valid() bool {
+	switch e {
+	case Count:
+		return true
+	case Last:
+		return true
+	case Max:
+		return true
+	case Sum:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PostV1PlansJSONBodyBaseBillTiming.
 const (
 	PostV1PlansJSONBodyBaseBillTimingInAdvance PostV1PlansJSONBodyBaseBillTiming = "in_advance"
@@ -1288,6 +1312,19 @@ type PostV1MetersJSONBody struct {
 // PostV1MetersJSONBodyAggregation defines parameters for PostV1Meters.
 type PostV1MetersJSONBodyAggregation string
 
+// PatchV1MetersIdJSONBody defines parameters for PatchV1MetersId.
+type PatchV1MetersIdJSONBody struct {
+	Aggregation PatchV1MetersIdJSONBodyAggregation `json:"aggregation,omitempty"`
+	Name        string                             `json:"name,omitempty"`
+
+	// RatingRuleVersionId Default rating rule; empty string clears.
+	RatingRuleVersionId string `json:"rating_rule_version_id,omitempty"`
+	Unit                string `json:"unit,omitempty"`
+}
+
+// PatchV1MetersIdJSONBodyAggregation defines parameters for PatchV1MetersId.
+type PatchV1MetersIdJSONBodyAggregation string
+
 // PostV1PlansJSONBody defines parameters for PostV1Plans.
 type PostV1PlansJSONBody struct {
 	BaseAmountCents int `json:"base_amount_cents,omitempty"`
@@ -1491,6 +1528,9 @@ type PostV1InvoicesCreatePreviewJSONRequestBody PostV1InvoicesCreatePreviewJSONB
 // PostV1MetersJSONRequestBody defines body for PostV1Meters for application/json ContentType.
 type PostV1MetersJSONRequestBody PostV1MetersJSONBody
 
+// PatchV1MetersIdJSONRequestBody defines body for PatchV1MetersId for application/json ContentType.
+type PatchV1MetersIdJSONRequestBody PatchV1MetersIdJSONBody
+
 // PostV1PlansJSONRequestBody defines body for PostV1Plans for application/json ContentType.
 type PostV1PlansJSONRequestBody PostV1PlansJSONBody
 
@@ -1583,6 +1623,9 @@ type ServerInterface interface {
 	// Create meter
 	// (POST /v1/meters)
 	PostV1Meters(w http.ResponseWriter, r *http.Request)
+	// Update meter (incl. the default rating-rule binding)
+	// (PATCH /v1/meters/{id})
+	PatchV1MetersId(w http.ResponseWriter, r *http.Request, id string)
 	// List plans
 	// (GET /v1/plans)
 	GetV1Plans(w http.ResponseWriter, r *http.Request)
@@ -1781,6 +1824,12 @@ func (_ Unimplemented) GetV1Meters(w http.ResponseWriter, r *http.Request) {
 // Create meter
 // (POST /v1/meters)
 func (_ Unimplemented) PostV1Meters(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Update meter (incl. the default rating-rule binding)
+// (PATCH /v1/meters/{id})
+func (_ Unimplemented) PatchV1MetersId(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2646,6 +2695,37 @@ func (siw *ServerInterfaceWrapper) PostV1Meters(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// PatchV1MetersId operation middleware
+func (siw *ServerInterfaceWrapper) PatchV1MetersId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchV1MetersId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetV1Plans operation middleware
 func (siw *ServerInterfaceWrapper) GetV1Plans(w http.ResponseWriter, r *http.Request) {
 
@@ -3419,6 +3499,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/meters", wrapper.PostV1Meters)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/meters/{id}", wrapper.PatchV1MetersId)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/plans", wrapper.GetV1Plans)
