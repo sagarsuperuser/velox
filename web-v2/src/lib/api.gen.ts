@@ -507,7 +507,12 @@ export interface paths {
                         code: string;
                         display_name: string;
                         customer_id: string;
-                        plan_id: string;
+                        /** @description Plan items — a subscription bills one or more plans. */
+                        items: {
+                            plan_id: string;
+                            /** @default 1 */
+                            quantity?: number;
+                        }[];
                         /**
                          * @default calendar
                          * @enum {string}
@@ -608,12 +613,19 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        customer_id: string;
-                        meter_id: string;
-                        subscription_id?: string;
-                        /** Format: int64 */
-                        quantity: number;
-                        properties?: Record<string, never>;
+                        /** @description The customer's external_id (your identifier), not the internal vlx_cus_ id. */
+                        external_customer_id: string;
+                        /** @description The meter key (e.g. "tokens"). */
+                        event_name: string;
+                        /** @description Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values. */
+                        quantity: number | string;
+                        /** @description Scalar dimension values used for pricing-rule dispatch (e.g. {"model", "token_type"}). */
+                        dimensions?: {
+                            [key: string]: unknown;
+                        };
+                        properties?: {
+                            [key: string]: unknown;
+                        };
                         idempotency_key?: string;
                         /** Format: date-time */
                         timestamp?: string;

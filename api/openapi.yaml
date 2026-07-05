@@ -1099,7 +1099,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [code, display_name, customer_id, plan_id]
+              required: [code, display_name, customer_id, items]
               properties:
                 code:
                   type: string
@@ -1107,8 +1107,18 @@ paths:
                   type: string
                 customer_id:
                   type: string
-                plan_id:
-                  type: string
+                items:
+                  type: array
+                  description: Plan items — a subscription bills one or more plans.
+                  items:
+                    type: object
+                    required: [plan_id]
+                    properties:
+                      plan_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        default: 1
                 billing_time:
                   type: string
                   enum: [calendar, anniversary]
@@ -1188,19 +1198,26 @@ paths:
           application/json:
             schema:
               type: object
-              required: [customer_id, meter_id, quantity]
+              required: [external_customer_id, event_name, quantity]
               properties:
-                customer_id:
+                external_customer_id:
                   type: string
-                meter_id:
+                  description: The customer's external_id (your identifier), not the internal vlx_cus_ id.
+                event_name:
                   type: string
-                subscription_id:
-                  type: string
+                  description: The meter key (e.g. "tokens").
                 quantity:
-                  type: integer
-                  format: int64
+                  oneOf:
+                    - type: number
+                    - type: string
+                  description: Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values.
+                dimensions:
+                  type: object
+                  additionalProperties: true
+                  description: Scalar dimension values used for pricing-rule dispatch (e.g. {"model", "token_type"}).
                 properties:
                   type: object
+                  additionalProperties: true
                 idempotency_key:
                   type: string
                 timestamp:
