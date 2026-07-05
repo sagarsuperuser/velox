@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pause-collection 422 stops lying about the product (2026-07-06).** Requesting the unsupported `void`/`mark_uncollectible` pause behaviors returned "…require an uncollectible invoice status **that does not yet exist**" — false since ADR-064 shipped mark-uncollectible as a live endpoint *and* a dunning final action in the same install; the API contradicted the product to exactly the API-first engineers evaluating it. The message now states the real deferral (auto-resolving each paused cycle's draft isn't implemented). Two MANUAL_TEST lines still asserting the removed hard-pause (`status=paused`) corrected to the real contract (`pause_collection_behavior` set, status stays `active`).
+
 ### Added
 
 - **Commit burndown surfaces (2026-07-06).** "How much of customer X's $50k commit is drawn, and when does it expire?" — the hybrid commit+usage DP's primary finance question — was answerable only by reconstructing the raw credit ledger, and the headline Credit Balance mixed money-backed commit liability with free promotional credits in one number. New `GET /v1/credits/grants/{customer_id}`: per-grant granted/drawn/remaining/expiry (the same `amount − consumed` arithmetic the drain order runs on) plus remaining split by cost-basis class (`commit` / `promotional` / other). The customer page gains a **Credit grants** burndown table (kind badges, per-grant drawdown) and the Credit Balance stat shows a "Commit $X · Promo $Y" subline — the kind-subtotal split the reassessment made an explicit acceptance criterion. Peer anchor: Metronome/Orb surface commitment burndown prominently in customer views.
