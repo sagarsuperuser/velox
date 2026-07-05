@@ -1643,6 +1643,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] `make bootstrap` + `make dev` + `cd web-v2 && npm run dev`. `/health` and `/health/ready` 200.
 - [ ] `RUN_MIGRATIONS_ON_BOOT=true` applies all migrations idempotently (default is `false` — set it explicitly for local dev).
 - [ ] Mail catches at `localhost:8025`.
+- [ ] **Full-stack compose ships the dashboard (2026-07-05):** `cd deploy/compose && docker compose up -d --build` → 5 containers; `http://localhost/` serves the operator UI (login with the bootstrap owner credentials — same origin as the API, no CORS/VITE_API_URL config), `http://localhost/health` still hits the API, deep links like `/invoices/<id>` survive refresh (SPA fallback), and the SSE webhook stream stays open past 35s (dedicated proxy location, buffering off).
 
 ## FLOW M1: Provider cost tables + margin (ADR-079)
 

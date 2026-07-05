@@ -1,10 +1,11 @@
 # Velox single-VM self-host stack
 #
-# Four containers behind one nginx reverse proxy:
-#   nginx       :80    -> velox-api:8080
-#   velox-api   :8080  -> postgres:5432, redis:6379
-#   postgres    :5432  (no host port — internal only)
-#   redis       :6379  (no host port — internal only; rate limiting)
+# Five containers behind one nginx reverse proxy:
+#   nginx           :80    -> /v1,/health,/docs -> velox-api:8080; everything else -> velox-dashboard:80
+#   velox-api       :8080  -> postgres:5432, redis:6379
+#   velox-dashboard :80    (no host port — the built web-v2 SPA; same origin as the API)
+#   postgres        :5432  (no host port — internal only)
+#   redis           :6379  (no host port — internal only; rate limiting)
 #
 # Migrations run on first boot via RUN_MIGRATIONS_ON_BOOT=true.
 # A separate worker binary is intentionally not split out: in v1 the
@@ -124,11 +125,31 @@ services:
       retries: 5
       start_period: 20s
 
+  # The operator dashboard (web-v2), built from source into a static-SPA
+  # nginx image. Without it the compose stack handed out "dashboard owner
+  # credentials" with nothing to log into — every operator surface
+  # (Stripe connect, dunning, margin, invoices) needed a laptop `npm run
+  # dev`. Served behind the front proxy on the SAME origin as the API, so
+  # no CORS and no build-time VITE_API_URL.
+  velox-dashboard:
+    image: ${VELOX_DASHBOARD_IMAGE:-velox-dashboard:local}
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.dashboard
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
       - velox-api
+      - velox-dashboard
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
