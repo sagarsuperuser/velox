@@ -325,6 +325,30 @@ func (e ItemChangeType) Valid() bool {
 	}
 }
 
+// Defines values for MemberInvitationStatus.
+const (
+	Accepted MemberInvitationStatus = "accepted"
+	Expired  MemberInvitationStatus = "expired"
+	Pending  MemberInvitationStatus = "pending"
+	Revoked  MemberInvitationStatus = "revoked"
+)
+
+// Valid indicates whether the value is a known member of the MemberInvitationStatus enum.
+func (e MemberInvitationStatus) Valid() bool {
+	switch e {
+	case Accepted:
+		return true
+	case Expired:
+		return true
+	case Pending:
+		return true
+	case Revoked:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MeterAggregation.
 const (
 	MeterAggregationCount MeterAggregation = "count"
@@ -1051,6 +1075,26 @@ type MarginReport struct {
 	UnresolvedEvents int64 `json:"unresolved_events"`
 }
 
+// MemberInvitation defines model for MemberInvitation.
+type MemberInvitation struct {
+	AcceptedAt     time.Time `json:"accepted_at,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	Email          string    `json:"email"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Id             string    `json:"id"`
+	InvitedByEmail string    `json:"invited_by_email,omitempty"`
+	RevokedAt      time.Time `json:"revoked_at,omitempty"`
+
+	// Role Recorded for the future role split; not enforced (every member holds the full permission set).
+	Role string `json:"role"`
+
+	// Status Server-derived; treat as authoritative.
+	Status MemberInvitationStatus `json:"status"`
+}
+
+// MemberInvitationStatus Server-derived; treat as authoritative.
+type MemberInvitationStatus string
+
 // Meter defines model for Meter.
 type Meter struct {
 	Aggregation         MeterAggregation `json:"aggregation,omitempty"`
@@ -1158,6 +1202,13 @@ type UsageEvent struct {
 	Properties     map[string]interface{} `json:"properties,omitempty"`
 	Quantity       int64                  `json:"quantity,omitempty"`
 	Timestamp      time.Time              `json:"timestamp,omitempty"`
+}
+
+// PostV1AuthAcceptInviteJSONBody defines parameters for PostV1AuthAcceptInvite.
+type PostV1AuthAcceptInviteJSONBody struct {
+	// Password Required (and validated) only when no account exists for the invited email; ignored otherwise.
+	Password string `json:"password,omitempty"`
+	Token    string `json:"token"`
 }
 
 // PostV1AuthLoginJSONBody defines parameters for PostV1AuthLogin.
@@ -1332,6 +1383,11 @@ type PostV1InvoicesCreatePreviewJSONBody struct {
 	// SubscriptionId Optional. Defaults to the customer's primary active
 	// subscription if not supplied.
 	SubscriptionId string `json:"subscription_id,omitempty"`
+}
+
+// PostV1MembersInviteJSONBody defines parameters for PostV1MembersInvite.
+type PostV1MembersInviteJSONBody struct {
+	Email openapi_types.Email `json:"email"`
 }
 
 // PostV1MetersJSONBody defines parameters for PostV1Meters.
@@ -1553,6 +1609,9 @@ type PatchV1WebhookEndpointsEndpointsIdJSONBody struct {
 	Url         string   `json:"url,omitempty"`
 }
 
+// PostV1AuthAcceptInviteJSONRequestBody defines body for PostV1AuthAcceptInvite for application/json ContentType.
+type PostV1AuthAcceptInviteJSONRequestBody PostV1AuthAcceptInviteJSONBody
+
 // PostV1AuthLoginJSONRequestBody defines body for PostV1AuthLogin for application/json ContentType.
 type PostV1AuthLoginJSONRequestBody PostV1AuthLoginJSONBody
 
@@ -1576,6 +1635,9 @@ type PostV1CustomersJSONRequestBody PostV1CustomersJSONBody
 
 // PostV1InvoicesCreatePreviewJSONRequestBody defines body for PostV1InvoicesCreatePreview for application/json ContentType.
 type PostV1InvoicesCreatePreviewJSONRequestBody PostV1InvoicesCreatePreviewJSONBody
+
+// PostV1MembersInviteJSONRequestBody defines body for PostV1MembersInvite for application/json ContentType.
+type PostV1MembersInviteJSONRequestBody PostV1MembersInviteJSONBody
 
 // PostV1MetersJSONRequestBody defines body for PostV1Meters for application/json ContentType.
 type PostV1MetersJSONRequestBody PostV1MetersJSONBody
@@ -1618,6 +1680,12 @@ type ServerInterface interface {
 	// Health check
 	// (GET /health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// Accept a team invitation
+	// (POST /v1/auth/accept-invite)
+	PostV1AuthAcceptInvite(w http.ResponseWriter, r *http.Request)
+	// Preview a team invitation (accept-page context)
+	// (GET /v1/auth/invite/{token})
+	GetV1AuthInviteToken(w http.ResponseWriter, r *http.Request, token string)
 	// Sign in with email and password; mint an httpOnly session cookie
 	// (POST /v1/auth/login)
 	PostV1AuthLogin(w http.ResponseWriter, r *http.Request)
@@ -1681,6 +1749,18 @@ type ServerInterface interface {
 	// Retry tax calculation on a deferred invoice
 	// (POST /v1/invoices/{id}/retry-tax)
 	PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string)
+	// List workspace members and invitations
+	// (GET /v1/members/)
+	GetV1Members(w http.ResponseWriter, r *http.Request)
+	// Revoke a pending invitation
+	// (DELETE /v1/members/invitations/{id})
+	DeleteV1MembersInvitationsId(w http.ResponseWriter, r *http.Request, id string)
+	// Invite a teammate by email
+	// (POST /v1/members/invite)
+	PostV1MembersInvite(w http.ResponseWriter, r *http.Request)
+	// Remove a member from the workspace
+	// (DELETE /v1/members/{user_id})
+	DeleteV1MembersUserId(w http.ResponseWriter, r *http.Request, userId string)
 	// List meters
 	// (GET /v1/meters)
 	GetV1Meters(w http.ResponseWriter, r *http.Request)
@@ -1780,6 +1860,18 @@ type Unimplemented struct{}
 // Health check
 // (GET /health)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Accept a team invitation
+// (POST /v1/auth/accept-invite)
+func (_ Unimplemented) PostV1AuthAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Preview a team invitation (accept-page context)
+// (GET /v1/auth/invite/{token})
+func (_ Unimplemented) GetV1AuthInviteToken(w http.ResponseWriter, r *http.Request, token string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1906,6 +1998,30 @@ func (_ Unimplemented) GetV1InvoicesIdPdf(w http.ResponseWriter, r *http.Request
 // Retry tax calculation on a deferred invoice
 // (POST /v1/invoices/{id}/retry-tax)
 func (_ Unimplemented) PostV1InvoicesIdRetryTax(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List workspace members and invitations
+// (GET /v1/members/)
+func (_ Unimplemented) GetV1Members(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Revoke a pending invitation
+// (DELETE /v1/members/invitations/{id})
+func (_ Unimplemented) DeleteV1MembersInvitationsId(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Invite a teammate by email
+// (POST /v1/members/invite)
+func (_ Unimplemented) PostV1MembersInvite(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Remove a member from the workspace
+// (DELETE /v1/members/{user_id})
+func (_ Unimplemented) DeleteV1MembersUserId(w http.ResponseWriter, r *http.Request, userId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2103,6 +2219,57 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1AuthAcceptInvite operation middleware
+func (siw *ServerInterfaceWrapper) PostV1AuthAcceptInvite(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1AuthAcceptInvite(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1AuthInviteToken operation middleware
+func (siw *ServerInterfaceWrapper) GetV1AuthInviteToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "token" -------------
+	var token string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token", chi.URLParam(r, "token"), &token, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1AuthInviteToken(w, r, token)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2838,6 +3005,108 @@ func (siw *ServerInterfaceWrapper) PostV1InvoicesIdRetryTax(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1InvoicesIdRetryTax(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1Members operation middleware
+func (siw *ServerInterfaceWrapper) GetV1Members(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1Members(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteV1MembersInvitationsId operation middleware
+func (siw *ServerInterfaceWrapper) DeleteV1MembersInvitationsId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteV1MembersInvitationsId(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1MembersInvite operation middleware
+func (siw *ServerInterfaceWrapper) PostV1MembersInvite(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1MembersInvite(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteV1MembersUserId operation middleware
+func (siw *ServerInterfaceWrapper) DeleteV1MembersUserId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "user_id" -------------
+	var userId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "user_id", chi.URLParam(r, "user_id"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteV1MembersUserId(w, r, userId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3783,6 +4052,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/health", wrapper.GetHealth)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/accept-invite", wrapper.PostV1AuthAcceptInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/auth/invite/{token}", wrapper.GetV1AuthInviteToken)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/login", wrapper.PostV1AuthLogin)
 	})
 	r.Group(func(r chi.Router) {
@@ -3844,6 +4119,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/invoices/{id}/retry-tax", wrapper.PostV1InvoicesIdRetryTax)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/members/", wrapper.GetV1Members)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/members/invitations/{id}", wrapper.DeleteV1MembersInvitationsId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/members/invite", wrapper.PostV1MembersInvite)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/members/{user_id}", wrapper.DeleteV1MembersUserId)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/meters", wrapper.GetV1Meters)

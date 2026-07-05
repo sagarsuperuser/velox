@@ -4,7 +4,6 @@ import { apiRequest } from './api'
 export interface MemberView {
   user_id: string
   email: string
-  display_name: string
   role: string
   joined_at: string
 }
@@ -40,10 +39,15 @@ export interface InvitePreview {
   expires_at: string
 }
 
+// session_minted is true only on the new-account path — the server
+// auto-logs the new user in (they just set their password). Existing
+// accounts get session_minted=false and sign in with their own password;
+// expires_at is "" in that case.
 export interface AcceptInviteResp {
   user_id: string
   email: string
   tenant_id: string
+  session_minted: boolean
   livemode: boolean
   expires_at: string
 }
@@ -63,10 +67,9 @@ export const membersApi = {
   previewInvite: (token: string) =>
     apiRequest<InvitePreview>('GET', `/auth/invite/${token}`),
 
-  acceptInvite: (token: string, password: string, displayName?: string) =>
+  acceptInvite: (token: string, password: string) =>
     apiRequest<AcceptInviteResp>('POST', '/auth/accept-invite', {
       token,
       password,
-      display_name: displayName || '',
     }),
 }

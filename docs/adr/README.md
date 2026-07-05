@@ -117,6 +117,7 @@ messages + CHANGELOG.md, not here.
 | [078](078-prepaid-commits-phase-1.md) | 2026-07-05 | Accepted | Prepaid commits + drawdown, phase 1 — grant-on-issue, retire-on-void, cash-instrument invoices |
 | [079](079-provider-cost-tables.md) | 2026-07-05 | Accepted | Provider cost tables + per-customer margin — ingest-time COGS stamp, honest attribution |
 | [080](080-paid-commit-cn-relief.md) | 2026-07-06 | Accepted | Paid-commit CN relief — telescoping price-ratio refund cap, single-tx create-and-issue |
+| [081](081-minimal-team-invites.md) | 2026-07-06 | Accepted | Minimal team invites — tokenized accept, session-revoking removal, NO RBAC (role recorded, not enforced) |
 
 > ℹ️ **ADR-058 was renumbered from a duplicate ADR-050** (2026-06-21). Two
 > concurrent sessions had each taken `050` — the same hazard the migration-numbering

@@ -1576,6 +1576,17 @@ Setup: fresh DB, `VELOX_BOOTSTRAP_TOKEN` set (≥16 chars).
 - [ ] Omit owner fields → owner defaults to `admin@velox.local` with a generated password in the response.
 - [ ] `APP_ENV=production` boot without `APP_DATABASE_URL` (or with password `velox_app`) → process exits with `refusing to start` naming APP_DATABASE_URL; with `APP_DATABASE_URL` pointed at the admin role → exits with `can BYPASS row-level security`.
 
+## FLOW T1: Team invites (ADR-081, 2026-07-06)
+
+Setup: `DASHBOARD_BASE_URL` set (invites refuse to mint without it), Mailpit up.
+
+- [ ] Settings → Team: invite `teammate@example.com` → invitation row appears (pending, 7-day expiry, "Invited by <your email>"); Mailpit shows the invite email with an accept link to `DASHBOARD_BASE_URL/accept-invite?token=…`.
+- [ ] Open the link logged out → page shows the workspace name + invited email + password form (new account). Set a 12+ char password → lands signed in on the dashboard; Settings → Team lists 2 members; audit log has `member.invited` (inviter as actor) + `member.joined` (invitee as actor).
+- [ ] Re-invite the SAME email while pending → 409 "pending invitation … already exists"; revoke it → its accept link now shows "no longer valid"; re-invite succeeds.
+- [ ] `POST /v1/members/invite` with a Bearer secret key → 403 (dashboard-session only).
+- [ ] Remove the invitee (confirm dialog warns they're signed out everywhere) → their session is dead on next request; re-inviting them works and accept says "You already have a Velox account" (no password form; attach only, then sign in at /login).
+- [ ] Remove yourself → blocked; remove the last member → blocked. *(automated: `internal/dashmembers` integration tests — golden path, existing-user attach, gates, revoked/expired tokens, session revocation, concurrent accept)*
+
 ## FLOW X3: Rate limiting
 
 - [ ] 100+ concurrent CRUD requests (e.g. `GET /v1/customers`) → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.

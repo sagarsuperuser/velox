@@ -1794,6 +1794,375 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/invite/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview a team invitation (accept-page context)
+         * @description Unauthenticated — the token IS the credential (mirrors password
+         *     reset). Returns the invited email, workspace name, and whether
+         *     the invitee needs to create an account. Invalid, expired,
+         *     revoked, and already-used tokens all return the same generic
+         *     422 (no state oracle for token guessing). ADR-081.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    token: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Invitation preview */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            email: string;
+                            tenant_id: string;
+                            tenant_name: string;
+                            needs_new_account: boolean;
+                            invited_by_email?: string;
+                            /** Format: date-time */
+                            expires_at: string;
+                        };
+                    };
+                };
+                /** @description Token invalid, expired, revoked, or already used */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/accept-invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept a team invitation
+         * @description Consumes the single-use invite token (CAS — a replay or a race
+         *     loses) and attaches the membership. If no account exists for the
+         *     invited email, `password` is required (min 12 chars), the account
+         *     is created, and a session cookie is minted (`session_minted:
+         *     true`). An EXISTING account is attached WITHOUT a session —
+         *     possession of the email alone must not log into an
+         *     already-privileged account; the user signs in with their own
+         *     password afterwards. ADR-081.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                        /** @description Required (and validated) only when no account exists for the invited email; ignored otherwise. */
+                        password?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Membership attached; cookie set when session_minted is true */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            user_id: string;
+                            email: string;
+                            tenant_id: string;
+                            session_minted: boolean;
+                            livemode: boolean;
+                            /** @description Session expiry (RFC 3339) when session_minted; empty string otherwise. */
+                            expires_at: string;
+                        };
+                    };
+                };
+                /** @description Token invalid/expired/revoked/used, or password does not meet policy */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/members/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List workspace members and invitations
+         * @description Dashboard-session only (403 for API keys — membership is a human
+         *     act with a human actor). Members are every user attached to the
+         *     tenant; invitations carry a server-derived status
+         *     (pending/accepted/revoked/expired). No RBAC yet: `role` is
+         *     recorded but every member holds the full permission set. ADR-081.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Members + invitations */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            members: {
+                                user_id: string;
+                                email: string;
+                                role: string;
+                                /** Format: date-time */
+                                joined_at: string;
+                            }[];
+                            invitations: components["schemas"]["MemberInvitation"][];
+                        };
+                    };
+                };
+                /** @description Caller is not a dashboard session */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/members/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invite a teammate by email
+         * @description Creates a pending invitation (7-day expiry, one pending per
+         *     email) and sends the accept link via the transactional email
+         *     outbox. Requires `DASHBOARD_BASE_URL` — accept links are never
+         *     derived from request headers. 409 when the email is already a
+         *     member or already has a pending invite. ADR-081.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Invitation created and email enqueued */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["MemberInvitation"];
+                    };
+                };
+                /** @description Already a member, or a pending invitation exists */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Invalid email */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/members/invitations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a pending invitation
+         * @description Stamps the invitation revoked; its accept link stops working
+         *     immediately (revoke racing an accept: exactly one wins). Only
+         *     pending invitations can be revoked — accepted/revoked ones 404.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Invitation revoked */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No pending invitation with this id */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a member from the workspace
+         * @description Deletes the membership AND revokes all of the user's sessions
+         *     (sessions pin the tenant — without revocation an active session
+         *     would keep full access). Guards: self-removal is blocked
+         *     (another member must remove you) and the last member cannot be
+         *     removed. ADR-081.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    user_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Member removed and sessions revoked */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description User is not a member of this workspace */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Self-removal or last-member removal blocked */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/whoami": {
         parameters: {
             query?: never;
@@ -2462,6 +2831,27 @@ export interface components {
                 message?: string;
                 request_id?: string;
             };
+        };
+        MemberInvitation: {
+            /** @example vlx_minv_1a2b3c4d5e6f7890 */
+            id: string;
+            email: string;
+            /** @description Recorded for the future role split; not enforced (every member holds the full permission set). */
+            role: string;
+            /**
+             * @description Server-derived; treat as authoritative.
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "revoked" | "expired";
+            invited_by_email?: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            accepted_at?: string;
+            /** Format: date-time */
+            revoked_at?: string;
         };
         Customer: {
             /** @example vlx_cus_42014438d82ddf33 */

@@ -24,6 +24,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/creditnote"
 	"github.com/sagarsuperuser/velox/internal/customer"
+	"github.com/sagarsuperuser/velox/internal/dashmembers"
 	"github.com/sagarsuperuser/velox/internal/dunning"
 	"github.com/sagarsuperuser/velox/internal/email"
 	"github.com/sagarsuperuser/velox/internal/hostedinvoice"
@@ -974,7 +975,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// User accounts: email + password auth for the dashboard. See
 	// ADR-011. The auth handler wires /v1/auth/login,
 	// /v1/auth/logout, and the password-reset flow.
-	userSvc := user.NewService(user.NewPostgresStore(db), nil)
+	userStore := user.NewPostgresStore(db)
+	userSvc := user.NewService(userStore, nil)
 	// Password-reset emails ride the same email infrastructure as
 	// every other transactional email. The user.EmailSender interface
 	// is narrower than email.OutboxSender's signature (no tenant or
@@ -1005,6 +1007,23 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// per-tenant audit_log. This is the DASHBOARD (session) auth handler —
 	// distinct from authH (the API-key handler) wired above.
 	dashboardAuthH.SetAuditLogger(auditLogger)
+
+	// Team membership: invite / accept / remove (minimal — no RBAC; every
+	// member gets the full owner permission set until roles land). Invite
+	// emails ride the transactional outbox like every other email; accept
+	// links are built from DASHBOARD_BASE_URL, same host-header-poisoning
+	// posture as password-reset links.
+	membersSvc := dashmembers.NewService(
+		dashmembers.NewPostgresStore(db),
+		&memberUserDirectoryAdapter{svc: userSvc, store: userStore},
+		sessionSvc,
+		outboxSender,
+		&memberTenantNamerAdapter{svc: tenantSvc},
+		nil, // real clock
+		dashboardBaseURL,
+	)
+	membersH := dashmembers.NewHandler(membersSvc, sessionSvc, session.DefaultCookieConfig())
+	membersH.SetAuditLogger(auditLogger)
 
 	s := &Server{
 		BillingEngine:     engine,
@@ -1170,6 +1189,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Route("/v1/auth", func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
+		// Invite accept flow — public like login/reset (the token IS the
+		// credential) and sharing the same limiter, so invite-token
+		// guessing is throttled like credential stuffing. Explicit routes
+		// win over the Mount("/") wildcard below.
+		membersH.RegisterPublicRoutes(r)
 		r.Mount("/", dashboardAuthH.Routes())
 	})
 
@@ -1307,6 +1331,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		})
 
 		r.With(auth.Require(auth.PermAPIKeyWrite)).Mount("/api-keys", authH.Routes())
+		// Team membership — dashboard sessions only. API keys are machine
+		// credentials with no user identity to attribute invites/removals
+		// to, so they 403 here (the service double-checks on invite).
+		r.With(auth.RequireSession()).Mount("/members", membersH.Routes())
 		// /customers subtree mixes reads (GET list/get/billing-profile) and
 		// writes (POST create, PATCH update, PUT billing-profile, GDPR
 		// delete-data). RequireMethod splits the gate by HTTP method so a

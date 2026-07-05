@@ -30,10 +30,12 @@ import type {
   CreditBalance,
   Customer,
   Error,
+  GetV1AuthInviteToken200,
   GetV1CreditsGrantsCustomerIdParams,
   GetV1CustomersIdMarginParams,
   GetV1CustomersParams,
   GetV1InvoicesParams,
+  GetV1Members200,
   GetV1ProviderCosts200,
   GetV1SubscriptionsParams,
   GetV1TestClocks200,
@@ -44,8 +46,11 @@ import type {
   Invoice,
   InvoiceWithLineItems,
   MarginReport,
+  MemberInvitation,
   PatchV1MetersIdBody,
   PatchV1WebhookEndpointsEndpointsIdBody,
+  PostV1AuthAcceptInvite200,
+  PostV1AuthAcceptInviteBody,
   PostV1AuthLogin200,
   PostV1AuthLoginBody,
   PostV1AuthMode200,
@@ -58,6 +63,7 @@ import type {
   PostV1CustomersBody,
   PostV1CustomersIdRotateCostDashboardToken200,
   PostV1InvoicesCreatePreviewBody,
+  PostV1MembersInviteBody,
   PostV1MetersBody,
   PostV1PlansBody,
   PostV1RatingRulesBody,
@@ -3271,6 +3277,527 @@ export const usePostV1AuthPasswordResetConfirm = <TError = Error,
         TContext
       > => {
       return useMutation(getPostV1AuthPasswordResetConfirmMutationOptions(options), queryClient);
+    }
+
+/**
+ * Unauthenticated — the token IS the credential (mirrors password
+reset). Returns the invited email, workspace name, and whether
+the invitee needs to create an account. Invalid, expired,
+revoked, and already-used tokens all return the same generic
+422 (no state oracle for token guessing). ADR-081.
+
+ * @summary Preview a team invitation (accept-page context)
+ */
+export const getGetV1AuthInviteTokenUrl = (token: string,) => {
+
+
+
+
+  return `/v1/auth/invite/${token}`
+}
+
+export const getV1AuthInviteToken = async (token: string, options?: RequestInit): Promise<GetV1AuthInviteToken200> => {
+
+  return orvalClient<GetV1AuthInviteToken200>(getGetV1AuthInviteTokenUrl(token),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1AuthInviteTokenQueryKey = (token: string,) => {
+    return [
+    `/v1/auth/invite/${token}`
+    ] as const;
+    }
+
+
+export const getGetV1AuthInviteTokenQueryOptions = <TData = Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError = Error>(token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1AuthInviteTokenQueryKey(token);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1AuthInviteToken>>> = () => getV1AuthInviteToken(token, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(token), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1AuthInviteTokenQueryResult = NonNullable<Awaited<ReturnType<typeof getV1AuthInviteToken>>>
+export type GetV1AuthInviteTokenQueryError = Error
+
+
+export function useGetV1AuthInviteToken<TData = Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError = Error>(
+ token: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1AuthInviteToken>>,
+          TError,
+          Awaited<ReturnType<typeof getV1AuthInviteToken>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1AuthInviteToken<TData = Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError = Error>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1AuthInviteToken>>,
+          TError,
+          Awaited<ReturnType<typeof getV1AuthInviteToken>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1AuthInviteToken<TData = Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError = Error>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Preview a team invitation (accept-page context)
+ */
+
+export function useGetV1AuthInviteToken<TData = Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError = Error>(
+ token: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1AuthInviteToken>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1AuthInviteTokenQueryOptions(token,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Consumes the single-use invite token (CAS — a replay or a race
+loses) and attaches the membership. If no account exists for the
+invited email, `password` is required (min 12 chars), the account
+is created, and a session cookie is minted (`session_minted:
+true`). An EXISTING account is attached WITHOUT a session —
+possession of the email alone must not log into an
+already-privileged account; the user signs in with their own
+password afterwards. ADR-081.
+
+ * @summary Accept a team invitation
+ */
+export const getPostV1AuthAcceptInviteUrl = () => {
+
+
+
+
+  return `/v1/auth/accept-invite`
+}
+
+export const postV1AuthAcceptInvite = async (postV1AuthAcceptInviteBody: PostV1AuthAcceptInviteBody, options?: RequestInit): Promise<PostV1AuthAcceptInvite200> => {
+
+  return orvalClient<PostV1AuthAcceptInvite200>(getPostV1AuthAcceptInviteUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1AuthAcceptInviteBody,)
+  }
+);}
+
+
+
+
+export const getPostV1AuthAcceptInviteMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthAcceptInvite>>, TError,{data: PostV1AuthAcceptInviteBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1AuthAcceptInvite>>, TError,{data: PostV1AuthAcceptInviteBody}, TContext> => {
+
+const mutationKey = ['postV1AuthAcceptInvite'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1AuthAcceptInvite>>, {data: PostV1AuthAcceptInviteBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1AuthAcceptInvite(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1AuthAcceptInviteMutationResult = NonNullable<Awaited<ReturnType<typeof postV1AuthAcceptInvite>>>
+    export type PostV1AuthAcceptInviteMutationBody = PostV1AuthAcceptInviteBody
+    export type PostV1AuthAcceptInviteMutationError = Error
+
+    /**
+ * @summary Accept a team invitation
+ */
+export const usePostV1AuthAcceptInvite = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1AuthAcceptInvite>>, TError,{data: PostV1AuthAcceptInviteBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1AuthAcceptInvite>>,
+        TError,
+        {data: PostV1AuthAcceptInviteBody},
+        TContext
+      > => {
+      return useMutation(getPostV1AuthAcceptInviteMutationOptions(options), queryClient);
+    }
+
+/**
+ * Dashboard-session only (403 for API keys — membership is a human
+act with a human actor). Members are every user attached to the
+tenant; invitations carry a server-derived status
+(pending/accepted/revoked/expired). No RBAC yet: `role` is
+recorded but every member holds the full permission set. ADR-081.
+
+ * @summary List workspace members and invitations
+ */
+export const getGetV1MembersUrl = () => {
+
+
+
+
+  return `/v1/members/`
+}
+
+export const getV1Members = async ( options?: RequestInit): Promise<GetV1Members200> => {
+
+  return orvalClient<GetV1Members200>(getGetV1MembersUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1MembersQueryKey = () => {
+    return [
+    `/v1/members/`
+    ] as const;
+    }
+
+
+export const getGetV1MembersQueryOptions = <TData = Awaited<ReturnType<typeof getV1Members>>, TError = Error>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1MembersQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1Members>>> = () => getV1Members(requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1MembersQueryResult = NonNullable<Awaited<ReturnType<typeof getV1Members>>>
+export type GetV1MembersQueryError = Error
+
+
+export function useGetV1Members<TData = Awaited<ReturnType<typeof getV1Members>>, TError = Error>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1Members>>,
+          TError,
+          Awaited<ReturnType<typeof getV1Members>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1Members<TData = Awaited<ReturnType<typeof getV1Members>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1Members>>,
+          TError,
+          Awaited<ReturnType<typeof getV1Members>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1Members<TData = Awaited<ReturnType<typeof getV1Members>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List workspace members and invitations
+ */
+
+export function useGetV1Members<TData = Awaited<ReturnType<typeof getV1Members>>, TError = Error>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1Members>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1MembersQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * Creates a pending invitation (7-day expiry, one pending per
+email) and sends the accept link via the transactional email
+outbox. Requires `DASHBOARD_BASE_URL` — accept links are never
+derived from request headers. 409 when the email is already a
+member or already has a pending invite. ADR-081.
+
+ * @summary Invite a teammate by email
+ */
+export const getPostV1MembersInviteUrl = () => {
+
+
+
+
+  return `/v1/members/invite`
+}
+
+export const postV1MembersInvite = async (postV1MembersInviteBody: PostV1MembersInviteBody, options?: RequestInit): Promise<MemberInvitation> => {
+
+  return orvalClient<MemberInvitation>(getPostV1MembersInviteUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1MembersInviteBody,)
+  }
+);}
+
+
+
+
+export const getPostV1MembersInviteMutationOptions = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1MembersInvite>>, TError,{data: PostV1MembersInviteBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1MembersInvite>>, TError,{data: PostV1MembersInviteBody}, TContext> => {
+
+const mutationKey = ['postV1MembersInvite'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1MembersInvite>>, {data: PostV1MembersInviteBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1MembersInvite(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1MembersInviteMutationResult = NonNullable<Awaited<ReturnType<typeof postV1MembersInvite>>>
+    export type PostV1MembersInviteMutationBody = PostV1MembersInviteBody
+    export type PostV1MembersInviteMutationError = Error
+
+    /**
+ * @summary Invite a teammate by email
+ */
+export const usePostV1MembersInvite = <TError = Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1MembersInvite>>, TError,{data: PostV1MembersInviteBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1MembersInvite>>,
+        TError,
+        {data: PostV1MembersInviteBody},
+        TContext
+      > => {
+      return useMutation(getPostV1MembersInviteMutationOptions(options), queryClient);
+    }
+
+/**
+ * Stamps the invitation revoked; its accept link stops working
+immediately (revoke racing an accept: exactly one wins). Only
+pending invitations can be revoked — accepted/revoked ones 404.
+
+ * @summary Revoke a pending invitation
+ */
+export const getDeleteV1MembersInvitationsIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/members/invitations/${id}`
+}
+
+export const deleteV1MembersInvitationsId = async (id: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getDeleteV1MembersInvitationsIdUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteV1MembersInvitationsIdMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteV1MembersInvitationsId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteV1MembersInvitationsId(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteV1MembersInvitationsIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>>
+
+    export type DeleteV1MembersInvitationsIdMutationError = void
+
+    /**
+ * @summary Revoke a pending invitation
+ */
+export const useDeleteV1MembersInvitationsId = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteV1MembersInvitationsId>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getDeleteV1MembersInvitationsIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * Deletes the membership AND revokes all of the user's sessions
+(sessions pin the tenant — without revocation an active session
+would keep full access). Guards: self-removal is blocked
+(another member must remove you) and the last member cannot be
+removed. ADR-081.
+
+ * @summary Remove a member from the workspace
+ */
+export const getDeleteV1MembersUserIdUrl = (userId: string,) => {
+
+
+
+
+  return `/v1/members/${userId}`
+}
+
+export const deleteV1MembersUserId = async (userId: string, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getDeleteV1MembersUserIdUrl(userId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteV1MembersUserIdMutationOptions = <TError = void | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersUserId>>, TError,{userId: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersUserId>>, TError,{userId: string}, TContext> => {
+
+const mutationKey = ['deleteV1MembersUserId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteV1MembersUserId>>, {userId: string}> = (props) => {
+          const {userId} = props ?? {};
+
+          return  deleteV1MembersUserId(userId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteV1MembersUserIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteV1MembersUserId>>>
+
+    export type DeleteV1MembersUserIdMutationError = void | Error
+
+    /**
+ * @summary Remove a member from the workspace
+ */
+export const useDeleteV1MembersUserId = <TError = void | Error,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteV1MembersUserId>>, TError,{userId: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteV1MembersUserId>>,
+        TError,
+        {userId: string},
+        TContext
+      > => {
+      return useMutation(getDeleteV1MembersUserIdMutationOptions(options), queryClient);
     }
 
 /**

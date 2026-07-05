@@ -256,6 +256,7 @@ All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook
 
 ### Recently shipped
 
+- **Team invites (Jul 2026, ADR-081)** — invite teammates by email (tokenized single-use accept links, member removal with session revocation); kills the shared-password reality and gives the audit log real per-person actors. No RBAC yet — every member has full access, roles recorded for the future split
 - **Provider cost tables + margin (Jul 2026, ADR-079)** — enter what you pay LLM providers; every usage event is stamped with its COGS at ingest; per-customer margin report (billed vs cost by model) — the report every other billing engine makes you build in your warehouse
 - **Prepaid commits + drawdown (Jul 2026, ADR-078)** — sell commit + usage: a commit line on an invoice funds a credit block at finalize (fund-once, atomic), promotional credits drain before paid, balance-threshold webhooks (`credit.balance_low/depleted/recovered`), void retires the unfunded remainder
 - **Full-product audit hardening (Jul 2026)** — a 117-finding end-to-end audit remediated in 13 gated PRs: threshold billing exactness, checkout/trial state-machine races, credit expiry atomicity, price-change semantics (pinned per-period resolution), transport delivery leases (no more duplicate emails/webhooks under load), self-host truth (one bootstrap, real `APP_DATABASE_URL`, race-safe migrations), and honest MRR analytics
@@ -279,7 +280,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 - Helm chart + Terraform AWS module + multi-replica HA
 - Stripe Billing migration tool (`velox-import`)
 - SOC 2 / GDPR-deletion / audit-log retention / encryption-at-rest enterprise-readiness docs
-- Member invitations + RBAC (single-user v1; SSO direction predetermined per ADR-014 — embedded OIDC/SAML libs in-process when a DP asks, never a SaaS auth vendor)
+- RBAC / role enforcement (invites shipped Jul 2026 per ADR-081 with every member holding full access; role-scoped permissions land when a DP names the split. SSO direction predetermined per ADR-014 — embedded OIDC/SAML libs in-process when a DP asks, never a SaaS auth vendor)
 - Operator polish: bulk actions, billing-alerts UI, plan-migration cohort UI, live event stream, embedded dashboard docs site
 
 These are paused — not killed. They land when a real customer names the specific shape they need; pre-launch, pre-evidence builds optimise the wrong version of each.

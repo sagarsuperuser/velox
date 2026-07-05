@@ -73,6 +73,23 @@ func Require(perm Permission) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireSession gates a subtree to dashboard-session principals only.
+// Used for surfaces that are inherently a human act (team membership):
+// API keys are machine credentials with no user identity to attribute
+// the action to, so they get a 403 with a pointer at the dashboard.
+func RequireSession() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if GetKeyType(r.Context()) != KeyTypeSession {
+				respond.Forbidden(w, r,
+					"this endpoint requires a dashboard session — sign in to the dashboard to manage team membership")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // RequireMethod returns middleware that picks the permission to enforce
 // based on HTTP method: GET/HEAD/OPTIONS check `read`, POST/PUT/PATCH/
 // DELETE check `write`. Closes the gap where a single Require() in

@@ -105,10 +105,12 @@ var keyPermissions = map[KeyType]map[Permission]bool{
 	// but reads nothing tenant-wide. Re-add a NARROW, purpose-built scope here
 	// only when a concrete browser use case names what it needs.
 	KeyTypePublishable: {},
-	// Dashboard sessions inherit the full secret-key permission set today —
-	// every logged-in user is an owner per the bootstrap flow, and there are
-	// no non-owner roles yet. When invites + role-scoped permissions land,
-	// this map gets replaced by a per-role lookup driven by user_tenants.role.
+	// Dashboard sessions inherit the full secret-key permission set today.
+	// Invites shipped (ADR-081) but roles are deliberately NOT enforced:
+	// user_tenants.role records owner/admin/member for the future split,
+	// and every session still gets this full set. When role-scoped
+	// permissions land, this map gets replaced by a per-role lookup driven
+	// by user_tenants.role.
 	KeyTypeSession: {
 		PermCustomerRead:      true,
 		PermCustomerWrite:     true,

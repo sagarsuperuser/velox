@@ -187,8 +187,13 @@ func (s *PostgresStore) TenantsForUser(ctx context.Context, userID string) ([]do
 	}
 	defer postgres.Rollback(tx)
 
+	// Ordered by join time: login picks tenants[0] (v1 has no tenant
+	// switcher), so the FIRST-joined membership — the user's original
+	// workspace — must win deterministically once invites (ADR-081)
+	// create multi-membership users.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT user_id, tenant_id, role FROM user_tenants WHERE user_id = $1`, userID)
+		`SELECT user_id, tenant_id, role FROM user_tenants WHERE user_id = $1
+		 ORDER BY created_at ASC, tenant_id ASC`, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -28,6 +28,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/pricing"
 	"github.com/sagarsuperuser/velox/internal/subscription"
+	"github.com/sagarsuperuser/velox/internal/tenant"
+	"github.com/sagarsuperuser/velox/internal/user"
 )
 
 // compositePaymentSetupStore implements payment.PaymentSetupStore on
@@ -1194,4 +1196,43 @@ func (a *subscriptionCheckerAdapter) NonTerminalForCustomer(ctx context.Context,
 		}
 	}
 	return out, nil
+}
+
+// memberUserDirectoryAdapter bridges dashmembers.UserDirectory onto the
+// user package — service for account creation (which validates the
+// password and hashes it), store for lookups/attach. Keeps dashmembers
+// decoupled from internal/user.
+type memberUserDirectoryAdapter struct {
+	svc   *user.Service
+	store *user.PostgresStore
+}
+
+func (a *memberUserDirectoryAdapter) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	return a.store.GetByEmail(ctx, email)
+}
+
+func (a *memberUserDirectoryAdapter) TenantsForUser(ctx context.Context, userID string) ([]domain.UserTenant, error) {
+	return a.store.TenantsForUser(ctx, userID)
+}
+
+func (a *memberUserDirectoryAdapter) CreateUser(ctx context.Context, email, plaintext, tenantID, role string) (domain.User, error) {
+	return a.svc.CreateUser(ctx, email, plaintext, tenantID, role)
+}
+
+func (a *memberUserDirectoryAdapter) AttachTenant(ctx context.Context, userID, tenantID, role string) error {
+	return a.store.AttachTenant(ctx, userID, tenantID, role)
+}
+
+// memberTenantNamerAdapter resolves the workspace display name for
+// invite emails and the accept page.
+type memberTenantNamerAdapter struct {
+	svc *tenant.Service
+}
+
+func (a *memberTenantNamerAdapter) GetTenantName(ctx context.Context, tenantID string) (string, error) {
+	t, err := a.svc.Get(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return t.Name, nil
 }

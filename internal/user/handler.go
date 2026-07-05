@@ -15,6 +15,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/session"
 )
 
@@ -103,7 +104,14 @@ func (h *Handler) SetAuditLogger(a AuditRecorder) { h.auditLogger = a }
 // a password-reset REQUEST, which any unauthenticated party can trigger).
 // Best-effort: a write failure is logged, never surfaced — auth must not fail
 // because the audit row didn't land.
-func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, actorUserID, tenantID, action, resourceID, label string, meta map[string]any) {
+//
+// livemode stamps the row's RLS mode partition. These endpoints run
+// OUTSIDE session middleware, so the ctx carries no livemode and the
+// audit writer's TxTenant would refuse to open (every auth audit row
+// silently failed this way until 2026-07-06). Callers pass the session's
+// mode when they have one, false (the dashboard's default view) for the
+// pre-auth events.
+func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, livemode bool, actorUserID, tenantID, action, resourceID, label string, meta map[string]any) {
 	if h.auditLogger == nil || tenantID == "" {
 		return
 	}
@@ -111,6 +119,7 @@ func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, actorUser
 		ctx = auth.WithUserID(ctx, actorUserID)
 	}
 	ctx = audit.WithClientIP(ctx, audit.ExtractClientIP(r))
+	ctx = postgres.WithLivemode(ctx, livemode)
 	if err := h.auditLogger.Log(ctx, tenantID, action, "user", resourceID, label, meta); err != nil {
 		slog.ErrorContext(ctx, "audit: auth event write failed", "action", action, "tenant_id", tenantID, "error", err)
 	}
@@ -247,7 +256,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.cookie.SetCookie(w, rawID, sess.ExpiresAt)
-	h.auditAuthEvent(r.Context(), r, u.ID, tenant.TenantID, "login", u.ID, u.Email,
+	h.auditAuthEvent(r.Context(), r, sess.Livemode, u.ID, tenant.TenantID, "login", u.ID, u.Email,
 		map[string]any{"livemode": sess.Livemode})
 	respond.JSON(w, r, http.StatusOK, loginResp{
 		UserID:    u.ID,
@@ -289,7 +298,9 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
-		h.auditAuthEvent(r.Context(), r, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
+		// Stamped with the NEW mode — the row lands in the partition the
+		// operator just switched into, alongside the actions that follow.
+		h.auditAuthEvent(r.Context(), r, req.Livemode, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
 			map[string]any{"livemode": req.Livemode})
 	}
 
@@ -306,7 +317,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		// Resolve before revoke so the audit row carries the operator identity;
 		// a stale/expired cookie just yields no row.
 		if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
-			h.auditAuthEvent(r.Context(), r, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
+			h.auditAuthEvent(r.Context(), r, sess.Livemode, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
 		}
 		if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
 			slog.Error("session: revoke failed", "err", revokeErr)
@@ -375,7 +386,7 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// it records as 'system'; the email identifies the targeted account. Only
 		// written on a match, so it neither leaks to the requester (the response
 		// is identical match-or-not) nor pollutes the log with spray attempts.
-		h.auditAuthEvent(r.Context(), r, "", tenantID, "password_reset_requested", "", req.Email,
+		h.auditAuthEvent(r.Context(), r, false, "", tenantID, "password_reset_requested", "", req.Email,
 			map[string]any{"email": req.Email})
 	}
 
@@ -466,7 +477,7 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 	// a high-value account-takeover signal. Actor is the account owner (they
 	// held the token); tenant resolved separately since domain.User carries none.
 	if tenantID, terr := h.users.TenantForUser(r.Context(), u.ID); terr == nil {
-		h.auditAuthEvent(r.Context(), r, u.ID, tenantID, "password_reset_completed", u.ID, u.Email, nil)
+		h.auditAuthEvent(r.Context(), r, false, u.ID, tenantID, "password_reset_completed", u.ID, u.Email, nil)
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{
