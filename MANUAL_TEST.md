@@ -1102,6 +1102,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 ## FLOW I10: Hosted invoice page
 
+- [ ] **Test-mode banner (2026-07-05):** open a hosted invoice minted from a **test-mode** key → amber "Test mode — this invoice is a test and no real payment will be collected." banner above the status banner; the payload carries `livemode: false`. A live-mode invoice shows no banner. The public cost-dashboard JSON (`GET /v1/public/cost-dashboard/{token}`) also carries `livemode` for embed banners.
 - [ ] **One live payment link per invoice (ADR-068):** click Pay twice quickly (or from two browsers) → both land on the SAME Stripe session URL; pay it once → the invoice settles once. `checkout_sessions` shows one open row flipping to `invoice_settled` on payment.
 - [ ] **Stale session dies on settle/void/credit:** open the Pay page (don't pay), then mark the invoice paid offline (or void it, or apply covering credits) → the claim row closes in the same operation, a new POST /checkout 409s (`not_payable`), and the old Stripe session is expired (or dies within 1h).
 - [ ] **Drifted amount never mints blind:** open a session, apply a partial credit note (amount_due drops), click Pay again → a NEW session at the new amount (old superseded). If the customer had already completed the old session, Pay 409s `payment_in_progress` and the settle raises `payment.amount_mismatch` with a Critical banner on the invoice.

@@ -146,6 +146,11 @@ type hostedInvoicePayload struct {
 	// "invoice.status == finalized && amount_due > 0", but computed
 	// server-side so the rule lives in one place.
 	PayEnabled bool `json:"pay_enabled"`
+	// Livemode marks whether this invoice is real money. The SPA shows a
+	// "Test mode" banner when false — an unmarked test invoice is
+	// indistinguishable from a real one to the customer it's sent to
+	// (Stripe Checkout self-discloses test mode the same way).
+	Livemode bool `json:"livemode"`
 }
 
 type viewInvoice struct {
@@ -330,6 +335,8 @@ func (h *Handler) viewInvoice(w http.ResponseWriter, r *http.Request) {
 		BillTo:     billTo,
 		Branding:   branding,
 		PayEnabled: payEnabled(inv),
+		// resolveToken pinned the row's livemode onto the request ctx.
+		Livemode: postgres.Livemode(r.Context()),
 	})
 }
 

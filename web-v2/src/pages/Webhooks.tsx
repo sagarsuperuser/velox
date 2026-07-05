@@ -370,6 +370,14 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
     ],
   },
   {
+    label: 'Credits',
+    events: [
+      { type: 'credit.balance_low', description: 'Credit balance crossed below the configured low threshold — time to top up' },
+      { type: 'credit.balance_depleted', description: 'Credit balance reached zero or below' },
+      { type: 'credit.balance_recovered', description: 'Credit balance went positive again after being depleted' },
+    ],
+  },
+  {
     label: 'Customer',
     events: [
       { type: 'customer.email_bounced', description: 'A customer email bounced and was suppressed' },
