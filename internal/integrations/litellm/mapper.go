@@ -47,10 +47,31 @@ const (
 // anthropic_style keys "claude-3.5-sonnet" with a DOT). Keep in sync with the
 // anthropic_style / openai_style recipe `dimension_match.model` values.
 var modelFamilies = []struct{ prefix, recipeToken string }{
+	// Current Anthropic lineup (4.5 generation, late 2025 — dated ids
+	// like claude-opus-4-5-20251101 match via the prefix+"-" rule).
+	{"claude-opus-4-5", "claude-opus-4.5"},
+	{"claude-sonnet-4-5", "claude-sonnet-4.5"},
+	{"claude-haiku-4-5", "claude-haiku-4.5"},
+	// Legacy Anthropic families — proxies mid-migration still route
+	// them; removing a detection prefix silently un-families live
+	// traffic (the model dim falls back to the raw id and no recipe
+	// rule matches).
 	{"claude-3-5-sonnet", "claude-3.5-sonnet"},
 	{"claude-3-opus", "claude-3-opus"},
 	{"claude-3-sonnet", "claude-3-sonnet"},
 	{"claude-3-haiku", "claude-3-haiku"},
+	// Current OpenAI lineup. The match rule is equality-or-prefix+"-",
+	// so the DOTTED ids (gpt-5.1, gpt-4.1) never collide with the bare
+	// gpt-5 entry and need their own rows; -mini/-nano still win over
+	// their base family via longest-prefix.
+	{"gpt-5-mini", "gpt-5-mini"},
+	{"gpt-5-nano", "gpt-5-nano"},
+	{"gpt-5.1", "gpt-5.1"},
+	{"gpt-5", "gpt-5"},
+	{"gpt-4.1-mini", "gpt-4.1-mini"},
+	{"gpt-4.1-nano", "gpt-4.1-nano"},
+	{"gpt-4.1", "gpt-4.1"},
+	// Legacy OpenAI families.
 	{"gpt-4o-mini", "gpt-4o-mini"}, // before gpt-4o (longest-prefix wins)
 	{"gpt-4o", "gpt-4o"},
 	{"gpt-4-turbo", "gpt-4-turbo"},

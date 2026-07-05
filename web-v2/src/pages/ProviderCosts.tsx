@@ -96,7 +96,7 @@ export default function ProviderCostsPage() {
           <CardDescription>
             Same provider + model + token type overwrites the existing rate.
             Use the exact model id your gateway reports (e.g.
-            claude-3-5-sonnet-20241022) or the model family (claude-3.5-sonnet)
+            claude-sonnet-4-5-20250929) or the model family (claude-sonnet-4.5)
             — exact ids match first.
           </CardDescription>
         </CardHeader>
@@ -109,7 +109,7 @@ export default function ProviderCostsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pc-model">Model</Label>
-              <Input id="pc-model" placeholder="claude-3.5-sonnet" className="w-[230px]"
+              <Input id="pc-model" placeholder="claude-sonnet-4.5" className="w-[230px]"
                 value={model} onChange={e => setModel(e.target.value)} />
             </div>
             <div className="space-y-1.5">

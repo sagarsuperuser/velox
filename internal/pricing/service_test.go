@@ -425,6 +425,54 @@ func TestCreateRatingRule_Validation(t *testing.T) {
 	}
 }
 
+// Zero rates are LEGAL (included/free allowances — "first 1M tokens free,
+// then $2/M" is the canonical AI-infra free-tier shape; Stripe documents a
+// $0 first graduated tier). Pre-2026-07-05 authoring rejected them with
+// "unit price must be greater than 0", forcing per-customer credit-grant
+// workarounds. Negative rates stay rejected — a negative RATE is a
+// discount misspelled (credits are the discount primitive, ADR-039).
+func TestCreateRatingRule_ZeroRatesAllowed_NegativeRejected(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "free-flat", Name: "free", Mode: domain.PricingFlat, Currency: "USD",
+		FlatAmountCents: decimal.Zero,
+	}); err != nil {
+		t.Errorf("zero flat rate must be allowed (free dimension): %v", err)
+	}
+
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "free-tier", Name: "free tier", Mode: domain.PricingGraduated, Currency: "USD",
+		GraduatedTiers: []domain.RatingTier{
+			{UpTo: 1_000_000, UnitAmountCents: decimal.Zero},         // included allowance
+			{UpTo: 0, UnitAmountCents: decimal.NewFromFloat(0.0002)}, // then $2/M
+		},
+	}); err != nil {
+		t.Errorf("zero-price first tier must be allowed (included allowance): %v", err)
+	}
+
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "free-pkg", Name: "free pkg", Mode: domain.PricingPackage, Currency: "USD",
+		PackageSize: 1000, PackageAmountCents: 0,
+	}); err != nil {
+		t.Errorf("zero-priced package must be allowed: %v", err)
+	}
+
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "neg-flat", Name: "neg", Mode: domain.PricingFlat, Currency: "USD",
+		FlatAmountCents: decimal.NewFromInt(-1),
+	}); err == nil {
+		t.Error("negative flat rate must be rejected")
+	}
+	if _, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "neg-tier", Name: "neg tier", Mode: domain.PricingGraduated, Currency: "USD",
+		GraduatedTiers: []domain.RatingTier{{UpTo: 0, UnitAmountCents: decimal.NewFromInt(-1)}},
+	}); err == nil {
+		t.Error("negative tier rate must be rejected")
+	}
+}
+
 func TestCreateMeter(t *testing.T) {
 	svc := NewService(newMemStore())
 	ctx := context.Background()

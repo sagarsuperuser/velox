@@ -184,8 +184,16 @@ func validateRatingRuleInput(input CreateRatingRuleInput) error {
 func validatePricingShape(mode domain.PricingMode, flat decimal.Decimal, tiers []domain.RatingTier, pkgSize, pkgAmount int64) error {
 	switch mode {
 	case domain.PricingFlat:
-		if !flat.IsPositive() {
-			return errs.Invalid("flat_amount_cents", "unit price must be greater than 0")
+		// Zero is a legal rate: "this dimension is free" (a $0 embedding
+		// model, an internal meter tracked but not billed). Almost every
+		// AI-infra pricing page has an included-free shape, and rejecting
+		// $0 at authoring forced per-customer credit-grant workarounds.
+		// ComputeAmountCents has always accepted zero (it rejects only
+		// negatives) — this gate was authoring-only. Negative stays
+		// rejected: a negative RATE is a discount misspelled (credits are
+		// the discount primitive, ADR-039).
+		if flat.IsNegative() {
+			return errs.Invalid("flat_amount_cents", "unit price must not be negative (use 0 for a free rate)")
 		}
 	case domain.PricingGraduated:
 		if len(tiers) == 0 {
@@ -193,8 +201,11 @@ func validatePricingShape(mode domain.PricingMode, flat decimal.Decimal, tiers [
 		}
 		lastUpper := int64(0)
 		for i, tier := range tiers {
-			if !tier.UnitAmountCents.IsPositive() {
-				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: unit price must be greater than 0", i+1))
+			// Zero-price tiers express included allowances — "first 1M
+			// tokens free, then $2/M" (Stripe documents a $0 first tier
+			// as the canonical graduated free-tier shape).
+			if tier.UnitAmountCents.IsNegative() {
+				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: unit price must not be negative (use 0 for a free tier)", i+1))
 			}
 			if tier.UpTo < 0 {
 				return errs.Invalid("graduated_tiers", fmt.Sprintf("tier %d: up_to must be positive, or 0 for the final catch-all tier", i+1))
@@ -217,8 +228,10 @@ func validatePricingShape(mode domain.PricingMode, flat decimal.Decimal, tiers [
 		if pkgSize <= 0 {
 			return errs.Invalid("package_size", "package size must be greater than 0")
 		}
-		if pkgAmount <= 0 {
-			return errs.Invalid("package_amount_cents", "package price must be greater than 0")
+		// Zero-priced packages are legal for the same included-allowance
+		// reason as zero tiers (ComputeAmountCents already accepts them).
+		if pkgAmount < 0 {
+			return errs.Invalid("package_amount_cents", "package price must not be negative (use 0 for a free package)")
 		}
 	default:
 		return errs.Invalid("mode", "must be one of: flat, graduated, package")

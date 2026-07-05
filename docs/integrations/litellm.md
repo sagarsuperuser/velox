@@ -52,7 +52,7 @@ The adapter resolves LiteLLM's `user` field to a Velox customer via `external_id
 import litellm
 
 response = litellm.completion(
-    model="claude-3-5-sonnet-20241022",
+    model="claude-sonnet-4-5-20250929",
     messages=[{"role": "user", "content": "Hello"}],
     user="cus_acme_corp",   # ← Velox external_customer_id
     metadata={
@@ -73,7 +73,7 @@ For each completion call, the adapter emits **up to three** usage events — all
 | `cache_read` | `prompt_tokens_details.cached_tokens` (if any)   | `<litellm_id>:cache_read`   |
 | `output`     | `usage.completion_tokens`                        | `<litellm_id>:output`       |
 
-Every event also carries dimensions `{model, model_raw, provider, team_id?, request_tags?}` (`request_tags` is LiteLLM's list, joined to a sorted comma-separated string — dimension values are scalars). `model` is the **canonical recipe family** (the mapper normalizes LiteLLM's raw string — e.g. `claude-3-5-sonnet-20241022` → `claude-3.5-sonnet`); `model_raw` preserves the verbatim string for audit. Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
+Every event also carries dimensions `{model, model_raw, provider, team_id?, request_tags?}` (`request_tags` is LiteLLM's list, joined to a sorted comma-separated string — dimension values are scalars). `model` is the **canonical recipe family** (the mapper normalizes LiteLLM's raw string — e.g. `claude-sonnet-4-5-20250929` → `claude-sonnet-4.5`); `model_raw` preserves the verbatim string for audit. Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
 
 Cache-**write** tokens (`cache_creation`) are seen but **not yet billed** — LiteLLM doesn't expose the 5m-vs-1h cache-write TTL split (BerriAI/litellm#15056), so the mapper logs them loudly and defers (ADR-044 follow-up).
 
