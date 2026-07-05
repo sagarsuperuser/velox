@@ -194,3 +194,66 @@ func TestGrantTx_CarriesGrantKind(t *testing.T) {
 		t.Fatal("GrantTx must reject grant_kind=commit (reserved for invoice-finalize funding)")
 	}
 }
+
+// TestListGrants_BurndownAndKindSubtotals: per-grant remaining tracks
+// drains, and the kind subtotals split money-backed commit liability from
+// free promotional credits (the headline balance mixes them — the
+// 2026-07-05 reassessment made the split an acceptance criterion).
+func TestListGrants_BurndownAndKindSubtotals(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+
+	creditStore := credit.NewPostgresStore(db)
+	svc := credit.NewService(creditStore)
+	tenantID := testutil.CreateTestTenant(t, db, "Grants Burndown")
+
+	cust, err := customer.NewPostgresStore(db).Create(ctx, tenantID, domain.Customer{
+		ExternalID: "cus_burndown", DisplayName: "Burndown",
+	})
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	// A promo grant ($20) and an unclassified grant ($50). Promotional
+	// drains FIRST (ADR-078 drain order).
+	if _, err := svc.Grant(ctx, tenantID, credit.GrantInput{
+		CustomerID: cust.ID, AmountCents: 2000, Description: "promo",
+		GrantKind: domain.GrantKindPromotional,
+	}); err != nil {
+		t.Fatalf("grant promo: %v", err)
+	}
+	if _, err := svc.Grant(ctx, tenantID, credit.GrantInput{
+		CustomerID: cust.ID, AmountCents: 5000, Description: "legacy",
+	}); err != nil {
+		t.Fatalf("grant legacy: %v", err)
+	}
+
+	// Drain $30: all of promo ($20) + $10 of legacy.
+	if _, err := svc.Adjust(ctx, tenantID, credit.AdjustInput{
+		CustomerID: cust.ID, AmountCents: -3000, Description: "clawback",
+	}); err != nil {
+		t.Fatalf("adjust: %v", err)
+	}
+
+	resp, err := svc.ListGrants(ctx, tenantID, cust.ID, false)
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	// Live-only: promo is exhausted → one row (legacy, $40 remaining).
+	if len(resp.Grants) != 1 || resp.Grants[0].RemainingCents != 4000 {
+		t.Fatalf("live grants: got %+v, want one legacy row with 4000 remaining", resp.Grants)
+	}
+	if resp.PromotionalRemainingCents != 0 || resp.OtherRemainingCents != 4000 || resp.CommitRemainingCents != 0 {
+		t.Fatalf("subtotals: got promo=%d other=%d commit=%d, want 0/4000/0",
+			resp.PromotionalRemainingCents, resp.OtherRemainingCents, resp.CommitRemainingCents)
+	}
+
+	// History view includes the exhausted promo block.
+	all, err := svc.ListGrants(ctx, tenantID, cust.ID, true)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all.Grants) != 2 {
+		t.Fatalf("history grants: got %d rows, want 2", len(all.Grants))
+	}
+}

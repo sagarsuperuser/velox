@@ -22,7 +22,10 @@ import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
@@ -169,6 +172,14 @@ export default function CustomerDetailPage() {
     ;(clocksData?.data ?? []).forEach(c => { m[c.id] = c.name || c.id })
     return m
   }, [clocksData])
+
+  // Commit/promo burndown (2026-07-06): per-grant remaining + kind
+  // subtotals — the DP's primary finance question on hybrid commit+usage.
+  const { data: creditGrants } = useQuery({
+    queryKey: ['credit-grants', id],
+    queryFn: () => api.listCreditGrants(id!),
+    enabled: !!id,
+  })
 
   const { data: overview } = useQuery({
     queryKey: ['customer-overview', id],
@@ -501,6 +512,15 @@ export default function CustomerDetailPage() {
             <Link to={`/credits?customer=${id}`} className="flex-1 px-6 py-4 hover:bg-accent/50 transition-colors">
               <p className="text-sm text-muted-foreground">Credit Balance</p>
               <p className={cn('text-sm font-medium mt-1', balance > 0 ? 'text-emerald-600' : 'text-foreground')}>{formatCents(balance)}</p>
+              {/* Kind split — money-backed commit liability must not read
+                  as one number with free promo credits. */}
+              {creditGrants && (creditGrants.commit_remaining_cents > 0 || creditGrants.promotional_remaining_cents > 0) && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {creditGrants.commit_remaining_cents > 0 && <>Commit {formatCents(creditGrants.commit_remaining_cents)}</>}
+                  {creditGrants.commit_remaining_cents > 0 && creditGrants.promotional_remaining_cents > 0 && ' · '}
+                  {creditGrants.promotional_remaining_cents > 0 && <>Promo {formatCents(creditGrants.promotional_remaining_cents)}</>}
+                </p>
+              )}
             </Link>
             {/* Outstanding balance — accounts-receivable exposure for
                 this customer (Stripe / Lago / Chargebee / Recurly all
@@ -765,6 +785,51 @@ export default function CustomerDetailPage() {
       <div className="mt-6">
         <MarginCard customerId={id!} />
       </div>
+
+      {/* Commit / credit-grant burndown — per-grant drawn vs remaining
+          (Metronome/Orb surface commitment burndown on the customer view;
+          this is the hybrid commit+usage DP's primary finance question). */}
+      {creditGrants && creditGrants.grants.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Credit grants</CardTitle>
+            <CardDescription>
+              Drawdown per grant. Commit grants are money-backed (funded by a
+              paid commit invoice); promotional grants burn first.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Grant</TableHead>
+                  <TableHead>Kind</TableHead>
+                  <TableHead className="text-right">Granted</TableHead>
+                  <TableHead className="text-right">Drawn</TableHead>
+                  <TableHead className="text-right">Remaining</TableHead>
+                  <TableHead>Expires</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creditGrants.grants.map(g => (
+                  <TableRow key={g.id}>
+                    <TableCell className="text-sm max-w-xs truncate" title={g.description}>{g.description}</TableCell>
+                    <TableCell>
+                      {g.grant_kind === 'commit' ? <Badge>Commit</Badge>
+                        : g.grant_kind === 'promotional' ? <Badge variant="secondary">Promo</Badge>
+                        : <Badge variant="outline">Credit</Badge>}
+                    </TableCell>
+                    <TableCell className="text-sm text-right">{formatCents(g.amount_cents)}</TableCell>
+                    <TableCell className="text-sm text-right">{formatCents(g.consumed_cents)}</TableCell>
+                    <TableCell className="text-sm text-right font-medium">{formatCents(g.remaining_cents)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{g.expires_at ? formatDate(g.expires_at) : 'never'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Public cost-dashboard token — ADR-031 / MANUAL_TEST CU8. Operator
           rotates to mint a shareable URL the customer can embed (iframe

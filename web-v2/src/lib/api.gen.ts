@@ -379,6 +379,51 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/credits/grants/{customer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-grant burndown + kind subtotals
+         * @description The customer's credit blocks with drawdown state — granted /
+         *     drawn / remaining per grant, expiry, and remaining split by
+         *     cost-basis class (commit = money-backed, promotional = free,
+         *     other = legacy/adjustments). include_exhausted=true adds
+         *     fully-drawn blocks for history.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    include_exhausted?: boolean;
+                };
+                header?: never;
+                path: {
+                    customer_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Grants with remaining + kind subtotals */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/webhook-endpoints/endpoints": {
         parameters: {
             query?: never;

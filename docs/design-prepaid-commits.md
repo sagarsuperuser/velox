@@ -174,10 +174,19 @@ priority = named phase-2 escape hatch).
   (0 → >0). Recovered is kept NOT for parity (single-peer, Orb) but as
   the state-machine complement of depleted — without it a consumer's
   depleted state can never clear.
-- Payloads carry `customer_id`, `balance_cents`, `threshold_cents` —
-  tenants with heterogeneous commit sizes implement per-customer logic
-  consumer-side; per-customer threshold override
-  (`COALESCE(customer, tenant)`) is the named phase-2 escape hatch.
+- Payloads carry `customer_id`, `balance_cents`, `threshold_cents`.
+  AMENDED 2026-07-06 (deferral reassessment falsified the original
+  mitigation): `balance_low` fires ONLY on crossing the single
+  tenant-level threshold, so "implement per-customer logic
+  consumer-side" is impossible for that event — a consumer never sees a
+  crossing for a customer whose commit dwarfs the tenant threshold. The
+  workaround that actually exists: set the tenant threshold to the
+  SMALLEST customer's alert level, rely on `balance_depleted` (always
+  fires per customer), and poll `GET /v1/credits/grants/{customer_id}`
+  for per-customer burndown. Per-customer threshold override
+  (`COALESCE(customer, tenant)`) remains the named phase-2 escape hatch
+  — trigger: first DP with heterogeneous commit sizes asking for
+  per-customer low alerts (tracked in docs/adr/README.md follow-ups).
 - Crossings computed on `SUM(amount_cents)` before/after inside each
   ledger-writing tx via ONE shared helper called from the **3** insert
   sites (`appendEntryInTx`, `AdjustAtomic`, `ApplyToInvoiceAtomic` —

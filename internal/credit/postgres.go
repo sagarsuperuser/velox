@@ -1227,3 +1227,61 @@ func creditEntrySortColumn(key string) string {
 		return "created_at"
 	}
 }
+
+// GrantSummary is one positive credit block with its live drawdown state —
+// the per-grant burndown row finance asks for ("how much of the $50k
+// commit is drawn, when does it expire?"). remaining = amount - consumed;
+// consumed is bumped by every drain (drawdown, clawback, expiry, commit
+// retire), so this is the same arithmetic the drain order runs on.
+type GrantSummary struct {
+	ID              string     `json:"id"`
+	EntryType       string     `json:"entry_type"`
+	GrantKind       string     `json:"grant_kind,omitempty"`
+	Description     string     `json:"description"`
+	AmountCents     int64      `json:"amount_cents"`
+	ConsumedCents   int64      `json:"consumed_cents"`
+	RemainingCents  int64      `json:"remaining_cents"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	SourceInvoiceID string     `json:"source_invoice_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// ListGrantSummaries returns the customer's positive blocks (grants +
+// positive adjustments + reversals) with per-block remaining, newest
+// first. Exhausted blocks are included when includeExhausted (history
+// view); live-only otherwise. Expired-but-unswept blocks report their
+// remaining honestly — the expiry sweep will retire them.
+func (s *PostgresStore) ListGrantSummaries(ctx context.Context, tenantID, customerID string, includeExhausted bool) ([]GrantSummary, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	exhausted := ""
+	if !includeExhausted {
+		exhausted = " AND consumed_cents < amount_cents"
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, entry_type, COALESCE(grant_kind,''), description,
+			amount_cents, consumed_cents, expires_at, COALESCE(source_invoice_id,''), created_at
+		FROM customer_credit_ledger
+		WHERE customer_id = $1 AND amount_cents > 0`+exhausted+`
+		ORDER BY created_at DESC, id DESC`, customerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []GrantSummary
+	for rows.Next() {
+		var g GrantSummary
+		if err := rows.Scan(&g.ID, &g.EntryType, &g.GrantKind, &g.Description,
+			&g.AmountCents, &g.ConsumedCents, &g.ExpiresAt, &g.SourceInvoiceID, &g.CreatedAt); err != nil {
+			return nil, err
+		}
+		g.RemainingCents = g.AmountCents - g.ConsumedCents
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}

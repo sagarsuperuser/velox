@@ -467,6 +467,51 @@ func (s *Service) processExpiry(ctx context.Context, grants []domain.CreditLedge
 	return expired, expiryErrs
 }
 
+// GrantsResponse is the burndown payload: per-grant rows plus the
+// kind-subtotal rollup (the headline Credit Balance mixes free promo with
+// money-backed commit liability — finance needs them split; the 2026-07-05
+// reassessment made the split an explicit acceptance criterion).
+type GrantsResponse struct {
+	Grants []GrantSummary `json:"grants"`
+	// Remaining, split by cost-basis class (ADR-078): commit = money-backed
+	// (funded by a paid commit invoice), promotional = free marketing
+	// credits, other = legacy/unclassified grants + positive adjustments +
+	// reversals (paid drain class).
+	CommitRemainingCents      int64 `json:"commit_remaining_cents"`
+	PromotionalRemainingCents int64 `json:"promotional_remaining_cents"`
+	OtherRemainingCents       int64 `json:"other_remaining_cents"`
+}
+
+// ListGrants returns the customer's credit blocks with drawdown state +
+// kind subtotals. includeExhausted adds fully-drawn blocks (history view).
+func (s *Service) ListGrants(ctx context.Context, tenantID, customerID string, includeExhausted bool) (GrantsResponse, error) {
+	if customerID == "" {
+		return GrantsResponse{}, errs.Required("customer_id")
+	}
+	grants, err := s.store.ListGrantSummaries(ctx, tenantID, customerID, includeExhausted)
+	if err != nil {
+		return GrantsResponse{}, err
+	}
+	resp := GrantsResponse{Grants: grants}
+	if resp.Grants == nil {
+		resp.Grants = []GrantSummary{}
+	}
+	for _, g := range grants {
+		if g.RemainingCents <= 0 {
+			continue
+		}
+		switch g.GrantKind {
+		case string(domain.GrantKindCommit):
+			resp.CommitRemainingCents += g.RemainingCents
+		case string(domain.GrantKindPromotional):
+			resp.PromotionalRemainingCents += g.RemainingCents
+		default:
+			resp.OtherRemainingCents += g.RemainingCents
+		}
+	}
+	return resp, nil
+}
+
 func (s *Service) GetBalance(ctx context.Context, tenantID, customerID string) (domain.CreditBalance, error) {
 	return s.store.GetBalance(ctx, tenantID, customerID)
 }

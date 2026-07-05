@@ -1032,6 +1032,30 @@ paths:
         "422":
           description: Validation failure (unknown rule id, bad aggregation)
 
+  /v1/credits/grants/{customer_id}:
+    get:
+      tags: [Credits]
+      summary: Per-grant burndown + kind subtotals
+      description: |
+        The customer's credit blocks with drawdown state — granted /
+        drawn / remaining per grant, expiry, and remaining split by
+        cost-basis class (commit = money-backed, promotional = free,
+        other = legacy/adjustments). include_exhausted=true adds
+        fully-drawn blocks for history.
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_exhausted
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Grants with remaining + kind subtotals
+
   /v1/webhook-endpoints/endpoints:
     post:
       tags: [Webhooks]

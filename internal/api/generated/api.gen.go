@@ -1202,6 +1202,11 @@ type PostV1CreditsGrantJSONBody struct {
 // PostV1CreditsGrantJSONBodyGrantKind defines parameters for PostV1CreditsGrant.
 type PostV1CreditsGrantJSONBodyGrantKind string
 
+// GetV1CreditsGrantsCustomerIdParams defines parameters for GetV1CreditsGrantsCustomerId.
+type GetV1CreditsGrantsCustomerIdParams struct {
+	IncludeExhausted bool `form:"include_exhausted,omitempty" json:"include_exhausted,omitempty"`
+}
+
 // GetV1CustomersParams defines parameters for GetV1Customers.
 type GetV1CustomersParams struct {
 	Status string `form:"status,omitempty" json:"status,omitempty"`
@@ -1608,6 +1613,9 @@ type ServerInterface interface {
 	// Grant credits to customer
 	// (POST /v1/credits/grant)
 	PostV1CreditsGrant(w http.ResponseWriter, r *http.Request)
+	// Per-grant burndown + kind subtotals
+	// (GET /v1/credits/grants/{customer_id})
+	GetV1CreditsGrantsCustomerId(w http.ResponseWriter, r *http.Request, customerId string, params GetV1CreditsGrantsCustomerIdParams)
 	// List customers
 	// (GET /v1/customers)
 	GetV1Customers(w http.ResponseWriter, r *http.Request, params GetV1CustomersParams)
@@ -1791,6 +1799,12 @@ func (_ Unimplemented) GetV1CreditsBalanceCustomerId(w http.ResponseWriter, r *h
 // Grant credits to customer
 // (POST /v1/credits/grant)
 func (_ Unimplemented) PostV1CreditsGrant(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Per-grant burndown + kind subtotals
+// (GET /v1/credits/grants/{customer_id})
+func (_ Unimplemented) GetV1CreditsGrantsCustomerId(w http.ResponseWriter, r *http.Request, customerId string, params GetV1CreditsGrantsCustomerIdParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2250,6 +2264,48 @@ func (siw *ServerInterfaceWrapper) PostV1CreditsGrant(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1CreditsGrant(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetV1CreditsGrantsCustomerId operation middleware
+func (siw *ServerInterfaceWrapper) GetV1CreditsGrantsCustomerId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "customer_id" -------------
+	var customerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "customer_id", chi.URLParam(r, "customer_id"), &customerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "customer_id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetV1CreditsGrantsCustomerIdParams
+
+	// ------------- Optional query parameter "include_exhausted" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_exhausted", r.URL.Query(), &params.IncludeExhausted, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include_exhausted", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetV1CreditsGrantsCustomerId(w, r, customerId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3691,6 +3747,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/credits/grant", wrapper.PostV1CreditsGrant)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/credits/grants/{customer_id}", wrapper.GetV1CreditsGrantsCustomerId)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/customers", wrapper.GetV1Customers)

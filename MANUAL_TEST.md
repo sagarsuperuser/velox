@@ -1645,6 +1645,12 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Mail catches at `localhost:8025`.
 - [ ] **Full-stack compose ships the dashboard (2026-07-05):** `cd deploy/compose && docker compose up -d --build` → 5 containers; `http://localhost/` serves the operator UI (login with the bootstrap owner credentials — same origin as the API, no CORS/VITE_API_URL config), `http://localhost/health` still hits the API, deep links like `/invoices/<id>` survive refresh (SPA fallback), and the SSE webhook stream stays open past 35s (dedicated proxy location, buffering off).
 
+## FLOW CG1: Commit / credit-grant burndown (2026-07-06)
+
+- [ ] Grant a promo credit + finalize a commit invoice → `GET /v1/credits/grants/{customer_id}` lists both blocks with `amount/consumed/remaining`, `grant_kind`, `expires_at`; `commit_remaining_cents` / `promotional_remaining_cents` split the headline balance.
+- [ ] Customer page: Credit Balance stat shows the "Commit $X · Promo $Y" subline when either class has remaining; the **Credit grants** card lists per-grant Granted/Drawn/Remaining/Expires with kind badges.
+- [ ] Drain past the promo total → promo row leaves the live list (`include_exhausted=true` still shows it); commit remaining unchanged until promo exhausts (ADR-078 drain order). *(automated: `TestListGrants_BurndownAndKindSubtotals`)*
+
 ## FLOW M1: Provider cost tables + margin (ADR-079)
 
 - [ ] Settings → Provider costs (or `PUT /v1/provider-costs`): add a rate `{provider: "anthropic", model: "claude-sonnet-4.5", token_type: "input", cost_per_token: "0.000003"}` → row appears in the table. *(order matters: rates BEFORE usage — events ingested earlier stay honestly uncosted)*
