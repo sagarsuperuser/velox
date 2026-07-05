@@ -427,8 +427,9 @@ func (s *PostgresStore) AdjustAtomic(
 	// drive SUM(amount_cents) below the blocks' remaining capacity —
 	// the exact negative-ledger drift the attribution model exists to
 	// prevent. Fail loud on the shortfall instead (P14, plan §4.4).
+	var drainedFrom []drainedBlock
 	if amountCents < 0 {
-		drained, _, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now)
+		drained, _, blocks, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, -amountCents, now)
 		if err != nil {
 			return domain.CreditLedgerEntry{}, fmt.Errorf("attribute clawback: %w", err)
 		}
@@ -437,6 +438,7 @@ func (s *PostgresStore) AdjustAtomic(
 				"insufficient drainable balance: active credit blocks cover %.2f of the %.2f deduction — the rest of the balance is expired credit pending the expiry sweep",
 				float64(drained)/100, float64(-amountCents)/100)
 		}
+		drainedFrom = blocks
 	}
 
 	entry := domain.CreditLedgerEntry{
@@ -455,7 +457,7 @@ func (s *PostgresStore) AdjustAtomic(
 			amount_cents, balance_after, description, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 	`, entry.ID, entry.TenantID, entry.CustomerID, entry.EntryType,
-		entry.AmountCents, entry.BalanceAfter, entry.Description, []byte("{}"), entry.CreatedAt,
+		entry.AmountCents, entry.BalanceAfter, entry.Description, drainMetadataJSON(drainedFrom), entry.CreatedAt,
 	); err != nil {
 		if postgres.IsForeignKeyViolation(err) {
 			return domain.CreditLedgerEntry{}, fmt.Errorf("customer %q not found", customerID)
@@ -501,7 +503,7 @@ func (s *PostgresStore) AdjustAtomic(
 // compares the two to detect drift and caps its drain at the balance.
 func (s *PostgresStore) drainPositiveBlocks(
 	ctx context.Context, tx *sql.Tx, tenantID, customerID string, wantDrain int64, now time.Time,
-) (int64, int64, error) {
+) (int64, int64, []drainedBlock, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, amount_cents, consumed_cents
 		FROM customer_credit_ledger
@@ -514,7 +516,7 @@ func (s *PostgresStore) drainPositiveBlocks(
 		         expires_at NULLS LAST, created_at, id
 	`, tenantID, customerID, now)
 	if err != nil {
-		return 0, 0, fmt.Errorf("scan positive blocks: %w", err)
+		return 0, 0, nil, fmt.Errorf("scan positive blocks: %w", err)
 	}
 	type block struct {
 		id        string
@@ -527,20 +529,21 @@ func (s *PostgresStore) drainPositiveBlocks(
 		var amount, consumed int64
 		if err := rows.Scan(&id, &amount, &consumed); err != nil {
 			_ = rows.Close()
-			return 0, 0, fmt.Errorf("scan block: %w", err)
+			return 0, 0, nil, fmt.Errorf("scan block: %w", err)
 		}
 		rem := amount - consumed
 		blocks = append(blocks, block{id: id, remaining: rem})
 		available += rem
 	}
 	if err := rows.Close(); err != nil {
-		return 0, 0, fmt.Errorf("close blocks cursor: %w", err)
+		return 0, 0, nil, fmt.Errorf("close blocks cursor: %w", err)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("iterate blocks: %w", err)
+		return 0, 0, nil, fmt.Errorf("iterate blocks: %w", err)
 	}
 
 	remaining := wantDrain
+	var drainedFrom []drainedBlock
 	for _, b := range blocks {
 		if remaining <= 0 {
 			break
@@ -554,11 +557,42 @@ func (s *PostgresStore) drainPositiveBlocks(
 			SET consumed_cents = consumed_cents + $1
 			WHERE id = $2 AND tenant_id = $3
 		`, take, b.id, tenantID); err != nil {
-			return 0, 0, fmt.Errorf("update block %s consumed_cents: %w", b.id, err)
+			return 0, 0, nil, fmt.Errorf("update block %s consumed_cents: %w", b.id, err)
 		}
+		drainedFrom = append(drainedFrom, drainedBlock{BlockID: b.id, TakeCents: take})
 		remaining -= take
 	}
-	return wantDrain - remaining, available, nil
+	return wantDrain - remaining, available, drainedFrom, nil
+}
+
+// drainedBlock is one (block, amount) leg of a drain — the attribution
+// record stamped into the consuming ledger entry's metadata as
+// {"drained_blocks": [...]}. Persisting it is deliberate (2026-07-05
+// reassessment): drainPositiveBlocks always computed this list and threw
+// it away while the entry's metadata was written as '{}', so every drain
+// permanently destroyed the block-level attribution any future
+// per-block reversal or commit-burndown reporting needs. The eventual
+// reversal-semantics redesign stays deferred; the DATA is not deferrable
+// — a drain that happened unrecorded is unrecoverable.
+type drainedBlock struct {
+	BlockID   string `json:"block_id"`
+	TakeCents int64  `json:"take_cents"`
+}
+
+// drainMetadataJSON renders the drained-block attribution as the ledger
+// entry's metadata document. Empty drain → '{}' (metadata column is NOT NULL).
+func drainMetadataJSON(drainedFrom []drainedBlock) []byte {
+	if len(drainedFrom) == 0 {
+		return []byte("{}")
+	}
+	doc, err := json.Marshal(map[string]any{"drained_blocks": drainedFrom})
+	if err != nil {
+		// A map of two scalar-field structs cannot fail to marshal; keep
+		// the entry writable regardless — the drain itself must not abort
+		// over its audit stamp.
+		return []byte("{}")
+	}
+	return doc
 }
 
 // ApplyToInvoiceAtomic debits the customer's credit balance and reduces the
@@ -698,7 +732,7 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	// invoiceAmountCents (ADR-078: the pre-read may predate a concurrent
 	// settle or credit note).
 	drainTarget := min(invAmountDue, currentBalance)
-	deduct, drainable, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, drainTarget, now)
+	deduct, drainable, drainedFrom, err := s.drainPositiveBlocks(ctx, tx, tenantID, customerID, drainTarget, now)
 	if err != nil {
 		return 0, fmt.Errorf("drain credits for invoice: %w", err)
 	}
@@ -727,7 +761,7 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 			amount_cents, balance_after, description, invoice_id, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`, entryID, tenantID, customerID, domain.CreditUsage,
-		-deduct, balanceAfter, invoiceDesc, invoiceID, []byte("{}"), now,
+		-deduct, balanceAfter, invoiceDesc, invoiceID, drainMetadataJSON(drainedFrom), now,
 	); err != nil {
 		if postgres.IsForeignKeyViolation(err) {
 			return 0, fmt.Errorf("customer %q not found", customerID)
