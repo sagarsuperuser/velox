@@ -57,17 +57,29 @@ green "✓ API is up at $BASE"
 step "2. Install Anthropic-style pricing (one call)"
 # One recipe = the tokens meter + a per-{model, token_type} price matrix
 # (input / output / cache_read, sub-cent decimal rates) + a monthly plan.
-INST=$(req POST "/v1/recipes/anthropic_style/instantiate" '{}')
-PLAN_ID=$(echo "$INST" | jq -r '.created_objects.plan_ids[0]')
-[ -n "$PLAN_ID" ] && [ "$PLAN_ID" != "null" ] || { echo "✗ recipe returned no plan"; echo "$INST" | jq .; exit 1; }
+# Rerun-friendly: an already-instantiated recipe (409) reuses its plan.
+INST_RAW=$(curl -sS -X POST "$BASE/v1/recipes/anthropic_style/instantiate" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d '{}' -w '\n%{http_code}')
+INST_STATUS=$(echo "$INST_RAW" | tail -1)
+INST=$(echo "$INST_RAW" | sed '$d')
+if [ "${INST_STATUS:0:1}" = "2" ]; then
+  PLAN_ID=$(echo "$INST" | jq -r '.created_objects.plan_ids[0]')
+elif [ "$INST_STATUS" = "409" ]; then
+  # Already installed on this tenant — look the plan up by its code.
+  PLAN_ID=$(req GET "/v1/plans" | jq -r '.data[] | select(.code == "ai_api_pro") | .id' | head -1)
+else
+  echo "✗ recipe instantiate → HTTP $INST_STATUS"; echo "$INST" | jq . 2>/dev/null || echo "$INST"; exit 1
+fi
+[ -n "$PLAN_ID" ] && [ "$PLAN_ID" != "null" ] || { echo "✗ no plan found for the recipe"; exit 1; }
 green "✓ Recipe live: tokens meter + per-model rates + plan $PLAN_ID"
 
 step "3. Test clock + customer"
 # The clock lets us simulate a whole billing month in seconds.
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RUN=$(date +%H%M%S)
 CLOCK_ID=$(req POST "/v1/test-clocks" "{\"name\": \"demo\", \"frozen_time\": \"$NOW\"}" | jq -r '.id')
 CUST=$(req POST "/v1/customers" "{
-  \"external_id\": \"acme_corp\",
+  \"external_id\": \"acme_$RUN\",
   \"display_name\": \"ACME Corp\",
   \"email\": \"billing@acme.com\",
   \"test_clock_id\": \"$CLOCK_ID\"
@@ -78,7 +90,7 @@ green "✓ Customer $CUST_ID pinned to test clock $CLOCK_ID"
 
 step "4. Subscribe ACME to the plan"
 SUB=$(req POST "/v1/subscriptions" "{
-  \"code\": \"acme-tokens\",
+  \"code\": \"acme-tokens-$RUN\",
   \"display_name\": \"ACME — usage\",
   \"customer_id\": \"$CUST_ID\",
   \"items\": [{\"plan_id\": \"$PLAN_ID\", \"quantity\": 1}],
@@ -91,9 +103,9 @@ green "✓ Subscription $SUB_ID active ($(echo "$SUB" | jq -r '.status'))"
 
 step "5. Tell Velox what YOU pay Anthropic (provider cost table)"
 for rate in \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "input",      "cost_per_token": "0.000003"}' \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "output",     "cost_per_token": "0.000015"}' \
-  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "cache_read", "cost_per_token": "0.0000003"}' ; do
+  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "input",      "cost_per_token": "0.0000012"}' \
+  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "output",     "cost_per_token": "0.0000045"}' \
+  '{"provider": "anthropic", "model": "claude-3.5-sonnet", "token_type": "cache_read", "cost_per_token": "0.00000005"}' ; do
   req PUT "/v1/provider-costs" "$rate" >/dev/null
 done
 green "✓ 3 provider rates saved — every new event gets its COGS stamped at ingest"
@@ -104,11 +116,11 @@ step "6. Usage arrives straight from a LiteLLM proxy (no SDK)"
 # {model, token_type} dimensions and dedupes replays by call id.
 for i in 1 2 3 4 5; do
   req POST "/v1/integrations/litellm/spend" "{
-    \"id\": \"chatcmpl-demo-$i\",
+    \"id\": \"chatcmpl-$RUN-$i\",
     \"call_type\": \"completion\",
     \"model\": \"claude-3-5-sonnet-20241022\",
     \"custom_llm_provider\": \"anthropic\",
-    \"user\": \"acme_corp\",
+    \"user\": \"acme_$RUN\",
     \"usage\": {
       \"prompt_tokens\": 120000,
       \"completion_tokens\": 35000,
