@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"fmt"
+	"sort"
 	"log/slog"
 	"strings"
 	"time"
@@ -153,8 +154,23 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 		if v, ok := p.Metadata["team_id"]; ok {
 			dims["team_id"] = v
 		}
+		// request_tags is list-typed on LiteLLM's wire ([]any after JSON
+		// decode), but usage ingest accepts scalar dimension values only
+		// (validateDimensions) — passing the array through rejected EVERY
+		// token event on tagged calls, silently unbilling that traffic
+		// (front-door audit 2026-07-05). Join to a stable comma-separated
+		// string; scalars pass through unchanged.
 		if v, ok := p.Metadata["request_tags"]; ok {
-			dims["request_tags"] = v
+			if tags, isList := v.([]any); isList {
+				parts := make([]string, 0, len(tags))
+				for _, tag := range tags {
+					parts = append(parts, fmt.Sprintf("%v", tag))
+				}
+				sort.Strings(parts)
+				dims["request_tags"] = strings.Join(parts, ",")
+			} else {
+				dims["request_tags"] = v
+			}
 		}
 	}
 
