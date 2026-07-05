@@ -674,6 +674,14 @@ func startDunningWithRetry(ctx context.Context, dunning DunningStarter, tenantID
 			}
 		}
 		if _, err := dunning.StartDunning(ctx, tenantID, invoiceID, customerID, failureAt); err != nil {
+			if errors.Is(err, errs.ErrInvalidState) {
+				// Dunning disabled or not-configured (no policy) is a DELIBERATE
+				// skip, not a transient failure — return success immediately rather
+				// than burning all 3 retries and emitting the misleading "operator
+				// must start manually" ERROR for a tenant that never wanted
+				// automated retries. A real transient error still retries below.
+				return nil
+			}
 			lastErr = err
 			continue
 		}

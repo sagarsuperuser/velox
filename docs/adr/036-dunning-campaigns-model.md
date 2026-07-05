@@ -1,7 +1,7 @@
 # ADR-036: Dunning campaigns model (multi-policy-per-tenant)
 
 **Date:** 2026-05-16
-**Status:** Accepted (amended 2026-05-16 — terminal-action set + pause-semantics fix; see Amendment section below)
+**Status:** Accepted (amended 2026-05-16 — terminal-action set + pause-semantics fix; amended 2026-07-05 — initial-default-at-first-create + no-policy = deliberate skip; see Amendment sections below)
 
 ## Context
 
@@ -271,3 +271,48 @@ the migration (semantics-identical, industry-standard spelling).
 - Memory: `feedback_stripe_parity_framing`, `feedback_verify_stripe_parity_claims`,
   `feedback_no_silent_fallbacks`, `feedback_reference_platforms`,
   `feedback_enum_check_constraint_audit`
+
+## Amendment (2026-07-05) — initial default + no-policy is a deliberate skip
+
+The multi-policy model above created a **no-default trap**: `upsertPolicyTx`
+inserted every new policy with `is_default=false` and only `SetDefaultPolicy`
+could designate one, so the normal state after a recipe instantiation (or a
+tenant's first manual policy) was *"a policy exists, but `is_default=false`"* →
+`GetDefaultPolicy` → `ErrNotFound` → `GetEffectivePolicyForCustomer` errored →
+the no-payment enrollment sweep reported `had_errors` and poisoned the billing
+catchup for an unpaid invoice. Surfaced live 2026-07-05 (a recipe tenant's
+`"AI default retry"` policy was `is_default=false`).
+
+Two orthogonal fixes (validated by a divergent design panel):
+
+1. **Initial-default-at-first-create.** The FIRST policy per `(tenant, livemode)`
+   is born `is_default=true`, computed in-statement as
+   `NOT EXISTS(SELECT 1 FROM dunning_policies WHERE is_default)` (RLS-scoped to
+   the current tenant+livemode). Both `UpsertPolicy` (manual) and `UpsertPolicyTx`
+   (recipe) inherit it. Subsequent policies stay `is_default=false`; the operator
+   re-points via `SetDefaultPolicy` (still the sole atomic demote-all/promote-one
+   path). `is_default` continues to mean exactly what it says — the row is
+   genuinely flipped, so `GetDefaultPolicy`/UI/analytics all agree (rejected
+   *resolve-to-sole*, a read-time patch that leaves `is_default` lying in the DB
+   and introduces a 1→2-policy silent-stop cliff). The partial unique index
+   `idx_dunning_policies_one_default_per_tenant` is the loud backstop for a
+   concurrent-first-insert race — no savepoint-retry (creates are serial; add it
+   under a named concurrency need). This generalizes migration 0086's own
+   one-time backfill (`UPDATE … SET is_default=true`) to every future tenant.
+
+2. **No effective policy = a deliberate skip, not an error.** `StartDunning` maps
+   *only* `ErrNotFound` from `GetEffectivePolicyForCustomer` to
+   `errs.InvalidState("dunning not configured")` (with a WARN) — the same
+   deliberate-skip class as a *disabled* policy, which the enrollment adapter
+   already swallows. So a genuinely zero-policy tenant (a plain bootstrap — which
+   deliberately seeds **no** dunning policy, to avoid shadowing recipe policies)
+   never poisons the money-path catchup: an unconfigured optional feature must not
+   break core billing (the SMTP-unset precedent). A real infra error still
+   propagates (fail loud — no silent fallback). Companion: `startDunningWithRetry`
+   short-circuits `ErrInvalidState` so disabled/no-policy tenants don't burn the
+   retry budget or emit the misleading "operator must start manually" ERROR.
+
+Resolution precedence (per-customer `dunning_policy_id` → tenant `is_default`)
+is unchanged. Memory: `feedback_adversarial_panel_before_build`,
+`feedback_settings_aspirational_runtime_enforcement`, `feedback_no_silent_fallbacks`,
+`feedback_no_belt_and_suspenders`, `feedback_longterm_fixes`.

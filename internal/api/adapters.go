@@ -409,11 +409,15 @@ func classifyDunningRetryError(err error) error {
 // where it would otherwise be retried forever with nothing to charge and
 // never reach a terminal).
 //
-// A "dunning disabled" result is the only InvalidState StartDunning
-// returns; it's swallowed here as a deliberate no-op — a tenant that
-// disabled dunning gets no automated retries on the no-card case, exactly
-// as it gets none on the declined-card case — so the per-tick sweep
-// doesn't emit a spurious error for every stalled invoice.
+// StartDunning returns InvalidState for two deliberate-skip cases, both
+// swallowed here as a no-op: (1) dunning DISABLED, and (2) dunning NOT
+// CONFIGURED — the tenant has no effective/default policy (StartDunning maps
+// that ErrNotFound to InvalidState so an unconfigured optional feature never
+// errors the money-path sweep). A tenant in either state gets no automated
+// retries on the no-card case, exactly as it gets none on the declined-card
+// case — so the per-tick sweep doesn't emit a spurious error for every stalled
+// invoice. A genuine error (DB down, etc.) is NOT InvalidState and still
+// propagates as a sweep error (fail loud).
 // dunningRunStarter is the minimal slice of dunning.Service the adapter
 // needs — an interface so the disabled-skip branch is unit-testable.
 type dunningRunStarter interface {

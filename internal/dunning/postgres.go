@@ -205,10 +205,13 @@ func (s *PostgresStore) UpsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID
 // (tenant_id, livemode) singleton-merge no longer applies — that
 // constraint was dropped in migration 0086.
 //
-// IsDefault is honored: setting a new policy to is_default=true here
-// would race against the partial UNIQUE index. SetDefaultPolicy is the
-// dedicated atomic-flip path; UpsertPolicy enforces that is_default
-// cannot be set via this call (preserves the invariant).
+// IsDefault handling: the caller CANNOT set is_default via p (an UPDATE
+// preserves the stored flag; SetDefaultPolicy is the dedicated atomic
+// demote-all/promote-one path). The ONE exception is the initial default —
+// the FIRST policy inserted per (tenant, livemode) is auto-promoted to
+// is_default=true in-statement (ADR-036 amendment; see the INSERT branch),
+// so a recipe/first-create tenant resolves a working default with no extra
+// call. The partial UNIQUE index is the loud backstop against two defaults.
 func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.DunningPolicy) (domain.DunningPolicy, error) {
 	// A dunning policy is tenant-level operator config, not a per-customer
 	// billing event — its created_at/updated_at must record the real instant
@@ -218,14 +221,25 @@ func (s *PostgresStore) upsertPolicyTx(ctx context.Context, tx *sql.Tx, tenantID
 	now := time.Now().UTC() // wall-clock: operator config write (ADR-030 addendum), never frozen_time
 	scheduleJSON, _ := json.Marshal(p.RetrySchedule)
 	if p.ID == "" {
-		// INSERT new policy. is_default stays false; promote later via
-		// SetDefaultPolicy if needed.
+		// INSERT new policy. The FIRST policy in a (tenant, livemode) scope is
+		// born is_default=true (ADR-036 amendment): NOT EXISTS(... WHERE is_default)
+		// is evaluated against the pre-insert table state, RLS-scoped to the
+		// current (tenant, livemode) — so a tenant that instantiates a recipe (or
+		// creates its first policy manually) gets a WORKING default with no extra
+		// SetDefaultPolicy step, closing the "policies exist but GetDefaultPolicy
+		// → not found" trap. Subsequent policies are is_default=false; the operator
+		// re-points via SetDefaultPolicy (the atomic demote-all/promote-one path).
+		// The partial unique index idx_dunning_policies_one_default_per_tenant is
+		// the LOUD backstop for a concurrent-first-insert race (a losing INSERT
+		// gets a clean 23505, never two defaults) — no savepoint-retry belt is
+		// built (creates are serial pre-launch; add the retry when a named
+		// concurrency need appears).
 		newID := postgres.NewID("vlx_dpol")
 		row := tx.QueryRowContext(ctx, `
 			INSERT INTO dunning_policies (id, tenant_id, name, enabled, is_default,
 				retry_schedule, max_retry_attempts, final_action, grace_period_days,
 				created_at, updated_at)
-			VALUES ($1,$2,$3,$4,false,$5,$6,$7,$8,$9,$9)
+			VALUES ($1,$2,$3,$4,NOT EXISTS(SELECT 1 FROM dunning_policies WHERE is_default),$5,$6,$7,$8,$9,$9)
 			RETURNING `+policyColumns,
 			newID, tenantID, p.Name, p.Enabled, scheduleJSON, p.MaxRetryAttempts,
 			p.FinalAction, p.GracePeriodDays, now,
