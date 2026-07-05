@@ -42,6 +42,18 @@ func (a *cnGrantAdapter) GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, t
 	return err
 }
 
+func (a *cnGrantAdapter) LockCommitGrantForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, int64, int64, bool, error) {
+	return a.svc.LockCommitGrantForReliefTx(ctx, tx, tenantID, invoiceID)
+}
+
+func (a *cnGrantAdapter) RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, cnID string, slice, refundedGross, grossPaid int64) (int64, error) {
+	res, err := a.svc.RetireCommitSliceForReliefTx(ctx, tx, tenantID, invoiceID, cnID, slice, refundedGross, grossPaid)
+	if err != nil {
+		return 0, err
+	}
+	return res.RemainingAfterCents, nil
+}
+
 func (a *cnGrantAdapter) Grant(ctx context.Context, tenantID string, in creditnote.CreditGrantInput) error {
 	_, err := a.svc.Grant(ctx, tenantID, credit.GrantInput{
 		CustomerID: in.CustomerID, AmountCents: in.AmountCents, Description: in.Description, InvoiceID: in.InvoiceID,

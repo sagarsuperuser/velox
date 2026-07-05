@@ -28,6 +28,12 @@ func (failingGranterTx) GrantForCreditNote(context.Context, string, string, cred
 func (failingGranterTx) GrantForCreditNoteTx(context.Context, *sql.Tx, string, string, creditnote.CreditGrantInput) error {
 	return errors.New("injected in-tx grant failure")
 }
+func (failingGranterTx) LockCommitGrantForReliefTx(context.Context, *sql.Tx, string, string) (int64, int64, int64, bool, error) {
+	return 0, 0, 0, false, nil
+}
+func (failingGranterTx) RetireCommitSliceForReliefTx(context.Context, *sql.Tx, string, string, string, int64, int64, int64) (int64, error) {
+	return 0, errors.New("not a commit test")
+}
 
 // TestIssue_GrantFailure_RollsBackCAS is the real-Postgres proof of the ADR-061
 // atomicity guarantee: when the INTERNAL credit grant fails inside Issue()'s
@@ -126,6 +132,12 @@ func (okGranterTx) GrantForCreditNote(context.Context, string, string, creditnot
 }
 func (okGranterTx) GrantForCreditNoteTx(context.Context, *sql.Tx, string, string, creditnote.CreditGrantInput) error {
 	return nil
+}
+func (okGranterTx) LockCommitGrantForReliefTx(context.Context, *sql.Tx, string, string) (int64, int64, int64, bool, error) {
+	return 0, 0, 0, false, nil
+}
+func (okGranterTx) RetireCommitSliceForReliefTx(context.Context, *sql.Tx, string, string, string, int64, int64, int64) (int64, error) {
+	return 0, nil
 }
 
 // TestListPendingCreditNoteTaxReversal_FindsMarkerlessOrphan is the real-Postgres

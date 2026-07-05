@@ -22,6 +22,10 @@ type Store interface {
 	// the caller's other writes (e.g. a subscription item delete) — the caller
 	// owns Begin/Commit/Rollback.
 	CreateUnderInvoiceLockTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// CreateUnderInvoiceLockDynamicTx: build returns the header AND lines —
+	// for callers whose line amounts derive from state read under locks
+	// taken inside build (ADR-080 commit relief).
+	CreateUnderInvoiceLockDynamicTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, []domain.CreditNoteLineItem, error)) (domain.CreditNote, error)
 	// ListPendingClawbackDrafts returns auto-issue clawback drafts whose
 	// post-commit Issue() hasn't succeeded yet (issue_pending, status='draft'),
 	// cross-tenant + scoped by livemode, for RetryPendingClawbackIssue.

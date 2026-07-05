@@ -78,15 +78,51 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
+// createRequest is CreateInput plus the ADR-080 commit-relief block. The
+// two shapes are mutually exclusive: commit_relief routes to the dedicated
+// single-tx relief coordinator (lines are server-built there); everything
+// else is the ordinary line-based create.
+type createRequest struct {
+	CreateInput
+	CommitRelief *CommitReliefInput `json:"commit_relief,omitempty"`
+}
+
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 
-	var input CreateInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	var req createRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.BadRequest(w, r, "invalid JSON body")
 		return
 	}
 
+	if req.CommitRelief != nil {
+		if len(req.Lines) > 0 {
+			respond.Validation(w, r, "commit_relief and lines are mutually exclusive — the relief derives its single line from the commit's remaining credits")
+			return
+		}
+		if req.CreditAmountCents > 0 {
+			respond.Validation(w, r, "credit_amount_cents cannot be used with commit_relief — paying relief from the customer's balance would refund the very credits being retired")
+			return
+		}
+		relief := *req.CommitRelief
+		if relief.InvoiceID == "" {
+			relief.InvoiceID = req.InvoiceID
+		}
+		if relief.Reason == "" {
+			relief.Reason = req.Reason
+		}
+		cn, err := h.svc.CreateAndIssueCommitRelief(r.Context(), tenantID, relief)
+		if err != nil {
+			respond.FromError(w, r, err, "credit_note")
+			return
+		}
+		h.auditLogCreditNote(r, tenantID, cn)
+		respond.JSON(w, r, http.StatusCreated, cn)
+		return
+	}
+
+	input := req.CreateInput
 	cn, err := h.svc.Create(r.Context(), tenantID, input)
 	if err != nil {
 		respond.FromError(w, r, err, "credit_note")

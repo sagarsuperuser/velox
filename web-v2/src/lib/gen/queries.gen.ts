@@ -53,6 +53,7 @@ import type {
   PostV1AuthPasswordResetConfirmBody,
   PostV1AuthPasswordResetRequestBody,
   PostV1BillingRun200,
+  PostV1CreditNotesBody,
   PostV1CreditsGrantBody,
   PostV1CustomersBody,
   PostV1CustomersIdRotateCostDashboardToken200,
@@ -794,6 +795,88 @@ export const usePatchV1MetersId = <TError = void,
         TContext
       > => {
       return useMutation(getPatchV1MetersIdMutationOptions(options), queryClient);
+    }
+
+/**
+ * Two shapes. LINE-BASED (regular invoices): lines[] +
+refund/credit/out_of_band allocation; capped by the invoice's
+remaining creditable gross. COMMIT RELIEF (ADR-080, paid commit
+invoices only): pass commit_relief and NO lines — the server
+retires commit credits and derives the refundable cash from the
+telescoping price-ratio anchor (discounted commits refund at the
+purchase rate, never at face). The relief credit note is created
+AND issued in one transaction; the credit-balance channel is
+forbidden on relief. Unpaid commit invoices: void the invoice
+instead.
+
+ * @summary Create a credit note (line-based, or commit relief)
+ */
+export const getPostV1CreditNotesUrl = () => {
+
+
+
+
+  return `/v1/credit-notes`
+}
+
+export const postV1CreditNotes = async (postV1CreditNotesBody: PostV1CreditNotesBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPostV1CreditNotesUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      postV1CreditNotesBody,)
+  }
+);}
+
+
+
+
+export const getPostV1CreditNotesMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotes>>, TError,{data: PostV1CreditNotesBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotes>>, TError,{data: PostV1CreditNotesBody}, TContext> => {
+
+const mutationKey = ['postV1CreditNotes'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1CreditNotes>>, {data: PostV1CreditNotesBody}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postV1CreditNotes(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1CreditNotesMutationResult = NonNullable<Awaited<ReturnType<typeof postV1CreditNotes>>>
+    export type PostV1CreditNotesMutationBody = PostV1CreditNotesBody
+    export type PostV1CreditNotesMutationError = void
+
+    /**
+ * @summary Create a credit note (line-based, or commit relief)
+ */
+export const usePostV1CreditNotes = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CreditNotes>>, TError,{data: PostV1CreditNotesBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1CreditNotes>>,
+        TError,
+        {data: PostV1CreditNotesBody},
+        TContext
+      > => {
+      return useMutation(getPostV1CreditNotesMutationOptions(options), queryClient);
     }
 
 /**

@@ -70,6 +70,12 @@ type Store interface {
 	// legal uncollectible→void sequence and retries converge on one
 	// retirement entry.
 	RetireCommitGrantForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, error)
+	// LockCommitGrantTx + RetireCommitSliceForReliefTx are the ADR-080
+	// relief pair: read the funded grant's frozen state under the relief
+	// locks, then retire an explicit slice (bumping the telescoping anchor
+	// cn_retired_cents) with a loud error on a missing grant.
+	LockCommitGrantTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (commitGrantState, bool, error)
+	RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, creditNoteID string, slice, refundedGrossCents, grossPaidCents int64) (commitGrantState, error)
 }
 
 type ListFilter struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -790,19 +791,113 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 	return deduct, nil
 }
 
+// commitGrantState is the funded grant's live drawdown state, read under
+// the customer advisory lock + grant row FOR UPDATE — one lock freezes
+// every input of the relief cap formula (ADR-080).
+type commitGrantState struct {
+	GrantID        string
+	CustomerID     string
+	AmountCents    int64 // G
+	ConsumedCents  int64 // C
+	CNRetiredCents int64 // K — cumulative credits retired by relief CNs
+}
+
+func (g commitGrantState) Remaining() int64 { return g.AmountCents - g.ConsumedCents }
+
+// lockCommitGrantTx locates the commit grant funded by invoiceID and
+// returns its state under the ADR-078 lock discipline (customer advisory
+// lock, then grant row FOR UPDATE re-read). found=false when the invoice
+// funded no grant — callers decide whether that is a clean no-op (void
+// leg) or a loud corruption error (relief leg: cash is about to move).
+func (s *PostgresStore) LockCommitGrantTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (commitGrantState, bool, error) {
+	var g commitGrantState
+	// Find the funded grant. No FOR UPDATE yet — the advisory lock comes
+	// first (grant-path writers serialize on it, not on row locks).
+	err := tx.QueryRowContext(ctx, `
+		SELECT id, customer_id, amount_cents, consumed_cents, cn_retired_cents
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND source_invoice_id = $2 AND grant_kind = 'commit'
+	`, tenantID, invoiceID).Scan(&g.GrantID, &g.CustomerID, &g.AmountCents, &g.ConsumedCents, &g.CNRetiredCents)
+	if err == sql.ErrNoRows {
+		return commitGrantState{}, false, nil
+	}
+	if err != nil {
+		return commitGrantState{}, false, fmt.Errorf("find commit grant for invoice %s: %w", invoiceID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		tenantID+":"+g.CustomerID,
+	); err != nil {
+		return commitGrantState{}, false, fmt.Errorf("acquire credit ledger lock: %w", err)
+	}
+
+	// Re-read under the row lock — the pre-lock snapshot is stale by
+	// construction (a concurrent drain can bump consumed_cents between
+	// the lookup and the lock).
+	err = tx.QueryRowContext(ctx, `
+		SELECT amount_cents, consumed_cents, cn_retired_cents
+		FROM customer_credit_ledger
+		WHERE tenant_id = $1 AND id = $2
+		FOR UPDATE
+	`, tenantID, g.GrantID).Scan(&g.AmountCents, &g.ConsumedCents, &g.CNRetiredCents)
+	if err != nil {
+		return commitGrantState{}, false, fmt.Errorf("re-read commit grant %s under lock: %w", g.GrantID, err)
+	}
+	return g, true, nil
+}
+
+// retireCommitSliceTx is the single retirement core both commit-unwind
+// writers share (invoice void + CN relief — the complete writer set).
+// Retires exactly `slice` credits from the locked grant: CAS-guarded
+// consumed bump (+ cn_retired bump for relief slices) and ONE negative
+// adjustment ledger entry. Caller holds the locks via lockCommitGrantTx.
+func (s *PostgresStore) retireCommitSliceTx(ctx context.Context, tx *sql.Tx, tenantID string, g commitGrantState, slice int64, bumpCNRetired bool, description string, meta map[string]any) error {
+	if slice <= 0 || slice > g.Remaining() {
+		return fmt.Errorf("retire slice %d out of range (remaining %d) on grant %s", slice, g.Remaining(), g.GrantID)
+	}
+	cnBump := int64(0)
+	if bumpCNRetired {
+		cnBump = slice
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customer_credit_ledger
+		SET consumed_cents = consumed_cents + $1,
+		    cn_retired_cents = cn_retired_cents + $2
+		WHERE tenant_id = $3 AND id = $4 AND consumed_cents + $1 <= amount_cents
+	`, slice, cnBump, tenantID, g.GrantID)
+	if err != nil {
+		return fmt.Errorf("retire commit grant %s: %w", g.GrantID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("retire commit grant %s: rows affected: %w", g.GrantID, err)
+	} else if n == 0 {
+		// Unreachable after the locked re-read; kept as the structural
+		// exactly-once gate so the entry below can never double-append.
+		return fmt.Errorf("retire commit grant %s: concurrent drain won the CAS", g.GrantID)
+	}
+
+	if _, err := s.appendEntryInTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
+		CustomerID:  g.CustomerID,
+		EntryType:   domain.CreditAdjustment,
+		AmountCents: -slice,
+		Description: description,
+		Metadata:    meta,
+		CreatedAt:   clock.Now(ctx),
+	}); err != nil {
+		return fmt.Errorf("append commit retirement entry for grant %s: %w", g.GrantID, err)
+	}
+	return nil
+}
+
 // RetireCommitGrantForInvoiceTx retires the REMAINING balance of the commit
-// grant funded by `invoiceID`, on the caller's tx — the void leg of ADR-078
+// grant funded by `invoiceID`, on the caller's tx — the VOID leg of ADR-078
 // (invoice.Service.Void runs it inside the UpdateStatusWithReversal
 // coordinator tx, after the status flip). Clean no-op (0, nil) when the
 // invoice funded no grant (gate never granted / not a commit invoice) or the
-// grant is already fully consumed or retired.
+// grant is already fully consumed or retired. Void-retire never bumps
+// cn_retired_cents — no cash left, so the relief anchor K is untouched.
 //
-// Shape is ExpireGrantAtomic's locked re-read on the CALLER's tx, with the
-// ADR-078 divergences: works for NULL expires_at (never-expiring commits are
-// first-class); the negative entry is stamped at void-time clock.Now — never
-// the grant's expiry (no future-dated ledger entries); entry_type is
-// 'adjustment' with metadata.reason='commit_void_retire' (this is a
-// non-payment clawback, not a term lapse — keeping it out of TotalExpired).
 // The `consumed_cents < amount_cents` CAS flip is the structural exactly-once
 // gate: a second retire (e.g. the legal uncollectible→void sequence, or any
 // retry) re-reads remaining == 0 and no-ops. Consumed stays consumed, always.
@@ -810,78 +905,85 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 // Lock order (ADR-078 global): the caller already holds the invoice row lock;
 // this takes the customer advisory lock, then the grant row FOR UPDATE.
 func (s *PostgresStore) RetireCommitGrantForInvoiceTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, error) {
-	var (
-		grantID    string
-		customerID string
-		amount     int64
-		consumed   int64
-	)
-	// Find the funded grant. No FOR UPDATE yet — we must take the advisory
-	// lock first (grant-path writers serialize on it, not on row locks).
-	err := tx.QueryRowContext(ctx, `
-		SELECT id, customer_id, amount_cents, consumed_cents
-		FROM customer_credit_ledger
-		WHERE tenant_id = $1 AND source_invoice_id = $2 AND grant_kind = 'commit'
-	`, tenantID, invoiceID).Scan(&grantID, &customerID, &amount, &consumed)
-	if err == sql.ErrNoRows {
+	g, found, err := s.LockCommitGrantTx(ctx, tx, tenantID, invoiceID)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
 		return 0, nil
 	}
-	if err != nil {
-		return 0, fmt.Errorf("find commit grant for invoice %s: %w", invoiceID, err)
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		tenantID+":"+customerID,
-	); err != nil {
-		return 0, fmt.Errorf("acquire credit ledger lock: %w", err)
-	}
-
-	// Re-read remaining under the row lock — the pre-lock snapshot is stale
-	// by construction (a concurrent drain can bump consumed_cents between
-	// the lookup and the lock).
-	err = tx.QueryRowContext(ctx, `
-		SELECT amount_cents, consumed_cents
-		FROM customer_credit_ledger
-		WHERE tenant_id = $1 AND id = $2
-		FOR UPDATE
-	`, tenantID, grantID).Scan(&amount, &consumed)
-	if err != nil {
-		return 0, fmt.Errorf("re-read commit grant %s under lock: %w", grantID, err)
-	}
-	remaining := amount - consumed
+	remaining := g.Remaining()
 	if remaining <= 0 {
 		return 0, nil // fully drawn or already retired — nothing to claw back
 	}
-
-	res, err := tx.ExecContext(ctx, `
-		UPDATE customer_credit_ledger
-		SET consumed_cents = amount_cents
-		WHERE tenant_id = $1 AND id = $2 AND consumed_cents < amount_cents
-	`, tenantID, grantID)
-	if err != nil {
-		return 0, fmt.Errorf("retire commit grant %s: %w", grantID, err)
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return 0, fmt.Errorf("retire commit grant %s: rows affected: %w", grantID, err)
-	} else if n == 0 {
-		// Unreachable after the locked re-read; kept as the structural
-		// exactly-once gate so the entry below can never double-append.
-		return 0, nil
-	}
-
-	if _, err := s.appendEntryInTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
-		CustomerID:  customerID,
-		EntryType:   domain.CreditAdjustment,
-		AmountCents: -remaining,
-		Description: fmt.Sprintf("Commit retired — funding invoice voided (grant %s)", grantID),
-		Metadata:    map[string]any{"reason": "commit_void_retire", "grant_id": grantID, "funding_invoice_id": invoiceID},
-		CreatedAt:   clock.Now(ctx),
-	}); err != nil {
-		return 0, fmt.Errorf("append commit retirement entry for grant %s: %w", grantID, err)
+	if err := s.retireCommitSliceTx(ctx, tx, tenantID, g, remaining, false,
+		fmt.Sprintf("Commit retired — funding invoice voided (grant %s)", g.GrantID),
+		map[string]any{"reason": "commit_void_retire", "grant_id": g.GrantID, "funding_invoice_id": invoiceID},
+	); err != nil {
+		return 0, err
 	}
 	return remaining, nil
 }
+
+// RetireCommitSliceForReliefTx retires exactly `slice` credits from the
+// commit grant funded by invoiceID — the RELIEF leg (ADR-080). Unlike the
+// void wrapper: a missing grant is a LOUD error (cash is about to move
+// against a grant that must exist — finalize funds it in the same tx, so
+// absence is corruption), and cn_retired_cents IS bumped (the telescoping
+// anchor K advances with every relief). Returns the post-retire state so
+// the caller can surface remaining/K without a re-read.
+func (s *PostgresStore) RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, creditNoteID string, slice, refundedGrossCents, grossPaidCents int64) (commitGrantState, error) {
+	g, found, err := s.LockCommitGrantTx(ctx, tx, tenantID, invoiceID)
+	if err != nil {
+		return commitGrantState{}, err
+	}
+	if !found {
+		return commitGrantState{}, fmt.Errorf("commit relief: invoice %s has a commit line but no funded grant — finalize funds the grant in the same tx, so this is corrupted state; refusing to move cash", invoiceID)
+	}
+	if slice > g.Remaining() {
+		return commitGrantState{}, fmt.Errorf("%w: %d requested, %d remaining", ErrCommitInsufficientRemaining, slice, g.Remaining())
+	}
+	if err := s.retireCommitSliceTx(ctx, tx, tenantID, g, slice, true,
+		fmt.Sprintf("Commit relief — %d credits retired for credit note (grant %s)", slice, g.GrantID),
+		map[string]any{
+			"reason":               "commit_refund_retire",
+			"grant_id":             g.GrantID,
+			"funding_invoice_id":   invoiceID,
+			"credit_note_id":       creditNoteID,
+			"refunded_gross_cents": refundedGrossCents,
+			"gross_paid_cents":     grossPaidCents,
+			"granted_cents":        g.AmountCents,
+		},
+	); err != nil {
+		return commitGrantState{}, err
+	}
+	g.ConsumedCents += slice
+	g.CNRetiredCents += slice
+
+	// credit.commit_retired rides the SAME tx (ADR-040 outbox) — the
+	// entitlement consumer that tracks commit burndown must see every
+	// relief exactly-once with the state change.
+	if s.outbox != nil {
+		if _, err := s.outbox.Enqueue(ctx, tx, tenantID, domain.EventCreditCommitRetired, map[string]any{
+			"customer_id":           g.CustomerID,
+			"grant_id":              g.GrantID,
+			"funding_invoice_id":    invoiceID,
+			"credit_note_id":        creditNoteID,
+			"retired_cents":         slice,
+			"refunded_gross_cents":  refundedGrossCents,
+			"remaining_after_cents": g.Remaining(),
+		}); err != nil {
+			return commitGrantState{}, fmt.Errorf("enqueue credit.commit_retired: %w", err)
+		}
+	}
+	return g, nil
+}
+
+// ErrCommitInsufficientRemaining is returned when a relief requests more
+// credits than the grant has remaining (a drawdown may have raced the
+// operator's read). The caller surfaces the LIVE remaining so the operator
+// re-decides — never a silent clamp of an approved money document.
+var ErrCommitInsufficientRemaining = errors.New("commit grant has insufficient remaining credits")
 
 // GetByProrationSource returns the credit ledger entry previously written
 // for a specific (subscription, item, change_type, change_at) event, if any.

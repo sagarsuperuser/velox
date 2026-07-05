@@ -165,6 +165,7 @@ what endpoint validation enforces. Summary:
 | `credit.balance_low` | Balance crossed below the tenant's configured threshold (payload carries `threshold_cents`; transactional) |
 | `credit.balance_depleted` | Balance crossed to ≤ 0 (transactional) |
 | `credit.balance_recovered` | Balance went positive again (transactional) |
+| `credit.commit_retired` | A relief credit note retired commit credits — payload carries `grant_id`, `credit_note_id`, `retired_cents`, `refunded_gross_cents`, `remaining_after_cents` (transactional) |
 
 Typical entitlement receiver for the commit-drawdown wedge: subscribe to
 `credit.balance_low` (nudge the customer to top up), `credit.balance_depleted`

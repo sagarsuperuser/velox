@@ -1182,6 +1182,35 @@ type PostV1AuthPasswordResetRequestJSONBody struct {
 	Email openapi_types.Email `json:"email"`
 }
 
+// PostV1CreditNotesJSONBody defines parameters for PostV1CreditNotes.
+type PostV1CreditNotesJSONBody struct {
+	AutoIssue bool `json:"auto_issue,omitempty"`
+
+	// CommitRelief Mutually exclusive with lines/credit_amount_cents.
+	CommitRelief struct {
+		OutOfBandAmountCents int `json:"out_of_band_amount_cents,omitempty"`
+
+		// RefundAmountCents Optional allocation; must sum with out_of_band to the derived cash.
+		RefundAmountCents int `json:"refund_amount_cents,omitempty"`
+
+		// RetireAll Retire the LIVE remaining (absorbs racing drawdowns).
+		RetireAll bool `json:"retire_all,omitempty"`
+
+		// RetireCents Commit credits to retire (1..remaining).
+		RetireCents int `json:"retire_cents,omitempty"`
+	} `json:"commit_relief,omitempty"`
+	CreditAmountCents int    `json:"credit_amount_cents,omitempty"`
+	InvoiceId         string `json:"invoice_id"`
+	Lines             []struct {
+		Description     string `json:"description,omitempty"`
+		Quantity        int    `json:"quantity,omitempty"`
+		UnitAmountCents int    `json:"unit_amount_cents,omitempty"`
+	} `json:"lines,omitempty"`
+	OutOfBandAmountCents int    `json:"out_of_band_amount_cents,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	RefundAmountCents    int    `json:"refund_amount_cents,omitempty"`
+}
+
 // PostV1CreditsGrantJSONBody defines parameters for PostV1CreditsGrant.
 type PostV1CreditsGrantJSONBody struct {
 	AmountCents int64  `json:"amount_cents"`
@@ -1536,6 +1565,9 @@ type PostV1AuthPasswordResetConfirmJSONRequestBody PostV1AuthPasswordResetConfir
 // PostV1AuthPasswordResetRequestJSONRequestBody defines body for PostV1AuthPasswordResetRequest for application/json ContentType.
 type PostV1AuthPasswordResetRequestJSONRequestBody PostV1AuthPasswordResetRequestJSONBody
 
+// PostV1CreditNotesJSONRequestBody defines body for PostV1CreditNotes for application/json ContentType.
+type PostV1CreditNotesJSONRequestBody PostV1CreditNotesJSONBody
+
 // PostV1CreditsGrantJSONRequestBody defines body for PostV1CreditsGrant for application/json ContentType.
 type PostV1CreditsGrantJSONRequestBody PostV1CreditsGrantJSONBody
 
@@ -1607,6 +1639,9 @@ type ServerInterface interface {
 	// Trigger billing cycle
 	// (POST /v1/billing/run)
 	PostV1BillingRun(w http.ResponseWriter, r *http.Request)
+	// Create a credit note (line-based, or commit relief)
+	// (POST /v1/credit-notes)
+	PostV1CreditNotes(w http.ResponseWriter, r *http.Request)
 	// Get customer credit balance
 	// (GET /v1/credits/balance/{customer_id})
 	GetV1CreditsBalanceCustomerId(w http.ResponseWriter, r *http.Request, customerId string)
@@ -1787,6 +1822,12 @@ func (_ Unimplemented) GetV1BillingPreviewSubscriptionId(w http.ResponseWriter, 
 // Trigger billing cycle
 // (POST /v1/billing/run)
 func (_ Unimplemented) PostV1BillingRun(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create a credit note (line-based, or commit relief)
+// (POST /v1/credit-notes)
+func (_ Unimplemented) PostV1CreditNotes(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2213,6 +2254,26 @@ func (siw *ServerInterfaceWrapper) PostV1BillingRun(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostV1BillingRun(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostV1CreditNotes operation middleware
+func (siw *ServerInterfaceWrapper) PostV1CreditNotes(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1CreditNotes(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3741,6 +3802,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/billing/run", wrapper.PostV1BillingRun)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/credit-notes", wrapper.PostV1CreditNotes)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/credits/balance/{customer_id}", wrapper.GetV1CreditsBalanceCustomerId)
