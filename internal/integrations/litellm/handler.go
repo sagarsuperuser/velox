@@ -181,11 +181,16 @@ func (h *Handler) persist(ctx context.Context, tenantID string, ing ExternalInge
 	}
 
 	if _, err := h.ingester.Ingest(ctx, tenantID, input); err != nil {
-		// Idempotency replay is silent — usage.Service returns the
-		// existing row, not an error. Any error here is a real
-		// persistence problem; the handler decides whether to count
-		// it as a partial-failure or bubble it up.
-		if errors.Is(err, errs.ErrAlreadyExists) {
+		// Idempotency replay is silent success: the usage store returns
+		// ErrDuplicateKey on the (tenant, idempotency_key) UNIQUE — a
+		// LiteLLM network-retry redelivering an already-ingested batch is
+		// the happy path, not a failure. Pre-fix this matched only
+		// ErrAlreadyExists (which the store never returns here), so every
+		// replay filled errors[] + WARN logs while the DB dedup was in
+		// fact working (front-door audit 2026-07-05). Any other error is
+		// a real persistence problem and bubbles to the partial-failure
+		// accounting.
+		if errors.Is(err, errs.ErrDuplicateKey) || errors.Is(err, errs.ErrAlreadyExists) {
 			return nil
 		}
 		return err

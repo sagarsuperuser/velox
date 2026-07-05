@@ -5,6 +5,7 @@ package generated
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -1372,9 +1373,14 @@ type PostV1SubscriptionsJSONBody struct {
 	Code        string                                 `json:"code"`
 	CustomerId  string                                 `json:"customer_id"`
 	DisplayName string                                 `json:"display_name"`
-	PlanId      string                                 `json:"plan_id"`
-	StartNow    bool                                   `json:"start_now,omitempty"`
-	TrialDays   int                                    `json:"trial_days,omitempty"`
+
+	// Items Plan items — a subscription bills one or more plans.
+	Items []struct {
+		PlanId   string `json:"plan_id"`
+		Quantity int    `json:"quantity,omitempty"`
+	} `json:"items"`
+	StartNow  bool `json:"start_now,omitempty"`
+	TrialDays int  `json:"trial_days,omitempty"`
 }
 
 // PostV1SubscriptionsJSONBodyBillingTime defines parameters for PostV1Subscriptions.
@@ -1393,13 +1399,31 @@ type PostV1TestClocksIdAdvanceJSONBody struct {
 
 // PostV1UsageEventsJSONBody defines parameters for PostV1UsageEvents.
 type PostV1UsageEventsJSONBody struct {
-	CustomerId     string                 `json:"customer_id"`
-	IdempotencyKey string                 `json:"idempotency_key,omitempty"`
-	MeterId        string                 `json:"meter_id"`
-	Properties     map[string]interface{} `json:"properties,omitempty"`
-	Quantity       int64                  `json:"quantity"`
-	SubscriptionId string                 `json:"subscription_id,omitempty"`
-	Timestamp      time.Time              `json:"timestamp,omitempty"`
+	// Dimensions Scalar dimension values used for pricing-rule dispatch (e.g. {"model", "token_type"}).
+	Dimensions map[string]interface{} `json:"dimensions,omitempty"`
+
+	// EventName The meter key (e.g. "tokens").
+	EventName string `json:"event_name"`
+
+	// ExternalCustomerId The customer's external_id (your identifier), not the internal vlx_cus_ id.
+	ExternalCustomerId string                 `json:"external_customer_id"`
+	IdempotencyKey     string                 `json:"idempotency_key,omitempty"`
+	Properties         map[string]interface{} `json:"properties,omitempty"`
+
+	// Quantity Decimal quantity — accepts a JSON number (5) or string ("5.5") for exact fractional values.
+	Quantity  PostV1UsageEventsJSONBody_Quantity `json:"quantity"`
+	Timestamp time.Time                          `json:"timestamp,omitempty"`
+}
+
+// PostV1UsageEventsJSONBodyQuantity0 defines parameters for PostV1UsageEvents.
+type PostV1UsageEventsJSONBodyQuantity0 = float32
+
+// PostV1UsageEventsJSONBodyQuantity1 defines parameters for PostV1UsageEvents.
+type PostV1UsageEventsJSONBodyQuantity1 = string
+
+// PostV1UsageEventsJSONBody_Quantity defines parameters for PostV1UsageEvents.
+type PostV1UsageEventsJSONBody_Quantity struct {
+	union json.RawMessage
 }
 
 // PostV1UsageEventsBatchJSONBody defines parameters for PostV1UsageEventsBatch.

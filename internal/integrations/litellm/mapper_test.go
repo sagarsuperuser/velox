@@ -300,3 +300,41 @@ func TestMapPayload_TimestampFromEndTime(t *testing.T) {
 		t.Errorf("timestamp seconds: got %d, want 1700000003", out[0].Timestamp.Unix())
 	}
 }
+
+// TestMapPayload_RequestTagsListBecomesScalar pins the front-door-audit fix:
+// LiteLLM sends request_tags as a JSON list; usage ingest accepts scalar
+// dimension values only. Pre-fix the []any passed through and EVERY token
+// event on tagged calls was rejected at ingest — tagged traffic silently
+// unbilled. The mapper now joins to a sorted comma-separated string.
+func TestMapPayload_RequestTagsListBecomesScalar(t *testing.T) {
+	p := StandardLoggingPayload{
+		ID: "call_tags", CallType: "completion", Model: "gpt-4o", User: "cus_x",
+		Usage:    &Usage{PromptTokens: 10, CompletionTokens: 5},
+		Metadata: map[string]any{"request_tags": []any{"prod", "batch"}},
+	}
+	out, err := MapPayload(p)
+	if err != nil {
+		t.Fatalf("map: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("no events")
+	}
+	for _, ev := range out {
+		got, ok := ev.Dimensions["request_tags"].(string)
+		if !ok {
+			t.Fatalf("request_tags dimension = %T (%v), want scalar string", ev.Dimensions["request_tags"], ev.Dimensions["request_tags"])
+		}
+		if got != "batch,prod" {
+			t.Errorf("request_tags = %q, want sorted joined \"batch,prod\"", got)
+		}
+	}
+	// Scalar tags still pass through untouched.
+	p.Metadata = map[string]any{"request_tags": "prod"}
+	out, err = MapPayload(p)
+	if err != nil {
+		t.Fatalf("map scalar: %v", err)
+	}
+	if got := out[0].Dimensions["request_tags"]; got != "prod" {
+		t.Errorf("scalar request_tags = %v, want \"prod\"", got)
+	}
+}

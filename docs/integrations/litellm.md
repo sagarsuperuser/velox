@@ -1,6 +1,6 @@
 # LiteLLM → Velox integration
 
-Drop a `generic_api` callback in your LiteLLM proxy config and every LLM call lands in Velox as a usage event. No glue code.
+Drop a `"generic"` success callback in your LiteLLM proxy config (LiteLLM's generic-API logger) and every LLM call lands in Velox as a usage event. No glue code.
 
 Design: [ADR-033](../adr/033-litellm-spend-adapter.md), superseded for the metering shape by [ADR-044](../adr/044-canonical-ai-token-metering-model.md) (one `tokens` meter + `token_type` dimension).
 
@@ -14,8 +14,10 @@ Recommended: instantiate one of the AI-native recipes — each creates the `toke
 curl -X POST "$VELOX/v1/recipes/anthropic_style/instantiate" \
   -H "Authorization: Bearer $VELOX_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"livemode": false}'
+  -d '{}'
 ```
+
+Test vs live mode follows the API key you use (`vlx_secret_test_…` vs `vlx_secret_live_…`) — there is no `livemode` request field.
 
 Or create it by hand (you still need pricing rules per `{model, token_type}` to bill it):
 
@@ -36,11 +38,11 @@ litellm_settings:
   failure_callback: ["generic"]
 
 environment_variables:
-  GENERIC_LOGGER_ENDPOINT: "https://api.velox.dev/v1/integrations/litellm/spend"
+  GENERIC_LOGGER_ENDPOINT: "https://<your-velox-host>/v1/integrations/litellm/spend"
   GENERIC_LOGGER_HEADERS: "Authorization=Bearer vlx_secret_test_…"
 ```
 
-Replace `api.velox.dev` with your Velox API host (self-hosted: your own domain). Use a **secret** key — publishable keys don't have `PermUsageWrite`.
+Point `<your-velox-host>` at your Velox API (local dev: `http://localhost:8080`). Use a **secret** key — publishable keys don't have `PermUsageWrite`.
 
 ## 3. Set `user=` on every call
 
@@ -59,7 +61,7 @@ response = litellm.completion(
 )
 ```
 
-Without `user=`, the adapter rejects the event with `payload.user is required`. The rest of the batch is accepted normally (per-row 422, not full-batch 5xx).
+Without `user=`, the adapter rejects the event with `payload.user is required`. The rest of the batch is accepted normally — the failure lands as a per-row entry in the 200 response's `errors[]`; monitor `errors[]`, not the HTTP status code.
 
 ## 4. What lands in Velox
 
@@ -71,15 +73,18 @@ For each completion call, the adapter emits **up to three** usage events — all
 | `cache_read` | `prompt_tokens_details.cached_tokens` (if any)   | `<litellm_id>:cache_read`   |
 | `output`     | `usage.completion_tokens`                        | `<litellm_id>:output`       |
 
-Every event also carries dimensions `{model, model_raw, provider, team_id?, tags?}`. `model` is the **canonical recipe family** (the mapper normalizes LiteLLM's raw string — e.g. `claude-3-5-sonnet-20241022` → `claude-3.5-sonnet`); `model_raw` preserves the verbatim string for audit. Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
+Every event also carries dimensions `{model, model_raw, provider, team_id?, request_tags?}` (`request_tags` is LiteLLM's list, joined to a sorted comma-separated string — dimension values are scalars). `model` is the **canonical recipe family** (the mapper normalizes LiteLLM's raw string — e.g. `claude-3-5-sonnet-20241022` → `claude-3.5-sonnet`); `model_raw` preserves the verbatim string for audit. Each event's metadata carries the LiteLLM call ID, response cost (audit-only), and the call's original metadata under `litellm_metadata.*`.
 
 Cache-**write** tokens (`cache_creation`) are seen but **not yet billed** — LiteLLM doesn't expose the 5m-vs-1h cache-write TTL split (BerriAI/litellm#15056), so the mapper logs them loudly and defers (ADR-044 follow-up).
 
 ## 5. Verify
 
 ```bash
-# Tail recent usage events for a customer
-curl "$VELOX/v1/usage-events?external_customer_id=cus_acme_corp&limit=5" \
+# Resolve the internal customer id from the external one, then tail events.
+# (The usage-events list filters on the INTERNAL customer_id.)
+CUST_ID=$(curl -s "$VELOX/v1/customers?external_id=cus_acme_corp" \
+  -H "Authorization: Bearer $VELOX_KEY" | jq -r '.data[0].id')
+curl "$VELOX/v1/usage-events?customer_id=$CUST_ID&limit=5" \
   -H "Authorization: Bearer $VELOX_KEY"
 ```
 
@@ -106,6 +111,6 @@ You should see one or more `tokens` events per LiteLLM call (up to three when pr
 
 ## Caveats
 
-- **Cost figures**: LiteLLM's `response_cost` is stored on each event's `metadata.velox.litellm_response_cost_usd` but does NOT drive Velox billing. The billable amount is computed by Velox's pricing rules. Operators can reconcile by querying both — they won't always match (Velox uses your configured rates, LiteLLM uses its built-in cost table).
-- **`tokens` meter must exist**: missing meter → per-row 422. Same path as missing `user`.
+- **Cost figures**: LiteLLM's `response_cost` does NOT drive Velox billing — the billable amount comes from your pricing rules, and per-event COGS comes from your provider cost table (ADR-079: `PUT /v1/provider-costs`, stamped on each event at ingest as `provider_cost_micros`). LiteLLM's own per-call figure is whole-call (it spans up to three per-role events), so it is not stamped per event; per-half observed-cost stamping from `cost_breakdown` is a named follow-up.
+- **`tokens` meter must exist**: missing meter → a per-row `errors[]` entry in the 200 response. Same path as missing `user` — monitor `errors[]`, not the status code.
 - **Single tenant per API key**: each Velox API key pins to one tenant. Multi-tenant LiteLLM proxies route via separate API keys per tenant (not a metadata field on the call).

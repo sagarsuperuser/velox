@@ -8,12 +8,14 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
  * OpenAPI spec version: 2026-04-07
  */
 import type { PostV1SubscriptionsBodyBillingTime } from './postV1SubscriptionsBodyBillingTime';
+import type { PostV1SubscriptionsBodyItemsItem } from './postV1SubscriptionsBodyItemsItem';
 
 export type PostV1SubscriptionsBody = {
   code: string;
   display_name: string;
   customer_id: string;
-  plan_id: string;
+  /** Plan items — a subscription bills one or more plans. */
+  items: PostV1SubscriptionsBodyItemsItem[];
   billing_time?: PostV1SubscriptionsBodyBillingTime;
   trial_days?: number;
   start_now?: boolean;

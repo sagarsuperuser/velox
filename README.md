@@ -1,6 +1,6 @@
 # Velox
 
-### Turn usage into revenue.
+### Meter every token. Sell commits. Know your margin.
 
 **The open-source billing engine for AI and usage-heavy SaaS — runs in your own VPC.**
 
@@ -10,25 +10,26 @@
 
 Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensional usage metering, invoicing, dunning, and credits. Stripe still does cards under the hood. The 0.5% Stripe Billing fee disappears, and customer billing data never leaves your infrastructure.
 
-Built for two market truths Stripe Billing structurally cannot serve:
+Built for three market truths Stripe Billing structurally cannot serve:
 
-1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × token_type × tier × context-window`, where `token_type` is a disjoint role (`input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`). Stripe's Meter API forces one Meter per dimension combination — many Meters and ugly subscription wiring just to model a single model's token roles. Velox treats dimensions as first-class on the meter.
-2. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
+1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × token_type × tier × context-window`, where `token_type` is a disjoint role (`input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`). Stripe's Meter API forces one Meter per dimension combination — many Meters and ugly subscription wiring just to model a single model's token roles. Velox treats dimensions as first-class on the meter — and ingests straight from a LiteLLM proxy spend callback, no SDK.
+2. **AI infra sells commit + usage.** "$10k prepaid commit, drawn down against metered usage" is the default AI-infra contract. Stripe Billing has no commit primitive; the engines that do (Orb, Metronome) are closed-source SaaS. In Velox a commit line on an invoice funds a credit block at finalize (atomic, fund-once); usage drains it — promotional credits first — with `credit.balance_low` / `depleted` / `recovered` webhooks to drive top-up nudges.
+3. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
 
 ---
 
 ## The wedge in code
 
-Bill Anthropic-style multi-dimensional pricing (model × token_type) with **one meter** and a few pricing rules — not 24 Stripe Meters and a Subscription Item per combination.
+Bill Anthropic-style multi-dimensional pricing (model × token_type) with **one meter**, sell a prepaid commit against it, and see per-customer margin — five calls, no Stripe Billing objects. (API from `make dev`, key from `make bootstrap` — see Quick start.)
 
 ```bash
 # 1. Create one meter for "tokens"
-curl -X POST https://api.velox.dev/v1/meters \
+curl -X POST http://localhost:8080/v1/meters \
   -H "Authorization: Bearer $VELOX_SECRET" \
   -d '{"key": "tokens", "name": "LLM tokens", "unit": "token"}'
 
 # 2. Ingest events that carry the dimensions inline
-curl -X POST https://api.velox.dev/v1/usage-events \
+curl -X POST http://localhost:8080/v1/usage-events \
   -H "Authorization: Bearer $VELOX_SECRET" \
   -H "Idempotency-Key: req_8f2c..." \
   -d '{
@@ -39,13 +40,41 @@ curl -X POST https://api.velox.dev/v1/usage-events \
   }'
 
 # 3. Define one pricing rule per (dimension subset, rate)
-curl -X POST https://api.velox.dev/v1/meters/vlx_mtr_tokens/pricing-rules \
+curl -X POST http://localhost:8080/v1/meters/$METER_ID/pricing-rules \
   -d '{
     "dimension_match": {"model": "gpt-4", "token_type": "input"},
     "rating_rule_version_id": "rrv_gpt4_input",
     "aggregation_mode": "sum",
     "priority": 100
   }'
+
+# 4. Sell a $10k prepaid commit for $9k — the credit block funds when the
+#    invoice finalizes, and usage draws it down
+curl -X POST http://localhost:8080/v1/invoices/$INVOICE_ID/line-items \
+  -H "Authorization: Bearer $VELOX_SECRET" \
+  -d '{"description": "Annual commit", "line_type": "add_on",
+       "quantity": 1, "unit_amount_cents": 900000,
+       "commit_granted_cents": 1000000}'
+curl -X POST http://localhost:8080/v1/invoices/$INVOICE_ID/finalize \
+  -H "Authorization: Bearer $VELOX_SECRET"
+
+# 5. Know which customers lose you money — stamped provider COGS vs rated revenue
+curl http://localhost:8080/v1/customers/$CUSTOMER_ID/margin \
+  -H "Authorization: Bearer $VELOX_SECRET"
+```
+
+Already running a LiteLLM proxy? Skip step 2 — point its spend callback at `POST /v1/integrations/litellm/spend` and every completion lands as dimensioned token events (`model`, `token_type`), replay-deduped, no SDK. See [`docs/integrations/litellm.md`](docs/integrations/litellm.md).
+
+What lands on the invoice (from `./scripts/demo.sh`, real output):
+
+```text
+ACME Corp — VLX-000001                                    $3.88
+──────────────────────────────────────────────────────────────
+Tokens (claude-3.5-sonnet · input)       400,000    →   $1.20
+Tokens (claude-3.5-sonnet · output)      175,000    →   $2.62
+Tokens (claude-3.5-sonnet · cache_read)  200,000    →   $0.06
+──────────────────────────────────────────────────────────────
+Margin (billed $3.88 vs provider cost $1.28)            67.1%
 ```
 
 Token roles are disjoint, so each `{model, token_type}` is exactly one rule at equal priority — no double-count. A coarse catch-all (`{"model": "gpt-4"}`) and finer per-role rules (`{"model": "gpt-4", "token_type": "cache_read"}`) still compose cleanly via the priority+claim resolver. The full design — schema, aggregation semantics, decimal quantities, all five aggregation modes (`sum`, `count`, `last_during_period`, `last_ever`, `max`) — lives in [`docs/design-multi-dim-meters.md`](docs/design-multi-dim-meters.md).
@@ -56,6 +85,9 @@ Token roles are disjoint, so each `{model, token_type}` is exactly one rule at e
 
 ### AI/usage-native (the wedge)
 - **Multi-dimensional meters** — one meter, N rules, dimensions on every event
+- **LiteLLM drop-in** — point your proxy's spend callback at `POST /v1/integrations/litellm/spend`; calls become dimensioned token events (`model`, `token_type`) with idempotent replay dedupe — no SDK, no schema work
+- **Prepaid commits + drawdown** — sell "pay $9k, get $10k" commits as invoice lines; the credit block funds atomically at finalize and usage draws it down, promotional credits first (ADR-078)
+- **Per-customer margin (COGS) in-app** — maintain your provider rates once (`/v1/provider-costs`); every usage event is stamped with provider cost at ingest; `GET /v1/customers/{id}/margin` answers "which customers lose us money?" — per-model where pricing rules pin `model`, honest `unattributed_revenue` bucket otherwise (ADR-079)
 - **Decimal quantities** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens
 - **Per-rule aggregation modes** — `sum`, `count`, `last_during_period`, `last_ever`, `max`
 - **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`)
@@ -87,6 +119,8 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 | AI-native pricing        | ✅        | ❌             | ⚠️ generic  | ⚠️ closed source  | ⚠️ metering-first |
 | Full billing engine      | ✅        | ✅             | ✅          | ✅                | ⚠️ emerging       |
 | Stripe-grade primitives  | ✅        | ✅             | ⚠️          | ✅                | ⚠️                |
+| Prepaid commits + drawdown | ✅      | ❌             | ⚠️ wallets  | ✅                | ❌                |
+| Per-customer margin (COGS) | ✅ in-app | ❌           | ❌          | ❌ warehouse join | ❌                |
 | Pricing                  | OSS       | 0.5% of GMV    | OSS / cloud | $30K+/yr          | OSS / cloud       |
 | Data sovereignty         | ✅        | ❌             | ⚠️          | ❌                | ✅                |
 
@@ -126,11 +160,13 @@ cd web-v2 && npm install && npm run dev
 # → http://localhost:5173 — sign in with the email + password from bootstrap
 ```
 
-End-to-end demo (creates a customer, ingests usage, runs billing, generates a PDF invoice):
+End-to-end demo — the whole wedge in ~30 seconds (Anthropic-style price matrix via one recipe call, LiteLLM-shaped token ingest, provider cost rates, a **test clock** that simulates a full billing month, a finalized invoice with per-`(model, token_type)` lines + PDF, and the per-customer margin report):
 
 ```bash
-./scripts/demo.sh $VELOX_SECRET
+./scripts/demo.sh <vlx_secret_test_... from make bootstrap>
 ```
+
+Every call in the script is checked — it fails loudly at the first API mismatch instead of pretending. Rerun it as often as you like (each run creates a fresh demo customer on its own test clock).
 
 Self-host: single-VM Docker Compose. See [`docs/self-host.md`](docs/self-host.md). Helm/Terraform/multi-replica HA paths land when a design partner names which Kubernetes flavour they actually run — pre-emptively shipping three deployment shapes produced surface nobody was running.
 
@@ -273,7 +309,7 @@ Integration tests exercise real Postgres with RLS enforced. Per project conventi
 
 ## Contributing
 
-Velox is open source under MIT. We're early and looking for design partners (12 months free hosted access in exchange for weekly check-ins and a co-branded case study). If you run AI inference, a vector DB, or any usage-heavy SaaS at $1M–$50M ARR and Stripe Billing is starting to chafe — open an issue or email `partners@velox.dev`.
+Velox is open source under MIT. We're early and looking for design partners: 12 months of white-glove support for your self-hosted deployment — we pair on install, upgrades, and pricing-model setup — in exchange for weekly check-ins and a co-branded case study. If you run AI inference, a vector DB, or any usage-heavy SaaS at $1M–$50M ARR and Stripe Billing is starting to chafe — open an issue or email `partners@velox.dev`.
 
 For code contributions, see [`CONTRIBUTING.md`](CONTRIBUTING.md). Major features land with a design RFC alongside the code — read any `docs/design-*.md` for the pattern.
 
