@@ -463,8 +463,8 @@ webhook:
   events:
     - invoice.finalized
     - invoice.paid
-    - invoice.payment_failed
-    - subscription.updated
+    - payment.failed
+    - subscription.item.updated
     - subscription.canceled
   url_placeholder: 'https://example.com/webhooks/velox'
 

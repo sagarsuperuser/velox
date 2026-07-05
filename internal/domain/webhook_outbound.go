@@ -156,3 +156,47 @@ const (
 	// could never clear.
 	EventCreditBalanceRecovered = "credit.balance_recovered"
 )
+
+// KnownWebhookEventTypes is the canonical emit catalog — every event type
+// the engine actually dispatches, and nothing else. Endpoint create/update
+// validates subscriptions against it: pre-2026-07-05 any string was
+// accepted and matchesEvent silently never fired, so a Stripe-trained
+// subscriber to "invoice.payment_failed" (real name: payment.failed) got
+// silence forever — Velox's own shipped recipes carried two such phantom
+// names. Keep in lockstep with the constants above AND the dashboard's
+// EVENT_GROUPS picker (web-v2/src/pages/Webhooks.tsx).
+var KnownWebhookEventTypes = map[string]bool{
+	EventInvoiceFinalized:                   true,
+	EventInvoicePaid:                        true,
+	EventInvoiceVoided:                      true,
+	EventInvoiceMarkedUncollectible:         true,
+	EventInvoicePaymentRecorded:             true,
+	EventPaymentSucceeded:                   true,
+	EventPaymentFailed:                      true,
+	EventPaymentDuplicateCharge:             true,
+	EventPaymentAmountMismatch:              true,
+	EventPaymentReceivedOnVoidedInvoice:     true,
+	EventSubscriptionCreated:                true,
+	EventSubscriptionActivated:              true,
+	EventSubscriptionCanceled:               true,
+	EventSubscriptionItemAdded:              true,
+	EventSubscriptionItemUpdated:            true,
+	EventSubscriptionItemRemoved:            true,
+	EventSubscriptionPendingChangeScheduled: true,
+	EventSubscriptionPendingChangeApplied:   true,
+	EventSubscriptionPendingChangeCanceled:  true,
+	EventSubscriptionCancelScheduled:        true,
+	EventSubscriptionCancelCleared:          true,
+	EventSubscriptionCollectionPaused:       true,
+	EventSubscriptionCollectionResumed:      true,
+	EventSubscriptionTrialEnded:             true,
+	EventSubscriptionTrialExtended:          true,
+	EventSubscriptionThresholdCrossed:       true,
+	EventCustomerEmailBounced:               true,
+	EventDunningStarted:                     true,
+	EventDunningEscalated:                   true,
+	EventDunningResolved:                    true,
+	EventCreditBalanceLow:                   true,
+	EventCreditBalanceDepleted:              true,
+	EventCreditBalanceRecovered:             true,
+}

@@ -22,6 +22,10 @@ type Store interface {
 	CreateEndpoint(ctx context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error)
 	CreateEndpointTx(ctx context.Context, tx *sql.Tx, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error)
 	GetEndpoint(ctx context.Context, tenantID, id string) (domain.WebhookEndpoint, error)
+	// UpdateEndpoint mutates url/description/events/active without touching
+	// the signing secret (the PATCH shape; delete+recreate was the only
+	// mutation path before and it rotated the secret).
+	UpdateEndpoint(ctx context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error)
 	ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error)
 	DeleteEndpoint(ctx context.Context, tenantID, id string) error
 	// RotateEndpointSecret atomically moves the current signing secret into

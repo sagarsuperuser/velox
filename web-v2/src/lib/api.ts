@@ -454,6 +454,12 @@ export const api = {
   // Webhooks
   listWebhookEndpoints: () => apiRequest<{ data: WebhookEndpoint[] }>('GET', '/webhook-endpoints/endpoints'),
   createWebhookEndpoint: (data: { url: string; description?: string; events?: string[] }) => apiRequest<{ endpoint: WebhookEndpoint; secret: string }>('POST', '/webhook-endpoints/endpoints', data),
+  // PATCH mutates url/description/events/active WITHOUT rotating the
+  // signing secret (delete+recreate was the only mutation path before,
+  // forcing a receiver redeploy). Also how recipe-created endpoints
+  // (inactive + placeholder URL) get pointed at a real receiver.
+  updateWebhookEndpoint: (id: string, data: { url?: string; description?: string; events?: string[]; active?: boolean }) =>
+    apiRequest<WebhookEndpoint>('PATCH', `/webhook-endpoints/endpoints/${id}`, data),
   deleteWebhookEndpoint: (id: string) => apiRequest<{ status: string }>('DELETE', `/webhook-endpoints/endpoints/${id}`),
   rotateWebhookSecret: (id: string) => apiRequest<{ secret: string; secondary_valid_until?: string }>('POST', `/webhook-endpoints/endpoints/${id}/rotate-secret`),
   getWebhookEndpointStats: () => apiRequest<{ data: { endpoint_id: string; total_deliveries: number; succeeded: number; failed: number; success_rate: number }[] }>('GET', '/webhook-endpoints/endpoints/stats'),

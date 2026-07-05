@@ -71,6 +71,19 @@ func (m *memStore) GetEndpoint(_ context.Context, tenantID, id string) (domain.W
 	return ep, nil
 }
 
+func (m *memStore) UpdateEndpoint(_ context.Context, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error) {
+	existing, ok := m.endpoints[ep.ID]
+	if !ok || existing.TenantID != tenantID {
+		return domain.WebhookEndpoint{}, errs.ErrNotFound
+	}
+	existing.URL = ep.URL
+	existing.Description = ep.Description
+	existing.Events = ep.Events
+	existing.Active = ep.Active
+	m.endpoints[ep.ID] = existing
+	return existing, nil
+}
+
 func (m *memStore) ListEndpoints(ctx context.Context, tenantID string) ([]domain.WebhookEndpoint, error) {
 	live := postgres.Livemode(ctx)
 	var result []domain.WebhookEndpoint
@@ -373,7 +386,7 @@ func TestCreateEndpoint(t *testing.T) {
 	t.Run("valid localhost", func(t *testing.T) {
 		result, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 			URL:    "http://localhost:8080/webhooks",
-			Events: []string{"invoice.created", "payment.succeeded"},
+			Events: []string{"invoice.finalized", "payment.succeeded"},
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -441,11 +454,11 @@ func TestDispatch(t *testing.T) {
 	// Register an endpoint (localhost to bypass SSRF DNS check in tests)
 	result, _ := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/webhooks",
-		Events: []string{"invoice.created"},
+		Events: []string{"invoice.finalized"},
 	})
 
 	// Dispatch an event
-	err := svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{
+	err := svc.Dispatch(ctx, "t1", "invoice.finalized", map[string]any{
 		"invoice_id": "inv_123",
 		"total":      19900,
 	})
@@ -460,7 +473,7 @@ func TestDispatch(t *testing.T) {
 	if len(store.events) != 1 {
 		t.Fatalf("events: got %d, want 1", len(store.events))
 	}
-	if store.events[0].EventType != "invoice.created" {
+	if store.events[0].EventType != "invoice.finalized" {
 		t.Errorf("event_type: got %q", store.events[0].EventType)
 	}
 
@@ -503,7 +516,7 @@ func TestDispatch(t *testing.T) {
 	// Verify Velox-Event-Type header
 	if httpClient.lastRequest != nil {
 		et := httpClient.lastRequest.Header.Get("Velox-Event-Type")
-		if et != "invoice.created" {
+		if et != "invoice.finalized" {
 			t.Errorf("Velox-Event-Type: got %q", et)
 		}
 	}
@@ -512,7 +525,7 @@ func TestDispatch(t *testing.T) {
 	if httpClient.lastBody != nil {
 		var payload map[string]any
 		_ = json.Unmarshal(httpClient.lastBody, &payload)
-		if payload["event_type"] != "invoice.created" {
+		if payload["event_type"] != "invoice.finalized" {
 			t.Errorf("payload event_type: got %v", payload["event_type"])
 		}
 		data, _ := payload["data"].(map[string]any)
@@ -570,13 +583,13 @@ func TestMatchesEvent(t *testing.T) {
 		event      string
 		want       bool
 	}{
-		{[]string{"*"}, "invoice.created", true},
-		{[]string{"invoice.created"}, "invoice.created", true},
-		{[]string{"invoice.created"}, "payment.succeeded", false},
-		{[]string{"invoice.*"}, "invoice.created", true},
+		{[]string{"*"}, "invoice.finalized", true},
+		{[]string{"invoice.finalized"}, "invoice.finalized", true},
+		{[]string{"invoice.finalized"}, "payment.succeeded", false},
+		{[]string{"invoice.*"}, "invoice.finalized", true},
 		{[]string{"invoice.*"}, "invoice.finalized", true},
 		{[]string{"invoice.*"}, "payment.succeeded", false},
-		{[]string{"invoice.created", "payment.succeeded"}, "payment.succeeded", true},
+		{[]string{"invoice.finalized", "payment.succeeded"}, "payment.succeeded", true},
 		{[]string{}, "anything", false},
 	}
 
@@ -596,7 +609,7 @@ func TestDelivery_FailedHTTP(t *testing.T) {
 
 	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{URL: "http://localhost:9999/hook"})
 	before := time.Now()
-	_ = svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{})
+	_ = svc.Dispatch(ctx, "t1", "invoice.finalized", map[string]any{})
 	// Delivery is synchronous in test mode
 
 	if len(store.deliveries) != 1 {
@@ -710,9 +723,9 @@ func TestReplay(t *testing.T) {
 	// Setup: create endpoint + dispatch event
 	_, _ = svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/hook",
-		Events: []string{"invoice.created"},
+		Events: []string{"invoice.finalized"},
 	})
-	_ = svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
+	_ = svc.Dispatch(ctx, "t1", "invoice.finalized", map[string]any{"id": "inv_1"})
 
 	if len(store.deliveries) != 1 {
 		t.Fatalf("initial deliveries: got %d, want 1", len(store.deliveries))
@@ -757,9 +770,9 @@ func TestReplay_PinsLivemodeOnDelivery(t *testing.T) {
 	testCtx := postgres.WithLivemode(context.Background(), false)
 	_, _ = svc.CreateEndpoint(testCtx, "t1", CreateEndpointInput{
 		URL:    "http://localhost:9999/hook",
-		Events: []string{"invoice.created"},
+		Events: []string{"invoice.finalized"},
 	})
-	_ = svc.Dispatch(testCtx, "t1", "invoice.created", map[string]any{"id": "inv_1"})
+	_ = svc.Dispatch(testCtx, "t1", "invoice.finalized", map[string]any{"id": "inv_1"})
 
 	// Drain the original dispatch's delivery signal (also async on this
 	// service) and assert it was test-mode — proves the harness captures
@@ -835,7 +848,7 @@ func TestDispatch_ModeScoped(t *testing.T) {
 
 	// A test-mode Dispatch must land the event in the test partition and
 	// only produce a delivery for the test endpoint.
-	if err := svc.Dispatch(testCtx, "t1", "invoice.created", map[string]any{"n": 1}); err != nil {
+	if err := svc.Dispatch(testCtx, "t1", "invoice.finalized", map[string]any{"n": 1}); err != nil {
 		t.Fatalf("test dispatch: %v", err)
 	}
 	if len(store.events) != 1 || store.events[0].Livemode {
@@ -849,7 +862,7 @@ func TestDispatch_ModeScoped(t *testing.T) {
 	}
 
 	// A live-mode Dispatch must only hit the live endpoint.
-	if err := svc.Dispatch(liveCtx, "t1", "invoice.created", map[string]any{"n": 2}); err != nil {
+	if err := svc.Dispatch(liveCtx, "t1", "invoice.finalized", map[string]any{"n": 2}); err != nil {
 		t.Fatalf("live dispatch: %v", err)
 	}
 	if len(store.events) != 2 || !store.events[1].Livemode {
@@ -871,7 +884,7 @@ func TestDispatch_ModeScoped(t *testing.T) {
 // v1= match, so the test checks both signatures line up with their
 // secrets.
 func TestBuildSignatureHeader(t *testing.T) {
-	body := []byte(`{"id":"evt_1","event_type":"invoice.created"}`)
+	body := []byte(`{"id":"evt_1","event_type":"invoice.finalized"}`)
 	ts := "1714000000"
 	now := time.Unix(1714000100, 0).UTC()
 
@@ -987,7 +1000,7 @@ func TestRotateSecret_GracePeriod(t *testing.T) {
 	}
 
 	// Dispatch — header should carry BOTH signatures while grace is live.
-	if err := svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"invoice_id": "inv_1"}); err != nil {
+	if err := svc.Dispatch(ctx, "t1", "invoice.finalized", map[string]any{"invoice_id": "inv_1"}); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if httpClient.lastRequest == nil {
@@ -1005,7 +1018,7 @@ func TestRotateSecret_GracePeriod(t *testing.T) {
 	store.endpoints[created.Endpoint.ID] = ep
 
 	httpClient.lastRequest = nil
-	if err := svc.Dispatch(ctx, "t1", "invoice.created", map[string]any{"invoice_id": "inv_2"}); err != nil {
+	if err := svc.Dispatch(ctx, "t1", "invoice.finalized", map[string]any{"invoice_id": "inv_2"}); err != nil {
 		t.Fatalf("dispatch 2: %v", err)
 	}
 	header2 := httpClient.lastRequest.Header.Get("Velox-Signature")
@@ -1039,7 +1052,7 @@ func TestRetryPendingDeliveries_OldEventResolvable(t *testing.T) {
 
 	// The event we'll attach the pending delivery to — created first, so it's
 	// the OLDEST event in the store.
-	oldEvent, err := store.CreateEvent(ctx, "t1", domain.WebhookEvent{EventType: "invoice.created"})
+	oldEvent, err := store.CreateEvent(ctx, "t1", domain.WebhookEvent{EventType: "invoice.finalized"})
 	if err != nil {
 		t.Fatalf("create old event: %v", err)
 	}
@@ -1208,5 +1221,91 @@ func TestIsBlockedIP(t *testing.T) {
 		if got := isBlockedIP(ip); got != c.want {
 			t.Errorf("isBlockedIP(%q) = %v, want %v", c.ip, got, c.want)
 		}
+	}
+}
+
+// Event-name validation (2026-07-05): endpoint create/update rejects
+// subscriptions to event types the engine never emits — pre-fix any string
+// was accepted and matchesEvent silently never fired (Velox's own recipes
+// shipped two phantom names: invoice.payment_failed, subscription.updated).
+func TestCreateEndpoint_RejectsUnknownEventNames(t *testing.T) {
+	svc := NewService(newMemStore(), nil)
+	ctx := context.Background()
+
+	for _, bad := range []string{"invoice.payment_failed", "subscription.updated", "totally.made_up"} {
+		if _, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+			URL: "http://localhost:9099/hook", Events: []string{bad},
+		}); err == nil {
+			t.Errorf("phantom event %q must be rejected at create", bad)
+		}
+	}
+	// Real names, the bare wildcard, and prefix wildcards all pass.
+	if _, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9099/hook", Events: []string{"payment.failed", "subscription.item.updated", "invoice.*"},
+	}); err != nil {
+		t.Fatalf("valid names must pass: %v", err)
+	}
+	if _, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9099/hook2", Events: []string{"nonexistent.*"}}); err == nil {
+		t.Error("a prefix wildcard matching no emitted event must be rejected")
+	}
+}
+
+// UpdateEndpoint mutates url/events/active WITHOUT touching the signing
+// secret — the pre-fix delete+recreate path rotated it and forced a
+// receiver redeploy, and recipe-created endpoints (inactive + placeholder
+// URL) were permanently dead.
+func TestUpdateEndpoint(t *testing.T) {
+	svc := NewService(newMemStore(), nil)
+	ctx := context.Background()
+
+	created, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9099/old", Events: []string{"invoice.finalized"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	strp := func(v string) *string { return &v }
+	boolp := func(v bool) *bool { return &v }
+	evp := func(v []string) *[]string { return &v }
+
+	updated, err := svc.UpdateEndpoint(ctx, "t1", created.Endpoint.ID, UpdateEndpointInput{
+		URL:    strp("http://localhost:9099/new"),
+		Events: evp([]string{"payment.failed", "credit.balance_depleted"}),
+		Active: boolp(false),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.URL != "http://localhost:9099/new" || updated.Active {
+		t.Fatalf("update not applied: %+v", updated)
+	}
+	if len(updated.Events) != 2 || updated.Events[0] != "payment.failed" {
+		t.Fatalf("events not applied: %v", updated.Events)
+	}
+
+	// Secret unchanged — re-read and compare.
+	after, err := svc.store.GetEndpoint(ctx, "t1", created.Endpoint.ID)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if after.Secret != created.Secret {
+		t.Fatal("PATCH must never rotate the signing secret")
+	}
+
+	// Phantom names rejected on update too.
+	if _, err := svc.UpdateEndpoint(ctx, "t1", created.Endpoint.ID, UpdateEndpointInput{
+		Events: evp([]string{"invoice.payment_failed"}),
+	}); err == nil {
+		t.Fatal("phantom event must be rejected at update")
+	}
+	// Nil fields = unchanged.
+	same, err := svc.UpdateEndpoint(ctx, "t1", created.Endpoint.ID, UpdateEndpointInput{})
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if same.URL != "http://localhost:9099/new" || len(same.Events) != 2 {
+		t.Fatalf("no-op update must leave fields unchanged: %+v", same)
 	}
 }

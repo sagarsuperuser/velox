@@ -1265,6 +1265,12 @@ The credit-note refund leg: operator retry, async webhook reconciliation, proact
 
 ## Webhooks
 
+## FLOW W0: Outbound webhook endpoint config (2026-07-05)
+
+- [ ] Create endpoint with `events: ["invoice.payment_failed"]` → **422** naming the unknown type (the engine never emits it — pre-fix this subscription received silence forever). `["payment.failed"]`, `["invoice.*"]`, and `["*"]` all pass; `["nonexistent.*"]` → 422.
+- [ ] `PATCH /v1/webhook-endpoints/endpoints/{id}` with a new URL + `active: true` → endpoint updated, **signing secret unchanged** (receiver keeps verifying). Dashboard → Webhooks → **Edit** shows URL/description/active + the same event picker as create, prefilled.
+- [ ] Instantiate a recipe → its webhook endpoint (inactive, placeholder URL) subscribes to REAL event names (`payment.failed`, `subscription.item.updated`); Edit it to a real URL + active → deliveries flow.
+
 ## FLOW W1: Stripe signature verification
 
 - [ ] Valid payload + signature ≤300s → 200, processed.

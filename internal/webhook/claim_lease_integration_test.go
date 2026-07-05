@@ -26,13 +26,13 @@ func TestListPendingDeliveries_LeasesClaimedRows(t *testing.T) {
 	store := webhook.NewPostgresStore(db)
 
 	ep, err := store.CreateEndpoint(ctx, tenantID, domain.WebhookEndpoint{
-		URL: "https://example.test/hook", Events: []string{"invoice.created"}, Active: true, Secret: "whsec_test",
+		URL: "https://example.test/hook", Events: []string{"invoice.finalized"}, Active: true, Secret: "whsec_test",
 	})
 	if err != nil {
 		t.Fatalf("create endpoint: %v", err)
 	}
 	evt, err := store.CreateEvent(ctx, tenantID, domain.WebhookEvent{
-		EventType: "invoice.created", Payload: map[string]any{"id": "inv_1"},
+		EventType: "invoice.finalized", Payload: map[string]any{"id": "inv_1"},
 	})
 	if err != nil {
 		t.Fatalf("create event: %v", err)

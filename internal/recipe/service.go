@@ -427,8 +427,10 @@ func (s *Service) Instantiate(
 	}
 
 	// Optional webhook endpoint. Created inactive with the YAML's
-	// url_placeholder; the operator activates it after pointing it at a
-	// real URL via the dashboard.
+	// url_placeholder; the operator points it at a real URL and activates
+	// it via PATCH /v1/webhook-endpoints/{id} (or the dashboard's Edit) —
+	// a surface that didn't exist until 2026-07-05, which left every
+	// recipe endpoint permanently dead.
 	if rendered.Webhook != nil {
 		secret, err := newWebhookSecret()
 		if err != nil {

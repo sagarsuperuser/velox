@@ -41,7 +41,7 @@ func TestWireShape_WebhookEventsStream_SnakeCase(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create endpoint: %v", err)
 	}
-	if err := svc.Dispatch(ctx, tenantID, "invoice.created", map[string]any{
+	if err := svc.Dispatch(ctx, tenantID, "invoice.finalized", map[string]any{
 		"customer_id": "vlx_cus_wireshape",
 		"invoice_id":  "vlx_inv_42",
 	}); err != nil {
@@ -125,8 +125,8 @@ func TestWireShape_WebhookEventsStream_SnakeCase(t *testing.T) {
 	}
 
 	// Spot-check the values map back to the seeded event.
-	if frame["event_type"] != "invoice.created" {
-		t.Errorf("event_type: got %v, want invoice.created", frame["event_type"])
+	if frame["event_type"] != "invoice.finalized" {
+		t.Errorf("event_type: got %v, want invoice.finalized", frame["event_type"])
 	}
 	if frame["customer_id"] != "vlx_cus_wireshape" {
 		t.Errorf("customer_id: got %v, want vlx_cus_wireshape", frame["customer_id"])
@@ -176,7 +176,7 @@ func TestWireShape_WebhookEventReplay(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create endpoint: %v", err)
 	}
-	if err := svc.Dispatch(ctx, tenantID, "invoice.created", map[string]any{
+	if err := svc.Dispatch(ctx, tenantID, "invoice.finalized", map[string]any{
 		"invoice_id": "vlx_inv_99",
 	}); err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -257,7 +257,7 @@ func TestWireShape_WebhookEventDeliveries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create endpoint: %v", err)
 	}
-	if err := svc.Dispatch(ctx, tenantID, "invoice.created", map[string]any{
+	if err := svc.Dispatch(ctx, tenantID, "invoice.finalized", map[string]any{
 		"invoice_id":  "vlx_inv_77",
 		"customer_id": "vlx_cus_77",
 	}); err != nil {
