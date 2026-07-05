@@ -30,6 +30,19 @@ CREATE TABLE member_invitations (
 
 CREATE INDEX idx_member_invitations_tenant ON member_invitations(tenant_id);
 
+-- 0006-pattern fence (mode-less shape, same as user_tenants in 0124).
+-- All dashmembers access runs under TxBypass — the accept path is
+-- pre-auth, and token lookup is by hash (the token IS the credential) —
+-- which the bypass clause admits. The fence is the structural backstop:
+-- a future tenant-scoped query gets DB-level isolation instead of
+-- relying on app-layer predicates alone.
+ALTER TABLE member_invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE member_invitations FORCE  ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON member_invitations FOR ALL USING (
+    current_setting('app.bypass_rls', true) = 'on'
+    OR tenant_id = current_setting('app.tenant_id', true)
+);
+
 -- At most one *pending* invitation per (tenant, email). Accepted or
 -- revoked rows are excluded so re-inviting after a revoke, or re-inviting
 -- a member who left, works without cleanup.

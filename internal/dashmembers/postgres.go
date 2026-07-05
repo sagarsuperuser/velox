@@ -26,8 +26,10 @@ import (
 // PostgresStore persists invitations and reads memberships. Queries run
 // under TxBypass like the sibling auth tables (users, sessions,
 // password_reset_tokens): the accept path runs before any tenant context
-// exists, so RLS would be circular. tenant_id predicates scope every
-// tenant-shaped query at the application layer.
+// exists. tenant_id predicates scope every tenant-shaped query at the
+// application layer; the table still carries the 0006 RLS fence
+// (bypass-admitting, m0139) as the structural backstop for any future
+// tenant-scoped query.
 type PostgresStore struct {
 	db *postgres.DB
 }
