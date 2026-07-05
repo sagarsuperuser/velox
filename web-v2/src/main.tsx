@@ -90,6 +90,7 @@ function PublicOnlyRoute({ children }: { children: ReactNode }) {
 const LoginPage = lazy(() => import('@/pages/Login'))
 const ForgotPasswordPage = lazy(() => import('@/pages/ForgotPassword'))
 const ResetPasswordPage = lazy(() => import('@/pages/ResetPassword'))
+const AcceptInvitePage = lazy(() => import('@/pages/AcceptInvite'))
 const DashboardPage = lazy(() => import('@/pages/Dashboard'))
 const CustomersPage = lazy(() => import('@/pages/Customers'))
 const PricingPage = lazy(() => import('@/pages/Pricing'))
@@ -137,6 +138,8 @@ const App = () => (
               <Route path="/login" element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
               <Route path="/forgot-password" element={<PublicOnlyRoute><ForgotPasswordPage /></PublicOnlyRoute>} />
               <Route path="/reset-password" element={<PublicOnlyRoute><ResetPasswordPage /></PublicOnlyRoute>} />
+              {/* Token-driven: no PublicOnlyRoute — see comment above. */}
+              <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
               <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
               <Route path="/recipes" element={<ProtectedRoute><RecipesPage /></ProtectedRoute>} />

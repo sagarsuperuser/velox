@@ -1,7 +1,9 @@
 # ADR-011: Email/Password Dashboard Auth, Pure-CRUD API Keys
 
 **Date:** 2026-05-01
-**Status:** Accepted
+**Status:** Accepted — amended by ADR-081 (2026-07-06): multi-user invites
+shipped (tokenized accept, no RBAC); the "invite flow comes when it's
+needed" deferrals below are partially resolved.
 
 ## Status
 Accepted

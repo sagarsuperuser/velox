@@ -47,7 +47,8 @@ import {
   postalPlaceholderForCountry,
 } from '@/lib/geo'
 
-import { Building2, CreditCard, FileText, Receipt, Check, AlertCircle, Loader2, Trash2, Copy, ExternalLink, X } from 'lucide-react'
+import { Building2, CreditCard, FileText, Receipt, Check, AlertCircle, Loader2, Trash2, Copy, ExternalLink, X, Users } from 'lucide-react'
+import { TeamTab } from '@/components/TeamTab'
 
 const settingsSchema = z.object({
   company_name: z.string().max(255, 'Must be at most 255 characters'),
@@ -291,9 +292,9 @@ export default function SettingsPage() {
   // Tab values: 'general' is the default home; 'business' is accepted
   // as a back-compat alias since older bookmarks / external links
   // (docs, support emails) point at ?tab=business.
-  const tab = ((): 'general' | 'invoicing' | 'tax' | 'payments' => {
+  const tab = ((): 'general' | 'invoicing' | 'tax' | 'payments' | 'team' => {
     const q = searchParams.get('tab')
-    if (q === 'invoicing' || q === 'tax' || q === 'payments') return q
+    if (q === 'invoicing' || q === 'tax' || q === 'payments' || q === 'team') return q
     if (q === 'business') return 'general'
     return 'general'
   })()
@@ -335,6 +336,7 @@ export default function SettingsPage() {
           <TabsTrigger value="invoicing"><FileText size={14} /> Invoicing</TabsTrigger>
           <TabsTrigger value="tax"><Receipt size={14} /> Tax</TabsTrigger>
           <TabsTrigger value="payments"><CreditCard size={14} /> Payments</TabsTrigger>
+          <TabsTrigger value="team"><Users size={14} /> Team</TabsTrigger>
         </TabsList>
 
         <div className="max-w-3xl mt-6 pb-24">
@@ -839,6 +841,13 @@ export default function SettingsPage() {
           {/* Payments: per-tenant Stripe credentials */}
           <TabsContent value="payments">
             <PaymentsSection />
+          </TabsContent>
+
+          {/* Team: members + invitations. Lives outside the settings
+              form — membership changes apply immediately, there's
+              nothing to save. */}
+          <TabsContent value="team">
+            <TeamTab />
           </TabsContent>
 
         </div>

@@ -81,10 +81,11 @@ func applyToCtx(ctx context.Context, s Session) context.Context {
 	ctx = auth.WithTenantID(ctx, s.TenantID)
 	ctx = auth.WithUserID(ctx, s.UserID)
 	// Session-authed requests use the KeyTypeSession permission set
-	// (full operator access, mirroring the bootstrap-equivalent role).
-	// When invite flows ship and roles diverge, resolve the user's
-	// role from the user_tenants row and pick a permission set per
-	// role. Today every user is implicitly an owner.
+	// (full operator access). Invites shipped (ADR-081) but roles are
+	// recorded-not-enforced: every member — owner or invited 'member' —
+	// gets the same full set. When roles diverge, resolve the user's
+	// role from the user_tenants row here and pick a permission set per
+	// role.
 	ctx = auth.WithKeyType(ctx, auth.KeyTypeSession)
 	ctx = postgres.WithLivemode(ctx, s.Livemode)
 	return ctx
