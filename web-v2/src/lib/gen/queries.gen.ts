@@ -43,6 +43,7 @@ import type {
   Invoice,
   InvoiceWithLineItems,
   MarginReport,
+  PatchV1MetersIdBody,
   PostV1AuthLogin200,
   PostV1AuthLoginBody,
   PostV1AuthMode200,
@@ -713,6 +714,84 @@ export function useGetV1Meters<TData = Awaited<ReturnType<typeof getV1Meters>>, 
 
 
 
+
+/**
+ * Fields omitted are left unchanged. `rating_rule_version_id` sets
+the meter's DEFAULT rating rule — the rate applied to usage no
+dimension pricing rule claims (the remedy for silently-unbilled
+unmatched usage); pass an empty string to clear it. The rule must
+exist on the tenant.
+
+ * @summary Update meter (incl. the default rating-rule binding)
+ */
+export const getPatchV1MetersIdUrl = (id: string,) => {
+
+
+
+
+  return `/v1/meters/${id}`
+}
+
+export const patchV1MetersId = async (id: string,
+    patchV1MetersIdBody: PatchV1MetersIdBody, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getPatchV1MetersIdUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      patchV1MetersIdBody,)
+  }
+);}
+
+
+
+
+export const getPatchV1MetersIdMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchV1MetersId>>, TError,{id: string;data: PatchV1MetersIdBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof patchV1MetersId>>, TError,{id: string;data: PatchV1MetersIdBody}, TContext> => {
+
+const mutationKey = ['patchV1MetersId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchV1MetersId>>, {id: string;data: PatchV1MetersIdBody}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  patchV1MetersId(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchV1MetersIdMutationResult = NonNullable<Awaited<ReturnType<typeof patchV1MetersId>>>
+    export type PatchV1MetersIdMutationBody = PatchV1MetersIdBody
+    export type PatchV1MetersIdMutationError = void
+
+    /**
+ * @summary Update meter (incl. the default rating-rule binding)
+ */
+export const usePatchV1MetersId = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchV1MetersId>>, TError,{id: string;data: PatchV1MetersIdBody}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchV1MetersId>>,
+        TError,
+        {id: string;data: PatchV1MetersIdBody},
+        TContext
+      > => {
+      return useMutation(getPatchV1MetersIdMutationOptions(options), queryClient);
+    }
 
 /**
  * @summary Create plan

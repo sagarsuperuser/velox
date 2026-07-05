@@ -50,6 +50,8 @@ export * from './marginReport';
 export * from './marginReportByModelItem';
 export * from './meter';
 export * from './meterAggregation';
+export * from './patchV1MetersIdBody';
+export * from './patchV1MetersIdBodyAggregation';
 export * from './plan';
 export * from './planBaseBillTiming';
 export * from './planBillingInterval';

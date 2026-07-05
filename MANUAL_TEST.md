@@ -778,6 +778,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Batch body over the 1MB cap → 413 `batch_too_large` (not a misleading 400 "expected JSON array").
 - [ ] Rule with `dimension_match={"token_type":"input"}` claims only input events; `{"token_type":"cache_read"}` claims only cache-read events. Token roles are DISJOINT (ADR-044), so each `{model, token_type}` matches exactly one rule — no priority tie-break needed (the old boolean `cached` + priority-wins model is gone).
 - [ ] Aggregations sum / count / max / last_during_period / last_ever all bill correctly. Switching aggregation between cycles re-bills next cycle without affecting past invoices.
+- [ ] **Meter default binding is settable post-create (2026-07-05):** `PATCH /v1/meters/{id} {"rating_rule_version_id": "<rule>"}` → unmatched-dimension usage prices at that default from the next close (the silently-unbilled remedy); a typo'd rule id → 422; `""` clears the binding.
 - [ ] `cmd/velox-bench` sustains 50k events/sec on local Postgres.
 
 ## FLOW B14: Billing thresholds

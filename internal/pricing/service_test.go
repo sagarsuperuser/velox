@@ -1110,3 +1110,64 @@ func TestCreateOverride_ResolvesRuleInTenant(t *testing.T) {
 		t.Errorf("override rule_key: got %q, want tokens", o.RuleKey)
 	}
 }
+
+// UpdateMeter is the operator's remedy for silently-unbilled unmatched
+// usage: the DEFAULT rating-rule binding becomes settable post-create
+// (pre-2026-07-05 it existed only as a create-time field, so recipe meters
+// could never gain a catch-all rate). A typo'd rule id must 422, not bind
+// a default that prices nothing.
+func TestUpdateMeter_DefaultBinding(t *testing.T) {
+	svc := NewService(newMemStore())
+	ctx := context.Background()
+
+	rule, err := svc.CreateRatingRule(ctx, "t1", CreateRatingRuleInput{
+		RuleKey: "catchall", Name: "catch-all", Mode: domain.PricingFlat, Currency: "USD",
+		FlatAmountCents: decimal.NewFromFloat(0.0001),
+	})
+	if err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	meter, err := svc.CreateMeter(ctx, "t1", CreateMeterInput{Key: "tokens_um", Name: "Tokens"})
+	if err != nil {
+		t.Fatalf("create meter: %v", err)
+	}
+	if meter.RatingRuleVersionID != "" {
+		t.Fatalf("meter starts unbound, got %q", meter.RatingRuleVersionID)
+	}
+
+	strp := func(v string) *string { return &v }
+
+	// Bind the default post-create — the escape hatch.
+	updated, err := svc.UpdateMeter(ctx, "t1", meter.ID, UpdateMeterInput{RatingRuleVersionID: strp(rule.ID)})
+	if err != nil {
+		t.Fatalf("bind default: %v", err)
+	}
+	if updated.RatingRuleVersionID != rule.ID {
+		t.Fatalf("default binding: got %q, want %q", updated.RatingRuleVersionID, rule.ID)
+	}
+	if updated.Name != "Tokens" || updated.Aggregation != "sum" {
+		t.Fatalf("untouched fields must survive the patch: %+v", updated)
+	}
+
+	// A typo'd rule id must 422.
+	if _, err := svc.UpdateMeter(ctx, "t1", meter.ID, UpdateMeterInput{RatingRuleVersionID: strp("vlx_rrv_nope")}); err == nil {
+		t.Fatal("nonexistent rule must be rejected — a typo'd default silently prices nothing")
+	}
+
+	// Explicit empty string clears the binding.
+	cleared, err := svc.UpdateMeter(ctx, "t1", meter.ID, UpdateMeterInput{RatingRuleVersionID: strp("")})
+	if err != nil {
+		t.Fatalf("clear default: %v", err)
+	}
+	if cleared.RatingRuleVersionID != "" {
+		t.Fatalf("binding must clear, got %q", cleared.RatingRuleVersionID)
+	}
+
+	// Aggregation patch validates the enum.
+	if _, err := svc.UpdateMeter(ctx, "t1", meter.ID, UpdateMeterInput{Aggregation: strp("median")}); err == nil {
+		t.Fatal("bad aggregation must be rejected")
+	}
+	if _, err := svc.UpdateMeter(ctx, "t1", meter.ID, UpdateMeterInput{Aggregation: strp("max")}); err != nil {
+		t.Fatalf("valid aggregation switch: %v", err)
+	}
+}

@@ -42,6 +42,7 @@ func (h *Handler) MeterRoutes() chi.Router {
 	r.Post("/", h.createMeter)
 	r.Get("/", h.listMeters)
 	r.Get("/{id}", h.getMeter)
+	r.Patch("/{id}", h.updateMeter)
 	return r
 }
 
@@ -265,6 +266,33 @@ func (h *Handler) getMeter(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "get meter", "error", err)
+		return
+	}
+
+	respond.JSON(w, r, http.StatusOK, meter)
+}
+
+// updateMeter is the PATCH that makes the DEFAULT rating-rule binding
+// settable post-create — the operator's remedy for "usage matching no
+// pricing rule is silently unbilled" (pre-fix the binding existed only as
+// a create-time field, so recipe meters could never gain a catch-all).
+func (h *Handler) updateMeter(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var input UpdateMeterInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		respond.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	meter, err := h.svc.UpdateMeter(r.Context(), tenantID, id, input)
+	if errors.Is(err, errs.ErrNotFound) {
+		respond.NotFound(w, r, "meter")
+		return
+	}
+	if err != nil {
+		respond.FromError(w, r, err, "meter")
 		return
 	}
 

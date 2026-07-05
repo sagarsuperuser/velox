@@ -991,6 +991,47 @@ paths:
         "200":
           description: Meter list
 
+  /v1/meters/{id}:
+    patch:
+      tags: [Pricing]
+      summary: Update meter (incl. the default rating-rule binding)
+      description: |
+        Fields omitted are left unchanged. `rating_rule_version_id` sets
+        the meter's DEFAULT rating rule — the rate applied to usage no
+        dimension pricing rule claims (the remedy for silently-unbilled
+        unmatched usage); pass an empty string to clear it. The rule must
+        exist on the tenant.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                unit:
+                  type: string
+                aggregation:
+                  type: string
+                  enum: [sum, count, max, last]
+                rating_rule_version_id:
+                  type: string
+                  description: Default rating rule; empty string clears.
+      responses:
+        "200":
+          description: Updated meter
+        "404":
+          description: Meter not found
+        "422":
+          description: Validation failure (unknown rule id, bad aggregation)
+
   /v1/plans:
     post:
       tags: [Pricing]

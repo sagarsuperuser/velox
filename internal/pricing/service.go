@@ -292,6 +292,69 @@ func (s *Service) CreateMeter(ctx context.Context, tenantID string, input Create
 	})
 }
 
+// UpdateMeterInput is the PATCH shape: nil = leave unchanged. A non-nil
+// empty RatingRuleVersionID CLEARS the default binding.
+type UpdateMeterInput struct {
+	Name                *string `json:"name,omitempty"`
+	Unit                *string `json:"unit,omitempty"`
+	Aggregation         *string `json:"aggregation,omitempty"`
+	RatingRuleVersionID *string `json:"rating_rule_version_id,omitempty"`
+}
+
+// UpdateMeter patches a meter — most importantly the DEFAULT rating-rule
+// binding (meters.rating_rule_version_id), which pre-2026-07-05 could only
+// be set at meter CREATE: a meter created without one (every recipe meter)
+// had no way to gain a catch-all rate later, so usage matching no pricing
+// rule was silently unbilled at cycle close with no operator remedy short
+// of recreating the meter. The default binding is the escape hatch: it
+// prices every event no dimension rule claims (Orb's required
+// default_unit_amount is the peer shape). Aggregation switches are
+// supported per FLOW B13 (re-bills next cycle; finalized invoices are
+// immutable).
+func (s *Service) UpdateMeter(ctx context.Context, tenantID, id string, input UpdateMeterInput) (domain.Meter, error) {
+	m, err := s.store.GetMeter(ctx, tenantID, id)
+	if err != nil {
+		return domain.Meter{}, err
+	}
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" {
+			return domain.Meter{}, errs.Required("name")
+		}
+		if err := domain.MaxLen("name", name, 255); err != nil {
+			return domain.Meter{}, err
+		}
+		m.Name = name
+	}
+	if input.Unit != nil {
+		unit := strings.TrimSpace(*input.Unit)
+		if unit == "" {
+			unit = "unit"
+		}
+		m.Unit = unit
+	}
+	if input.Aggregation != nil {
+		agg := *input.Aggregation
+		if agg != "sum" && agg != "count" && agg != "max" && agg != "last" {
+			return domain.Meter{}, errs.Invalid("aggregation", "must be one of: sum, count, max, last")
+		}
+		m.Aggregation = agg
+	}
+	if input.RatingRuleVersionID != nil {
+		rid := strings.TrimSpace(*input.RatingRuleVersionID)
+		if rid != "" {
+			// The binding must point at a real rule on this tenant — a
+			// typo'd default silently prices nothing, the exact silence
+			// this PATCH exists to close.
+			if _, err := s.store.GetRatingRule(ctx, tenantID, rid); err != nil {
+				return domain.Meter{}, errs.Invalid("rating_rule_version_id", "rating rule not found")
+			}
+		}
+		m.RatingRuleVersionID = rid
+	}
+	return s.store.UpdateMeter(ctx, tenantID, m)
+}
+
 func (s *Service) GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error) {
 	return s.store.GetMeter(ctx, tenantID, id)
 }
