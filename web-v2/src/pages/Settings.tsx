@@ -967,6 +967,14 @@ const STRIPE_WEBHOOK_EVENTS: { name: string; purpose: string }[] = [
   { name: 'checkout.session.completed', purpose: 'completes Stripe Checkout returns' },
   { name: 'setup_intent.succeeded', purpose: 'saves customer payment method' },
   { name: 'setup_intent.setup_failed', purpose: 'logs setup errors' },
+  // Refund truth (ADR-063): a credit-note refund is created synchronously
+  // but can FAIL later at Stripe (insufficient balance, dispute). Without
+  // these, Velox keeps showing the refund as pending/succeeded forever —
+  // and it only breaks in prod (stripe listen forwards ALL events, so dev
+  // never reproduces it).
+  { name: 'charge.refund.updated', purpose: 'tracks async refund status' },
+  { name: 'refund.updated', purpose: 'tracks async refund status' },
+  { name: 'refund.failed', purpose: 'flags refunds that failed at Stripe' },
 ]
 
 // StripeCard is the main orchestrator for a single mode. State machine,

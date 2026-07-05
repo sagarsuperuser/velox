@@ -5,9 +5,14 @@ import (
 	"net/http"
 
 	chimw "github.com/go-chi/chi/v5/middleware"
+
+	"github.com/sagarsuperuser/velox/internal/version"
 )
 
-const apiVersion = "2026-04-07"
+// apiVersion feeds the Velox-Version response header — the build-time
+// stamp (git tag in released images, "dev" locally), not a hardcoded date
+// that went stale within weeks.
+var apiVersion = version.Version
 
 // JSON writes a success response with standard headers.
 func JSON(w http.ResponseWriter, r *http.Request, status int, data any) {

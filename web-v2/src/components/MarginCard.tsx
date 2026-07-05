@@ -1,20 +1,49 @@
+import { useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { formatCents } from '@/lib/api'
+import { endOfDayInTZ, startOfDayInTZ } from '@/lib/dates'
 import { useGetV1CustomersIdMargin } from '@/lib/gen/queries.gen'
 
-// Margin (ADR-079): rated usage revenue vs stamped provider COGS for the
-// last 30 days. Operator-only surface — COGS never renders on
-// customer-facing pages. Attribution is honest by design: per-model margin
-// shows only where pricing rules pin the model; everything else appears as
-// "not model-attributed" rather than being split by heuristic.
+const WINDOW_PRESETS = [
+  { key: '7d', label: 'Last 7 days', days: 7 },
+  { key: '30d', label: 'Last 30 days', days: 30 },
+  { key: '90d', label: 'Last 90 days', days: 90 },
+  { key: 'custom', label: 'Custom', days: 0 },
+] as const
+
+// Margin (ADR-079): rated usage revenue vs stamped provider COGS over an
+// operator-picked window (presets + custom dates; the API always took
+// from/to — the UI just never exposed them, hardwiring last-30-days).
+// Operator-only surface — COGS never renders on customer-facing pages.
+// Attribution is honest by design: per-model margin shows only where
+// pricing rules pin the model; everything else appears as "not
+// model-attributed" rather than being split by heuristic.
 export function MarginCard({ customerId }: { customerId: string }) {
-  const { data: rep, isLoading } = useGetV1CustomersIdMargin(customerId)
+  const [preset, setPreset] = useState<typeof WINDOW_PRESETS[number]['key']>('30d')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+
+  const params = useMemo(() => {
+    if (preset === 'custom') {
+      if (!customFrom || !customTo) return undefined // wait for both ends
+      return { from: startOfDayInTZ(customFrom), to: endOfDayInTZ(customTo) }
+    }
+    const days = WINDOW_PRESETS.find(p => p.key === preset)?.days ?? 30
+    const to = new Date()
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
+    return { from: from.toISOString(), to: to.toISOString() }
+  }, [preset, customFrom, customTo])
+
+  const { data: rep, isLoading } = useGetV1CustomersIdMargin(customerId, params, {
+    query: { enabled: params !== undefined },
+  })
 
   // micros (1e-6 dollars) → display dollars.
   const costDollars = (micros: number) => `$${(micros / 1_000_000).toFixed(micros >= 100_000 ? 2 : 4)}`
@@ -22,11 +51,34 @@ export function MarginCard({ customerId }: { customerId: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Margin — last 30 days</CardTitle>
-        <CardDescription>
-          Usage billing vs your provider costs. Excludes base fees, credits,
-          and taxes — this is usage unit economics, not accounting margin.
-        </CardDescription>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <CardTitle>Margin</CardTitle>
+            <CardDescription>
+              Usage billing vs your provider costs. Excludes base fees, credits,
+              and taxes — this is usage unit economics, not accounting margin.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              aria-label="Margin window"
+              className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={preset}
+              onChange={e => setPreset(e.target.value as typeof preset)}
+            >
+              {WINDOW_PRESETS.map(p => (
+                <option key={p.key} value={p.key}>{p.label}</option>
+              ))}
+            </select>
+            {preset === 'custom' && (
+              <>
+                <DatePicker value={customFrom} onChange={setCustomFrom} placeholder="From" className="w-36" />
+                <DatePicker value={customTo} onChange={setCustomTo} placeholder="To" className="w-36"
+                  minDate={customFrom ? new Date(customFrom + 'T00:00:00') : undefined} />
+              </>
+            )}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading || !rep ? (

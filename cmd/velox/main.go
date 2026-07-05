@@ -25,6 +25,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/platform/telemetry"
 	"github.com/sagarsuperuser/velox/internal/testclock"
+	"github.com/sagarsuperuser/velox/internal/version"
 	"github.com/sagarsuperuser/velox/internal/webhook"
 )
 
@@ -66,7 +67,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println("velox 2026-04-07")
+		fmt.Println("velox " + version.Version)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
