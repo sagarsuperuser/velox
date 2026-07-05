@@ -59,9 +59,15 @@ type StandardLoggingPayload struct {
 
 	// ResponseCost is LiteLLM's pre-computed dollar cost for this
 	// call (legacy single-field; cost_breakdown is the newer
-	// per-component shape). Surfaced on the usage event metadata
-	// for operator visibility — Velox's own rating rules still
-	// compute the billable amount. See ADR-033.
+	// per-component shape). NOTE (ADR-079 census correction): this is
+	// accepted on the wire and stamped into the mapper's in-memory
+	// metadata, but the ingest path DROPS it — usage_events has no
+	// metadata column and IngestInput carries none, so it is never
+	// persisted. It is also a WHOLE-CALL figure: a call maps to up to
+	// three per-half events, so stamping it per event would multi-count
+	// COGS. Velox's COGS comes from the operator's provider_cost_rates
+	// table at ingest (ADR-079); per-half observed-cost stamping (from
+	// CostBreakdown, never from this field) is the named fast-follow.
 	ResponseCost float64 `json:"response_cost,omitempty"`
 
 	// CostBreakdown is LiteLLM's per-component cost split. Same
@@ -76,11 +82,12 @@ type StandardLoggingPayload struct {
 	StartTime float64 `json:"startTime,omitempty"`
 	EndTime   float64 `json:"endTime,omitempty"`
 
-	// Metadata is a free-form map LiteLLM passes through from
-	// the caller. We surface the whole map on the usage event's
-	// metadata column so operators can attribute by team_id,
-	// request_tags, end_user_email, etc. without us needing to
-	// model every LiteLLM extension explicitly.
+	// Metadata is a free-form map LiteLLM passes through from the
+	// caller. team_id and request_tags are promoted into event
+	// DIMENSIONS (the mapper's dims block); the rest is currently
+	// dropped at ingest — usage_events has no metadata column
+	// (ADR-079 census; an earlier version of this comment claimed
+	// otherwise).
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 

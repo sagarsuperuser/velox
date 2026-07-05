@@ -63,3 +63,21 @@ type BilledEntry struct {
 	Source         BilledEntrySource `json:"source,omitempty"`
 	Timestamp      time.Time         `json:"timestamp"`
 }
+
+// ProviderCostRate is one row of the operator's provider cost table
+// (ADR-079): what THEY pay a provider per token for (provider, model,
+// token_type), in decimal dollars — verified real-world rates reach
+// 1.5e-06/token, so never floats, never cents. CURRENT-rate semantics:
+// one row per key per mode, edited in place; the per-event stamp is the
+// historical snapshot, so edits never rewrite history.
+type ProviderCostRate struct {
+	ID           string          `json:"id"`
+	TenantID     string          `json:"tenant_id,omitempty"`
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	TokenType    string          `json:"token_type"`
+	CostPerToken decimal.Decimal `json:"cost_per_token"`
+	Currency     string          `json:"currency"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}

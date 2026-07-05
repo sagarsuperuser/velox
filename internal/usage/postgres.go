@@ -168,7 +168,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 	}
 	args = append(args, queryLimit)
 	query := `SELECT id, tenant_id, customer_id, meter_id,
-		quantity, properties, COALESCE(idempotency_key,''), timestamp
+		quantity, properties, COALESCE(idempotency_key,''), timestamp,
+		provider_cost_micros, COALESCE(provider_cost_source,'')
 		FROM usage_events` + where + ` ORDER BY timestamp DESC, id DESC LIMIT $` + fmt.Sprintf("%d", len(args))
 	if !useCursor {
 		args = append(args, filter.Offset)
@@ -186,7 +187,8 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.U
 		var e domain.UsageEvent
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
 			&e.Quantity, propertiesScanner{&e.Dimensions},
-			&e.IdempotencyKey, &e.Timestamp); err != nil {
+			&e.IdempotencyKey, &e.Timestamp,
+			&e.ProviderCostMicros, &e.ProviderCostSource); err != nil {
 			return nil, 0, err
 		}
 		events = append(events, e)

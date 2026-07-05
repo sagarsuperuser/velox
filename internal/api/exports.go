@@ -421,11 +421,16 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 	cw := writeCSVHeaders(w, "usage-events")
 	defer cw.Flush()
 
+	// provider_cost_* columns (ADR-079): the operator-warehouse margin
+	// join is the verified peer workflow (Metronome exports events with
+	// cost metadata for exactly this) — the in-app margin card covers the
+	// common case; the CSV keeps finance reconciliation possible.
 	if err := cw.Write([]string{
 		"id", "customer_id", "meter_id",
 		"quantity", "timestamp",
 		"idempotency_key", "origin",
 		"dimensions_json",
+		"provider_cost_micros", "provider_cost_source",
 	}); err != nil {
 		return
 	}
@@ -454,6 +459,10 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 					dimsJSON = string(b)
 				}
 			}
+			costMicros := ""
+			if ev.ProviderCostMicros != nil {
+				costMicros = fmt.Sprintf("%d", *ev.ProviderCostMicros)
+			}
 			if err := cw.Write([]string{
 				ev.ID, ev.CustomerID, ev.MeterID,
 				ev.Quantity.String(),
@@ -461,6 +470,7 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 				csvSafe(ev.IdempotencyKey),
 				string(ev.Origin),
 				dimsJSON,
+				costMicros, ev.ProviderCostSource,
 			}); err != nil {
 				return
 			}
