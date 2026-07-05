@@ -366,3 +366,151 @@ func TestSettleFailed_OutOfOrderGuardLivesInPrimitive(t *testing.T) {
 		t.Errorf("dunning started on an already-paid invoice: %+v", dunning.calls)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Post-commit durability tiering (2026-07-05): the receipt enqueue runs FIRST
+// post-commit — before any Stripe network call — and the whole side-effect
+// block is detached from the caller's cancellation via context.WithoutCancel.
+// Pre-fix the receipt sat at the very bottom, below the checkout-session
+// expire sweep and the card fetch: a process death or a webhook-client
+// disconnect during those seconds-wide network calls silently dropped the
+// receipt enqueue (which has NO reconciler behind it), while the comment
+// above it claimed the window was "sub-ms".
+// ---------------------------------------------------------------------------
+
+// callSequencer records the order fakes fire in and the ctx cancellation
+// state each observed at call time.
+type callSequencer struct {
+	seq     []string
+	ctxErrs map[string]error
+}
+
+func (c *callSequencer) record(name string, ctx context.Context) {
+	if c.ctxErrs == nil {
+		c.ctxErrs = map[string]error{}
+	}
+	c.seq = append(c.seq, name)
+	c.ctxErrs[name] = ctx.Err()
+}
+
+type sequencedReceiptEmail struct{ seq *callSequencer }
+
+func (r sequencedReceiptEmail) SendPaymentReceipt(ctx context.Context, _, _, _, _ string, _ int64, _, _ string) error {
+	r.seq.record("receipt_enqueue", ctx)
+	return nil
+}
+
+type sequencedCardFetcher struct{ seq *callSequencer }
+
+func (f sequencedCardFetcher) FetchCardDetails(context.Context, string) (CardDetails, error) {
+	return CardDetails{}, nil
+}
+func (f sequencedCardFetcher) FetchCardForPaymentIntent(ctx context.Context, _ string) (CardDetails, error) {
+	f.seq.record("card_fetch", ctx)
+	return CardDetails{Brand: "visa", Last4: "4242"}, nil
+}
+
+type sequencedDunningResolver struct{ seq *callSequencer }
+
+func (d sequencedDunningResolver) ResolveByInvoice(ctx context.Context, _, _ string, _ domain.DunningResolution) error {
+	d.seq.record("dunning_resolve", ctx)
+	return nil
+}
+
+func TestSettleSucceeded_ReceiptEnqueueFirstPostCommit_AndDetachedFromCancel(t *testing.T) {
+	invoices := newMockInvoiceUpdater()
+	invoices.invoices["inv_1"] = domain.Invoice{
+		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", InvoiceNumber: "VLX-1",
+		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentProcessing,
+		StripePaymentIntentID: "pi_abc", TotalAmountCents: 2900, Currency: "USD",
+	}
+	invoices.byPI["pi_abc"] = "inv_1"
+
+	seq := &callSequencer{}
+	s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil)
+	s.SetEmailReceipt(sequencedReceiptEmail{seq}, staticCustomerEmail{})
+	s.SetCardFetcher(sequencedCardFetcher{seq})
+	s.SetDunningResolver(sequencedDunningResolver{seq})
+
+	// The caller's ctx is ALREADY canceled — the shape of a webhook client
+	// disconnect / server drain. The settle's post-commit block must run
+	// on a detached ctx so the enqueues still land. (The mocks don't check
+	// ctx themselves; what's asserted is the ctx.Err() each fake RECEIVED.)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.SettleSucceeded(ctx, "t1", invoices.invoices["inv_1"], "pi_abc", 0, SourceWebhook); err != nil {
+		t.Fatalf("SettleSucceeded: %v", err)
+	}
+
+	want := []string{"receipt_enqueue", "dunning_resolve", "card_fetch"}
+	if len(seq.seq) != len(want) {
+		t.Fatalf("post-commit call sequence: got %v, want %v", seq.seq, want)
+	}
+	for i, name := range want {
+		if seq.seq[i] != name {
+			t.Fatalf("post-commit call sequence: got %v, want %v — the receipt enqueue (unrecoverable) must run before every network call", seq.seq, want)
+		}
+	}
+	for name, err := range seq.ctxErrs {
+		if err != nil {
+			t.Errorf("%s observed a canceled ctx (%v) — post-commit side effects must run on context.WithoutCancel", name, err)
+		}
+	}
+}
+
+// TestSettleFailed_EmailEnqueueBeforeDunningStart pins the failed-path twin:
+// the payment-failed email enqueue (no reconciler) runs before the dunning
+// start (recovered by the dunning_backfill sweep), and suppression skips ONLY
+// the email — dunning still runs.
+func TestSettleFailed_EmailEnqueueBeforeDunningStart(t *testing.T) {
+	run := func(suppress bool) (seq *callSequencer, dunning *mockDunningStarter) {
+		invoices := newMockInvoiceUpdater()
+		invoices.invoices["inv_1"] = domain.Invoice{
+			ID: "inv_1", TenantID: "t1", CustomerID: "cus_1", InvoiceNumber: "VLX-1",
+			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentProcessing,
+		}
+		invoices.byPI["pi_abc"] = "inv_1"
+		seq = &callSequencer{}
+		dunning = &mockDunningStarter{seq: seq}
+		s := NewStripe(&mockStripeClient{}, invoices, newMockWebhookStore(), nil, dunning)
+		s.SetEmailPaymentFailed(sequencedFailedEmail{seq}, staticCustomerEmail{})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := s.SettleFailed(ctx, "t1", invoices.invoices["inv_1"], "pi_abc", "card declined", suppress, SourceWebhook); err != nil {
+			t.Fatalf("SettleFailed(suppress=%v): %v", suppress, err)
+		}
+		return seq, dunning
+	}
+
+	seq, _ := run(false)
+	want := []string{"failed_email_enqueue", "dunning_start"}
+	if len(seq.seq) != 2 || seq.seq[0] != want[0] || seq.seq[1] != want[1] {
+		t.Fatalf("failed-path sequence: got %v, want %v — the email enqueue (unrecoverable) must run before the dunning start (reconciler-backstopped)", seq.seq, want)
+	}
+	for name, err := range seq.ctxErrs {
+		if err != nil {
+			t.Errorf("%s observed a canceled ctx (%v) — post-commit side effects must run on context.WithoutCancel", name, err)
+		}
+	}
+
+	// Suppression skips only the email; dunning must still start.
+	seq, _ = run(true)
+	if len(seq.seq) != 1 || seq.seq[0] != "dunning_start" {
+		t.Fatalf("suppressed sequence: got %v, want [dunning_start] — suppression is about duplicate comms, not collections", seq.seq)
+	}
+}
+
+type sequencedFailedEmail struct{ seq *callSequencer }
+
+func (r sequencedFailedEmail) SendPaymentFailed(ctx context.Context, _, _, _, _, _, _ string) error {
+	r.seq.record("failed_email_enqueue", ctx)
+	return nil
+}
+
+// mockDunningStarter records StartDunning into the shared sequencer.
+type mockDunningStarter struct{ seq *callSequencer }
+
+func (m *mockDunningStarter) StartDunning(ctx context.Context, _, _, _ string, _ time.Time) (domain.InvoiceDunningRun, error) {
+	m.seq.record("dunning_start", ctx)
+	return domain.InvoiceDunningRun{}, nil
+}
