@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
@@ -51,6 +52,12 @@ type CreditGranter interface {
 	// The 0093 dedup index still backs it, but the CAS makes it unreachable: a
 	// dedup conflict here would mean a second CAS winner, which cannot happen.
 	GrantForCreditNoteTx(ctx context.Context, tx *sql.Tx, tenantID, creditNoteID string, input CreditGrantInput) error
+	// ADR-080 relief pair. Lock reads the funded commit grant's frozen
+	// state (granted G, consumed C, cn_retired K) under the relief locks
+	// on the caller's tx; Retire retires an explicit slice, bumps K, and
+	// enqueues credit.commit_retired in the same tx.
+	LockCommitGrantForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (granted, consumed, cnRetired int64, found bool, err error)
+	RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, creditNoteID string, slice, refundedGrossCents, grossPaidCents int64) (remainingAfter int64, err error)
 }
 
 // TaxReverser issues a reversal of the invoice's committed tax transaction.
@@ -239,8 +246,15 @@ func (s *Service) create(ctx context.Context, tenantID string, input CreateInput
 	}
 	for _, li := range invLines {
 		if li.IsCommitLine() {
+			// Ordinary line-based CNs stay blocked on commit invoices in
+			// BOTH states: cash != face on a discounted commit, so line-cap
+			// semantics are wrong. Route by state to the correct unwind.
+			if inv.Status == domain.InvoicePaid {
+				return domain.CreditNote{}, errs.InvalidState(
+					"this invoice funds a prepaid commit — use commit relief (POST /v1/credit-notes with a commit_relief block) to refund it; the relief derives the cash from the commit's remaining credits")
+			}
 			return domain.CreditNote{}, errs.InvalidState(
-				"this invoice funds a prepaid commit — credit notes are not supported on commit invoices; void the unpaid invoice to cancel the commit instead")
+				"this invoice funds a prepaid commit — void the unpaid invoice to cancel the commit instead")
 		}
 	}
 
@@ -635,6 +649,293 @@ func (s *Service) buildCreditNote(ctx context.Context, tenantID string, input Cr
 	}, nil
 }
 
+// CommitReliefInput is the operator request for a paid-commit refund
+// (ADR-080). Retirement is denominated in CREDITS; the cash is always
+// server-derived from the telescoping anchor — never operator-supplied.
+type CommitReliefInput struct {
+	InvoiceID string `json:"invoice_id"`
+	// RetireCents: how many commit credits to retire (1..remaining).
+	// Ignored when RetireAll — which resolves to the LIVE remaining inside
+	// the tx, so a racing drawdown shrinks the relief instead of failing it.
+	RetireCents int64  `json:"retire_cents"`
+	RetireAll   bool   `json:"retire_all"`
+	Reason      string `json:"reason"`
+	// Allocation across the two permitted channels. nil = default: full
+	// refund when the invoice has a PaymentIntent, else out_of_band
+	// (offline-paid commits — the migration-month norm). The credit
+	// channel is structurally forbidden: paying relief out of the
+	// customer's balance would refund the very block being retired.
+	RefundAmountCents    *int64 `json:"refund_amount_cents,omitempty"`
+	OutOfBandAmountCents *int64 `json:"out_of_band_amount_cents,omitempty"`
+}
+
+// commitReliefCash is the telescoping anchor (ADR-080, panel-settled):
+// f(k) = RoundHalfToEven(grossPaid × k, granted). A relief retiring r
+// credits refunds f(K+r) − f(K), so ANY partial sequence sums to exactly
+// f(K_final) ≤ f(granted) = grossPaid — per-slice independent rounding
+// would over-refund (grossPaid=2, granted=3, three 1-credit slices: naive
+// pays 3 on 2 collected; telescoping pays exactly 2).
+//
+// THE ANCHOR HAS EXACTLY ONE CALL SITE COMPUTING CN CASH — a second
+// computation site reintroduces the per-slice rounding bug. Keep it here.
+func commitReliefCash(grossPaid, granted, k, r int64) int64 {
+	f := func(x int64) int64 {
+		if x <= 0 {
+			return 0
+		}
+		if x >= granted {
+			return grossPaid
+		}
+		return money.RoundHalfToEven(grossPaid*x, granted)
+	}
+	return f(k+r) - f(k)
+}
+
+// CreateAndIssueCommitRelief refunds a PAID commit invoice by retiring
+// commit credits (ADR-080 — the ADR-078 phase-2 relief leg). ONE
+// coordinator tx creates the credit note, flips it issued, and retires the
+// credits: a crash pre-commit leaves nothing; post-commit only the
+// external legs (Stripe refund / tax reversal) are outstanding and both
+// self-heal — credits are always retired at-or-before cash leaves, never
+// refunded-but-drawable. Deliberately create-and-issue (no draft window):
+// operator-initiated, idempotency-keyed at the HTTP layer, and a draft
+// would neither reserve the cap nor survive Issue()'s credit-channel
+// re-derive default — the exact hazards the panel rejected.
+func (s *Service) CreateAndIssueCommitRelief(ctx context.Context, tenantID string, input CommitReliefInput) (domain.CreditNote, error) {
+	if input.InvoiceID == "" {
+		return domain.CreditNote{}, errs.Required("invoice_id")
+	}
+	if !input.RetireAll && input.RetireCents <= 0 {
+		return domain.CreditNote{}, errs.Invalid("retire_cents", "must be a positive number of credits, or set retire_all")
+	}
+	if s.numbers == nil {
+		return domain.CreditNote{}, fmt.Errorf("credit-note number generator not wired (call SetNumberGenerator)")
+	}
+	if s.credits == nil {
+		return domain.CreditNote{}, fmt.Errorf("credit granter not wired (call SetCreditGranter)")
+	}
+
+	inv, err := s.invoices.Get(ctx, tenantID, input.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+
+	// Shape gate first: a relief request against a non-commit invoice is
+	// wrong regardless of status — route to the regular CN flow.
+	invLines, err := s.invoices.ListLineItems(ctx, tenantID, input.InvoiceID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("list invoice line items: %w", err)
+	}
+	commitLines := 0
+	for _, li := range invLines {
+		if li.IsCommitLine() {
+			commitLines++
+		}
+	}
+	if commitLines == 0 {
+		return domain.CreditNote{}, errs.Invalid("invoice_id", "not a commit invoice — use a regular credit note")
+	}
+	if commitLines != len(invLines) || commitLines != 1 {
+		// Mixed commit+other invoices: relief semantics for the non-commit
+		// share are undefined in phase 2 — gate loudly. Trigger: first DP
+		// mixed-invoice refund ask.
+		return domain.CreditNote{}, errs.InvalidState("commit relief supports single-line commit invoices only — this invoice mixes commit and non-commit lines")
+	}
+
+	// Status gates. Paid is terminal for commit invoices (void-of-paid is
+	// blocked), so these pre-tx reads cannot regress under us; the money
+	// inputs are frozen later by the grant row lock.
+	switch {
+	case inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible:
+		return domain.CreditNote{}, errs.InvalidState("cannot relieve a voided or uncollectible commit invoice")
+	case inv.PaymentStatus.IsInFlight():
+		return domain.CreditNote{}, errs.InvalidState("a charge is in flight on this invoice — wait for it to settle (or cancel it) before relieving the commit")
+	case inv.Status != domain.InvoicePaid || inv.PaymentStatus != domain.PaymentSucceeded:
+		return domain.CreditNote{}, errs.InvalidState("commit relief applies to PAID commit invoices — void the unpaid invoice to cancel the commit instead")
+	}
+
+	grossPaid := inv.TotalAmountCents
+	if grossPaid <= 0 {
+		return domain.CreditNote{}, errs.InvalidState("commit invoice has a zero total — nothing to relieve")
+	}
+
+	tx, err := s.store.BeginTx(ctx, tenantID)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("begin commit relief tx: %w", err)
+	}
+	defer postgres.Rollback(tx)
+
+	// Captured by the build closure for the post-insert retire.
+	var retireSlice, reliefCash int64
+
+	cn, err := s.store.CreateUnderInvoiceLockDynamicTx(ctx, tx, tenantID, input.InvoiceID, func(existing []domain.CreditNote) (domain.CreditNote, []domain.CreditNoteLineItem, error) {
+		// Grant lock AFTER the per-invoice CN lock — the ADR-080 order
+		// (invoice-CN → customer advisory → ledger rows). G, C, K are
+		// frozen from here to commit.
+		granted, consumed, k, found, gerr := s.credits.LockCommitGrantForReliefTx(ctx, tx, tenantID, input.InvoiceID)
+		if gerr != nil {
+			return domain.CreditNote{}, nil, gerr
+		}
+		if !found {
+			return domain.CreditNote{}, nil, fmt.Errorf("invoice %s has a commit line but no funded grant — finalize funds the grant in the same tx, so this is corrupted state; refusing to move cash", input.InvoiceID)
+		}
+		remaining := granted - consumed
+		if remaining <= 0 {
+			return domain.CreditNote{}, nil, errs.InvalidState("commit fully consumed (or lapsed per its term) — nothing refundable")
+		}
+		r := input.RetireCents
+		if input.RetireAll {
+			r = remaining
+		}
+		if r > remaining {
+			return domain.CreditNote{}, nil, errs.Invalid("retire_cents", fmt.Sprintf(
+				"%d credits requested but only %d remain on the commit (max refundable now: %.2f) — a drawdown may have landed since you looked; re-check and retry",
+				r, remaining, float64(commitReliefCash(grossPaid, granted, k, remaining))/100))
+		}
+
+		x := commitReliefCash(grossPaid, granted, k, r)
+		if x == 0 {
+			// Deep-discount degenerate slice: the credits round to zero
+			// cash. A zero-total CN would silently donate the credits —
+			// refuse; retiring a bigger slice loses nothing (telescoping).
+			return domain.CreditNote{}, nil, errs.Invalid("retire_cents", "this slice rounds to zero refundable cash — retire more credits in one relief")
+		}
+
+		// Document caps vs existing CNs. Ordinary CNs are blocked on commit
+		// invoices, so `existing` are prior relief CNs; the telescoping
+		// anchor guarantees Σ totals ≤ grossPaid — keep the check as a
+		// defensive invariant, not a reachable branch.
+		var existingTotal, existingTaxReversed, existingRefunds int64
+		for _, e := range existing {
+			if e.Status == domain.CreditNoteVoided {
+				continue
+			}
+			existingTotal += e.TotalCents
+			existingTaxReversed += e.TaxAmountCents
+			existingRefunds += e.RefundAmountCents
+		}
+		if existingTotal+x > inv.TotalAmountCents {
+			return domain.CreditNote{}, nil, fmt.Errorf("commit relief invariant violated: existing CN total %d + relief %d exceeds invoice total %d", existingTotal, x, inv.TotalAmountCents)
+		}
+
+		// Proportional tax — same discipline as buildCreditNote: floor
+		// ratio per CN, and the EXHAUSTING relief absorbs the cumulative
+		// residual so Σ reversed tax equals the invoice tax exactly.
+		var taxAmount int64
+		netSubtotal := x
+		if inv.TotalAmountCents > 0 && inv.TaxAmountCents > 0 {
+			if existingTotal+x == inv.TotalAmountCents {
+				taxAmount = inv.TaxAmountCents - existingTaxReversed
+			} else {
+				taxAmount = inv.TaxAmountCents * x / inv.TotalAmountCents
+			}
+			netSubtotal = x - taxAmount
+		}
+
+		// Allocation: the two permitted channels only (requirement f).
+		var refundAmount, outOfBand int64
+		// RecordOfflinePayment stamps a synthetic "out_of_band:<ts>" marker
+		// into the PI field — there is no card to refund behind it.
+		hasCardPI := inv.StripePaymentIntentID != "" && !strings.HasPrefix(inv.StripePaymentIntentID, "out_of_band:")
+		if input.RefundAmountCents == nil && input.OutOfBandAmountCents == nil {
+			if hasCardPI {
+				refundAmount = x
+			} else {
+				outOfBand = x // offline-paid commit: the CN records the obligation; cash moves outside
+			}
+		} else {
+			if input.RefundAmountCents != nil {
+				refundAmount = *input.RefundAmountCents
+			}
+			if input.OutOfBandAmountCents != nil {
+				outOfBand = *input.OutOfBandAmountCents
+			}
+			if refundAmount < 0 || outOfBand < 0 {
+				return domain.CreditNote{}, nil, errs.Invalid("allocation", "refund_amount_cents and out_of_band_amount_cents must be ≥ 0")
+			}
+			if refundAmount+outOfBand != x {
+				return domain.CreditNote{}, nil, errs.Invalid("allocation", fmt.Sprintf(
+					"allocation must sum to the derived relief amount %.2f (refund %.2f + out_of_band %.2f = %.2f)",
+					float64(x)/100, float64(refundAmount)/100, float64(outOfBand)/100, float64(refundAmount+outOfBand)/100))
+			}
+		}
+		// PM refund cap: never push more cash to the card than was paid
+		// minus prior refunds — an out-of-band Stripe-dashboard refund may
+		// have drained the PI.
+		pmRefundable := max(0, inv.AmountPaidCents-existingRefunds)
+		if refundAmount > pmRefundable {
+			return domain.CreditNote{}, nil, errs.Invalid("refund_amount_cents", fmt.Sprintf(
+				"refund amount (%.2f) exceeds payment-method refundable (%.2f) — route the rest to out_of_band_amount_cents",
+				float64(refundAmount)/100, float64(pmRefundable)/100))
+		}
+
+		cnNumber, nerr := s.numbers.NextCreditNoteNumber(ctx, tenantID)
+		if nerr != nil {
+			return domain.CreditNote{}, nil, fmt.Errorf("allocate credit note number: %w", nerr)
+		}
+		if cnNumber == "" {
+			return domain.CreditNote{}, nil, fmt.Errorf("credit-note number generator returned an empty number")
+		}
+
+		reason := strings.TrimSpace(input.Reason)
+		if reason == "" {
+			reason = "commit_relief"
+		}
+		retireSlice, reliefCash = r, x
+
+		header := domain.CreditNote{
+			InvoiceID:            input.InvoiceID,
+			CustomerID:           inv.CustomerID,
+			CreditNoteNumber:     cnNumber,
+			Status:               domain.CreditNoteDraft, // flipped issued below, same tx
+			Reason:               reason,
+			SubtotalCents:        netSubtotal,
+			TaxAmountCents:       taxAmount,
+			TotalCents:           x,
+			RefundAmountCents:    refundAmount,
+			CreditAmountCents:    0, // structurally forbidden channel
+			OutOfBandAmountCents: outOfBand,
+			CommitRetiredCents:   r,
+			Currency:             inv.Currency,
+			RefundStatus:         domain.RefundNone,
+		}
+		line := domain.CreditNoteLineItem{
+			Description:     fmt.Sprintf("Commit relief — retired %d of %d commit credits", r, granted),
+			Quantity:        1,
+			UnitAmountCents: x,
+			AmountCents:     x,
+		}
+		return header, []domain.CreditNoteLineItem{line}, nil
+	})
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+
+	// Flip issued on the SAME tx — trivially won on a fresh row, but kept
+	// as the single issued-state gate (and it stamps issued_at).
+	won, err := s.store.TransitionStatusTx(ctx, tx, tenantID, cn.ID, domain.CreditNoteDraft, domain.CreditNoteIssued)
+	if err != nil {
+		return domain.CreditNote{}, fmt.Errorf("claim relief issue transition: %w", err)
+	}
+	if !won {
+		return domain.CreditNote{}, fmt.Errorf("commit relief: freshly-created draft lost its issue CAS — concurrent writer on a row created this tx (impossible; investigate)")
+	}
+
+	// Retire the credits IN the tx (the internal money effect). The grant
+	// row is already locked by this tx, so the re-read is consistent.
+	if _, err := s.credits.RetireCommitSliceForReliefTx(ctx, tx, tenantID, input.InvoiceID, cn.ID, retireSlice, reliefCash, grossPaid); err != nil {
+		return domain.CreditNote{}, fmt.Errorf("retire commit slice: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.CreditNote{}, fmt.Errorf("commit relief tx: %w", err)
+	}
+
+	// External legs (Stripe refund / tax reversal) — shared with Issue(),
+	// idempotency-keyed and self-healing.
+	return s.runPostIssueExternalLegs(ctx, tenantID, cn.ID, cn, inv)
+}
+
 // RefundInput describes a direct refund against a paid invoice. It bypasses
 // the usual line-item ceremony by synthesizing a single-line credit note from
 // the caller's amount + reason. Used by the invoice /refund endpoint (FEAT-2).
@@ -903,7 +1204,16 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		}
 	}
 
-	// ===== POST-COMMIT external effects (idempotency-keyed, recoverable) =====
+	return s.runPostIssueExternalLegs(ctx, tenantID, id, cn, inv)
+}
+
+// runPostIssueExternalLegs runs the POST-COMMIT external effects shared by
+// Issue() and CreateAndIssueCommitRelief (ADR-080): the Stripe refund leg
+// (idempotency-keyed velox_cn_<id>, refund_status persisted, RetryRefund
+// recovers) and the upstream tax reversal (partial mode, sweep-recovered).
+// Both are idempotent + recoverable, so a crash after the coordinator tx
+// commits self-heals. Returns the current row with the leg statuses.
+func (s *Service) runPostIssueExternalLegs(ctx context.Context, tenantID, id string, cn domain.CreditNote, inv domain.Invoice) (domain.CreditNote, error) {
 
 	// Paid-branch Stripe refund (EXTERNAL — cannot share the DB tx, per "no
 	// network I/O in a DB transaction"). Idempotency contract: the deterministic

@@ -29,7 +29,7 @@ const cnReadCols = `id, tenant_id, invoice_id, customer_id, credit_note_number,
 	refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
 	currency, issued_at, voided_at, refund_status, COALESCE(stripe_refund_id,''),
 	COALESCE(tax_transaction_id,''), is_simulated, issue_pending,
-	tax_reversal_pending,
+	tax_reversal_pending, commit_retired_cents,
 	metadata, created_at, updated_at`
 
 // cnScanDest returns Scan destinations in cnReadCols order. metaJSON is the
@@ -41,7 +41,7 @@ func cnScanDest(cn *domain.CreditNote, metaJSON *[]byte) []any {
 		&cn.RefundAmountCents, &cn.CreditAmountCents, &cn.OutOfBandAmountCents,
 		&cn.Currency, &cn.IssuedAt, &cn.VoidedAt, &cn.RefundStatus, &cn.StripeRefundID,
 		&cn.TaxTransactionID, &cn.IsSimulated, &cn.IssuePending,
-		&cn.TaxReversalPending,
+		&cn.TaxReversalPending, &cn.CommitRetiredCents,
 		metaJSON, &cn.CreatedAt, &cn.UpdatedAt,
 	}
 }
@@ -118,6 +118,40 @@ func (s *PostgresStore) createUnderInvoiceLockInTx(ctx context.Context, tx *sql.
 		return domain.CreditNote{}, err
 	}
 	cn, err := build(existing)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	created, err := s.insertCreditNoteTx(ctx, tx, tenantID, cn)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	for i, line := range lines {
+		line.CreditNoteID = created.ID
+		if _, err := s.insertLineItemTx(ctx, tx, tenantID, line); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("create line item %d: %w", i+1, err)
+		}
+	}
+	return created, nil
+}
+
+// CreateUnderInvoiceLockDynamicTx is CreateUnderInvoiceLockTx for callers
+// whose LINE AMOUNTS depend on state that must be read UNDER locks taken
+// inside build (ADR-080 commit relief: the CN's cash amount is derived from
+// the grant's live drawdown state, which is only frozen once build takes
+// the customer advisory + grant row locks — after this method has taken
+// the per-invoice CN lock, preserving the invoice-CN → customer-advisory →
+// ledger-row order). build returns the header AND its lines.
+func (s *PostgresStore) CreateUnderInvoiceLockDynamicTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, []domain.CreditNoteLineItem, error)) (domain.CreditNote, error) {
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, tenantID+":"+invoiceID,
+	); err != nil {
+		return domain.CreditNote{}, fmt.Errorf("acquire credit-note invoice lock: %w", err)
+	}
+	existing, err := s.listByInvoiceTx(ctx, tx, invoiceID)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	cn, lines, err := build(existing)
 	if err != nil {
 		return domain.CreditNote{}, err
 	}
@@ -217,13 +251,13 @@ func (s *PostgresStore) insertCreditNoteTx(ctx context.Context, tx *sql.Tx, tena
 		INSERT INTO credit_notes (id, tenant_id, invoice_id, customer_id, credit_note_number,
 			status, reason, subtotal_cents, tax_amount_cents, total_cents,
 			refund_amount_cents, credit_amount_cents, out_of_band_amount_cents,
-			currency, refund_status, is_simulated, issue_pending, metadata, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)
+			currency, refund_status, is_simulated, issue_pending, commit_retired_cents, metadata, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$20)
 		RETURNING `+cnReadCols,
 		id, tenantID, cn.InvoiceID, cn.CustomerID, cn.CreditNoteNumber,
 		cn.Status, cn.Reason, cn.SubtotalCents, cn.TaxAmountCents, cn.TotalCents,
 		cn.RefundAmountCents, cn.CreditAmountCents, cn.OutOfBandAmountCents,
-		cn.Currency, cn.RefundStatus, cn.IsSimulated, cn.IssuePending, metaJSON, now,
+		cn.Currency, cn.RefundStatus, cn.IsSimulated, cn.IssuePending, cn.CommitRetiredCents, metaJSON, now,
 	).Scan(cnScanDest(&cn, &metaJSON)...)
 	if err != nil {
 		return domain.CreditNote{}, err

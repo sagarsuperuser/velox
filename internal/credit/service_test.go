@@ -48,6 +48,31 @@ func (m *memStore) ListGrantSummaries(_ context.Context, tenantID, customerID st
 	return out, nil
 }
 
+// Relief-pair stubs: the in-tx relief path is proven against real
+// Postgres (commit_cn_relief tests); unit fakes don't model row locks.
+func (m *memStore) LockCommitGrantTx(_ context.Context, _ *sql.Tx, tenantID, invoiceID string) (commitGrantState, bool, error) {
+	for _, e := range m.entries {
+		if e.TenantID == tenantID && e.SourceInvoiceID == invoiceID && e.GrantKind == domain.GrantKindCommit {
+			return commitGrantState{GrantID: e.ID, CustomerID: e.CustomerID, AmountCents: e.AmountCents, ConsumedCents: e.ConsumedCents}, true, nil
+		}
+	}
+	return commitGrantState{}, false, nil
+}
+
+func (m *memStore) RetireCommitSliceForReliefTx(_ context.Context, _ *sql.Tx, tenantID, invoiceID, _ string, slice, _, _ int64) (commitGrantState, error) {
+	for id, e := range m.entries {
+		if e.TenantID == tenantID && e.SourceInvoiceID == invoiceID && e.GrantKind == domain.GrantKindCommit {
+			if e.ConsumedCents+slice > e.AmountCents {
+				return commitGrantState{}, ErrCommitInsufficientRemaining
+			}
+			e.ConsumedCents += slice
+			m.entries[id] = e
+			return commitGrantState{GrantID: e.ID, CustomerID: e.CustomerID, AmountCents: e.AmountCents, ConsumedCents: e.ConsumedCents, CNRetiredCents: slice}, nil
+		}
+	}
+	return commitGrantState{}, fmt.Errorf("no commit grant for invoice %s", invoiceID)
+}
+
 func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// exercising retry-after-partial-failure paths silently double-insert

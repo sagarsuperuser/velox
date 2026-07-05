@@ -379,6 +379,92 @@ export interface paths {
         };
         trace?: never;
     };
+    "/v1/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a credit note (line-based, or commit relief)
+         * @description Two shapes. LINE-BASED (regular invoices): lines[] +
+         *     refund/credit/out_of_band allocation; capped by the invoice's
+         *     remaining creditable gross. COMMIT RELIEF (ADR-080, paid commit
+         *     invoices only): pass commit_relief and NO lines — the server
+         *     retires commit credits and derives the refundable cash from the
+         *     telescoping price-ratio anchor (discounted commits refund at the
+         *     purchase rate, never at face). The relief credit note is created
+         *     AND issued in one transaction; the credit-balance channel is
+         *     forbidden on relief. Unpaid commit invoices: void the invoice
+         *     instead.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        invoice_id: string;
+                        reason?: string;
+                        lines?: {
+                            description?: string;
+                            quantity?: number;
+                            unit_amount_cents?: number;
+                        }[];
+                        refund_amount_cents?: number;
+                        credit_amount_cents?: number;
+                        out_of_band_amount_cents?: number;
+                        auto_issue?: boolean;
+                        /** @description Mutually exclusive with lines/credit_amount_cents. */
+                        commit_relief?: {
+                            /** @description Commit credits to retire (1..remaining). */
+                            retire_cents?: number;
+                            /** @description Retire the LIVE remaining (absorbs racing drawdowns). */
+                            retire_all?: boolean;
+                            /** @description Optional allocation; must sum with out_of_band to the derived cash. */
+                            refund_amount_cents?: number;
+                            out_of_band_amount_cents?: number;
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description Credit note (issued immediately for commit relief) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description State gate (unpaid commit → void; fully-consumed commit; in-flight charge) */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation (over-retire with live remaining; allocation mismatch; zero-cash slice) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/credits/grants/{customer_id}": {
         parameters: {
             query?: never;

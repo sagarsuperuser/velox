@@ -1645,6 +1645,13 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Mail catches at `localhost:8025`.
 - [ ] **Full-stack compose ships the dashboard (2026-07-05):** `cd deploy/compose && docker compose up -d --build` → 5 containers; `http://localhost/` serves the operator UI (login with the bootstrap owner credentials — same origin as the API, no CORS/VITE_API_URL config), `http://localhost/health` still hits the API, deep links like `/invoices/<id>` survive refresh (SPA fallback), and the SSE webhook stream stays open past 35s (dedicated proxy location, buffering off).
 
+## FLOW CR1: Paid-commit relief (ADR-080, 2026-07-06)
+
+- [ ] Hand-build a DISCOUNTED commit invoice (price $90.00, granted $100.00), finalize, `RecordOfflinePayment`. Draw $40.00 of credits via usage/apply. `POST /v1/credit-notes {invoice_id, commit_relief: {retire_all: true}}` → 201, CN **issued** immediately, `total_cents = 5400` (price-ratio: the $40 drawn were bought at 0.9 — NOT $60.00 face, NOT $50.00), `commit_retired_cents = 6000`, `credit_amount_cents = 0`, allocation defaulted to `out_of_band` (offline-paid). Grant fully consumed; balance 0; ONE `credit.commit_retired` outbox row.
+- [ ] Partial then rest: fresh commit, relieve `retire_cents: 2000` → $18.00; draw $30.00; `retire_all` → $45.00. Cash telescopes exactly (Σ = f(total retired)); no rounding drift across any partial split.
+- [ ] Repeat relief on the exhausted commit → 409 "fully consumed"; relief on an UNPAID commit → 409 naming void; ordinary line CN on a PAID commit → 409 naming commit relief; `retire_cents` above remaining → 422 carrying the LIVE remaining + max refundable; expired-then-swept commit → 409 (breakage is earned).
+- [ ] Card-paid commit: relief allocation defaults to the Stripe refund channel, keyed `velox_cn_<id>`; a failed refund leg leaves the CN issued + credits retired with `refund_status=failed` → Retry refund converges (safe direction: never over-relieved). *(automated: `TestCommitRelief_*` — worked example, telescoping, race, gates, expiry)*
+
 ## FLOW CG1: Commit / credit-grant burndown (2026-07-06)
 
 - [ ] Grant a promo credit + finalize a commit invoice → `GET /v1/credits/grants/{customer_id}` lists both blocks with `amount/consumed/remaining`, `grant_kind`, `expires_at`; `commit_remaining_cents` / `promotional_remaining_cents` split the headline balance.

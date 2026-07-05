@@ -71,6 +71,28 @@ func (m *memStore) CreateUnderInvoiceLockTx(ctx context.Context, _ *sql.Tx, tena
 	return m.CreateUnderInvoiceLock(ctx, tenantID, invoiceID, lines, build)
 }
 
+// CreateUnderInvoiceLockDynamicTx mirrors the real store's dynamic-lines
+// variant on the in-memory double (no real locks — the relief lock
+// discipline is proven against real Postgres).
+func (m *memStore) CreateUnderInvoiceLockDynamicTx(ctx context.Context, _ *sql.Tx, tenantID, invoiceID string, build func(existing []domain.CreditNote) (domain.CreditNote, []domain.CreditNoteLineItem, error)) (domain.CreditNote, error) {
+	var lines []domain.CreditNoteLineItem
+	created, err := m.CreateUnderInvoiceLock(ctx, tenantID, invoiceID, nil, func(existing []domain.CreditNote) (domain.CreditNote, error) {
+		cn, ls, err := build(existing)
+		lines = ls
+		return cn, err
+	})
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	for _, line := range lines {
+		line.ID = fmt.Sprintf("vlx_cnli_%d", len(m.lineItems[created.ID])+1)
+		line.TenantID = tenantID
+		line.CreditNoteID = created.ID
+		m.lineItems[created.ID] = append(m.lineItems[created.ID], line)
+	}
+	return created, nil
+}
+
 // ListPendingClawbackDrafts returns the in-memory auto-issue clawback drafts
 // (issue_pending, still draft). livemode/batch are ignored in the double.
 func (m *memStore) ListPendingClawbackDrafts(_ context.Context, _ int, _ bool) ([]domain.CreditNote, error) {

@@ -284,6 +284,20 @@ func (a *creditGrantAdapter) GrantForCreditNoteTx(ctx context.Context, tx *sql.T
 	return err
 }
 
+// LockCommitGrantForReliefTx / RetireCommitSliceForReliefTx bridge the
+// ADR-080 relief pair to credit.Service on the CN coordinator tx.
+func (a *creditGrantAdapter) LockCommitGrantForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (int64, int64, int64, bool, error) {
+	return a.svc.LockCommitGrantForReliefTx(ctx, tx, tenantID, invoiceID)
+}
+
+func (a *creditGrantAdapter) RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, creditNoteID string, slice, refundedGrossCents, grossPaidCents int64) (int64, error) {
+	res, err := a.svc.RetireCommitSliceForReliefTx(ctx, tx, tenantID, invoiceID, creditNoteID, slice, refundedGrossCents, grossPaidCents)
+	if err != nil {
+		return 0, err
+	}
+	return res.RemainingAfterCents, nil
+}
+
 // creditNoteListerAdapter bridges creditnote.Service → invoice.CreditNoteLister.
 type creditNoteListerAdapter struct {
 	svc *creditnote.Service

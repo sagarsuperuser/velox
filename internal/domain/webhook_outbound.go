@@ -155,6 +155,12 @@ const (
 	// complement of depleted — without it a consumer's depleted state
 	// could never clear.
 	EventCreditBalanceRecovered = "credit.balance_recovered"
+	// EventCreditCommitRetired fires when a relief credit note retires
+	// commit credits (ADR-080): payload carries customer_id, grant_id,
+	// funding_invoice_id, credit_note_id, retired_cents,
+	// refunded_gross_cents, remaining_after_cents. Enqueued IN the CN
+	// coordinator tx — exactly-once with the retire.
+	EventCreditCommitRetired = "credit.commit_retired"
 )
 
 // KnownWebhookEventTypes is the canonical emit catalog — every event type
@@ -199,4 +205,5 @@ var KnownWebhookEventTypes = map[string]bool{
 	EventCreditBalanceLow:                   true,
 	EventCreditBalanceDepleted:              true,
 	EventCreditBalanceRecovered:             true,
+	EventCreditCommitRetired:                true,
 }

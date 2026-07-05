@@ -191,6 +191,38 @@ func (s *Service) GrantCommitForInvoiceTx(ctx context.Context, tx *sql.Tx, tenan
 	})
 }
 
+// CommitReliefResult is the post-retire grant state the relief CN needs
+// for its event payload and response (ADR-080).
+type CommitReliefResult struct {
+	GrantID             string
+	RemainingAfterCents int64
+	CNRetiredCents      int64
+}
+
+// RetireCommitSliceForReliefTx retires `slice` credits from the commit
+// grant funded by invoiceID on the caller's CN coordinator tx (ADR-080
+// relief leg). Loud on a missing grant; bumps the telescoping anchor K.
+func (s *Service) RetireCommitSliceForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID, creditNoteID string, slice, refundedGrossCents, grossPaidCents int64) (CommitReliefResult, error) {
+	g, err := s.store.RetireCommitSliceForReliefTx(ctx, tx, tenantID, invoiceID, creditNoteID, slice, refundedGrossCents, grossPaidCents)
+	if err != nil {
+		return CommitReliefResult{}, err
+	}
+	return CommitReliefResult{GrantID: g.GrantID, RemainingAfterCents: g.Remaining(), CNRetiredCents: g.CNRetiredCents}, nil
+}
+
+// LockCommitGrantForReliefTx reads the funded grant's live state under the
+// relief locks (customer advisory + grant FOR UPDATE) on the caller's tx —
+// the read half of the relief: the cap formula's inputs (G, C, K) come from
+// here and stay frozen until the tx commits. found=false when the invoice
+// funded no grant.
+func (s *Service) LockCommitGrantForReliefTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string) (granted, consumed, cnRetired int64, found bool, err error) {
+	g, found, err := s.store.LockCommitGrantTx(ctx, tx, tenantID, invoiceID)
+	if err != nil || !found {
+		return 0, 0, 0, found, err
+	}
+	return g.AmountCents, g.ConsumedCents, g.CNRetiredCents, true, nil
+}
+
 // RetireCommitGrantForInvoiceTx retires the remaining balance of the commit
 // grant funded by invoiceID, on the caller's tx (invoice void — ADR-078 D3).
 // Clean no-op when no grant exists or nothing remains; consumed stays

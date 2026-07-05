@@ -397,9 +397,12 @@ func TestRetryPendingCreditNoteTaxReversal_RecoversMarkerlessOrphan(t *testing.T
 // happy path doesn't call Grant, but wiring one keeps the service's
 // optional-dep surface exercised.
 type fakeCreditGranter struct {
-	calls     []CreditGrantInput
-	cnCalls   []fakeCreditGranterCNCall
-	seenCNIDs map[string]bool
+	calls                                          []CreditGrantInput
+	cnCalls                                        []fakeCreditGranterCNCall
+	seenCNIDs                                      map[string]bool
+	commitGranted, commitConsumed, commitCNRetired int64
+	commitFound                                    bool
+	retiredSlices, refundedGross                   []int64
 }
 
 type fakeCreditGranterCNCall struct {
@@ -430,6 +433,21 @@ func (f *fakeCreditGranter) GrantForCreditNote(_ context.Context, _, creditNoteI
 
 // GrantForCreditNoteTx ignores the (nil) coordinator tx and delegates — the
 // fake records the same way; real in-tx atomicity is covered by the PG test.
+// Relief-pair stubs: unit doubles carry a configurable commit grant so the
+// relief coordinator's math is unit-testable; lock semantics are proven on
+// real Postgres.
+func (f *fakeCreditGranter) LockCommitGrantForReliefTx(_ context.Context, _ *sql.Tx, _, _ string) (int64, int64, int64, bool, error) {
+	return f.commitGranted, f.commitConsumed, f.commitCNRetired, f.commitFound, nil
+}
+
+func (f *fakeCreditGranter) RetireCommitSliceForReliefTx(_ context.Context, _ *sql.Tx, _, _, _ string, slice, refundedGross, _ int64) (int64, error) {
+	f.retiredSlices = append(f.retiredSlices, slice)
+	f.refundedGross = append(f.refundedGross, refundedGross)
+	f.commitConsumed += slice
+	f.commitCNRetired += slice
+	return f.commitGranted - f.commitConsumed, nil
+}
+
 func (f *fakeCreditGranter) GrantForCreditNoteTx(ctx context.Context, _ *sql.Tx, _, creditNoteID string, in CreditGrantInput) error {
 	return f.GrantForCreditNote(ctx, "", creditNoteID, in)
 }

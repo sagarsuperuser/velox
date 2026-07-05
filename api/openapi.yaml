@@ -1032,6 +1032,75 @@ paths:
         "422":
           description: Validation failure (unknown rule id, bad aggregation)
 
+  /v1/credit-notes:
+    post:
+      tags: [CreditNotes]
+      summary: Create a credit note (line-based, or commit relief)
+      description: |
+        Two shapes. LINE-BASED (regular invoices): lines[] +
+        refund/credit/out_of_band allocation; capped by the invoice's
+        remaining creditable gross. COMMIT RELIEF (ADR-080, paid commit
+        invoices only): pass commit_relief and NO lines — the server
+        retires commit credits and derives the refundable cash from the
+        telescoping price-ratio anchor (discounted commits refund at the
+        purchase rate, never at face). The relief credit note is created
+        AND issued in one transaction; the credit-balance channel is
+        forbidden on relief. Unpaid commit invoices: void the invoice
+        instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invoice_id]
+              properties:
+                invoice_id:
+                  type: string
+                reason:
+                  type: string
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      description:
+                        type: string
+                      quantity:
+                        type: integer
+                      unit_amount_cents:
+                        type: integer
+                refund_amount_cents:
+                  type: integer
+                credit_amount_cents:
+                  type: integer
+                out_of_band_amount_cents:
+                  type: integer
+                auto_issue:
+                  type: boolean
+                commit_relief:
+                  type: object
+                  description: Mutually exclusive with lines/credit_amount_cents.
+                  properties:
+                    retire_cents:
+                      type: integer
+                      description: Commit credits to retire (1..remaining).
+                    retire_all:
+                      type: boolean
+                      description: Retire the LIVE remaining (absorbs racing drawdowns).
+                    refund_amount_cents:
+                      type: integer
+                      description: Optional allocation; must sum with out_of_band to the derived cash.
+                    out_of_band_amount_cents:
+                      type: integer
+      responses:
+        "201":
+          description: Credit note (issued immediately for commit relief)
+        "409":
+          description: State gate (unpaid commit → void; fully-consumed commit; in-flight charge)
+        "422":
+          description: Validation (over-retire with live remaining; allocation mismatch; zero-cash slice)
+
   /v1/credits/grants/{customer_id}:
     get:
       tags: [Credits]
