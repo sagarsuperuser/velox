@@ -2,6 +2,7 @@ package webhook_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,5 +90,84 @@ func setDuePast(t *testing.T, db *postgres.DB, deliveryID string) {
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
+	}
+}
+
+// TestListPendingDeliveries_ConcurrentClaimersDisjoint is the webhook port
+// of email's TestP5_ConcurrentClaimersDisjoint (the 2026-07-05 reassessment
+// flagged the asymmetry: the email side's SKIP LOCKED claim was
+// concurrency-tested, the webhook side's identical claim wasn't). Two
+// workers racing the same due set must claim DISJOINT rows — FOR UPDATE
+// SKIP LOCKED + the lease are what make multi-replica retry workers safe
+// from double-delivering a webhook.
+func TestListPendingDeliveries_ConcurrentClaimersDisjoint(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 20*time.Second)
+	defer cancel()
+
+	tenantID := testutil.CreateTestTenant(t, db, "Webhook Disjoint Claims")
+	store := webhook.NewPostgresStore(db)
+
+	ep, err := store.CreateEndpoint(ctx, tenantID, domain.WebhookEndpoint{
+		URL: "https://example.test/hook", Events: []string{"invoice.finalized"}, Active: true, Secret: "whsec_test",
+	})
+	if err != nil {
+		t.Fatalf("create endpoint: %v", err)
+	}
+	evt, err := store.CreateEvent(ctx, tenantID, domain.WebhookEvent{
+		EventType: "invoice.finalized", Payload: map[string]any{"id": "inv_disjoint"},
+	})
+	if err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	const n = 10
+	ids := make(map[string]bool, n)
+	for i := 0; i < n; i++ {
+		del, err := store.CreateDelivery(ctx, tenantID, domain.WebhookDelivery{
+			WebhookEndpointID: ep.ID, WebhookEventID: evt.ID, Status: domain.DeliveryPending,
+		})
+		if err != nil {
+			t.Fatalf("create delivery %d: %v", i, err)
+		}
+		setDuePast(t, db, del.ID)
+		ids[del.ID] = true
+	}
+
+	// Two workers race the same due set. Each may claim any share, but no
+	// row may be claimed by both (SKIP LOCKED) and together they must not
+	// exceed the set.
+	results := make([][]domain.WebhookDelivery, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			results[w], errs[w] = store.ListPendingDeliveries(ctx, n)
+		}(w)
+	}
+	wg.Wait()
+	for w, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d claim: %v", w, err)
+		}
+	}
+
+	claimed := map[string]int{}
+	for _, rs := range results {
+		for _, d := range rs {
+			if !ids[d.ID] {
+				t.Errorf("claimed a delivery outside the seeded set: %s", d.ID)
+			}
+			claimed[d.ID]++
+		}
+	}
+	for id, count := range claimed {
+		if count != 1 {
+			t.Errorf("delivery %s claimed by %d workers, want exactly 1 (double-delivery)", id, count)
+		}
+	}
+	if len(claimed) != n {
+		t.Errorf("workers together claimed %d distinct rows, want %d (nothing stranded)", len(claimed), n)
 	}
 }

@@ -1651,6 +1651,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Ingest 1,000 input tokens with dims `{provider, model, token_type}` → `GET /v1/usage-events` shows `provider_cost_micros: 3000`, `provider_cost_source: "table"`. *(automated: `TestProviderCostStamp`)*
 - [ ] Edit the rate to 0.000009 → old events keep 3000 micros; a NEW event stamps 9000 (snapshot semantics).
 - [ ] Ingest a token event for a model with NO rate → `provider_cost_micros` null (uncosted, actionable); a non-token event (no provider/model dims) → `provider_cost_source: "not_applicable"`.
+- [ ] **Margin window picker (2026-07-06):** the customer Margin card offers Last 7/30/90 days + Custom (two date inputs); switching windows refetches (`from`/`to` on `GET /v1/customers/{id}/margin`); Custom waits for both dates before querying.
 - [ ] `GET /v1/customers/{id}/margin` → headline revenue vs cost + margin %; per-model rows show margin ONLY for model-pinned pricing rules; flat-rule revenue shows under "not model-attributed"; `unresolved_events` counts only the missing-rate token events. *(automated: `TestMargin_AttributionHonesty`)*
 - [ ] Customer page (operator) shows the margin card; the CUSTOMER-facing hosted cost dashboard shows NO cost/margin data.
 - [ ] Usage CSV export includes `provider_cost_micros` and `provider_cost_source` columns.
