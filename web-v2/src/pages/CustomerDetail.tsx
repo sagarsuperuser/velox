@@ -10,6 +10,7 @@ import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol, type C
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { endOfDayInTZ, startOfDayInTZ } from '@/lib/dates'
 import { Checkbox } from '@/components/ui/checkbox'
+import { MarginCard } from '@/components/MarginCard'
 import { Layout } from '@/components/Layout'
 import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
 import { CostDashboard } from '@/components/CostDashboard'
@@ -757,6 +758,12 @@ export default function CustomerDetailPage() {
           GET /v1/customers/{id}/usage. Operator-facing surface. */}
       <div className="mt-6">
         <CostDashboard customerId={id!} />
+      </div>
+
+      {/* Margin — rated usage revenue vs provider COGS (ADR-079).
+          Operator-only; never rendered on customer-facing surfaces. */}
+      <div className="mt-6">
+        <MarginCard customerId={id!} />
       </div>
 
       {/* Public cost-dashboard token — ADR-031 / MANUAL_TEST CU8. Operator
