@@ -160,6 +160,14 @@ func (a *invoiceStoreAdapter) SetAutoChargePending(ctx context.Context, tenantID
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
 
+func (a *invoiceStoreAdapter) ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error) {
+	return a.store.ClaimAutoCharge(ctx, tenantID, id)
+}
+
+func (a *invoiceStoreAdapter) ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error {
+	return a.store.ReleaseAutoChargeClaim(ctx, tenantID, id)
+}
+
 func (a *invoiceStoreAdapter) ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error) {
 	return a.store.ListAutoChargePending(ctx, limit)
 }

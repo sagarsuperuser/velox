@@ -554,6 +554,13 @@ type InvoiceWriter interface {
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	// ClaimAutoCharge takes the per-invoice charge lease (HA hazard #1):
+	// CAS re-asserting the full eligibility predicate; false = another
+	// leader owns the invoice or its state moved on — skip, never charge.
+	ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error)
+	// ReleaseAutoChargeClaim clears the lease on provably-pre-Stripe skip
+	// paths so the next tick/Advance retries immediately.
+	ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 	// ListAutoChargePendingForClock is the catchup-path counterpart to
 	// ListAutoChargePending — returns invoices whose owning subscription
@@ -5315,6 +5322,20 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 	charged := 0
 	var errs []error
 	for _, inv := range pending {
+		// Per-invoice charge lease (HA hazard #1): exactly one sweep
+		// leader enters the charge leg per invoice per 5m window. The CAS
+		// re-asserts the full eligibility predicate, so a rival leader's
+		// outcome (or a webhook settle) landing between list and claim
+		// fails the claim here — BEFORE the credit-apply/refresh path
+		// that could otherwise mint a divergent Stripe idempotency key.
+		claimed, cerr := e.invoices.ClaimAutoCharge(ctx, inv.TenantID, inv.ID)
+		if cerr != nil {
+			errs = append(errs, fmt.Errorf("claim auto-charge %s: %w", inv.ID, cerr))
+			continue
+		}
+		if !claimed {
+			continue
+		}
 		// Re-apply customer credits BEFORE charging. An invoice lands in this
 		// sweep precisely when its finalize-time flow didn't complete — and the
 		// most important such case is a FAILED credit application at cycle
@@ -5333,6 +5354,9 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 			if _, err := e.credits.ApplyToInvoiceAt(ctx, inv.TenantID, inv.CustomerID, inv.ID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
 				slog.Warn("auto-charge retry: credit re-apply failed — skipping charge to avoid overcharging; will retry next tick",
 					"invoice_id", inv.ID, "error", err)
+				// Provably pre-Stripe: release the lease so the next
+				// tick/Advance retries immediately instead of waiting it out.
+				_ = e.invoices.ReleaseAutoChargeClaim(ctx, inv.TenantID, inv.ID)
 				continue
 			}
 			// Refresh: credits may have reduced (or fully covered) amount_due.
@@ -5364,6 +5388,9 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 
 		stripeCusID, stripePMID, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
 		if err != nil || stripePMID == "" || stripeCusID == "" {
+			// Provably pre-Stripe (no chargeable PM resolved): release so
+			// dunning enrollment / a card attach retries without lease lag.
+			_ = e.invoices.ReleaseAutoChargeClaim(ctx, inv.TenantID, inv.ID)
 			continue
 		}
 
