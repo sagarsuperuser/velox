@@ -31,6 +31,19 @@ type UsageEvent struct {
 	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 	Timestamp      time.Time        `json:"timestamp"`
 	Origin         UsageEventOrigin `json:"origin,omitempty"`
+
+	// ProviderCostMicros is the COGS stamp (ADR-079): what serving this
+	// event cost the OPERATOR (their provider bill), in micro-dollars
+	// (1e-6), resolved from provider_cost_rates at INGEST time — snapshot
+	// semantics; later rate edits never rewrite it. Nil = unresolved
+	// (costable dims but no matching rate — the actionable "add a rate"
+	// signal) or pre-feature row. Operator-facing only.
+	ProviderCostMicros *int64 `json:"provider_cost_micros,omitempty"`
+	// ProviderCostSource: 'table' (inferred from provider_cost_rates),
+	// 'not_applicable' (no costable dims — non-token meters), 'observed'
+	// (sender-supplied per-half cost — named fast-follow, not yet
+	// written). Empty = unresolved/pre-feature.
+	ProviderCostSource string `json:"provider_cost_source,omitempty"`
 }
 
 type BilledEntrySource string
