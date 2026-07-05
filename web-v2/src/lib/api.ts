@@ -277,6 +277,10 @@ export const api = {
     apiRequest<{ data: CreditBalance[] }>('GET', '/credits/balances'),
   getBalance: (customerId: string) =>
     apiRequest<CreditBalance>('GET', `/credits/balance/${customerId}`),
+  // Burndown: per-grant granted/drawn/remaining + kind subtotals — the
+  // commit-drawdown answer without reconstructing it from the raw ledger.
+  listCreditGrants: (customerId: string, includeExhausted = false) =>
+    apiRequest<CreditGrantsResponse>('GET', `/credits/grants/${customerId}${includeExhausted ? '?include_exhausted=true' : ''}`),
   grantCredits: (data: { customer_id: string; amount_cents: number; description: string; expires_at?: string; grant_kind?: 'promotional' }, idempotencyKey?: string) =>
     apiRequest<CreditLedgerEntry>('POST', '/credits/grant', data, { idempotencyKey }),
   adjustCredits: (data: { customer_id: string; amount_cents: number; description: string }, idempotencyKey?: string) =>
@@ -995,6 +999,27 @@ export interface CreditBalance {
   total_granted: number
   total_used: number
   total_expired: number
+}
+
+// Per-grant burndown row (commit/promo drawdown surfaces, 2026-07-06).
+export interface CreditGrantSummary {
+  id: string
+  entry_type: string
+  grant_kind?: 'commit' | 'promotional' | ''
+  description: string
+  amount_cents: number
+  consumed_cents: number
+  remaining_cents: number
+  expires_at?: string
+  source_invoice_id?: string
+  created_at: string
+}
+
+export interface CreditGrantsResponse {
+  grants: CreditGrantSummary[]
+  commit_remaining_cents: number
+  promotional_remaining_cents: number
+  other_remaining_cents: number
 }
 
 // CustomerPaymentMethod mirrors the operator-facing JSON shape from

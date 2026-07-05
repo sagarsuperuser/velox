@@ -27,6 +27,27 @@ func (m *memStore) AppendEntryTx(ctx context.Context, _ *sql.Tx, tenantID string
 	return m.AppendEntry(ctx, tenantID, entry)
 }
 
+// ListGrantSummaries: the in-memory fake mirrors the store's
+// remaining = amount - consumed arithmetic over positive entries.
+func (m *memStore) ListGrantSummaries(_ context.Context, tenantID, customerID string, includeExhausted bool) ([]GrantSummary, error) {
+	var out []GrantSummary
+	for _, e := range m.entries {
+		if e.TenantID != tenantID || e.CustomerID != customerID || e.AmountCents <= 0 {
+			continue
+		}
+		if !includeExhausted && e.ConsumedCents >= e.AmountCents {
+			continue
+		}
+		out = append(out, GrantSummary{
+			ID: e.ID, EntryType: string(e.EntryType), GrantKind: string(e.GrantKind),
+			Description: e.Description, AmountCents: e.AmountCents,
+			ConsumedCents: e.ConsumedCents, RemainingCents: e.AmountCents - e.ConsumedCents,
+			ExpiresAt: e.ExpiresAt, SourceInvoiceID: e.SourceInvoiceID, CreatedAt: e.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
 func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// exercising retry-after-partial-failure paths silently double-insert

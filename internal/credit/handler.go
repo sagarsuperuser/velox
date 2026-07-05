@@ -35,6 +35,7 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/balances", h.listBalances)
 	r.Get("/balance/{customer_id}", h.getBalance)
 	r.Get("/ledger/{customer_id}", h.listEntries)
+	r.Get("/grants/{customer_id}", h.listGrants)
 	return r
 }
 
@@ -128,6 +129,23 @@ func (h *Handler) getBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, bal)
+}
+
+// listGrants is the commit/promo burndown: per-grant granted/drawn/
+// remaining/expiry + kind subtotals — the answer to finance's "how much
+// of the $50k commit is drawn, and when does it expire?" without
+// reconstructing it from the raw ledger.
+func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	customerID := chi.URLParam(r, "customer_id")
+	includeExhausted := r.URL.Query().Get("include_exhausted") == "true"
+
+	resp, err := h.svc.ListGrants(r.Context(), tenantID, customerID, includeExhausted)
+	if err != nil {
+		respond.FromError(w, r, err, "credit_grants")
+		return
+	}
+	respond.JSON(w, r, http.StatusOK, resp)
 }
 
 func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {

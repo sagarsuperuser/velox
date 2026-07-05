@@ -10,6 +10,10 @@ import (
 
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
+	// ListGrantSummaries returns the customer's positive blocks with
+	// per-block remaining (amount - consumed) — the commit/promo burndown
+	// rows. includeExhausted=false returns live blocks only.
+	ListGrantSummaries(ctx context.Context, tenantID, customerID string, includeExhausted bool) ([]GrantSummary, error)
 	// AppendEntryTx is the in-transaction variant used by callers that
 	// need to compose a credit-ledger insert atomically with other
 	// writes (e.g. the subscription handler's AddItem-with-proration

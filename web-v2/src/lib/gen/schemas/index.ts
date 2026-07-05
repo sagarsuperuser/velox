@@ -19,6 +19,7 @@ export * from './customerStatus';
 export * from './error';
 export * from './errorError';
 export * from './errorErrorType';
+export * from './getV1CreditsGrantsCustomerIdParams';
 export * from './getV1CustomersDir';
 export * from './getV1CustomersIdMarginParams';
 export * from './getV1CustomersParams';

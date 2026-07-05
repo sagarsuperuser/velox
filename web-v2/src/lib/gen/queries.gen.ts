@@ -30,6 +30,7 @@ import type {
   CreditBalance,
   Customer,
   Error,
+  GetV1CreditsGrantsCustomerIdParams,
   GetV1CustomersIdMarginParams,
   GetV1CustomersParams,
   GetV1InvoicesParams,
@@ -794,6 +795,128 @@ export const usePatchV1MetersId = <TError = void,
       > => {
       return useMutation(getPatchV1MetersIdMutationOptions(options), queryClient);
     }
+
+/**
+ * The customer's credit blocks with drawdown state — granted /
+drawn / remaining per grant, expiry, and remaining split by
+cost-basis class (commit = money-backed, promotional = free,
+other = legacy/adjustments). include_exhausted=true adds
+fully-drawn blocks for history.
+
+ * @summary Per-grant burndown + kind subtotals
+ */
+export const getGetV1CreditsGrantsCustomerIdUrl = (customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/v1/credits/grants/${customerId}?${stringifiedParams}` : `/v1/credits/grants/${customerId}`
+}
+
+export const getV1CreditsGrantsCustomerId = async (customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams, options?: RequestInit): Promise<void> => {
+
+  return orvalClient<void>(getGetV1CreditsGrantsCustomerIdUrl(customerId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetV1CreditsGrantsCustomerIdQueryKey = (customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams,) => {
+    return [
+    `/v1/credits/grants/${customerId}`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetV1CreditsGrantsCustomerIdQueryOptions = <TData = Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError = unknown>(customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetV1CreditsGrantsCustomerIdQueryKey(customerId,params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>> = () => getV1CreditsGrantsCustomerId(customerId,params, requestOptions);
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(customerId), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetV1CreditsGrantsCustomerIdQueryResult = NonNullable<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>>
+export type GetV1CreditsGrantsCustomerIdQueryError = unknown
+
+
+export function useGetV1CreditsGrantsCustomerId<TData = Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError = unknown>(
+ customerId: string,
+    params: undefined |  GetV1CreditsGrantsCustomerIdParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>,
+          TError,
+          Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1CreditsGrantsCustomerId<TData = Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError = unknown>(
+ customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>,
+          TError,
+          Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetV1CreditsGrantsCustomerId<TData = Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError = unknown>(
+ customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Per-grant burndown + kind subtotals
+ */
+
+export function useGetV1CreditsGrantsCustomerId<TData = Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError = unknown>(
+ customerId: string,
+    params?: GetV1CreditsGrantsCustomerIdParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getV1CreditsGrantsCustomerId>>, TError, TData>>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetV1CreditsGrantsCustomerIdQueryOptions(customerId,params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
 
 /**
  * Returns the endpoint plus its signing secret (shown once). Event
