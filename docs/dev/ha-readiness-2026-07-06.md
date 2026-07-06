@@ -136,7 +136,8 @@ Ordered work items:
 | 10 | **LiteLLM loss-window shrink**: spend handler returns 5xx on real storage errors (make handler.go:107/163-165 comments true); correct ADR-033's false retry claim; recommend `max_retries>0` in callback config; outage-replay runbook in docs/integrations/litellm.md; decide 503-vs-401 for DB-down at the ingest auth edge | small |
 | 11 | **Ingest docs**: retry contract + "idempotency_key strongly recommended for at-least-once pipelines"; late-event counter for finalized-period landings | small |
 | 12 | **Shutdown**: cap catchup wait at ~30s (1 line, main.go:310); document grace-period numbers | trivial |
-| 13 | **Deferrable past cutover**: SSE LISTEN/NOTIFY fan-out (~1-2 days); reset throttle → Redis (~half day); threshold-note DB dedup (~2h) | as noted |
+| 13 | **Tax-reversal promote-on-detect + pending-reversals gauge** (ADR-062 amendment 2026-07-06): the CN/invoice tax-reversal sweeps' structural branch detects marker-less orphans but does not promote them, so the 24h window bounds Stripe recovery, not detection — a >24h tax-API outage coinciding with the compound failure silently over-remits. One local write + gauge + runbook row | ~1-2h |
+| 14 | **Deferrable past cutover**: SSE LISTEN/NOTIFY fan-out (~1-2 days); reset throttle → Redis (~half day); threshold-note DB dedup (~2h) | as noted |
 
 Items 0-2 unlock N=2 for the ingest edge — the tier that most rewards redundancy and needs no leader election (verified stateless). Items 3-9 make rolling deploys and failover honest. Total: roughly two engineer-weeks plus ops.
 
