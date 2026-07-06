@@ -1818,6 +1818,54 @@ func (s *PostgresStore) ReleaseAutoChargeClaim(ctx context.Context, tenantID, id
 	return tx.Commit()
 }
 
+// ClaimChargeForDunningRetry is the dunning-side twin of
+// ClaimAutoCharge (HA hazard #11): both charge paths share ONE lease
+// column, so the auto-charge sweep and a due dunning retry can never
+// hold the same invoice concurrently — their Stripe idempotency keys
+// differ BY CONSTRUCTION (the purpose suffix), so Stripe cannot dedupe
+// them and mutual exclusion here is the only guard.
+//
+// Predicate differences from the sweep claim, both deliberate:
+//   - no auto_charge_pending requirement (dunning retries fire off the
+//     run schedule, not the flag);
+//   - payment_status IN ('pending','failed') — 'pending' covers the
+//     card-less-enrolled invoice whose card just attached, 'failed' is
+//     the normal retry state. 'unknown' is EXCLUDED on purpose: an
+//     ambiguous outcome may be a real payment and must wait for the
+//     reconciler, never be blind re-charged — this also closes the
+//     same-tick N=1 window where the billing half's unknown outcome
+//     was followed seconds later by the dunning half's retry.
+//
+// Same lease/no-updated_at rules as ClaimAutoCharge (see there).
+func (s *PostgresStore) ClaimChargeForDunningRetry(ctx context.Context, tenantID, id string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoices
+		SET auto_charge_claimed_until = now() + interval '5 minutes'
+		WHERE id = $1
+		  AND payment_status IN ('pending', 'failed')
+		  AND status = 'finalized'
+		  AND amount_due_cents > 0
+		  AND (auto_charge_claimed_until IS NULL OR auto_charge_claimed_until < now())
+	`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // SetAutoChargePending marks an invoice for scheduler-based auto-charge retry.
 func (s *PostgresStore) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)

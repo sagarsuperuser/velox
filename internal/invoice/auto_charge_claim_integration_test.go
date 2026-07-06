@@ -241,3 +241,90 @@ func TestClaimAutoCharge_ListsStayClaimBlind(t *testing.T) {
 		t.Fatal("a claimed invoice vanished from ListAutoChargePending — dunning enrollment shares this list and would be starved (card-less invoices never enter dunning)")
 	}
 }
+
+// TestClaimChargeForDunningRetry_CrossPathExclusion (HA hazard #11):
+// the sweep claim and the dunning-retry claim share ONE lease column —
+// whichever path claims first, the other is refused. Their Stripe
+// idempotency keys differ by construction (purpose suffix), so this
+// mutual exclusion is the only double-charge guard between them.
+func TestClaimChargeForDunningRetry_CrossPathExclusion(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Claim CrossPath")
+	store := invoice.NewPostgresStore(db)
+
+	// Sweep first, dunning refused.
+	a := seedClaimableInvoice(t, db, ctx, tenantID, "INV-XPATH-A")
+	if ok, _ := store.ClaimAutoCharge(ctx, tenantID, a.ID); !ok {
+		t.Fatal("sweep claim must succeed")
+	}
+	if ok, _ := store.ClaimChargeForDunningRetry(ctx, tenantID, a.ID); ok {
+		t.Fatal("dunning claim must be refused while the sweep holds the lease — concurrent charges have divergent keys Stripe cannot dedupe")
+	}
+
+	// Dunning first, sweep refused.
+	b := seedClaimableInvoice(t, db, ctx, tenantID, "INV-XPATH-B")
+	if ok, _ := store.ClaimChargeForDunningRetry(ctx, tenantID, b.ID); !ok {
+		t.Fatal("dunning claim must succeed")
+	}
+	if ok, _ := store.ClaimAutoCharge(ctx, tenantID, b.ID); ok {
+		t.Fatal("sweep claim must be refused while dunning holds the lease")
+	}
+}
+
+// TestClaimChargeForDunningRetry_StatusMatrix pins the deliberate
+// predicate asymmetry between the two claims:
+//   - 'pending'  → both paths may claim (card-less enrolled + card attached);
+//   - 'failed'   → dunning only (the normal retry state; the sweep's list
+//     never returns failed invoices);
+//   - 'unknown'  → NEITHER — an ambiguous outcome may be a real payment
+//     and must wait for the reconciler. This is the same-tick
+//     N=1 window: billing half's unknown outcome followed
+//     seconds later by the dunning half's due retry.
+func TestClaimChargeForDunningRetry_StatusMatrix(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Claim StatusMatrix")
+	store := invoice.NewPostgresStore(db)
+
+	set := func(t *testing.T, id, status string) {
+		t.Helper()
+		tx, err := db.BeginTx(context.Background(), postgres.TxBypass, "")
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := tx.Exec(`UPDATE invoices SET payment_status=$1, auto_charge_claimed_until=NULL WHERE id=$2`, status, id); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("set status: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
+
+	inv := seedClaimableInvoice(t, db, ctx, tenantID, "INV-STATUS-MATRIX")
+
+	// pending: dunning claimable.
+	if ok, _ := store.ClaimChargeForDunningRetry(ctx, tenantID, inv.ID); !ok {
+		t.Fatal("dunning claim on 'pending' must succeed (card-less enrolled, card attached)")
+	}
+
+	// failed: dunning claimable, sweep NOT.
+	set(t, inv.ID, "failed")
+	if ok, _ := store.ClaimChargeForDunningRetry(ctx, tenantID, inv.ID); !ok {
+		t.Fatal("dunning claim on 'failed' must succeed (the normal retry state)")
+	}
+	set(t, inv.ID, "failed")
+	if ok, _ := store.ClaimAutoCharge(ctx, tenantID, inv.ID); ok {
+		t.Fatal("sweep claim on 'failed' must be refused — dunning owns failed invoices")
+	}
+
+	// unknown: NEITHER path may charge — reconciler territory.
+	set(t, inv.ID, "unknown")
+	if ok, _ := store.ClaimChargeForDunningRetry(ctx, tenantID, inv.ID); ok {
+		t.Fatal("dunning claim on 'unknown' must be refused — the ambiguous PI may be a real payment; blind re-charge is the same-tick double-charge window")
+	}
+	if ok, _ := store.ClaimAutoCharge(ctx, tenantID, inv.ID); ok {
+		t.Fatal("sweep claim on 'unknown' must be refused")
+	}
+}

@@ -354,6 +354,22 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 		return nil // Nothing to charge
 	}
 
+	// Per-invoice charge lease, shared with the auto-charge sweep (HA
+	// hazard #11): the two paths' Stripe idempotency keys differ by
+	// construction (purpose suffix), so this mutual exclusion is the
+	// only double-charge guard between them. Claim-lose = the sweep (or
+	// a rival dunning leader) owns the invoice, or payment_status moved
+	// to a state that must not be re-charged ('unknown' waits for the
+	// reconciler) — map to ErrTransientSkip so the run does NOT burn an
+	// attempt on a charge that never reached Stripe.
+	claimed, err := a.invoiceStore.ClaimChargeForDunningRetry(ctx, tenantID, invoiceID)
+	if err != nil {
+		return fmt.Errorf("claim dunning retry charge: %w", err)
+	}
+	if !claimed {
+		return dunning.ErrTransientSkip
+	}
+
 	// Re-apply customer credits before retrying the card — same contract as
 	// the auto-charge sweep (processAutoCharge): credits granted since the
 	// original failure (or whose application failed at cycle close) must
@@ -364,6 +380,9 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	if a.credits != nil {
 		at := clock.Now(ctx) // sim-aware: catchup binds effective-now on ctx
 		if _, err := a.credits.ApplyToInvoiceAt(ctx, tenantID, customerID, invoiceID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
+			// Provably pre-Stripe: release so the next due tick retries
+			// without waiting out the lease.
+			_ = a.invoiceStore.ReleaseAutoChargeClaim(ctx, tenantID, invoiceID)
 			return dunning.ErrTransientSkip
 		}
 		inv, err = a.invoiceStore.Get(ctx, tenantID, invoiceID)
@@ -383,6 +402,8 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 
 	ps, err := a.paymentSetups.GetPaymentSetup(ctx, tenantID, customerID)
 	if err != nil || ps.StripeCustomerID == "" || ps.StripePaymentMethodID == "" {
+		// Provably pre-Stripe: release the lease before reporting.
+		_ = a.invoiceStore.ReleaseAutoChargeClaim(ctx, tenantID, invoiceID)
 		return fmt.Errorf("no payment method for customer")
 	}
 
