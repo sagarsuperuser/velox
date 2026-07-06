@@ -120,8 +120,10 @@ Open `http://localhost:5173/customers/<vlx_cus_...>` in a browser, click
 
 The dashboard mints a Setup Intent against Stripe via
 `internal/payment/checkout_handler.go`, the user confirms in Stripe Elements,
-and the resulting `pm_*` payment method ID lands on the Velox customer's
-`stripe_payment_method_id` column.
+and the resulting `pm_*` payment method ID is persisted as a row in the
+`payment_methods` table for that customer (the canonical multi-PM store;
+the old `customer_payment_setups.stripe_payment_method_id` column was
+dropped in migration 0097).
 
 **Expected:** customer detail shows the card with last4=4242, brand=visa, status=valid.
 
@@ -184,8 +186,9 @@ there is no operator-level `STRIPE_WEBHOOK_SECRET` env var. The signing secret
 lives (encrypted) in `stripe_provider_credentials.webhook_secret` and is
 resolved per request via the `endpoint_id` embedded in the URL path
 `/v1/webhooks/stripe/{endpoint_id}` (`LookupEndpoint` in
-`internal/payment/handler.go`). Verified events are stored in `webhook_event`
-keyed on `(tenant_id, stripe_event_id)` for idempotency.
+`internal/payment/handler.go`). Verified events are stored in
+`stripe_webhook_events` keyed on `(tenant_id, stripe_event_id)` for
+idempotency (a UNIQUE constraint; there is no `processed` column).
 
 For local testing without exposing port 8080 to the public internet:
 
@@ -204,8 +207,10 @@ through the CLI tunnel.
 
 **Expected:** every Stripe event for steps 2–4 (`payment_method.attached`,
 `payment_intent.created`, `payment_intent.succeeded`, `charge.succeeded`) lands
-in `webhook_event` with `processed=true` and is visible at
-`/webhook_events` in the dashboard.
+as a row in `stripe_webhook_events` (one per `stripe_event_id`; a
+replayed event is deduped by the UNIQUE constraint). Note the dashboard's
+`/webhook_events` page shows OUTBOUND webhook deliveries, not this inbound
+Stripe-ingestion table.
 
 ---
 
@@ -215,7 +220,7 @@ Re-run step 3 against the customer from step 2c (declined card). The
 PaymentIntent fails and dunning kicks in:
 
 ```bash
-curl -s "http://localhost:8080/v1/dunning/attempts?customer_id=<vlx_cus_...>" \
+curl -s "http://localhost:8080/v1/dunning/runs?customer_id=<vlx_cus_...>" \
   -b /tmp/velox-cookies.txt | jq
 ```
 
@@ -224,9 +229,11 @@ Day 14, then `final_action=cancel`). The first retry should already be
 scheduled. Each retry is a fresh PaymentIntent; check the Stripe dashboard's
 Payments page to confirm the PI ID changes per attempt.
 
-To recover the customer, swap the card via step 2b with `4242` and either
-(a) wait for the next dunning retry, or (b) call
-`POST /v1/dunning/attempts/<id>/retry` to force one.
+To recover the customer, swap the card via step 2b with `4242`, then
+either wait for the next scheduled dunning retry or, once the payment
+succeeds, the run resolves automatically (`POST /v1/dunning/runs/{id}/resolve`
+is the operator action to close a run manually — there is no per-attempt
+force-retry endpoint).
 
 ---
 

@@ -52,8 +52,9 @@ trigger fires, ship nothing speculative.
 - **Trigger**: same as cursor.
 - **Cost**: ~20 lines, but cleaner if shipped together with cursor.
 
-### 3. `source` field on each event row
-- **What**: every wire-row carries `source: "lifecycle" | "stripe" | "email" | "dunning" | "tax"`.
+### 3. `source` field on each event row — **SHIPPED**
+- **Status**: shipped. Every timeline row carries `source` (`internal/invoice/handler.go` `timelineEvent`). The shipped enum is `lifecycle | stripe | dunning | email | credit_note` (not the `tax` originally sketched here).
+- **What**: every wire-row carries a `source` field.
 - **Why**: every comparable system tags events with origin. Lets the frontend render source-distinct icons / filter chips without parsing `event_type` strings.
 - **Trigger**: an operator-driven need to filter/scan by source, OR adding refund / credit / one-off-charge events to the timeline (more sources = the source-field gap becomes annoying to ignore).
 - **Cost**: ~30 lines in the existing handler switch; no migration.
@@ -64,8 +65,9 @@ trigger fires, ship nothing speculative.
 - **Trigger**: an operator complains they can't debug a webhook-ordering issue or a dunning-decline reason without querying the DB directly.
 - **Cost**: ~80 lines (endpoint + schema + frontend disclosure UI).
 
-### 5. Server-derived `simulated` flag
-- **What**: server stamps `simulated: true` on events produced during a test-clock-advanced run. Frontend renders the chip from this field instead of comparing `event.timestamp > Date.now()` client-side.
+### 5. Server-derived `simulated` flag — **SHIPPED**
+- **Status**: shipped as `is_simulated` on each timeline row (`internal/invoice/handler.go`); the SPA reads the flag directly, no client-side clock comparison.
+- **What**: server stamps `is_simulated: true` on events produced during a test-clock-advanced run.
 - **Why**: cleaner separation — client renders, server owns semantics. Removes a leaky check that breaks if wall-clock and server-clock drift.
 - **Trigger**: any time we touch the timeline backend for another reason; bundle this in.
 - **Cost**: ~10 lines.

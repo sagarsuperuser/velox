@@ -84,9 +84,10 @@ curl -s http://localhost:8080/health/ready
 1. Check application logs for panics; restart pod if found.
 2. Cancel long queries with `SELECT pg_cancel_backend(<pid>)` if
    appropriate.
-3. If the cycle for a specific tenant is hot-spotting, scale
-   `BILLING_BATCH_SIZE` down (env var) so each tick processes fewer
-   subs.
+3. Batch size is a fixed literal (50 subs per tick, `cmd/velox/main.go`)
+   and is not env-configurable today; a hot-spotting tenant is drained
+   on demand with `POST /v1/billing/run` (per tenant, loops until empty)
+   rather than by shrinking the batch.
 
 ### 2. Email outbox backed up
 
@@ -213,8 +214,9 @@ LIMIT 20;
 ```
 
 **Fix**:
-1. Check application logs for "reconciler" entries; should run
-   every 60s.
+1. Check application logs for "reconciler" entries; reconcilers run
+   once per scheduler tick (1h in production, 5m in local), not on a
+   60s loop.
 2. There is no manual bulk-reconcile endpoint. The payment reconciler
    sweeps automatically every tick; per invoice, use the dashboard's
    invoice attention actions (charge now / retry) — the reconciler's
@@ -281,19 +283,17 @@ operator's session.
 
 ## Scheduler interval tuning
 
-Default tick is 5 minutes. Lower for tenants with high cycle
-frequency (per-day billing); raise to reduce DB load on large
-deployments.
+The tick interval and batch size are compiled-in, not env-configurable:
+the scheduler ticks every **1 hour** in staging/production and **5
+minutes** only when `APP_ENV=local`, and processes a fixed **50 subs per
+tick** (`cmd/velox/main.go`). A tenant with a backlog is drained on
+demand via `POST /v1/billing/run` (loops until that tenant is empty)
+rather than by tuning these knobs.
 
-```bash
-# env vars
-BILLING_SCHEDULER_INTERVAL=5m   # default
-BILLING_BATCH_SIZE=50           # default — subs per tick
-```
-
-If you raise the interval, watch `velox_billing_cycle_duration_seconds`
-to ensure each tick fits inside the interval; otherwise the next
-tick collides with the previous and you'll see lock waits.
+Watch `velox_billing_cycle_duration_seconds` to ensure each tick fits
+inside the interval; if a tick runs long, the leader-held advisory lock
+makes the next tick skip rather than collide, so you'll see skipped
+ticks (not lock waits) and a lengthening backlog.
 
 ## Manual operator interventions
 
@@ -319,26 +319,25 @@ this action.
 Use the dashboard's `Mark as paid` action. Direct SQL alternative:
 
 ```sql
+-- payment_status has a CHECK (pending/processing/succeeded/failed/unknown) —
+-- 'paid' is an INVOICE status, not a payment_status. Mirror what MarkPaid does:
 UPDATE invoices
-SET payment_status = 'paid', paid_at = now(),
-    auto_charge_pending = false, updated_at = now()
+SET status = 'paid', payment_status = 'succeeded',
+    amount_paid_cents = amount_due_cents, amount_due_cents = 0,
+    paid_at = now(), auto_charge_pending = false, updated_at = now()
 WHERE id = '<invoice_id>';
 ```
 
 Audit log this action manually if running SQL directly.
 
-### Reset a customer's PaymentSetup to ready
+### A customer has no usable payment method on file
 
-If Stripe webhook missed setting status:
-
-```sql
-UPDATE payment_setups
-SET setup_status = 'ready', updated_at = now()
-WHERE customer_id = '<customer_id>';
-```
-
-Verify via Stripe dashboard that the customer actually has a saved
-PM before doing this.
+There is no `setup_status` flag to flip — the `customer_payment_setups`
+table was dropped (migration 0097); saved cards live in the
+`payment_methods` table, written by the Stripe `setup_intent.succeeded` /
+`payment_method.attached` webhooks. If a webhook was missed, the fix is
+to re-drive it (re-send from the Stripe dashboard) or have the customer
+re-add a card via the hosted payment-setup page — not a SQL flag flip.
 
 ## Logs to grep when paged
 

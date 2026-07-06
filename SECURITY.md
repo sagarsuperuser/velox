@@ -17,13 +17,12 @@ We commit to:
 
 ## In scope
 
-- The Velox Go binary (`cmd/velox`, `cmd/velox-bootstrap`, `cmd/velox-import`, `cmd/velox-cli`, `cmd/velox-bench`, `cmd/velox-migrate-safety`)
+- The Velox Go binary (`cmd/velox`, `cmd/velox-bootstrap`, `cmd/velox-cli`, `cmd/velox-bench`, `cmd/velox-migrate-safety`)
 - Code under `internal/` and `pkg/`
 - The migration runner and schema in `internal/platform/migrate/`
 - The web-v2 dashboard (`web-v2/`)
-- Helm chart, Docker Compose, Terraform module under `deploy/` and `charts/`
+- Docker Compose deployment config under `deploy/compose/`
 - Outbound webhook signing, inbound Stripe webhook verification, API key handling, session/cookie auth, RLS policy enforcement, AES-GCM encryption-at-rest, HMAC blind index for email
-- Documented security guarantees in `docs/ops/encryption-at-rest.md`, `docs/compliance/soc2-mapping.md`, `docs/ops/audit-log-retention.md`
 
 ## Out of scope
 
@@ -36,12 +35,12 @@ We commit to:
 
 ## Hardening status
 
-Velox is **pre-launch** and pre-audit. Encryption-at-rest, RLS, audit log immutability, HMAC webhook signing, Argon2id passwords, SHA-256 session/API-key/token hashing, security headers, GCRA rate limiting, and TLS-only intent are all implemented; see `docs/compliance/soc2-mapping.md` for the full SOC 2 control mapping with code-level evidence pointers.
+Velox is **pre-launch** and pre-audit. Encryption-at-rest, RLS, audit log immutability, HMAC webhook signing, bcrypt (cost 12) passwords, SHA-256 session/API-key/token hashing, security headers, GCRA rate limiting, and TLS-only intent are all implemented. (A SOC 2 control mapping is deferred until a design partner requires it — see the deferred list in the README.)
 
-Known gaps documented openly in the same doc:
+Known gaps, documented openly:
 
 - No built-in mechanism to rotate `VELOX_ENCRYPTION_KEY` or `VELOX_EMAIL_BIDX_KEY` (envelope encryption rebuild planned)
-- No MFA on dashboard login (tracked under WorkOS / Clerk integration)
+- No MFA on dashboard login (no MFA in v1; SSO direction is embedded OIDC/SAML per ADR-014 — Velox will not depend on a SaaS auth vendor)
 - No SAST in CI (Semgrep / CodeQL planned)
 - No image signing (cosign / Sigstore planned)
 - No threat model document (STRIDE / LINDDUN planned)

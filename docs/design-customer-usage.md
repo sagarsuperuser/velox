@@ -4,7 +4,7 @@
 > **Last revised:** 2026-04-26
 > **Related:** `docs/design-multi-dim-meters.md` (multi-dim dependency), `docs/design-recipes.md` (same wire-contract conventions)
 >
-> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to `internal/usage/customer_usage.go` and `internal/costdashboard/` for the current behaviour.
+> The text below is preserved as the design-time RFC. The implementation is live in `main`; refer to `internal/usage/customer_usage.go` + `customer_usage_handler.go` (dashboard UI in `web-v2/src/components/CostDashboard.tsx`) for the current behaviour.
 
 ## Motivation
 

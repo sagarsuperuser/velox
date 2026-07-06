@@ -123,7 +123,7 @@ GRANT ALL ON TABLE meter_pricing_rules TO velox_app;
 
 > **Wire-contract conventions** (consistent with the rest of `/v1/*`):
 >
-> - **Paths use hyphens**, not underscores: `/v1/usage-events`, `/v1/meters/{id}/pricing-rules`, `/v1/usage-records`. Matches `/v1/credit-notes`, `/v1/rating-rules`, etc.
+> - **Paths use hyphens**, not underscores: `/v1/usage-events`, `/v1/meters/{id}/pricing-rules`. Matches `/v1/credit-notes`, `/v1/rating-rules`, etc.
 > - **Quantity field is `quantity`, both directions.** JSON wire form is a string for decimal precision (`"1234.5"`); numeric form is also accepted on input. There is no `value` alias — pre-launch we don't owe back-compat, and one canonical name beats two.
 > - **External identifiers on input.** Ingest takes `external_customer_id` (the developer's own ID) and `event_name` (the meter key); the handler resolves both to internal `customer_id` / `meter_id` server-side.
 
@@ -165,7 +165,6 @@ Response `201`:
 
 The response carries internal IDs (`vlx_cus_*`, `vlx_mtr_*`) and surfaces dimensions on `properties` (the storage column name) — `dimensions` on the request is just an alias and collapses onto `properties` at the storage layer.
 
-Existing `POST /v1/usage-records` stays for back-compat (no `dimensions`, integer-only `quantity`); ingests into the same `usage_events` table with empty `properties`.
 
 ### `POST /v1/meters/{id}/pricing-rules`
 

@@ -1,7 +1,7 @@
 # ADR-010: Tenant Timezone Model
 
 **Date:** 2026-05-01
-**Status:** Accepted
+**Status:** Accepted — but the "billing math stays in UTC" sub-decision below is **superseded by ADR-058** (billing date-math anchors in the tenant timezone) and **ADR-077** (the billing timezone is an org-level setting, denormalized onto each invoice at issue). The display-timezone parts of this ADR still hold.
 
 ## Status
 Accepted
@@ -84,6 +84,13 @@ real IANA zone name on write. Used for:
   "today" rendering.
 
 ### Subscription billing math — UTC, follow Stripe
+
+> **SUPERSEDED by ADR-058 / ADR-077 (2026-06/07).** Billing month/year
+> math now anchors in the **billing timezone** (org-level per ADR-077,
+> denormalized onto the invoice at issue), not UTC — `addIntervalIn`
+> resolves "monthly on the 5th" in that zone (`internal/domain/
+> subscription.go`). The UTC framing below is retained as the original
+> decision record only.
 
 `current_billing_period_start/end`, `billing_cycle_anchor` stay UTC.
 "Monthly on the 5th" means *5th in UTC*, not 5th in tenant TZ. This

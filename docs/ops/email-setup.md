@@ -27,7 +27,7 @@ Plus three URL vars that build the CTAs in customer-facing emails:
 
 ```bash
 HOSTED_INVOICE_BASE_URL=https://billing.example.com    # email "View & pay invoice" / "View receipt" CTA target → /invoice/<public_token>
-CUSTOMER_PORTAL_URL=https://billing.example.com        # magic-link emails → <base>/portal/magic?token=<...>
+CUSTOMER_PORTAL_URL=https://billing.example.com        # SPA base for the Stripe payment-method-setup return URL
 PAYMENT_UPDATE_URL=https://billing.example.com/update-payment   # payment-update-request emails (no-PM-at-finalize, charge-failure)
 ```
 
@@ -39,7 +39,7 @@ env, so misconfiguration is unmissable without preventing startup:
 |---|---|---|
 | `SMTP_HOST` | `SMTP NOT CONFIGURED — …` | Every send returns `ErrSMTPNotConfigured`, dispatcher retries → DLQ. No stdout fallback. |
 | `HOSTED_INVOICE_BASE_URL` | `HOSTED_INVOICE_BASE_URL NOT SET — …` | Invoice / receipt / dunning / payment-failed emails render with **no link** in the CTA button. |
-| `CUSTOMER_PORTAL_URL` | `CUSTOMER_PORTAL_URL NOT SET — …` | Magic-link requests fail with `ErrPortalURLNotConfigured`. |
+| `CUSTOMER_PORTAL_URL` | *(no dedicated boot warning)* | Not a customer email variable — it is the SPA base for the Stripe payment-method-setup return URL. Unset → the return URL silently defaults to `http://localhost:5173`. |
 | `PAYMENT_UPDATE_URL` | `PAYMENT_UPDATE_URL NOT SET — …` | Payment-update-request emails (no-PM-at-finalize, charge-failure) skipped at send time. |
 
 For local dev, point at the Mailpit container in `docker-compose.yml`

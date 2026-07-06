@@ -9,7 +9,7 @@ when a design partner names which Kubernetes flavour they actually run.
 
 **The canonical walkthrough is
 [`deploy/compose/README.md`](../deploy/compose/README.md)** — a
-containerized four-service stack (postgres, redis, velox-api, nginx)
+containerized five-service stack (postgres, redis, velox-api, velox-dashboard, nginx)
 with its own `.env.example`. Five minutes from a fresh VM to a working
 tenant: set four secrets, `docker compose up -d`, then one
 `POST /v1/bootstrap` call returns your dashboard owner login and API

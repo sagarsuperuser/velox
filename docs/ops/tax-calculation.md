@@ -34,8 +34,9 @@ Pick this when:
 - Tenant exempt (set `tax_rate=0`).
 - Tenant does not have Stripe Tax registered or wired up.
 
-Manual is also the internal fallback used by `stripe_tax` when the
-Stripe call cannot produce an answer — see *Failure handling* below.
+(There is no automatic manual fallback for `stripe_tax` failures — post
+ADR-041 a failed Stripe Tax call always defers the invoice; see *Failure
+handling* below.)
 
 ### `stripe_tax`
 
@@ -89,47 +90,36 @@ ignore the outcome without branching on provider name.
 | No Stripe client configured for the request's livemode         | `no_client_for_mode` |
 | Stripe Tax API returns any error                               | `api_error`          |
 
-What happens next depends on the per-request `OnFailure` policy:
+On failure there is one behavior (post ADR-041 — the legacy
+`fallback_manual` policy was removed 2026-05-30; `block` is now the only
+`OnFailure` value): the error propagates, the engine defers the invoice
+to `tax_status=pending`, and a scheduled retry re-runs `Calculate`. No
+invoice is ever issued at a guessed rate.
 
-- **default (`fallback_manual`)** — silently delegate to the internal
-  `ManualProvider`. Billing continues at the tenant's configured manual
-  rate. Less accurate but available.
-- **`block`** — propagate the error; the engine defers the invoice to
-  `tax_status=pending` and a scheduled retry re-runs `Calculate`. Used
-  by tenants whose compliance posture forbids issuing an invoice at the
-  wrong rate (regulated marketplaces, OIDAR-registered EU VAT, etc.).
+The outcome is counted on `velox_tax_outcome_total{outcome, reason}`:
 
-Both outcomes are counted on `velox_tax_outcome_total{outcome, reason}`:
-
-- `outcome=fallback` — silent rate drift; investigate before it compounds.
 - `outcome=deferred` — blocked billing cycle; needs operator action if
   retries do not clear.
 
 Happy-path calculations are not counted on this metric — it is a pure
 failure-mode signal, suitable for `rate(...) > 0` alerting.
 
-### Why fallback, not fail (default)?
+### Why defer rather than fall back to a manual rate?
 
-A billing engine that blocks on a third-party outage misses billing
-cycles, which is a customer-visible revenue event. Manual tax at the
-tenant's configured rate is the reasonable default — correct-ish, and
-the divergence is observable on `velox_tax_outcome_total{outcome="fallback"}`.
-
-### Why offer `block` then?
-
-Some tenants — regulated marketplaces, OIDAR-registered EU VAT — are
-legally exposed if they issue an invoice at the wrong rate. For them, a
-deferred invoice with a retry is correct; a fallback is not. `block`
-trades availability for correctness, and the deferred pile is itself an
-alert.
+An earlier design fell back to the tenant's manual rate on a Stripe Tax
+outage, trading correctness for availability. That was cut (ADR-041): a
+billing engine issuing invoices at a *guessed* tax rate is a compliance
+liability — regulated marketplaces and OIDAR-registered EU VAT tenants
+are legally exposed by a wrong rate. Deferring the invoice with a retry
+is the safe default; the deferred pile is itself the alert, and a
+transient outage clears on the next tick.
 
 ### Log lines
 
 ```
-WARN stripe tax failed, falling back to manual reason=api_error error=… livemode=true
-WARN stripe tax failed, falling back to manual reason=no_country
-WARN stripe tax failed, falling back to manual reason=no_client_for_mode livemode=true
-WARN stripe tax failed, deferring per block policy reason=api_error error=… livemode=true
+WARN stripe tax failed, deferring invoice reason=api_error error=… livemode=true
+WARN stripe tax failed, deferring invoice reason=no_country
+WARN stripe tax failed, deferring invoice reason=no_client_for_mode livemode=true
 ```
 
 These are `warn`, not `error`, because the system continues correctly —
@@ -196,5 +186,3 @@ validation against tax authorities is out of scope.
 
 - [runbook.md](./runbook.md) — alerts that page on billing-cycle
   failures, including tax outcomes that exceed thresholds.
-- [sla-slo.md](./sla-slo.md) — SLO targets for billing-cycle success
-  rate.

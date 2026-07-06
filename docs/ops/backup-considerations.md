@@ -20,23 +20,23 @@ Backup MUST include them; restore MUST verify they match.
 | Table | Why critical |
 |---|---|
 | `tenants` | Top-level isolation key; every other row references this |
-| `customers`, `billing_profiles` | Customer identity + tax/PII |
+| `customers`, `customer_billing_profiles` | Customer identity + tax/PII |
 | `subscriptions`, `subscription_items` | Active billing relationships |
 | `plans`, `meters`, `rating_rules`, `rating_rule_versions` | Pricing config — invoice math depends on this |
 | `invoices`, `invoice_line_items` | Issued invoices — financial record |
 | `credit_notes`, `credit_note_line_items` | Refunds and adjustments — financial record |
-| `credit_grants`, `credit_ledger` | Customer credit balance state (event-sourced; ALL events are needed) |
-| `payment_setups`, `customer_payment_methods` | Payment-method bindings |
-| `dunning_policies`, `customer_dunning_overrides` | Operator-set policy |
+| `customer_credit_ledger` | Customer credit balance state (event-sourced; ALL entries are needed) |
+| `payment_methods`, `customers.stripe_customer_id` | Saved cards + the Stripe Customer mapping |
+| `dunning_policies` (+ `customers.dunning_policy_id`) | Operator-set dunning policy + per-customer assignment |
 | `invoice_dunning_runs`, `invoice_dunning_events` | Dunning state machine; loss can re-stack failed charges |
 | `tax_calculations` | Stripe Tax provider records — ties invoice to upstream tax_transaction |
 | `audit_log` | SOC 2 evidence — usually 7y retention required |
-| `coupons`, `customer_coupons` | Discount config and assignments |
+| `coupons`, `customer_discounts`, `coupon_redemptions` | Discount config + assignments (coupons are cut pre-launch per ADR-039; tables remain in the schema) |
 | `users`, `user_tenants`, `password_reset_tokens` | Operator identities |
 | `api_keys` | Authentication credentials |
 | `tenant_settings`, `stripe_provider_credentials` | Tenant configuration including encrypted Stripe keys |
 | `webhook_endpoints` | Outbound webhook config + signing secrets |
-| `recipes` | Pricing-recipe scaffolds |
+| `recipe_instances` | Installed pricing-recipe records |
 | `test_clocks`, `dashboard_sessions` | Active state; not financial but loss = operator UX disruption |
 | `schema_migrations` | Migration version state — required for app to boot |
 
@@ -151,12 +151,14 @@ idempotent.
 
 ### 5. Scheduler resumes cleanly
 
-Velox's billing scheduler has no leader election today (single-
-instance assumption). On restart it picks up where it left off:
+The billing scheduler is leader-elected via Postgres advisory locks —
+one leader runs each tick, other replicas stand by, so a single instance
+or a multi-replica set both resume cleanly. On restart it picks up where
+it left off:
 
 - `subscriptions.next_billing_at` is the cycle anchor — if a sub was
   due at the moment of failure but didn't bill, the next scheduler
-  tick (typically 5min) picks it up.
+  tick (1h in production, 5m in local) picks it up.
 - `invoices.auto_charge_pending = true` rows get retried by the
   scheduler.
 - `invoice_dunning_runs` with `next_action_at <= now()` get
