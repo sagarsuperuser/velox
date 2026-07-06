@@ -189,3 +189,42 @@ migration, no new table.
   home for the build-vs-buy + pgx rationale.
 - `reference_billing_reliability_industry_grounding` (memory) — the verified
   River/Oban/Solid-Queue/Temporal + sync-vs-async grounding.
+
+## Amendment (2026-07-06): the one exception re-examined — deferral re-affirmed with sharper remedies
+
+A design review of the CN tax-reversal orphan (the "one correctness
+exception" above) sharpened three things; the deferral STANDS (user
+decision, 2026-07-06), now with named remedies cheaper than the
+enqueue-in-tx hedge originally recorded:
+
+1. **The residual is recovery-bounded, not detection-bounded.** The
+   structural sweep branch (b) finds the marker-less orphan, but a
+   FAILED retry attempt writes nothing — so the 24h freshness window
+   effectively requires the Stripe reversal to *succeed* (not merely be
+   noticed) within 24h of issuance, or the orphan ages out into a
+   permanent silent over-remit. Survival of a money obligation
+   currently depends on an external system recovering inside an
+   arbitrary window.
+2. **Named first remedy — promote-on-detect** (supersedes enqueue-in-tx
+   as the cheap hedge): make the retry loop's FIRST action on a
+   branch-(b) row `SetTaxReversalPending(true)` — one local Postgres
+   write, no Stripe dependency — promoting the orphan into the
+   unbounded, indexed marker branch. The 24h bound then bounds only
+   detection latency (one healthy sweep tick), the obligation itself
+   never expires, and the scan stays cheap. Rider in the same change:
+   a `pending_tax_reversals` gauge + runbook row (tier-2 escalation —
+   today a permanently-stuck reversal is visible only as an hourly log
+   line). Apply symmetrically to the invoice-side #310 sweep. ~1-2h.
+3. **Two premises updated.** (a) The 24h bound's anti-burst rationale
+   (pre-feature CNs re-reversed on first deploy) is stale for v0.1.0+
+   installs — no pre-feature production database exists anywhere; the
+   bound's remaining value is scan cost. (b) The marker branch's
+   UNBOUNDED retry is re-affirmed as correct money-kind terminal
+   semantics (obligations exit only by success or explicit human
+   write-off), deliberately opposite to the webhook outbox's
+   15-attempt DLQ — the per-kind distinction this ADR already records.
+
+**Trigger:** production cutover (row added to the HA-readiness
+work list) — or immediately if the orphan is ever observed. At pilot
+scale the triple coincidence (two same-second write failures + >24h
+recovery unavailability) stays negligible.
