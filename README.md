@@ -248,7 +248,7 @@ API reference: [`api/openapi.yaml`](api/openapi.yaml) covers the core resource r
 | Secret      | `vlx_secret_`     | Full tenant access (server-side)                         |
 | Publishable | `vlx_pub_`        | Usage ingestion + customer-bound reads (browser-safe)    |
 
-All keys are HMAC-rotated on a 72-hour overlap window, matching Stripe's webhook-signature pattern.
+API keys are salted-SHA-256 hashed at rest; rotation supports an optional grace window (immediate by default, up to 7 days) so in-flight requests keep authenticating while the old key winds down. (The 72-hour overlap window is Stripe's webhook-signing-secret pattern, which Velox mirrors for outbound webhook secrets — not API keys.)
 
 ---
 

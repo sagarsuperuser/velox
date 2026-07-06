@@ -18,7 +18,7 @@ Every delivery is an HTTP `POST` to your endpoint URL with
 
 ```json
 {
-  "id": "vlx_whev_…",
+  "id": "vlx_whevt_…",
   "event_type": "invoice.paid",
   "created_at": "2026-07-05T14:03:22Z",
   "data": { "invoice_id": "vlx_inv_…", "customer_id": "vlx_cus_…", "…": "…" }

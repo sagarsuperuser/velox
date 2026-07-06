@@ -1,7 +1,7 @@
 # Velox self-host on a single VM (Docker Compose)
 
-A 5-minute path from a fresh VM to a working Velox tenant. Four
-containers behind one nginx: postgres, redis, velox-api, nginx.
+A 5-minute path from a fresh VM to a working Velox tenant. Five
+containers behind one nginx: postgres, redis, velox-api, velox-dashboard, nginx.
 Migrations run on first boot.
 
 ## Prerequisites

@@ -419,7 +419,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] **Disjoint cron**: while a clock-pinned sub is at next_billing < frozen_time (gap state), watch slog for ≥1 wall-clock scheduler tick (5 min in dev). The tick must NOT bill the clock-pinned sub. Confirm in DB: invoice count for the sub unchanged across the tick boundary. Only operator Advance click bills clock-pinned subs.
 - [ ] **Disjoint cron — full coverage (ADR-029)**: same gap-state setup as above, but extend the assertion to every time-aware path. Across the wall-clock tick boundary: no new charge attempt (`auto_charge_pending=true` row stays untouched), no tax retry (`tax_retry_count` unchanged), no threshold scan firing, no dunning advance (`invoice_dunning_runs.next_action_at` not bumped), no credit expiry on the customer's grants. Then click Advance: all five concerns fire in one operator action — the catchup orchestrator's Phases 1-5 process the deferred consequences in lockstep with simulated time. `slog | grep "scheduler tick"` shows the cron heartbeat is unchanged; the per-phase telemetry from catchup carries the actual work.
 - [ ] **Usage ingests in simulated time on an advanced clock:** pin a usage-plan sub, Advance +1 month, then POST a usage event with NO timestamp → event's `timestamp` = frozen_time (not wall-clock). POST one timestamped inside the simulated current period (wall-clock future) → 200, accepted. POST one past frozen_time + 5 min → 422 "must not be in the future". Backfill timestamped between wall-now and frozen_time → 200, `origin=backfill`. Advance again → the cycle invoice bills those events. Live-mode keys: behavior unchanged (wall-clock gates, no clock lookup).
-- [ ] **Usage summary follows the clock:** with the clock advanced into a future month, `GET /v1/usage/summary/{customer}` (no `?from/?to`) defaults to the FROZEN month's window, not the wall-clock month.
+- [ ] **Usage summary follows the clock:** with the clock advanced into a future month, `GET /v1/usage-summary/{customer_id}` (no `?from/?to`) defaults to the FROZEN month's window, not the wall-clock month.
 - [ ] Advance backwards → 422 `must be strictly after current frozen_time`.
 - [ ] **Second advance while advancing → 409.** Force `advancing` via `psql -c "UPDATE test_clocks SET status='advancing' WHERE id='<clock>'"`, then `POST /v1/test-clocks/<clock>/advance` with any future time → `409 Conflict` + `{"error":{"type":"invalid_request_error","code":"invalid_state","message":"clock is advancing, must be ready to advance"}}`. Restore via `UPDATE … SET status='ready'`. After restore, `frozen_time` and `last_failure_reason` must match pre-test state — rejected advance leaves no side effects.
 - [ ] Delete clock → pinned subs cancelled; non-pinned subs unaffected.
@@ -1366,13 +1366,6 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 
 ## Platform
 
-## FLOW P1: Feature flags
-
-- [ ] `GET /v1/feature-flags` → seeded flags: `billing.auto_charge`, `billing.tax_basis_points`, `webhooks.enabled`, `dunning.enabled`, `credits.auto_apply`, `billing.stripe_tax`.
-- [ ] `PUT /v1/feature-flags/webhooks.enabled {enabled:false}` → events not delivered. Re-enable → resumes.
-- [ ] Per-tenant override: `PUT /…/overrides/{tenant_id}` disables for one tenant; DELETE falls back to global.
-- [ ] Toggle reflects within 30s.
-
 ## FLOW P2: Audit log
 
 - [ ] Several actions (create customer, grant credits, void invoice, change plan) → all logged.
@@ -1621,7 +1614,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 
 ## FLOW X7: Stripe Tax
 
-- [ ] `PUT /v1/feature-flags/billing.stripe_tax {enabled:true}`. Customer with full address → invoice tax calculated by Stripe; `tax_name` shows jurisdiction; per-line tax populated.
+- [ ] Settings → Tax → set Tax provider = **Stripe Tax** (`tenant_settings.tax_provider="stripe_tax"`). Customer with full address → invoice tax calculated by Stripe; `tax_name` shows jurisdiction; per-line tax populated.
 - [ ] Invalid Stripe key → invoice is **deferred** to `tax_status=pending` (NOT charged $0 — the zero-tax fallback was removed in ADR-041); the TaxRetrier reconciles it later. Counter `velox_tax_outcome_total{outcome="deferred",reason="api_error"}` +1.
 - [ ] Customer `tax_status=exempt` → $0 tax regardless.
 - [ ] India-registered Stripe account → blocked at account level → use FLOW B10.
@@ -1654,7 +1647,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 
 ## FLOW X11: Large batch usage ingestion
 
-- [ ] POST /v1/usage-events/batch with 1000 events → `{ingested:1000, errors:[], total:1000}`.
+- [ ] POST /v1/usage-events/batch with 1000 events → `{ingested:1000, deduplicated:0, total:1000}` (the 201 body has no `errors` key — that appears only on the 422 `batch_rejected` path).
 - [ ] Include duplicate idempotency keys → duplicates rejected.
 - [ ] Run billing → aggregated correctly.
 
@@ -1744,7 +1737,6 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 - Subscription not due → period end in future. Backdate for testing.
 - Already billed → FLOW B3 (idempotent skip).
 - Subscription paused / customer archived / trial active → no billing.
-- `billing.auto_charge` off → invoice generated but not charged.
 
 ## Stripe Tax errors
 - These defer the invoice to `tax_status=pending` (the TaxRetrier reconciles) and bump `velox_tax_outcome_total{outcome="deferred",reason=...}` — they do NOT charge $0 (zero-tax fallback removed, ADR-041).

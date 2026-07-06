@@ -107,7 +107,7 @@ You should see one or more `tokens` events per LiteLLM call (up to three when pr
 }
 ```
 
-`skipped` covers non-token-bearing calls (image generation, moderation) and zero-token failed completions. `errors[]` lists per-row reasons. 5xx is reserved for full-handler failure (DB down, etc.) — operator-side misconfig never returns 5xx.
+`skipped` covers non-token-bearing calls (image generation, moderation) and zero-token failed completions. `errors[]` lists per-row reasons. The handler never returns 5xx once past decode: a malformed body is a 400, and everything else — including per-row persist failures during a DB outage — surfaces as `errors[]` entries in a 200 envelope (a full DB outage also tends to die earlier, at API-key auth, as a 401). Monitor `errors[]`, not the status code.
 
 ## Caveats
 
