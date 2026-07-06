@@ -276,11 +276,11 @@ func TestClaimChargeForDunningRetry_CrossPathExclusion(t *testing.T) {
 // predicate asymmetry between the two claims:
 //   - 'pending'  → both paths may claim (card-less enrolled + card attached);
 //   - 'failed'   → dunning only (the normal retry state; the sweep's list
-//                  never returns failed invoices);
+//     never returns failed invoices);
 //   - 'unknown'  → NEITHER — an ambiguous outcome may be a real payment
-//                  and must wait for the reconciler. This is the same-tick
-//                  N=1 window: billing half's unknown outcome followed
-//                  seconds later by the dunning half's due retry.
+//     and must wait for the reconciler. This is the same-tick
+//     N=1 window: billing half's unknown outcome followed
+//     seconds later by the dunning half's due retry.
 func TestClaimChargeForDunningRetry_StatusMatrix(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	ctx := postgres.WithLivemode(context.Background(), false)
