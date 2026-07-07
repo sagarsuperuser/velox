@@ -92,18 +92,21 @@ type StripeChecker interface {
 	HasFor(ctx context.Context, tenantID string, livemode bool) bool
 }
 
-// CustomerClockReader reads a customer's test-clock pin so Create can stamp
-// invoice.is_simulated authoritatively at write time — the same direct field
-// check the engine uses for cycle invoices (sub.TestClockID != ""), applied to
-// the customer for manual one-off invoices. Satisfied by
-// *customer.PostgresStore.
+// CustomerReader reads the full customer record. Two consumers:
+//   - Create stamps invoice.is_simulated authoritatively at write time from
+//     the customer's test-clock pin — the same direct field check the engine
+//     uses for cycle invoices (sub.TestClockID != ""), applied to the customer
+//     for manual one-off invoices. This is the WRITE-time capture, NOT the
+//     read-time snapshot heuristic ADR-030 bans: we record whether the
+//     customer was pinned at the instant the invoice was born, then persist
+//     it. (We can't use clock.IsSimulated(ctx) here — bindForCreate binds ctx
+//     to the resolver's effective-now even for UNPINNED customers, so "ctx is
+//     bound" doesn't mean "on a test clock".)
+//   - attachAttention reads the customer's email presence to pick the honest
+//     no_payment_method banner variant (emailed-a-link vs no-address).
 //
-// This is the WRITE-time capture, NOT the read-time snapshot heuristic that
-// ADR-030 bans: we record whether the customer was pinned at the instant the
-// invoice was born, then persist it. (We can't use clock.IsSimulated(ctx) here
-// — bindForCreate binds ctx to the resolver's effective-now even for UNPINNED
-// customers, so "ctx is bound" doesn't mean "on a test clock".)
-type CustomerClockReader interface {
+// Satisfied by *customer.PostgresStore.
+type CustomerReader interface {
 	Get(ctx context.Context, tenantID, customerID string) (domain.Customer, error)
 }
 
@@ -144,7 +147,7 @@ type Service struct {
 	taxRetrier     TaxRetrier
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
-	customerClock  CustomerClockReader
+	customerReader CustomerReader
 	settings       TenantSettingsReader
 	audit          AuditLogger
 	events         domain.EventDispatcher
@@ -279,12 +282,14 @@ func (s *Service) SetPaymentMethodReader(r PaymentMethodReader) {
 	s.paymentMethods = r
 }
 
-// SetCustomerClockReader wires the customer lookup Create uses to stamp
-// is_simulated from the customer's test-clock pin. Optional — when nil (narrow
-// unit tests), is_simulated defaults false, which is correct for any
-// non-clock-pinned invoice; production always wires it.
-func (s *Service) SetCustomerClockReader(r CustomerClockReader) {
-	s.customerClock = r
+// SetCustomerReader wires the customer lookup used to (a) stamp is_simulated
+// from the customer's test-clock pin at Create and (b) pick the no-PM banner
+// variant from email presence at read. Optional — when nil (narrow unit
+// tests), is_simulated defaults false (correct for any non-clock-pinned
+// invoice) and the no-PM banner falls back to the no-email variant; production
+// always wires it.
+func (s *Service) SetCustomerReader(r CustomerReader) {
+	s.customerReader = r
 }
 
 // customerOnTestClock reports whether the customer is pinned to a test clock —
@@ -293,10 +298,10 @@ func (s *Service) SetCustomerClockReader(r CustomerClockReader) {
 // Lookup failure / unwired reader → false (safe: an unbadged simulated invoice
 // is better than a badged real one, and the reader is always wired in prod).
 func (s *Service) customerOnTestClock(ctx context.Context, tenantID, customerID string) bool {
-	if s.customerClock == nil || customerID == "" {
+	if s.customerReader == nil || customerID == "" {
 		return false
 	}
-	cust, err := s.customerClock.Get(ctx, tenantID, customerID)
+	cust, err := s.customerReader.Get(ctx, tenantID, customerID)
 	if err != nil {
 		return false
 	}
@@ -498,6 +503,20 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 		ps, err := s.paymentMethods.GetPaymentSetup(ctx, inv.TenantID, inv.CustomerID)
 		if err == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != "" {
 			atc.HasPaymentMethod = true
+		}
+	}
+	// Email presence drives the no_payment_method banner variant (the engine's
+	// setup-link email skips silently with no address, so the banner must not
+	// claim it was sent). Fetch lazily — only for the finalized-unpaid-no-PM
+	// invoices that actually reach that classifier branch — so list reads don't
+	// pay a customer lookup per row. The guard is a cheap superset of the
+	// classifier's no_payment_method precondition; a rare over-fetch when a
+	// higher-priority reason (tax/payment failure) preempts it is harmless.
+	if !atc.HasPaymentMethod && inv.Status == domain.InvoiceFinalized &&
+		inv.PaymentStatus == domain.PaymentPending &&
+		s.customerReader != nil && inv.CustomerID != "" {
+		if cust, err := s.customerReader.Get(ctx, inv.TenantID, inv.CustomerID); err == nil {
+			atc.CustomerHasEmail = cust.Email != ""
 		}
 	}
 	if s.stripeChecker != nil && inv.TenantID != "" {

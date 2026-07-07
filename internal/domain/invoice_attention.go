@@ -284,6 +284,17 @@ type AttentionContext struct {
 	// awaiting_payment race window.
 	HasPaymentMethod bool
 
+	// CustomerHasEmail is true when the customer has an email address on
+	// file. Consumed only by the no_payment_method classifier: the
+	// engine's finalize-time setup-link email (NotifyNoPaymentMethod)
+	// skips silently when there's no address, so the banner must not
+	// claim "we emailed a link" — and must not offer a resend that
+	// cannot send — in that case. Zero-value (false) is the conservative
+	// default: it renders the "no email on file — copy a link" variant,
+	// which never asserts a send that didn't happen. The invoice service
+	// populates it from the customer record.
+	CustomerHasEmail bool
+
 	// StripeConnected reports whether the invoice's tenant has Stripe
 	// credentials connected for this invoice's mode (livemode). Used
 	// by the tax-classification path to distinguish two states that
@@ -390,7 +401,7 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	// the operator "engine will retry on its next tick" when the
 	// retry will skip again until a PM is attached.
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && !atc.HasPaymentMethod:
-		return classifyNoPaymentMethod(inv)
+		return classifyNoPaymentMethod(inv, atc.CustomerHasEmail)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
 		return classifyPaymentScheduled(inv)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending:
@@ -690,30 +701,55 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 // Severity = warning (operator action required, not financially
 // broken). Promoting to critical would make a perfectly normal "send-
 // invoice" collection mode look alarming.
-func classifyNoPaymentMethod(inv Invoice) *Attention {
+func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 	since := inv.UpdatedAt
 	// Auto-collect framing: post-ADR-013 b18d2d3 the engine queues
 	// no-PM invoices via auto_charge_pending and the scheduler picks
 	// them up the moment a PaymentSetup flips to ready (Chargebee's
 	// "Collect Invoice on Card Update"). So attaching a PM is enough
 	// — Collect Payment is the operator's *manual override* for
-	// immediate charge. Naming both paths here matches the actual
-	// behaviour and removes the false impression that operator action
-	// is required after PM attach.
-	// Operator-facing actions, ordered by what the operator can
-	// actually do. Adding a payment method is a *customer* action
-	// (PCI: card details must be entered by the cardholder via a
-	// secure flow). The operator's lever is "email the customer a
-	// link to pay" — the hosted invoice page handles both has-PM and
-	// no-PM via Stripe Checkout, so a single action covers the path.
-	// "Open customer page" is the secondary advanced flow (operator
-	// drives setup live during a support call); it's not the right
-	// banner-primary verb.
+	// immediate charge.
+	//
+	// The message splits on whether the customer has an email on file,
+	// because the engine's finalize-time setup-link email
+	// (NotifyNoPaymentMethod) SILENTLY skips when the customer has no
+	// address — the adapter treats a missing email as "a delivery gap,
+	// not a billing failure" and returns without sending. A single
+	// hardcoded "the customer has been emailed a setup link" then lied
+	// to the operator on exactly the invoices where it mattered most:
+	// no address means no send AND no resend (the resend path can't
+	// email either), so telling the operator to wait or resend strands
+	// the invoice. hasEmail comes from AttentionContext.CustomerHasEmail,
+	// populated by the invoice service from the customer record.
+	//
+	// Card details are always a *customer* action (PCI: entered by the
+	// cardholder via Stripe's hosted flow). The operator's levers are
+	// (a) resend the emailed link and (b) open the customer page, whose
+	// "Add payment method" dialog can copy a secure setup link to hand
+	// to the customer directly (call/chat) or add an email to the record.
+	if !hasEmail {
+		// No address on file → nothing was emailed and nothing can be
+		// resent. Point the operator at the only workable path (open the
+		// customer page → copy a link, or add an email) and drop the
+		// "Resend setup link" action, which would fail with no recipient.
+		return &Attention{
+			Severity: AttentionSeverityWarning,
+			Reason:   AttentionReasonNoPaymentMethod,
+			Code:     "payment.no_payment_method",
+			Message:  "No payment method on file, and no email address to send a setup link to — so none was sent. Open the customer page to copy a secure setup link and share it with the customer directly, or add an email and the engine will send the link. Either way, the engine auto-charges once a card is attached.",
+			DocURL:   docBaseURL + "no-payment-method",
+			Actions: []AttentionActionItem{
+				{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
+			},
+			Since: &since,
+			DueBy: inv.DueAt,
+		}
+	}
 	return &Attention{
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. The customer has been emailed a setup link — the engine will auto-charge once a method is attached. Resend the link if they haven't acted, or open the customer page to drive setup live.",
+		Message:  "No payment method on file. The customer has been emailed a setup link — the engine will auto-charge once a method is attached. Resend the link if they haven't acted, or open the customer page to copy the link and share it with them directly.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionSendReminder, Label: "Resend setup link"},

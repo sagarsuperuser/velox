@@ -21,7 +21,7 @@ import (
 // invoices. It exercises the REAL production path end-to-end:
 //
 //   - The FLAG (invoice.is_simulated) is captured at write time from the
-//     customer's test-clock pin (invoiceSvc.SetCustomerClockReader → the same
+//     customer's test-clock pin (invoiceSvc.SetCustomerReader → the same
 //     authoritative customer.TestClockID check the engine uses on subs). This
 //     is NOT inferred from the ctx clock-binding: bindForCreate binds ctx to
 //     the resolver's effective-now even for UNPINNED customers (it returns
@@ -30,7 +30,7 @@ import (
 //   - The TIMESTAMPS (issued_at) ride the resolver-bound frozen time
 //     (invoiceSvc.SetResolver(engine) → EffectiveNowForCustomer).
 //
-// Production wires both: router.go SetResolver + SetCustomerClockReader +
+// Production wires both: router.go SetResolver + invoiceSvc.SetCustomerReader +
 // engine.SetCustomerReader + engine.SetTestClockReader.
 func TestManualInvoice_IsSimulatedFromCustomerPin(t *testing.T) {
 	if testing.Short() {
@@ -58,8 +58,8 @@ func TestManualInvoice_IsSimulatedFromCustomerPin(t *testing.T) {
 	engine.SetTestClockReader(testClockStore)
 
 	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
-	invoiceSvc.SetResolver(engine)                   // drives simulated timestamps
-	invoiceSvc.SetCustomerClockReader(customerStore) // drives the is_simulated flag
+	invoiceSvc.SetResolver(engine)              // drives simulated timestamps
+	invoiceSvc.SetCustomerReader(customerStore) // drives the is_simulated flag
 
 	line := []invoice.AddLineItemInput{{Description: "Service", Quantity: 1, UnitAmountCents: 1000}}
 
