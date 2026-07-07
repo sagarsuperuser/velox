@@ -136,18 +136,27 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 		return nil, nil
 	}
 
-	// Event timestamp: prefer EndTime (when the call actually
-	// completed), fall back to StartTime, then time.Now. LiteLLM
-	// emits floats in unix-seconds; convert to time.Time without
-	// loss for sub-second resolution.
-	var ts time.Time
+	// Event timestamp: prefer EndTime (when the call actually completed), fall
+	// back to StartTime. LiteLLM emits floats in unix-seconds; convert to
+	// time.Time without loss for sub-second resolution.
+	//
+	// When the payload carries NEITHER (a synthetic or test-clock ingest that
+	// omits both), leave the timestamp NIL rather than manufacturing
+	// time.Now(): usage.Service then supplies the customer's effective-now —
+	// the frozen_time of a test-clock-pinned customer, wall-clock otherwise —
+	// exactly like the direct /v1/usage-events door (ADR-030, "no timestamp =>
+	// frozen_time"). A manufactured time.Now() here is non-nil, so the service
+	// skips the clock resolution and silently lands simulated usage at
+	// wall-clock, defeating the test clock (the flagship advance-clock →
+	// LiteLLM-ingest → billed demo depended on this).
+	var ts *time.Time
 	switch {
 	case p.EndTime > 0:
-		ts = unixSecondsToTime(p.EndTime)
+		t := unixSecondsToTime(p.EndTime)
+		ts = &t
 	case p.StartTime > 0:
-		ts = unixSecondsToTime(p.StartTime)
-	default:
-		ts = time.Now().UTC()
+		t := unixSecondsToTime(p.StartTime)
+		ts = &t
 	}
 
 	// Canonical model family on `model` (what recipe rules match), raw string
@@ -218,7 +227,7 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 			Quantity:           decimal.NewFromInt(uncachedInput),
 			Dimensions:         dimsWithTokenType(dims, TokenTypeInput),
 			IdempotencyKey:     p.ID + ":" + TokenTypeInput,
-			Timestamp:          &ts,
+			Timestamp:          ts,
 			Metadata:           buildEventMetadata(p, TokenTypeInput),
 		})
 	}
@@ -229,7 +238,7 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 			Quantity:           decimal.NewFromInt(cacheRead),
 			Dimensions:         dimsWithTokenType(dims, TokenTypeCacheRead),
 			IdempotencyKey:     p.ID + ":" + TokenTypeCacheRead,
-			Timestamp:          &ts,
+			Timestamp:          ts,
 			Metadata:           buildEventMetadata(p, TokenTypeCacheRead),
 		})
 	}
@@ -240,7 +249,7 @@ func MapPayload(p StandardLoggingPayload) ([]ExternalIngest, error) {
 			Quantity:           decimal.NewFromInt(p.Usage.CompletionTokens),
 			Dimensions:         dimsWithTokenType(dims, TokenTypeOutput),
 			IdempotencyKey:     p.ID + ":" + TokenTypeOutput,
-			Timestamp:          &ts,
+			Timestamp:          ts,
 			Metadata:           buildEventMetadata(p, TokenTypeOutput),
 		})
 	}

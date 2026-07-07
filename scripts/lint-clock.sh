@@ -45,6 +45,11 @@ PACKAGES=(
   "internal/dunning"
   "internal/customer"
   "internal/billing"
+  # Ingest doors write usage_event timestamps on clock-pinned customers, so a
+  # bare time.Now() here leaks wall-clock into simulated time. The LiteLLM door
+  # regressed exactly this (a manufactured time.Now() default defeated the test
+  # clock); scanning it keeps the fix from silently coming back.
+  "internal/integrations/litellm"
 )
 
 # Files within those packages where the rule applies. We don't lint
