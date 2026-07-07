@@ -389,3 +389,52 @@ func TestService_ReinstallAfterUninstall_AdoptsExistingGraph(t *testing.T) {
 		t.Errorf("recipe_instances after reinstall: got %d, want 1", n)
 	}
 }
+
+// TestService_Instantiate_RefusesDivergentPlan is the conformance-gate
+// regression (ADR-083): when a plan with the recipe's plan_code already exists
+// but its billing config contradicts the recipe (in_advance $99 vs the recipe's
+// in_arrears $0), Instantiate must REFUSE rather than silently wire the recipe's
+// meters/rules onto it — and the whole tx must roll back, leaving the operator's
+// plan untouched. Mutation-verify: drop the plan conformance gate (adopt
+// unconditionally) and this fails — the recipe adopts the divergent plan and
+// persists its graph.
+func TestService_Instantiate_RefusesDivergentPlan(t *testing.T) {
+	f := newRecipeFixture(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, f.db, "divergent plan refuse")
+
+	// Operator already has a plan under the recipe's default plan_code, but
+	// with billing config the recipe never declares.
+	pre, err := f.pricingSvc.CreatePlan(ctx, tenantID, pricing.CreatePlanInput{
+		Code: "ai_api_pro", Name: "Operator Pro", Currency: "USD",
+		BillingInterval: domain.BillingMonthly, BaseAmountCents: 9900,
+		BaseBillTiming: domain.BillInAdvance,
+	})
+	if err != nil {
+		t.Fatalf("pre-create plan: %v", err)
+	}
+
+	_, err = f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
+	if !errors.Is(err, errs.ErrAlreadyExists) {
+		t.Fatalf("expected refusal (ErrAlreadyExists) adopting a divergent plan, got %v", err)
+	}
+
+	// Mutation-verify: the entire tx rolled back — nothing the recipe would
+	// have created persisted.
+	for _, tbl := range []string{"recipe_instances", "rating_rule_versions", "meters", "meter_pricing_rules", "dunning_policies", "webhook_endpoints"} {
+		if n := countRows(t, f.db, tenantID, tbl); n != 0 {
+			t.Errorf("%s after refusal: got %d, want 0 (tx must roll back)", tbl, n)
+		}
+	}
+	// Only the operator's pre-existing plan remains, unchanged.
+	if n := countRows(t, f.db, tenantID, "plans"); n != 1 {
+		t.Errorf("plans after refusal: got %d, want 1 (operator's plan only)", n)
+	}
+	got, err := f.pricingSvc.GetPlan(ctx, tenantID, pre.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.BaseBillTiming != domain.BillInAdvance || got.BaseAmountCents != 9900 {
+		t.Errorf("operator's plan was mutated: timing=%s base=%d, want in_advance/9900 (never touched)", got.BaseBillTiming, got.BaseAmountCents)
+	}
+}

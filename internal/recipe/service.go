@@ -343,6 +343,14 @@ func (s *Service) Instantiate(
 	meterIDByKey := make(map[string]string, len(rendered.Meters))
 	for _, m := range rendered.Meters {
 		if existing, err := s.pricing.GetMeterByKey(ctx, tenantID, m.Key); err == nil {
+			// Adoption conformance gate (ADR-083): adopt a same-key meter only
+			// if its billing-consulted config matches the recipe. A divergent
+			// aggregation (sum vs max/count/last) silently mis-rolls-up usage,
+			// so refuse rather than wire the recipe's pricing rules onto it.
+			if diffs := meterConformanceDiff(existing, m); len(diffs) > 0 {
+				return domain.RecipeInstance{}, errs.AlreadyExists("meter",
+					fmt.Sprintf("meter %q already exists with settings that don't match recipe %q (%s) — reconcile the existing meter before instantiating", m.Key, recipeKey, formatDiffs(diffs)))
+			}
 			meterIDByKey[m.Key] = existing.ID
 			objs.MeterIDs = append(objs.MeterIDs, existing.ID)
 			continue
@@ -382,24 +390,35 @@ func (s *Service) Instantiate(
 	}
 
 	// Plan — references the meters created above by ID, not key.
-	// Existing plan codes are adopted (same reinstall rationale; the
-	// operator's plan — possibly carrying live subs — is never touched).
+	// Existing plan codes are ADOPTED only when the existing plan matches the
+	// recipe's declared spec (conformance gate, ADR-083); a divergent plan is
+	// refused, never silently wired up. The operator's plan (possibly carrying
+	// live subs) is never mutated either way.
 	existingPlans, err := s.pricing.ListPlans(ctx, tenantID)
 	if err != nil {
 		return domain.RecipeInstance{}, fmt.Errorf("list plans for adoption check: %w", err)
 	}
-	planIDByCode := make(map[string]string, len(existingPlans))
+	planByCode := make(map[string]domain.Plan, len(existingPlans))
 	for _, ep := range existingPlans {
-		planIDByCode[ep.Code] = ep.ID
+		planByCode[ep.Code] = ep
 	}
 	for _, p := range rendered.Plans {
-		if id, ok := planIDByCode[p.Code]; ok {
-			objs.PlanIDs = append(objs.PlanIDs, id)
-			continue
-		}
 		meterIDs := make([]string, 0, len(p.MeterKeys))
 		for _, mk := range p.MeterKeys {
 			meterIDs = append(meterIDs, meterIDByKey[mk])
+		}
+		if existing, ok := planByCode[p.Code]; ok {
+			// Adopt only if money-affecting config matches; else refuse. A
+			// divergent plan (e.g. in_advance $99 vs the recipe's in_arrears
+			// $0) would silently bill customers under a plan the operator never
+			// declared. The tx rolls back everything created so far; the
+			// existing plan is never touched.
+			if diffs := planConformanceDiff(existing, p, meterIDs); len(diffs) > 0 {
+				return domain.RecipeInstance{}, errs.AlreadyExists("plan_code",
+					fmt.Sprintf("plan %q already exists with billing settings that don't match recipe %q (%s) — reconcile the plan or instantiate with a different plan_code", p.Code, recipeKey, formatDiffs(diffs)))
+			}
+			objs.PlanIDs = append(objs.PlanIDs, existing.ID)
+			continue
 		}
 		created, err := s.pricing.CreatePlanTx(ctx, tx, tenantID, domain.Plan{
 			Code:            p.Code,
