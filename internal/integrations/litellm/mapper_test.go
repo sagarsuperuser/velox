@@ -348,3 +348,63 @@ func TestMapPayload_RequestTagsListBecomesScalar(t *testing.T) {
 		t.Errorf("scalar request_tags = %v, want \"prod\"", got)
 	}
 }
+
+// TestMapPayload_TimestampSourcing pins the test-clock fix: the mapper must NOT
+// manufacture a wall-clock timestamp when the payload omits both EndTime and
+// StartTime. It leaves Timestamp nil so usage.Service supplies the customer's
+// effective-now (a test-clock-pinned customer's frozen_time) — the flagship
+// advance-clock → LiteLLM-ingest → billed demo depends on this. A non-nil
+// time.Now() here is treated as an explicit timestamp and silently defeats the
+// clock, landing simulated usage at wall-clock.
+func TestMapPayload_TimestampSourcing(t *testing.T) {
+	base := StandardLoggingPayload{
+		ID: "call_ts", CallType: "completion", Model: "claude-3-5-sonnet-20241022",
+		CustomLLMProvider: "anthropic", User: "cus_acme",
+		Usage: &Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+	}
+
+	t.Run("no start/end leaves nil timestamp (service applies frozen_time)", func(t *testing.T) {
+		out, err := MapPayload(base) // StartTime/EndTime both zero
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(out) == 0 {
+			t.Fatal("expected events")
+		}
+		for _, e := range out {
+			if e.Timestamp != nil {
+				t.Errorf("timestamp must be nil when payload omits start/end (got %v) — a non-nil value defeats the test clock", *e.Timestamp)
+			}
+		}
+	})
+
+	t.Run("EndTime is used verbatim, not wall-clock", func(t *testing.T) {
+		p := base
+		p.EndTime = 1700000003.456
+		out, err := MapPayload(p)
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		want := unixSecondsToTime(1700000003.456)
+		for _, e := range out {
+			if e.Timestamp == nil || !e.Timestamp.Equal(want) {
+				t.Errorf("timestamp: got %v, want EndTime %v", e.Timestamp, want)
+			}
+		}
+	})
+
+	t.Run("only StartTime present uses StartTime", func(t *testing.T) {
+		p := base
+		p.StartTime = 1700000000.1
+		out, err := MapPayload(p)
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		want := unixSecondsToTime(1700000000.1)
+		for _, e := range out {
+			if e.Timestamp == nil || !e.Timestamp.Equal(want) {
+				t.Errorf("timestamp: got %v, want StartTime %v", e.Timestamp, want)
+			}
+		}
+	})
+}
