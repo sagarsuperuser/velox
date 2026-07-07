@@ -512,6 +512,9 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 	// pay a customer lookup per row. The guard is a cheap superset of the
 	// classifier's no_payment_method precondition; a rare over-fetch when a
 	// higher-priority reason (tax/payment failure) preempts it is harmless.
+	// On a lookup error CustomerHasEmail stays false: the classifier's
+	// false-branch copy states engine behavior rather than asserting the
+	// customer's email state, so the banner is honest even when undetermined.
 	if !atc.HasPaymentMethod && inv.Status == domain.InvoiceFinalized &&
 		inv.PaymentStatus == domain.PaymentPending &&
 		s.customerReader != nil && inv.CustomerID != "" {

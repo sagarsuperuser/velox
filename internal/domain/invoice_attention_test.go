@@ -483,8 +483,11 @@ func TestClassifyInvoiceAttention_NoPaymentMethod_NoEmail(t *testing.T) {
 	if strings.Contains(att.Message, "has been emailed") {
 		t.Errorf("no-email variant must NOT claim a setup link was emailed, got %q", att.Message)
 	}
-	if !strings.Contains(att.Message, "no email address") {
-		t.Errorf("no-email variant must name the missing-email cause, got %q", att.Message)
+	// Honest under uncertainty: states engine behavior ("only when … an email
+	// address on file"), never asserts this customer's email state — so it's
+	// correct whether the address is confirmably absent or merely undetermined.
+	if !strings.Contains(att.Message, "only when the customer has an email address on file") {
+		t.Errorf("no-email variant must state the conditional engine behavior, got %q", att.Message)
 	}
 	codes := make(map[AttentionAction]bool)
 	for _, a := range att.Actions {

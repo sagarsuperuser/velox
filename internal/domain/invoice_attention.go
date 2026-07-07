@@ -284,15 +284,16 @@ type AttentionContext struct {
 	// awaiting_payment race window.
 	HasPaymentMethod bool
 
-	// CustomerHasEmail is true when the customer has an email address on
-	// file. Consumed only by the no_payment_method classifier: the
-	// engine's finalize-time setup-link email (NotifyNoPaymentMethod)
-	// skips silently when there's no address, so the banner must not
-	// claim "we emailed a link" — and must not offer a resend that
-	// cannot send — in that case. Zero-value (false) is the conservative
-	// default: it renders the "no email on file — copy a link" variant,
-	// which never asserts a send that didn't happen. The invoice service
-	// populates it from the customer record.
+	// CustomerHasEmail is true ONLY when the customer confirmably has an
+	// email address on file. Consumed only by the no_payment_method
+	// classifier: the engine's finalize-time setup-link email
+	// (NotifyNoPaymentMethod) skips silently when there's no address, so
+	// the banner must not claim "we emailed a link" — and must not offer a
+	// resend that cannot send — in that case. Zero-value (false) is the
+	// conservative default and also covers "couldn't determine" (read
+	// error / no reader): the false-branch copy states engine behavior,
+	// not this customer's email state, so it stays honest either way. The
+	// invoice service populates it from the customer record.
 	CustomerHasEmail bool
 
 	// StripeConnected reports whether the invoice's tenant has Stripe
@@ -728,15 +729,24 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 	// "Add payment method" dialog can copy a secure setup link to hand
 	// to the customer directly (call/chat) or add an email to the record.
 	if !hasEmail {
-		// No address on file → nothing was emailed and nothing can be
-		// resent. Point the operator at the only workable path (open the
-		// customer page → copy a link, or add an email) and drop the
-		// "Resend setup link" action, which would fail with no recipient.
+		// hasEmail is false in two cases: the customer confirmably has no
+		// address, OR the service couldn't determine it (read error / no
+		// reader). The copy is phrased to be honest in BOTH — it states the
+		// engine's *behavior* ("emails a link only when there's an address
+		// on file") rather than asserting this customer's email state or
+		// claiming a link was/wasn't sent, so a rare transient customer-read
+		// error can't make the banner assert a falsifiable fact. Either way
+		// the operator's path is the same and always works: open the
+		// customer page (see the real email, copy a secure link, or add an
+		// address). The "Resend setup link" action is dropped — with no
+		// confirmed recipient it can't reliably send, and the customer-page
+		// dialog offers both send-email and copy-link once the operator is
+		// there.
 		return &Attention{
 			Severity: AttentionSeverityWarning,
 			Reason:   AttentionReasonNoPaymentMethod,
 			Code:     "payment.no_payment_method",
-			Message:  "No payment method on file, and no email address to send a setup link to — so none was sent. Open the customer page to copy a secure setup link and share it with the customer directly, or add an email and the engine will send the link. Either way, the engine auto-charges once a card is attached.",
+			Message:  "No payment method on file. The engine emails a setup link only when the customer has an email address on file — open the customer page to copy a secure setup link and share it with the customer directly, or add an email so the engine can send it. It auto-charges once a card is attached.",
 			DocURL:   docBaseURL + "no-payment-method",
 			Actions: []AttentionActionItem{
 				{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
