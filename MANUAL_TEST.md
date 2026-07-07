@@ -241,6 +241,7 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 - [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
 - [ ] `POST /v1/billing/run` → 1 cycle invoice generated.
 - [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
+- [ ] Each Tokens line's **Unit Price** shows the clean configured rate (a terminating decimal matching the recipe's per-token rate, e.g. `$0.000003`), NOT a repeating/inflated `$0.00000333333333` (ADR-054 amendment: flat usage lines display the stamped nominal rate, not effective amount÷qty).
 - [ ] Invoice has the $99 base line covering the UPCOMING period; the base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
 - [ ] Usage line totals equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
 

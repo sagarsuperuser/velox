@@ -394,15 +394,32 @@ type InvoiceLineItem struct {
 	// renders a badge for non-trivial values, and the PDF appends an
 	// exemption legend when at least one line is customer- or
 	// product-exempt. Empty for non-Stripe providers.
-	TaxabilityReason    string         `json:"tax_reason,omitempty"`
-	TotalAmountCents    int64          `json:"total_amount_cents"`
-	Currency            string         `json:"currency"`
-	PricingMode         string         `json:"pricing_mode,omitempty"`
-	RatingRuleVersionID string         `json:"rating_rule_version_id,omitempty"`
-	BillingPeriodStart  *time.Time     `json:"billing_period_start,omitempty"`
-	BillingPeriodEnd    *time.Time     `json:"billing_period_end,omitempty"`
-	Metadata            map[string]any `json:"metadata,omitempty"`
-	CreatedAt           time.Time      `json:"created_at"`
+	TaxabilityReason    string `json:"tax_reason,omitempty"`
+	TotalAmountCents    int64  `json:"total_amount_cents"`
+	Currency            string `json:"currency"`
+	PricingMode         string `json:"pricing_mode,omitempty"`
+	RatingRuleVersionID string `json:"rating_rule_version_id,omitempty"`
+	// NominalUnitAmountDecimal is the actually-billed CONFIGURED per-unit rate
+	// (decimal cents) for FLAT-mode usage lines — the clean rate-card figure
+	// (0.0003 = $0.000003/token), unlike EffectiveUnitAmountDecimal
+	// (amount÷quantity) which drifts by the cent-rounding of the line total
+	// (e.g. 6,000 tokens billed 2¢ → effective 0.00033¢, nominal 0.0003¢).
+	// It is STAMPED at build from the override-applied rule.FlatAmountCents,
+	// NOT derived on read: a CustomerPriceOverride preserves the
+	// rating_rule_versions id while swapping the price, so re-reading that row
+	// yields list price, not the negotiated price billed (ADR-054
+	// re-examination). Nil for every line with no single configured rate —
+	// base_fee/proration (effective per-seat is the honest figure),
+	// graduated/package usage (blended, no single rate), add_on/discount/tax
+	// (whole-cent unit already equals nominal) — which fall back to the
+	// effective rate. Internal-only (json:"-"): the wire's unit_amount_decimal
+	// already carries the display value via DisplayUnitAmountDecimal, so
+	// exposing this separately would just duplicate it on flat lines.
+	NominalUnitAmountDecimal *decimal.Decimal `json:"-"`
+	BillingPeriodStart       *time.Time       `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd         *time.Time       `json:"billing_period_end,omitempty"`
+	Metadata                 map[string]any   `json:"metadata,omitempty"`
+	CreatedAt                time.Time        `json:"created_at"`
 
 	// CommitGrantedCents marks this line as a prepaid-commit purchase
 	// (ADR-078): when the invoice finalizes, a credit block of this many
@@ -445,15 +462,31 @@ func (li InvoiceLineItem) EffectiveUnitAmountDecimal() decimal.Decimal {
 	return decimal.NewFromInt(li.AmountCents).DivRound(qty, 12)
 }
 
+// DisplayUnitAmountDecimal is the per-unit price to SHOW on invoices (decimal
+// cents): the stamped nominal configured rate when present (flat usage lines),
+// else the effective amount÷quantity rate. This is the single value the
+// dashboard wire form, the hosted DTO, and the PDF all render, so the
+// displayed rate is consistent across surfaces and clean for sub-cent flat
+// rates — $0.000003, not the effective $0.00000333333333 that the line's
+// cent-rounding produces (ADR-054 re-examination). See
+// NominalUnitAmountDecimal for why nominal is stamped, not derived on read.
+func (li InvoiceLineItem) DisplayUnitAmountDecimal() decimal.Decimal {
+	if li.NominalUnitAmountDecimal != nil {
+		return *li.NominalUnitAmountDecimal
+	}
+	return li.EffectiveUnitAmountDecimal()
+}
+
 // MarshalJSON augments the wire form with unit_amount_decimal — the
-// full-precision per-unit price (decimal cents) computed by
-// EffectiveUnitAmountDecimal — so dashboards and API clients can render
-// sub-cent rates without the whole-cent unit_amount_cents collapsing them to
-// "$0.00" (ADR-054). Computed on the fly, never persisted.
+// full-precision per-unit price (decimal cents) from DisplayUnitAmountDecimal
+// (the nominal configured rate on flat usage lines, else the effective
+// amount÷quantity rate) — so dashboards and API clients render sub-cent rates
+// cleanly without the whole-cent unit_amount_cents collapsing them to "$0.00"
+// (ADR-054). Computed on the fly.
 func (li InvoiceLineItem) MarshalJSON() ([]byte, error) {
 	type alias InvoiceLineItem
 	return json.Marshal(struct {
 		alias
 		UnitAmountDecimal string `json:"unit_amount_decimal"`
-	}{alias(li), li.EffectiveUnitAmountDecimal().String()})
+	}{alias(li), li.DisplayUnitAmountDecimal().String()})
 }

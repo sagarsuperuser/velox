@@ -495,7 +495,7 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		}
 		textAt(colX[0], y, desc)
 		rightAlignAt(colX[1], y, colX[2]-colX[1], formatQuantity(item))
-		rightAlignAt(colX[2], y, colX[3]-colX[2], formatRate(item.EffectiveUnitAmountDecimal()))
+		rightAlignAt(colX[2], y, colX[3]-colX[2], formatRate(item.DisplayUnitAmountDecimal()))
 		rightAlignAt(colX[3], y, colEnd-colX[3], formatCents(item.AmountCents))
 		y += 18
 	}
