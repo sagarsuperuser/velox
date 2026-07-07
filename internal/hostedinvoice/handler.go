@@ -488,7 +488,7 @@ func toViewLineItems(items []domain.InvoiceLineItem) []viewLineItem {
 			Description:       it.Description,
 			Quantity:          it.Quantity,
 			UnitAmountCents:   it.UnitAmountCents,
-			UnitAmountDecimal: it.EffectiveUnitAmountDecimal().String(),
+			UnitAmountDecimal: it.DisplayUnitAmountDecimal().String(),
 			AmountCents:       it.AmountCents,
 			TaxAmountCents:    it.TaxAmountCents,
 			TotalAmountCents:  it.TotalAmountCents,

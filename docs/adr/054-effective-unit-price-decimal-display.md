@@ -45,6 +45,25 @@ Surface a full-precision per-unit price, **derived on read**, never stored.
 - **Credit-note line items** (`credit_note_line_items`) carry the same whole-cent `unit_amount_cents` and would show the same `$0.00` for a sub-cent gross unit. Deferred — same pattern (a parallel method + the CN render surfaces); credit notes for sub-cent usage are rare and the reported surface is the invoice. Trigger: first sub-cent credit-note display complaint.
 - The effective rate can differ from the *nominal* configured rate by the amount's rounding at very small quantities (e.g. one unit of a sub-cent item rounds the amount itself); this is correct invoice behavior (Stripe rounds the line amount too) and reconciles with what's charged.
 
+## Amendment (2026-07-07): show the NOMINAL configured rate on flat usage lines
+
+**Status:** Accepted — implemented. Supersedes decision point 2 ("effective, not nominal") *for flat single-rule usage lines only*.
+
+### Why revisit
+
+A sub-cent usage line rendered `$0.00000333333333` (6,000 tokens billed 2¢ at a configured $3.00/1M = 0.0003¢/token). It's correct — the effective rate at 12dp — but reads like a glitch, and worse, it is *inflated*: the 2¢ was rounded up from 1.8¢, so the effective rate (0.000333¢) overstates the configured rate (0.0003¢) by ~11%. Verified industry behavior (research 2026-07-07, quotes/URLs in memory `project_unit_rate_display_nominal_vs_effective`): peers show the **configured/nominal** rate (Stripe's `unit_amount_decimal` is the rate you *set*, which terminates → no repeating decimal), and **exact `qty × unit = amount` reconciliation is NOT an industry requirement** (ProjectWorks / ERP.net / EU e-invoice all display `qty × unit ≠ rounded amount`). That removes this ADR's *original* main reason (reconciliation) for choosing effective over nominal.
+
+### Decision
+
+Stamp the actually-billed **nominal** per-unit rate on **flat-mode usage lines** and display it; keep the effective rate everywhere else.
+
+1. **Stamped at build, not derived on read.** The override trap: `domain.CustomerPriceOverride.ApplyTo` swaps the price but **preserves the `rating_rule_versions` id** the line stores, so reading that row back yields *list* price, not the negotiated price billed. The engine stamps `rule.FlatAmountCents` from the *override-applied* rule (`resolveRatedRule`), so `invoice_line_items.nominal_unit_amount_decimal` (migration 0142, nullable NUMERIC) holds the real billed rate. Helper `nominalRate(rule)` returns nil for non-flat modes; the 4 usage writers + the preview/overage copy-through are the complete writer set.
+2. **Flat only; effective is the fallback.** Graduated/package usage (blended rate, no single nominal), base_fee/proration (the effective per-seat amount is the honest figure — the full plan price would misrepresent a prorated line), and add_on/discount/tax (whole-cent unit already equals nominal, `qty × unit` is an exact product) all leave the column NULL and fall back to `EffectiveUnitAmountDecimal` — today's behavior. Verified by a per-line-type audit (2026-07-07).
+3. **One display value, all surfaces.** `DisplayUnitAmountDecimal()` returns nominal when stamped, else effective; `MarshalJSON` (dashboard), the hosted DTO, and the PDF all call it — no FE change (the wire's `unit_amount_decimal` just gets cleaner). The nominal field is internal-only (`json:"-"`) — the wire already carries the display value.
+4. **No backfill.** Historical lines keep the effective rate (NULL nominal); only newly-built lines stamp it. Consistent with this ADR's no-backfill posture.
+
+Result: the screenshot line now shows `$0.000003` (the rate card), not `$0.00000333333333`. Still deferred (a genuine feature, its own trigger): a **per-million display scale** for token meters (`$3.00 / 1M tokens`, the Metronome/Anthropic/OpenAI convention) — needs meter display-scale config; and the parallel `credit_note_line_items` gap (§Risks above).
+
 ## References
 - ADR-045 (decimal per-unit pricing rates — line amounts stay int64), ADR-053 (single source of truth posture).
 - Memory: `project_decimal_pricing_rates`, `feedback_no_heuristic_proxies`, `project_tax_field_propagation_drift`, `feedback_verify_stripe_parity_claims`.

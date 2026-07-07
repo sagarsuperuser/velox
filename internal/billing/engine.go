@@ -2216,6 +2216,24 @@ func (e *Engine) handleTrialState(ctx context.Context, sub domain.Subscription, 
 	return sub, false, nil
 }
 
+// nominalRate returns the actually-billed CONFIGURED per-unit rate (decimal
+// cents) for a FLAT-mode usage line, so the invoice shows the clean rate-card
+// figure ($0.000003) instead of the effective amount÷quantity rate, which the
+// line's cent-rounding turns into a repeating, slightly-inflated decimal
+// ($0.00000333333333) (ADR-054 re-examination). rule is the OVERRIDE-APPLIED
+// rule (resolveRatedRule applies any CustomerPriceOverride on top), so this
+// captures the negotiated rate, not list price — reading rating_rule_versions
+// back would yield list price because the override preserves the row id.
+// Returns nil for graduated/package modes: no single nominal rate exists, so
+// those correctly fall back to EffectiveUnitAmountDecimal (the honest blend).
+func nominalRate(rule domain.RatingRuleVersion) *decimal.Decimal {
+	if rule.Mode != domain.PricingFlat {
+		return nil
+	}
+	r := rule.FlatAmountCents
+	return &r
+}
+
 // buildLineItems computes the invoice line items and subtotal for one
 // billing period: per-item base-fee segments (change-log aware) plus
 // per-meter usage charges (multi-dimensional and single-rule paths),
@@ -2720,19 +2738,20 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 					}
 					unitAmount := decimal.NewFromInt(amount).Div(qty).RoundBank(0).IntPart()
 					lineItems = append(lineItems, domain.InvoiceLineItem{
-						LineType:            domain.LineTypeUsage,
-						MeterID:             meterID,
-						Description:         usageLineDescription(meter, rulesByID[agg.RuleID]),
-						Quantity:            qty.IntPart(),
-						QuantityDecimal:     qty,
-						UnitAmountCents:     unitAmount,
-						AmountCents:         amount,
-						TotalAmountCents:    amount,
-						Currency:            invoiceCurrency,
-						PricingMode:         string(rule.Mode),
-						RatingRuleVersionID: rule.ID,
-						BillingPeriodStart:  &ivStart,
-						BillingPeriodEnd:    &ivEnd,
+						LineType:                 domain.LineTypeUsage,
+						MeterID:                  meterID,
+						Description:              usageLineDescription(meter, rulesByID[agg.RuleID]),
+						Quantity:                 qty.IntPart(),
+						QuantityDecimal:          qty,
+						UnitAmountCents:          unitAmount,
+						AmountCents:              amount,
+						TotalAmountCents:         amount,
+						Currency:                 invoiceCurrency,
+						PricingMode:              string(rule.Mode),
+						RatingRuleVersionID:      rule.ID,
+						NominalUnitAmountDecimal: nominalRate(rule),
+						BillingPeriodStart:       &ivStart,
+						BillingPeriodEnd:         &ivEnd,
 					})
 					subtotal += amount
 				}
@@ -2786,19 +2805,20 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			unitAmount := decimal.NewFromInt(amount).Div(quantity).RoundBank(0).IntPart()
 
 			lineItems = append(lineItems, domain.InvoiceLineItem{
-				LineType:            domain.LineTypeUsage,
-				MeterID:             meterID,
-				Description:         fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
-				Quantity:            quantity.IntPart(),
-				QuantityDecimal:     quantity,
-				UnitAmountCents:     unitAmount,
-				AmountCents:         amount,
-				TotalAmountCents:    amount,
-				Currency:            invoiceCurrency,
-				PricingMode:         string(rule.Mode),
-				RatingRuleVersionID: rule.ID,
-				BillingPeriodStart:  &ivStart,
-				BillingPeriodEnd:    &ivEnd,
+				LineType:                 domain.LineTypeUsage,
+				MeterID:                  meterID,
+				Description:              fmt.Sprintf("%s (%s)", meter.Name, meter.Unit),
+				Quantity:                 quantity.IntPart(),
+				QuantityDecimal:          quantity,
+				UnitAmountCents:          unitAmount,
+				AmountCents:              amount,
+				TotalAmountCents:         amount,
+				Currency:                 invoiceCurrency,
+				PricingMode:              string(rule.Mode),
+				RatingRuleVersionID:      rule.ID,
+				NominalUnitAmountDecimal: nominalRate(rule),
+				BillingPeriodStart:       &ivStart,
+				BillingPeriodEnd:         &ivEnd,
 			})
 			subtotal += amount
 		}
@@ -4044,19 +4064,20 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 					}
 					unitAmount := decimal.NewFromInt(amount).Div(qty).RoundBank(0).IntPart()
 					lineItems = append(lineItems, domain.InvoiceLineItem{
-						LineType:            domain.LineTypeUsage,
-						MeterID:             meterID,
-						Description:         usageLineDescription(meter, rulesByID[agg.RuleID]) + " - canceled mid-period",
-						Quantity:            qty.IntPart(),
-						QuantityDecimal:     qty,
-						UnitAmountCents:     unitAmount,
-						AmountCents:         amount,
-						TotalAmountCents:    amount,
-						Currency:            invoiceCurrency,
-						PricingMode:         string(rule.Mode),
-						RatingRuleVersionID: rule.ID,
-						BillingPeriodStart:  &ivStart,
-						BillingPeriodEnd:    &ivEnd,
+						LineType:                 domain.LineTypeUsage,
+						MeterID:                  meterID,
+						Description:              usageLineDescription(meter, rulesByID[agg.RuleID]) + " - canceled mid-period",
+						Quantity:                 qty.IntPart(),
+						QuantityDecimal:          qty,
+						UnitAmountCents:          unitAmount,
+						AmountCents:              amount,
+						TotalAmountCents:         amount,
+						Currency:                 invoiceCurrency,
+						PricingMode:              string(rule.Mode),
+						RatingRuleVersionID:      rule.ID,
+						NominalUnitAmountDecimal: nominalRate(rule),
+						BillingPeriodStart:       &ivStart,
+						BillingPeriodEnd:         &ivEnd,
 					})
 					subtotal += amount
 				}
@@ -4116,19 +4137,20 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 			ivStart := iv.start
 			ivEnd := iv.end
 			lineItems = append(lineItems, domain.InvoiceLineItem{
-				LineType:            domain.LineTypeUsage,
-				MeterID:             meterID,
-				Description:         fmt.Sprintf("%s (%s) - canceled mid-period", meter.Name, meter.Unit),
-				Quantity:            quantity.IntPart(),
-				QuantityDecimal:     quantity,
-				UnitAmountCents:     unitAmount,
-				AmountCents:         amount,
-				TotalAmountCents:    amount,
-				Currency:            invoiceCurrency,
-				PricingMode:         string(rule.Mode),
-				RatingRuleVersionID: rule.ID,
-				BillingPeriodStart:  &ivStart,
-				BillingPeriodEnd:    &ivEnd,
+				LineType:                 domain.LineTypeUsage,
+				MeterID:                  meterID,
+				Description:              fmt.Sprintf("%s (%s) - canceled mid-period", meter.Name, meter.Unit),
+				Quantity:                 quantity.IntPart(),
+				QuantityDecimal:          quantity,
+				UnitAmountCents:          unitAmount,
+				AmountCents:              amount,
+				TotalAmountCents:         amount,
+				Currency:                 invoiceCurrency,
+				PricingMode:              string(rule.Mode),
+				RatingRuleVersionID:      rule.ID,
+				NominalUnitAmountDecimal: nominalRate(rule),
+				BillingPeriodStart:       &ivStart,
+				BillingPeriodEnd:         &ivEnd,
 			})
 			subtotal += amount
 		}

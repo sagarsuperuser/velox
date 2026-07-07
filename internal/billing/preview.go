@@ -43,6 +43,12 @@ type PreviewLine struct {
 	// threshold scan classifies non-additive buckets with it (ADR-066 §4);
 	// the public create_preview wire is unchanged.
 	AggregationMode domain.AggregationMode `json:"-"`
+	// NominalUnitAmountDecimal carries the flat-mode configured per-unit rate
+	// (decimal cents) from the OVERRIDE-APPLIED rule, internal-only (json:"-")
+	// so an overage invoice line built from this preview shows the clean
+	// nominal rate like a cycle usage line (ADR-054 re-examination). Nil for
+	// graduated/package/base_fee → the invoice line's effective-rate fallback.
+	NominalUnitAmountDecimal *decimal.Decimal `json:"-"`
 }
 
 // PreviewTotal is one currency's roll-up across the preview's lines. We
@@ -288,18 +294,19 @@ func (e *Engine) previewMeter(ctx context.Context, tenantID, customerID, meterID
 		desc := usageLineDescription(meter, rulesByID[agg.RuleID])
 
 		lines = append(lines, PreviewLine{
-			LineType:            "usage",
-			Description:         desc,
-			MeterID:             meterID,
-			RatingRuleVersionID: ratingRule.ID,
-			RuleKey:             ratingRule.RuleKey,
-			DimensionMatch:      dimMatch,
-			Currency:            ratingRule.Currency,
-			Quantity:            agg.Quantity,
-			UnitAmountCents:     unitAmount,
-			AmountCents:         amount,
-			PricingMode:         string(ratingRule.Mode),
-			AggregationMode:     agg.AggregationMode,
+			LineType:                 "usage",
+			Description:              desc,
+			MeterID:                  meterID,
+			RatingRuleVersionID:      ratingRule.ID,
+			RuleKey:                  ratingRule.RuleKey,
+			DimensionMatch:           dimMatch,
+			Currency:                 ratingRule.Currency,
+			Quantity:                 agg.Quantity,
+			UnitAmountCents:          unitAmount,
+			AmountCents:              amount,
+			PricingMode:              string(ratingRule.Mode),
+			AggregationMode:          agg.AggregationMode,
+			NominalUnitAmountDecimal: nominalRate(ratingRule),
 		})
 	}
 

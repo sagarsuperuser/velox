@@ -1,0 +1,1 @@
+ALTER TABLE invoice_line_items DROP COLUMN nominal_unit_amount_decimal;

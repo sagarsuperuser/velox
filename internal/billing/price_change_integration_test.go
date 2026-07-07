@@ -170,6 +170,22 @@ func TestPriceChange_OverrideSurvivesPublish_SingleRule(t *testing.T) {
 	if len(usageLines) == 1 && usageLines[0].RatingRuleVersionID != v1.ID {
 		t.Errorf("line rule version: got %s, want %s (v1 — the period opened on v1)", usageLines[0].RatingRuleVersionID, v1.ID)
 	}
+	// ADR-054 re-examination — the override trap: the stamped nominal rate is
+	// the OVERRIDE-applied rate (5c/call), NOT the list price at the persisted
+	// version id (v1 = 1c). The override preserves the version id, so a naive
+	// derive-on-read from rating_rule_versions.flat_amount_cents would
+	// misdisplay list price on this negotiated line — which is exactly why the
+	// rate is stamped at build from the resolved (override-applied) rule.
+	// Mutation-verify: stamp rule.ID's list rate instead of rule.FlatAmountCents
+	// and this fails with got 1.
+	if len(usageLines) == 1 {
+		nom := usageLines[0].NominalUnitAmountDecimal
+		if nom == nil {
+			t.Errorf("nominal rate: got nil, want 5 (a flat line must stamp its configured rate)")
+		} else if !nom.Equal(decimal.NewFromInt(5)) {
+			t.Errorf("nominal rate: got %s, want 5 (the negotiated override, not v1 list 1c)", nom.String())
+		}
+	}
 }
 
 // TestPriceChange_OverrideSurvivesPublish_MultiDim: same regression on

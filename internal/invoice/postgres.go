@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -1210,6 +1212,26 @@ func (s *PostgresStore) UpdateTotals(ctx context.Context, tenantID, id string, s
 	return inv, nil
 }
 
+// nominalRateArg returns the driver value for the nullable
+// nominal_unit_amount_decimal column: the decimal (via its Valuer) when set,
+// else nil → SQL NULL. See domain.InvoiceLineItem.NominalUnitAmountDecimal.
+func nominalRateArg(p *decimal.Decimal) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// scanNominalRate converts a scanned nullable NUMERIC into the optional
+// nominal per-unit rate pointer (nil when the column is NULL).
+func scanNominalRate(n decimal.NullDecimal) *decimal.Decimal {
+	if !n.Valid {
+		return nil
+	}
+	d := n.Decimal
+	return &d
+}
+
 func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -1229,8 +1251,8 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 			description, quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
-			tax_jurisdiction, tax_code, tax_reason, quantity_decimal)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			tax_jurisdiction, tax_code, tax_reason, quantity_decimal, nominal_unit_amount_decimal)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
@@ -1242,6 +1264,7 @@ func (s *PostgresStore) CreateLineItem(ctx context.Context, tenantID string, ite
 		postgres.NullableString(item.PricingMode), postgres.NullableString(item.RatingRuleVersionID),
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
 		metaJSON, now, item.TaxJurisdiction, item.TaxCode, item.TaxabilityReason, item.QuantityDecimal,
+		nominalRateArg(item.NominalUnitAmountDecimal),
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRate, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
@@ -1272,7 +1295,7 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
 			COALESCE(rating_rule_version_id,''), billing_period_start, billing_period_end,
 			metadata, created_at, tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
-			commit_granted_cents, commit_expires_at
+			commit_granted_cents, commit_expires_at, nominal_unit_amount_decimal
 		FROM invoice_line_items WHERE invoice_id = $1
 		ORDER BY created_at ASC
 	`, invoiceID)
@@ -1285,15 +1308,17 @@ func (s *PostgresStore) ListLineItems(ctx context.Context, tenantID, invoiceID s
 	for rows.Next() {
 		var item domain.InvoiceLineItem
 		var metaJSON []byte
+		var nominal decimal.NullDecimal
 		if err := rows.Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType,
 			&item.MeterID, &item.Description, &item.Quantity, &item.UnitAmountCents,
 			&item.AmountCents, &item.TaxRate, &item.TaxAmountCents, &item.TotalAmountCents,
 			&item.Currency, &item.PricingMode, &item.RatingRuleVersionID,
 			&item.BillingPeriodStart, &item.BillingPeriodEnd, &metaJSON, &item.CreatedAt,
 			&item.TaxJurisdiction, &item.TaxCode, &item.TaxabilityReason, &item.QuantityDecimal,
-			&item.CommitGrantedCents, &item.CommitExpiresAt); err != nil {
+			&item.CommitGrantedCents, &item.CommitExpiresAt, &nominal); err != nil {
 			return nil, err
 		}
+		item.NominalUnitAmountDecimal = scanNominalRate(nominal)
 		_ = json.Unmarshal(metaJSON, &item.Metadata)
 		items = append(items, item)
 	}
@@ -1400,8 +1425,8 @@ func (s *PostgresStore) AddLineItemAtomic(
 			total_amount_cents, currency, pricing_mode, rating_rule_version_id,
 			billing_period_start, billing_period_end, metadata, created_at,
 			tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
-			commit_granted_cents, commit_expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+			commit_granted_cents, commit_expires_at, nominal_unit_amount_decimal)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		RETURNING id, invoice_id, tenant_id, line_type, COALESCE(meter_id,''), description,
 			quantity, unit_amount_cents, amount_cents, tax_rate, tax_amount_cents,
 			total_amount_cents, currency, COALESCE(pricing_mode,''),
@@ -1415,6 +1440,7 @@ func (s *PostgresStore) AddLineItemAtomic(
 		postgres.NullableTime(item.BillingPeriodStart), postgres.NullableTime(item.BillingPeriodEnd),
 		metaJSON, now, item.TaxJurisdiction, item.TaxCode, item.TaxabilityReason, item.QuantityDecimal,
 		item.CommitGrantedCents, postgres.NullableTime(item.CommitExpiresAt),
+		nominalRateArg(item.NominalUnitAmountDecimal),
 	).Scan(&item.ID, &item.InvoiceID, &item.TenantID, &item.LineType, &item.MeterID,
 		&item.Description, &item.Quantity, &item.UnitAmountCents, &item.AmountCents,
 		&item.TaxRate, &item.TaxAmountCents, &item.TotalAmountCents, &item.Currency,
@@ -1722,8 +1748,8 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 				tax_amount_cents, total_amount_cents, currency, pricing_mode,
 				rating_rule_version_id, billing_period_start, billing_period_end, metadata, created_at,
 				tax_jurisdiction, tax_code, tax_reason, quantity_decimal,
-				commit_granted_cents, commit_expires_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+				commit_granted_cents, commit_expires_at, nominal_unit_amount_decimal)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		`, itemID, inv.ID, tenantID, items[i].LineType, postgres.NullableString(items[i].MeterID),
 			items[i].Description, items[i].Quantity, items[i].UnitAmountCents, items[i].AmountCents,
 			items[i].TaxRate, items[i].TaxAmountCents, items[i].TotalAmountCents,
@@ -1732,6 +1758,7 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			postgres.NullableTime(items[i].BillingPeriodStart), postgres.NullableTime(items[i].BillingPeriodEnd),
 			itemMetaJSON, now, items[i].TaxJurisdiction, items[i].TaxCode, items[i].TaxabilityReason, items[i].QuantityDecimal,
 			items[i].CommitGrantedCents, postgres.NullableTime(items[i].CommitExpiresAt),
+			nominalRateArg(items[i].NominalUnitAmountDecimal),
 		)
 		if err != nil {
 			return domain.Invoice{}, fmt.Errorf("create line item %d: %w", i, err)
