@@ -48,6 +48,13 @@ overridable:
     type: string
     default: ai_api_pro
     pattern: '^[a-z][a-z0-9_]*$'
+  - key: base_amount_cents
+    type: int
+    default: 0
+  - key: base_bill_timing
+    type: string
+    default: in_arrears
+    enum: [in_arrears, in_advance]
 
 meters:
   - key: tokens

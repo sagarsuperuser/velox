@@ -23,6 +23,11 @@ type RecipeInstance struct {
 	CreatedObjects CreatedObjects `json:"created_objects"`
 	CreatedAt      time.Time      `json:"created_at"`
 	CreatedBy      string         `json:"created_by,omitempty"`
+	// Warnings is populated on the Instantiate RESPONSE only (never persisted;
+	// empty on reads). Surfaces operator-owned-plan transparency (ADR-084):
+	// e.g. a pre-existing plan was reused as-is, or supplied base-fee params
+	// couldn't be applied because a plan with that code already existed.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // CreatedObjects is the per-role map of entity IDs a recipe instantiation
@@ -115,7 +120,11 @@ type RecipePlan struct {
 	Currency        string          `json:"currency"`
 	BillingInterval BillingInterval `json:"billing_interval"`
 	BaseAmountCents int64           `json:"base_amount_cents"`
-	MeterKeys       []string        `json:"meter_keys"`
+	// BaseBillTiming is optional; empty falls back to CreatePlanTx's
+	// in_arrears default. Overridable at instantiate (ADR-084) so a recipe
+	// can seed an in_advance base plan in one call — no follow-up PATCH.
+	BaseBillTiming BillTiming `json:"base_bill_timing,omitempty"`
+	MeterKeys      []string   `json:"meter_keys"`
 }
 
 type RecipeDunningPolicy struct {

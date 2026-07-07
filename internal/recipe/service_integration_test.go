@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,21 +391,21 @@ func TestService_ReinstallAfterUninstall_AdoptsExistingGraph(t *testing.T) {
 	}
 }
 
-// TestService_Instantiate_RefusesDivergentPlan is the conformance-gate
-// regression (ADR-083): when a plan with the recipe's plan_code already exists
-// but its billing config contradicts the recipe (in_advance $99 vs the recipe's
-// in_arrears $0), Instantiate must REFUSE rather than silently wire the recipe's
-// meters/rules onto it — and the whole tx must roll back, leaving the operator's
-// plan untouched. Mutation-verify: drop the plan conformance gate (adopt
-// unconditionally) and this fails — the recipe adopts the divergent plan and
-// persists its graph.
-func TestService_Instantiate_RefusesDivergentPlan(t *testing.T) {
+// TestService_Instantiate_ReusesExistingPlan is the ADR-084 regression: a
+// pre-existing plan under the recipe's plan_code — even one whose billing
+// config diverges from the recipe — is REUSED as-is (never conform-checked,
+// never refused, never mutated). Instantiate SUCCEEDS, the recipe graph is
+// built around the existing plan, and the response WARNS transparently
+// (including that supplied base-fee params were not applied).
+// Mutation-verify: restore ADR-083's conformance-refuse and this fails.
+func TestService_Instantiate_ReusesExistingPlan(t *testing.T) {
 	f := newRecipeFixture(t)
 	ctx := postgres.WithLivemode(context.Background(), false)
-	tenantID := testutil.CreateTestTenant(t, f.db, "divergent plan refuse")
+	tenantID := testutil.CreateTestTenant(t, f.db, "reuse existing plan")
 
-	// Operator already has a plan under the recipe's default plan_code, but
-	// with billing config the recipe never declares.
+	// Operator has an in_advance $99 plan under the recipe's default plan_code
+	// (the recipe declares in_arrears $0) — a divergence the recipe must NOT
+	// reconcile.
 	pre, err := f.pricingSvc.CreatePlan(ctx, tenantID, pricing.CreatePlanInput{
 		Code: "ai_api_pro", Name: "Operator Pro", Currency: "USD",
 		BillingInterval: domain.BillingMonthly, BaseAmountCents: 9900,
@@ -414,27 +415,95 @@ func TestService_Instantiate_RefusesDivergentPlan(t *testing.T) {
 		t.Fatalf("pre-create plan: %v", err)
 	}
 
-	_, err = f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
-	if !errors.Is(err, errs.ErrAlreadyExists) {
-		t.Fatalf("expected refusal (ErrAlreadyExists) adopting a divergent plan, got %v", err)
+	// Supply base-fee params too — they can't be applied to an existing plan.
+	inst, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style",
+		map[string]any{"base_amount_cents": 5000, "base_bill_timing": "in_arrears"}, InstantiateOptions{})
+	if err != nil {
+		t.Fatalf("expected reuse-and-succeed, got error: %v", err)
 	}
 
-	// Mutation-verify: the entire tx rolled back — nothing the recipe would
-	// have created persisted.
-	for _, tbl := range []string{"recipe_instances", "rating_rule_versions", "meters", "meter_pricing_rules", "dunning_policies", "webhook_endpoints"} {
-		if n := countRows(t, f.db, tenantID, tbl); n != 0 {
-			t.Errorf("%s after refusal: got %d, want 0 (tx must roll back)", tbl, n)
-		}
+	// The recipe graph WAS built (no refusal), around the existing plan.
+	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
+		t.Errorf("recipe_instances: got %d, want 1", n)
 	}
-	// Only the operator's pre-existing plan remains, unchanged.
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
+		t.Errorf("rating_rule_versions: got %d, want 35", n)
+	}
 	if n := countRows(t, f.db, tenantID, "plans"); n != 1 {
-		t.Errorf("plans after refusal: got %d, want 1 (operator's plan only)", n)
+		t.Errorf("plans: got %d, want 1 (existing reused, not duplicated)", n)
+	}
+	// The existing plan is recorded as the recipe's plan, and is UNCHANGED.
+	if len(inst.CreatedObjects.PlanIDs) != 1 || inst.CreatedObjects.PlanIDs[0] != pre.ID {
+		t.Errorf("recipe should reuse existing plan id %s, got %v", pre.ID, inst.CreatedObjects.PlanIDs)
 	}
 	got, err := f.pricingSvc.GetPlan(ctx, tenantID, pre.ID)
 	if err != nil {
 		t.Fatalf("GetPlan: %v", err)
 	}
 	if got.BaseBillTiming != domain.BillInAdvance || got.BaseAmountCents != 9900 {
-		t.Errorf("operator's plan was mutated: timing=%s base=%d, want in_advance/9900 (never touched)", got.BaseBillTiming, got.BaseAmountCents)
+		t.Errorf("existing plan was mutated: timing=%s base=%d, want in_advance/9900 (never touched)", got.BaseBillTiming, got.BaseAmountCents)
+	}
+	// Transparency: reuse is not silent — a warning reports it AND that the
+	// supplied params weren't applied.
+	if len(inst.Warnings) == 0 {
+		t.Fatal("expected a warning that the plan was reused as-is")
+	}
+	if !strings.Contains(inst.Warnings[0], "used as-is") || !strings.Contains(inst.Warnings[0], "NOT applied") {
+		t.Errorf("warning should report reuse + params-not-applied, got %q", inst.Warnings[0])
+	}
+}
+
+// TestService_Instantiate_OneCallInAdvancePlan is the ADR-084 one-call win: a
+// fresh install seeds an in_advance $99 base plan directly via instantiate
+// params — no follow-up PATCH.
+func TestService_Instantiate_OneCallInAdvancePlan(t *testing.T) {
+	f := newRecipeFixture(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, f.db, "one-call in_advance")
+
+	inst, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style",
+		map[string]any{"base_amount_cents": 9900, "base_bill_timing": "in_advance"}, InstantiateOptions{})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+	if len(inst.CreatedObjects.PlanIDs) != 1 {
+		t.Fatalf("expected 1 plan created, got %v", inst.CreatedObjects.PlanIDs)
+	}
+	got, err := f.pricingSvc.GetPlan(ctx, tenantID, inst.CreatedObjects.PlanIDs[0])
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.BaseAmountCents != 9900 || got.BaseBillTiming != domain.BillInAdvance {
+		t.Errorf("one-call plan: got base=%d timing=%s, want 9900/in_advance", got.BaseAmountCents, got.BaseBillTiming)
+	}
+}
+
+// TestService_Instantiate_RefusesDivergentMeter keeps the ADR-084 meter gate:
+// a same-key meter whose aggregation diverges from the recipe (reference data
+// that IS billing-consulted) is refused, and the tx rolls back.
+func TestService_Instantiate_RefusesDivergentMeter(t *testing.T) {
+	f := newRecipeFixture(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, f.db, "divergent meter refuse")
+
+	// Pre-existing `tokens` meter with a DIFFERENT aggregation than the recipe
+	// declares (sum) — adopting it would silently mis-roll-up usage.
+	if _, err := f.pricingSvc.CreateMeter(ctx, tenantID, pricing.CreateMeterInput{
+		Key: "tokens", Name: "Tokens", Unit: "tokens", Aggregation: "max",
+	}); err != nil {
+		t.Fatalf("pre-create meter: %v", err)
+	}
+
+	_, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
+	if !errors.Is(err, errs.ErrAlreadyExists) {
+		t.Fatalf("expected refusal (ErrAlreadyExists) on divergent meter aggregation, got %v", err)
+	}
+	for _, tbl := range []string{"recipe_instances", "rating_rule_versions", "plans"} {
+		if n := countRows(t, f.db, tenantID, tbl); n != 0 {
+			t.Errorf("%s after refusal: got %d, want 0 (tx must roll back)", tbl, n)
+		}
+	}
+	if n := countRows(t, f.db, tenantID, "meters"); n != 1 {
+		t.Errorf("meters after refusal: got %d, want 1 (pre-existing, unchanged)", n)
 	}
 }

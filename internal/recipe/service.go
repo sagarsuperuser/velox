@@ -313,6 +313,10 @@ func (s *Service) Instantiate(
 	}
 
 	objs := domain.CreatedObjects{}
+	// Response-only warnings (never persisted): operator-owned-plan transparency
+	// (ADR-084) — a pre-existing plan reused as-is, or supplied base-fee params
+	// that couldn't be applied.
+	var warnings []string
 
 	// Rating rules first — meters and pricing rules reference them by ID.
 	// Reinstall-after-uninstall ADOPTS an existing key's latest version
@@ -343,10 +347,12 @@ func (s *Service) Instantiate(
 	meterIDByKey := make(map[string]string, len(rendered.Meters))
 	for _, m := range rendered.Meters {
 		if existing, err := s.pricing.GetMeterByKey(ctx, tenantID, m.Key); err == nil {
-			// Adoption conformance gate (ADR-083): adopt a same-key meter only
-			// if its billing-consulted config matches the recipe. A divergent
-			// aggregation (sum vs max/count/last) silently mis-rolls-up usage,
-			// so refuse rather than wire the recipe's pricing rules onto it.
+			// Reference-data conformance (ADR-084): a meter's aggregation is
+			// recipe-declared and never drifts, so adopt a same-key meter only
+			// if its aggregation matches. A divergent aggregation (sum vs
+			// max/count/last) silently mis-rolls-up usage, so refuse rather
+			// than wire the recipe's pricing rules onto it. (The plan, by
+			// contrast, is operator-owned and never conform-checked.)
 			if diffs := meterConformanceDiff(existing, m); len(diffs) > 0 {
 				return domain.RecipeInstance{}, errs.AlreadyExists("meter",
 					fmt.Sprintf("meter %q already exists with settings that don't match recipe %q (%s) — reconcile the existing meter before instantiating", m.Key, recipeKey, formatDiffs(diffs)))
@@ -389,36 +395,42 @@ func (s *Service) Instantiate(
 		objs.PricingRuleIDs = append(objs.PricingRuleIDs, created.ID)
 	}
 
-	// Plan — references the meters created above by ID, not key.
-	// Existing plan codes are ADOPTED only when the existing plan matches the
-	// recipe's declared spec (conformance gate, ADR-083); a divergent plan is
-	// refused, never silently wired up. The operator's plan (possibly carrying
-	// live subs) is never mutated either way.
+	// Plan (operator-owned business config, ADR-084) — the recipe holds NO
+	// standing claim on the plan's money-config. A pre-existing plan (by code)
+	// is left UNTOUCHED and reported as reused (never conform-checked, never
+	// refused, never mutated); an absent plan is created as a starter honoring
+	// the base_amount_cents + base_bill_timing instantiate params. Because the
+	// recipe declares no ongoing plan spec, an operator-edited own plan and a
+	// foreign collision get identical treatment — the case-3/case-4 distinction
+	// (and the provenance it needed) evaporates.
 	existingPlans, err := s.pricing.ListPlans(ctx, tenantID)
 	if err != nil {
-		return domain.RecipeInstance{}, fmt.Errorf("list plans for adoption check: %w", err)
+		return domain.RecipeInstance{}, fmt.Errorf("list plans: %w", err)
 	}
 	planByCode := make(map[string]domain.Plan, len(existingPlans))
 	for _, ep := range existingPlans {
 		planByCode[ep.Code] = ep
 	}
+	_, suppliedBase := overrides["base_amount_cents"]
+	_, suppliedTiming := overrides["base_bill_timing"]
 	for _, p := range rendered.Plans {
+		if existing, ok := planByCode[p.Code]; ok {
+			objs.PlanIDs = append(objs.PlanIDs, existing.ID)
+			timing := string(existing.BaseBillTiming)
+			if timing == "" {
+				timing = string(domain.BillInArrears)
+			}
+			warn := fmt.Sprintf("plan %q already existed and was used as-is (base fee $%.2f, %s)",
+				existing.Code, float64(existing.BaseAmountCents)/100, timing)
+			if suppliedBase || suppliedTiming {
+				warn += "; the base fee / timing you supplied were NOT applied — edit the plan or instantiate with a different plan_code"
+			}
+			warnings = append(warnings, warn)
+			continue
+		}
 		meterIDs := make([]string, 0, len(p.MeterKeys))
 		for _, mk := range p.MeterKeys {
 			meterIDs = append(meterIDs, meterIDByKey[mk])
-		}
-		if existing, ok := planByCode[p.Code]; ok {
-			// Adopt only if money-affecting config matches; else refuse. A
-			// divergent plan (e.g. in_advance $99 vs the recipe's in_arrears
-			// $0) would silently bill customers under a plan the operator never
-			// declared. The tx rolls back everything created so far; the
-			// existing plan is never touched.
-			if diffs := planConformanceDiff(existing, p, meterIDs); len(diffs) > 0 {
-				return domain.RecipeInstance{}, errs.AlreadyExists("plan_code",
-					fmt.Sprintf("plan %q already exists with billing settings that don't match recipe %q (%s) — reconcile the plan or instantiate with a different plan_code", p.Code, recipeKey, formatDiffs(diffs)))
-			}
-			objs.PlanIDs = append(objs.PlanIDs, existing.ID)
-			continue
 		}
 		created, err := s.pricing.CreatePlanTx(ctx, tx, tenantID, domain.Plan{
 			Code:            p.Code,
@@ -427,6 +439,7 @@ func (s *Service) Instantiate(
 			BillingInterval: p.BillingInterval,
 			Status:          domain.PlanActive,
 			BaseAmountCents: p.BaseAmountCents,
+			BaseBillTiming:  p.BaseBillTiming,
 			MeterIDs:        meterIDs,
 		})
 		if err != nil {
@@ -482,6 +495,7 @@ func (s *Service) Instantiate(
 	if err := tx.Commit(); err != nil {
 		return domain.RecipeInstance{}, err
 	}
+	inst.Warnings = warnings
 	return inst, nil
 }
 

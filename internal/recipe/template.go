@@ -73,6 +73,18 @@ func renderRecipe(r domain.Recipe, overrides map[string]any) (domain.Recipe, err
 		if out.Plans[i].Currency, err = apply(p.Currency); err != nil {
 			return domain.Recipe{}, err
 		}
+		// Typed plan-shaping overrides (base fee + timing) — applied directly
+		// (these are an int and an enum, not string-templated), and ONLY when
+		// the caller SUPPLIED them, so the recipe's YAML plan defaults stand
+		// otherwise (ADR-084). merged holds the validated value.
+		if _, supplied := overrides["base_amount_cents"]; supplied {
+			out.Plans[i].BaseAmountCents = toInt64(merged["base_amount_cents"])
+		}
+		if _, supplied := overrides["base_bill_timing"]; supplied {
+			if s, ok := merged["base_bill_timing"].(string); ok {
+				out.Plans[i].BaseBillTiming = domain.BillTiming(s)
+			}
+		}
 	}
 
 	if out.SampleData != nil {
@@ -116,6 +128,23 @@ func mergeOverrides(r domain.Recipe, overrides map[string]any) (map[string]any, 
 		out[ov.Key] = v
 	}
 	return out, nil
+}
+
+// toInt64 coerces an override value (YAML int, JSON float64, or int/int32) to
+// int64. validateOverrideValue already asserts the "int" type upstream, so the
+// default 0 is only reached for genuinely-absent values.
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case float64:
+		return int64(n)
+	}
+	return 0
 }
 
 func validateOverrideValue(ov domain.RecipeOverride, v any) error {

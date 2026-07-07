@@ -83,6 +83,7 @@ type rawPlan struct {
 	Currency        string   `yaml:"currency"`
 	BillingInterval string   `yaml:"billing_interval"`
 	BaseAmountCents int64    `yaml:"base_amount_cents"`
+	BaseBillTiming  string   `yaml:"base_bill_timing"`
 	Meters          []string `yaml:"meters"`
 }
 
@@ -282,7 +283,7 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 		}
 		out.Plans = append(out.Plans, domain.RecipePlan{
 			Code: p.Code, Name: p.Name, Currency: p.Currency, BillingInterval: interval,
-			BaseAmountCents: p.BaseAmountCents, MeterKeys: p.Meters,
+			BaseAmountCents: p.BaseAmountCents, BaseBillTiming: domain.BillTiming(p.BaseBillTiming), MeterKeys: p.Meters,
 		})
 	}
 

@@ -1,7 +1,7 @@
 # ADR-083: Recipe adoption conformance gate — refuse to adopt a divergent plan/meter, never silently
 
 **Date:** 2026-07-07
-**Status:** Accepted
+**Status:** Superseded by [ADR-084](084-recipe-plan-operator-owned.md) — the plan conformance gate below was removed the same day (the plan is operator-owned; it is never conform-checked). The meter-aggregation half survives under ADR-084's ownership principle. Kept for the record; the diagnosis of the original silent-adoption bug still holds.
 
 ## Context
 

@@ -213,8 +213,8 @@ Walks the wedge demo path: instantiate an AI-native recipe → set up a customer
 Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.1 Recipe + plan
-- [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
-- [ ] Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
+- [ ] `POST /v1/recipes/anthropic_style/instantiate {"overrides":{"base_amount_cents":9900,"base_bill_timing":"in_advance"}}` → 201. Creates ONE `tokens` meter + the `ai_api_pro` plan (in-advance $99/mo, per-`{model, token_type}` pricing rules — ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model) in **one call** (ADR-084 — no follow-up PATCH). Omitting the two overrides yields the usage-only $0 / in_arrears default.
+- [ ] *(Optional)* Pricing → the `ai_api_pro` plan already shows **Base fee billed = At start of period**, $99/mo. Editing it here is the same operator-owned plan edit — the recipe holds no claim on it.
 
 ### S2.2 Customer + day-1 invoice
 - [ ] Create customer `external_id=cus_demo_ai` with PM `4242 4242 4242 4242`. Note its internal `id` (`cus_…`) from the response — used as `customer_id` below.
@@ -661,7 +661,10 @@ whole cents — only the RATE gains precision.
 - [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — i.e. `0.0003`¢/unit × 1,000,000 units = `300`¢ (not `0`, which is what rounding the rate to int cents would give; not `300000000`, which is billing `300`¢ *per unit*).
 - [ ] **Unit Price column shows the full-precision rate, not `$0.00` (ADR-054)**: that usage line's Unit Price reads the effective rate (`$0.000003`), not `$0.00`, on the invoice detail page, the PDF, and the public hosted page — `GET /v1/invoices/{id}` line carries `unit_amount_decimal` (e.g. `"0.0003"` cents) alongside the whole-cent `unit_amount_cents`. Quantity × Unit Price reconciles with Amount. (Try the screenshot case too: 1,000 units billed `$3.00` → Unit Price `$0.003`, not `$0.00`.)
 - [ ] Instantiate `anthropic_style` → `c35_sonnet_input` stored as `0.0003` cents/token; 1,000,000 input tokens bill `300`¢, not `$3,000,000`.
-- [ ] **Recipe adoption conformance gate (ADR-083):** on a fresh tenant, create a plan with code `ai_api_pro` but `base_bill_timing=in_advance` (or a non-zero `base_amount_cents`), then `POST /v1/recipes/anthropic_style/instantiate` → **409** naming the diverging field (e.g. *"base fee timing: recipe wants in_arrears, existing is in_advance"*), and the recipe graph does NOT persist (`meters`/`rating_rule_versions`/`recipe_instances` stay at 0 — the tx rolls back) and the operator's plan is unchanged. Reconcile the plan (or instantiate with a different `plan_code`) → instantiate succeeds. *(automated real-PG: `TestService_Instantiate_RefusesDivergentPlan`)*
+- [ ] **Recipe adoption is operator-owned (ADR-084):**
+  - **Plan reused, not refused:** on a fresh tenant, create a plan with code `ai_api_pro` but `base_bill_timing=in_advance` (or a non-zero `base_amount_cents`), then `POST /v1/recipes/anthropic_style/instantiate` → **201**. The existing plan is used **as-is** (unchanged), the recipe graph is built around it, and the response carries a `warnings` entry ("plan …already existed and was used as-is…"). Supplying `base_amount_cents`/`base_bill_timing` on that call adds "…the base fee / timing you supplied were NOT applied…". *(automated real-PG: `TestService_Instantiate_ReusesExistingPlan`)*
+  - **One-call base plan:** on a fresh tenant, `instantiate` with `{"base_amount_cents":9900,"base_bill_timing":"in_advance"}` → the `ai_api_pro` plan is created in-advance $99 in **one call** (no follow-up PATCH). *(automated: `TestService_Instantiate_OneCallInAdvancePlan`)*
+  - **Meter aggregation still gated:** pre-create a `tokens` meter with a different `aggregation` (e.g. `max`) → instantiate → **409** (reference-data conflict), tx rolls back. *(automated: `TestService_Instantiate_RefusesDivergentMeter`)*
 
 ## FLOW B3: Idempotency
 
