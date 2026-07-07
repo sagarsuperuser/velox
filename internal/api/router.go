@@ -762,7 +762,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the customer's test_clock_id (the authoritative write-time signal, like
 	// the engine's sub.TestClockID for cycle invoices). Without it, manual
 	// invoices never carry the simulated badge.
-	invoiceSvc.SetCustomerClockReader(customerStore)
+	invoiceSvc.SetCustomerReader(customerStore)
 	// Tenant net-terms fallback: a manual invoice created without an explicit
 	// net_payment_term_days inherits the tenant's configured default (then 30),
 	// mirroring the cycle engine. settingsStore satisfies TenantSettingsReader.

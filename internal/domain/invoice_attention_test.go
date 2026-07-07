@@ -431,7 +431,9 @@ func TestClassifyInvoiceAttention_NoPaymentMethod(t *testing.T) {
 	inv.PaymentStatus = PaymentPending
 	inv.UpdatedAt = time.Now()
 
-	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false})
+	// Customer HAS an email → the engine emailed a setup link, so the banner
+	// claims it and offers both a resend and the customer-page path.
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false, CustomerHasEmail: true})
 	if att == nil {
 		t.Fatalf("expected attention")
 	}
@@ -448,8 +450,54 @@ func TestClassifyInvoiceAttention_NoPaymentMethod(t *testing.T) {
 	if !codes[AttentionActionAddPaymentMethod] {
 		t.Errorf("no_payment_method must offer add_payment_method, got %+v", att.Actions)
 	}
+	if !codes[AttentionActionSendReminder] {
+		t.Errorf("has-email no_payment_method must offer a resend, got %+v", att.Actions)
+	}
+	if !strings.Contains(att.Message, "has been emailed a setup link") {
+		t.Errorf("has-email variant must state the link was emailed, got %q", att.Message)
+	}
 	if att.NextAttemptAt != nil {
 		t.Errorf("no_payment_method must not set NextAttemptAt — engine won't auto-charge without PM, got %v", att.NextAttemptAt)
+	}
+}
+
+// TestClassifyInvoiceAttention_NoPaymentMethod_NoEmail pins the honest variant
+// for a customer with no email on file: the engine's setup-link email skips
+// silently (no address), so the banner must NOT claim it was emailed, must NOT
+// offer a resend that can't send, and must point the operator at the copy-a-
+// link / add-an-email path (add_payment_method). Zero-value CustomerHasEmail
+// (the conservative default) selects this variant.
+func TestClassifyInvoiceAttention_NoPaymentMethod_NoEmail(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false, CustomerHasEmail: false})
+	if att == nil {
+		t.Fatalf("expected attention")
+	}
+	if att.Reason != AttentionReasonNoPaymentMethod {
+		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonNoPaymentMethod)
+	}
+	if strings.Contains(att.Message, "has been emailed") {
+		t.Errorf("no-email variant must NOT claim a setup link was emailed, got %q", att.Message)
+	}
+	// Honest under uncertainty: states engine behavior ("only when … an email
+	// address on file"), never asserts this customer's email state — so it's
+	// correct whether the address is confirmably absent or merely undetermined.
+	if !strings.Contains(att.Message, "only when the customer has an email address on file") {
+		t.Errorf("no-email variant must state the conditional engine behavior, got %q", att.Message)
+	}
+	codes := make(map[AttentionAction]bool)
+	for _, a := range att.Actions {
+		codes[a.Code] = true
+	}
+	if !codes[AttentionActionAddPaymentMethod] {
+		t.Errorf("no-email variant must offer add_payment_method (copy link / add email), got %+v", att.Actions)
+	}
+	if codes[AttentionActionSendReminder] {
+		t.Errorf("no-email variant must NOT offer a resend that can't send, got %+v", att.Actions)
 	}
 }
 
