@@ -123,12 +123,3 @@ webhook:
     - subscription.item.updated
     - subscription.canceled
   url_placeholder: 'https://example.com/webhooks/velox'
-
-sample_data:
-  customer:
-    external_id: demo-customer
-    display_name: Demo Customer
-    email: demo@example.com
-  subscription:
-    plan: '{{ .plan_code }}'
-    trial_days: 14

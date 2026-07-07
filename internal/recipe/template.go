@@ -75,14 +75,6 @@ func renderRecipe(r domain.Recipe, overrides map[string]any) (domain.Recipe, err
 		}
 	}
 
-	if out.SampleData != nil {
-		sd := *r.SampleData
-		out.SampleData = &sd
-		if out.SampleData.Subscription.PlanCode, err = apply(sd.Subscription.PlanCode); err != nil {
-			return domain.Recipe{}, err
-		}
-	}
-
 	return out, nil
 }
 
@@ -202,11 +194,6 @@ func validateTemplateReferences(r domain.Recipe, allowed map[string]struct{}) er
 			return err
 		}
 		if err := check(p.Currency, fmt.Sprintf("plans[%d].currency", i)); err != nil {
-			return err
-		}
-	}
-	if r.SampleData != nil {
-		if err := check(r.SampleData.Subscription.PlanCode, "sample_data.subscription.plan"); err != nil {
 			return err
 		}
 	}

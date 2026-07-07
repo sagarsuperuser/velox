@@ -137,43 +137,6 @@ func TestService_Instantiate_BuildsFullGraph(t *testing.T) {
 	}
 }
 
-// TestService_Instantiate_Idempotent verifies the second Instantiate call
-// for the same (tenant, recipe_key) returns AlreadyExists with the
-// existing instance ID and creates no new rows. The pre-check inside the
-// tx is the first line of defence; the UNIQUE index in postgres_integration
-// is the second.
-func TestService_Instantiate_Idempotent(t *testing.T) {
-	f := newRecipeFixture(t)
-	tenantID := testutil.CreateTestTenant(t, f.db, "idempotent install")
-	ctx := postgres.WithLivemode(context.Background(), false)
-
-	first, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
-	if err != nil {
-		t.Fatalf("first Instantiate: %v", err)
-	}
-
-	_, err = f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
-	if !errors.Is(err, errs.ErrAlreadyExists) {
-		t.Fatalf("expected ErrAlreadyExists on second instantiate, got %v", err)
-	}
-
-	// No second graph was built — counts unchanged (anthropic_style v3 = 35 rules).
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
-		t.Errorf("rating_rule_versions after duplicate Instantiate: got %d, want 35", n)
-	}
-	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
-		t.Errorf("recipe_instances after duplicate Instantiate: got %d, want 1", n)
-	}
-
-	got, err := f.store.GetByKey(ctx, tenantID, "anthropic_style")
-	if err != nil {
-		t.Fatalf("GetByKey: %v", err)
-	}
-	if got.ID != first.ID {
-		t.Errorf("instance ID drifted: got %q, want %q", got.ID, first.ID)
-	}
-}
-
 // failingPricingWriter wraps the real pricing writer and fails on the
 // nth call to UpsertMeterPricingRuleTx. Used to inject a mid-graph failure
 // so the rollback path is exercised against real DB rows.
@@ -309,102 +272,59 @@ func TestService_Instantiate_PreviewParity(t *testing.T) {
 	}
 }
 
-// TestService_Uninstall_RemovesInstanceOnly proves the documented v1
-// behaviour: Uninstall deletes the recipe_instance row but leaves the
-// resources the recipe created (plans, meters, dunning policy, webhook
-// endpoint) alone — operators own them once they exist, and silent
-// cascade could lose live billing data.
-func TestService_Uninstall_RemovesInstanceOnly(t *testing.T) {
+// TestService_Instantiate_Idempotent proves apply is an idempotent EVENT
+// (ADR-085): a second apply on an already-installed recipe is a no-op that
+// returns the EXISTING instance — never a 409, never a duplicate plan. The
+// badge is the idempotency gate; it short-circuits before any write.
+func TestService_Instantiate_Idempotent(t *testing.T) {
 	f := newRecipeFixture(t)
-	tenantID := testutil.CreateTestTenant(t, f.db, "uninstall keeps resources")
-	ctx := postgres.WithLivemode(context.Background(), false)
-
-	inst, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
-	if err != nil {
-		t.Fatalf("Instantiate: %v", err)
-	}
-
-	if err := f.svc.Uninstall(ctx, tenantID, inst.ID); err != nil {
-		t.Fatalf("Uninstall: %v", err)
-	}
-
-	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 0 {
-		t.Errorf("recipe_instances after Uninstall: got %d, want 0", n)
-	}
-	// The downstream resources stick around.
-	if n := countRows(t, f.db, tenantID, "plans"); n != 1 {
-		t.Errorf("plans after Uninstall: got %d, want 1 (resources persist)", n)
-	}
-	if n := countRows(t, f.db, tenantID, "meters"); n != 1 {
-		t.Errorf("meters after Uninstall: got %d, want 1 (resources persist)", n)
-	}
-	// anthropic_style v3 (2026-07-05 refresh): 7 models × 5 token roles = 35 rating rules.
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != 35 {
-		t.Errorf("rating_rule_versions after Uninstall: got %d, want 35 (resources persist)", n)
-	}
-}
-
-// TestService_ReinstallAfterUninstall_AdoptsExistingGraph: Uninstall
-// keeps the created objects (the operator owns them), so reinstall must
-// RECONNECT to them by natural key — pre-ADR-070 it 409ed on the first
-// hardcoded-Version:1 rating rule ("the operator is told they own the
-// objects, then punished for owning them"). Adoption never duplicates:
-// object counts stay flat across the round trip.
-func TestService_ReinstallAfterUninstall_AdoptsExistingGraph(t *testing.T) {
-	f := newRecipeFixture(t)
-	tenantID := testutil.CreateTestTenant(t, f.db, "reinstall adopt")
+	tenantID := testutil.CreateTestTenant(t, f.db, "idempotent apply")
 	ctx := postgres.WithLivemode(context.Background(), false)
 
 	first, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
 	if err != nil {
-		t.Fatalf("first Instantiate: %v", err)
+		t.Fatalf("first apply: %v", err)
 	}
-	rulesAfterFirst := countRows(t, f.db, tenantID, "rating_rule_versions")
-	metersAfterFirst := countRows(t, f.db, tenantID, "meters")
 	plansAfterFirst := countRows(t, f.db, tenantID, "plans")
-
-	if err := f.svc.Uninstall(ctx, tenantID, first.ID); err != nil {
-		t.Fatalf("Uninstall: %v", err)
-	}
+	metersAfterFirst := countRows(t, f.db, tenantID, "meters")
+	rulesAfterFirst := countRows(t, f.db, tenantID, "rating_rule_versions")
 
 	second, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
 	if err != nil {
-		t.Fatalf("reinstall after uninstall: %v", err)
+		t.Fatalf("re-apply must be a no-op, not an error: %v", err)
 	}
-	if second.ID == first.ID {
-		t.Error("reinstall returned the deleted instance id")
+	if second.ID != first.ID {
+		t.Errorf("re-apply returned a new instance id %q, want the existing %q (idempotent)", second.ID, first.ID)
 	}
 
-	// Adoption, not duplication: the graph is reused, not rebuilt.
-	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != rulesAfterFirst {
-		t.Errorf("rating_rule_versions after reinstall: got %d, want %d (adopted, not republished)", n, rulesAfterFirst)
-	}
-	if n := countRows(t, f.db, tenantID, "meters"); n != metersAfterFirst {
-		t.Errorf("meters after reinstall: got %d, want %d", n, metersAfterFirst)
+	// No duplicate objects — the badge gated the re-apply before any write.
+	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
+		t.Errorf("recipe_instances after re-apply: got %d, want 1", n)
 	}
 	if n := countRows(t, f.db, tenantID, "plans"); n != plansAfterFirst {
-		t.Errorf("plans after reinstall: got %d, want %d", n, plansAfterFirst)
+		t.Errorf("plans after re-apply: got %d, want %d (no duplicate plan)", n, plansAfterFirst)
 	}
-	if n := countRows(t, f.db, tenantID, "recipe_instances"); n != 1 {
-		t.Errorf("recipe_instances after reinstall: got %d, want 1", n)
+	if n := countRows(t, f.db, tenantID, "meters"); n != metersAfterFirst {
+		t.Errorf("meters after re-apply: got %d, want %d", n, metersAfterFirst)
+	}
+	if n := countRows(t, f.db, tenantID, "rating_rule_versions"); n != rulesAfterFirst {
+		t.Errorf("rating_rule_versions after re-apply: got %d, want %d", n, rulesAfterFirst)
 	}
 }
 
-// TestService_Instantiate_RefusesDivergentPlan is the conformance-gate
-// regression (ADR-083): when a plan with the recipe's plan_code already exists
-// but its billing config contradicts the recipe (in_advance $99 vs the recipe's
-// in_arrears $0), Instantiate must REFUSE rather than silently wire the recipe's
-// meters/rules onto it — and the whole tx must roll back, leaving the operator's
-// plan untouched. Mutation-verify: drop the plan conformance gate (adopt
-// unconditionally) and this fails — the recipe adopts the divergent plan and
-// persists its graph.
-func TestService_Instantiate_RefusesDivergentPlan(t *testing.T) {
+// TestService_Instantiate_GeneratesFreshPlanOnCollision proves the born-unique
+// plan model (ADR-085): a plan already holding the recipe's default plan_code —
+// with billing config the recipe never declares — does NOT block apply and is
+// NEVER adopted or mutated. The recipe generates a fresh plan under a uniquified
+// code (ai_api_pro_2), wired to the tokens meter (so usage bills), and leaves
+// the operator's plan untouched. Mutation-verify: reinstate adopt-by-code and
+// this fails — the recipe would 409 or wire its graph onto the divergent plan.
+func TestService_Instantiate_GeneratesFreshPlanOnCollision(t *testing.T) {
 	f := newRecipeFixture(t)
 	ctx := postgres.WithLivemode(context.Background(), false)
-	tenantID := testutil.CreateTestTenant(t, f.db, "divergent plan refuse")
+	tenantID := testutil.CreateTestTenant(t, f.db, "born-unique plan")
 
-	// Operator already has a plan under the recipe's default plan_code, but
-	// with billing config the recipe never declares.
+	// Operator already has a foreign plan under the recipe's default plan_code.
 	pre, err := f.pricingSvc.CreatePlan(ctx, tenantID, pricing.CreatePlanInput{
 		Code: "ai_api_pro", Name: "Operator Pro", Currency: "USD",
 		BillingInterval: domain.BillingMonthly, BaseAmountCents: 9900,
@@ -414,27 +334,74 @@ func TestService_Instantiate_RefusesDivergentPlan(t *testing.T) {
 		t.Fatalf("pre-create plan: %v", err)
 	}
 
-	_, err = f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
-	if !errors.Is(err, errs.ErrAlreadyExists) {
-		t.Fatalf("expected refusal (ErrAlreadyExists) adopting a divergent plan, got %v", err)
+	if _, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{}); err != nil {
+		t.Fatalf("apply must succeed by generating a fresh plan, not refuse: %v", err)
 	}
 
-	// Mutation-verify: the entire tx rolled back — nothing the recipe would
-	// have created persisted.
-	for _, tbl := range []string{"recipe_instances", "rating_rule_versions", "meters", "meter_pricing_rules", "dunning_policies", "webhook_endpoints"} {
-		if n := countRows(t, f.db, tenantID, tbl); n != 0 {
-			t.Errorf("%s after refusal: got %d, want 0 (tx must roll back)", tbl, n)
+	// Two plans now: the operator's ai_api_pro + the recipe's uniquified one.
+	plans, err := f.pricingSvc.ListPlans(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("ListPlans: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("plans: got %d, want 2 (operator's + recipe's fresh)", len(plans))
+	}
+	var recipePlan domain.Plan
+	for _, p := range plans {
+		if p.ID != pre.ID {
+			recipePlan = p
 		}
 	}
-	// Only the operator's pre-existing plan remains, unchanged.
-	if n := countRows(t, f.db, tenantID, "plans"); n != 1 {
-		t.Errorf("plans after refusal: got %d, want 1 (operator's plan only)", n)
+	if recipePlan.Code != "ai_api_pro_2" {
+		t.Errorf("generated plan code: got %q, want ai_api_pro_2 (uniquified, incumbent never renamed)", recipePlan.Code)
 	}
+	if len(recipePlan.MeterIDs) == 0 {
+		t.Error("generated plan must be wired to the tokens meter — else usage silently bills $0")
+	}
+
+	// The operator's plan is untouched.
 	got, err := f.pricingSvc.GetPlan(ctx, tenantID, pre.ID)
 	if err != nil {
 		t.Fatalf("GetPlan: %v", err)
 	}
-	if got.BaseBillTiming != domain.BillInAdvance || got.BaseAmountCents != 9900 {
-		t.Errorf("operator's plan was mutated: timing=%s base=%d, want in_advance/9900 (never touched)", got.BaseBillTiming, got.BaseAmountCents)
+	if got.Code != "ai_api_pro" || got.BaseBillTiming != domain.BillInAdvance || got.BaseAmountCents != 9900 {
+		t.Errorf("operator's plan was mutated: code=%s timing=%s base=%d, want ai_api_pro/in_advance/9900 (never touched)", got.Code, got.BaseBillTiming, got.BaseAmountCents)
+	}
+}
+
+// TestService_Instantiate_RefusesDivergentMeter proves the one loud guard
+// (ADR-085): a same-key meter whose AGGREGATION contradicts the recipe (max vs
+// the recipe's sum) is refused — adopting it would silently mis-roll-up usage.
+// The whole tx rolls back; the operator's meter is untouched and nothing the
+// recipe would create persists. Mutation-verify: drop meterConformanceDiff and
+// this fails — the recipe wires its rules onto the mis-aggregating meter.
+func TestService_Instantiate_RefusesDivergentMeter(t *testing.T) {
+	f := newRecipeFixture(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, f.db, "divergent meter refuse")
+
+	// Operator already has a `tokens` meter — but counting max, not the
+	// recipe's sum.
+	if _, err := f.pricingSvc.CreateMeter(ctx, tenantID, pricing.CreateMeterInput{
+		Key: "tokens", Name: "Tokens", Unit: "tokens", Aggregation: "max",
+	}); err != nil {
+		t.Fatalf("pre-create meter: %v", err)
+	}
+
+	_, err := f.svc.Instantiate(ctx, tenantID, "anthropic_style", nil, InstantiateOptions{})
+	if !errors.Is(err, errs.ErrAlreadyExists) {
+		t.Fatalf("expected refusal (ErrAlreadyExists) adopting a divergent-aggregation meter, got %v", err)
+	}
+
+	// Mutation-verify: the entire tx rolled back — nothing the recipe would
+	// have created persisted.
+	for _, tbl := range []string{"recipe_instances", "rating_rule_versions", "plans", "meter_pricing_rules", "dunning_policies", "webhook_endpoints"} {
+		if n := countRows(t, f.db, tenantID, tbl); n != 0 {
+			t.Errorf("%s after refusal: got %d, want 0 (tx must roll back)", tbl, n)
+		}
+	}
+	// Only the operator's pre-existing meter remains, unchanged.
+	if n := countRows(t, f.db, tenantID, "meters"); n != 1 {
+		t.Errorf("meters after refusal: got %d, want 1 (operator's meter only)", n)
 	}
 }

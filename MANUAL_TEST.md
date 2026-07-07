@@ -664,7 +664,8 @@ whole cents — only the RATE gains precision.
 - [ ] Meter on that rule + customer with 1,000,000 usage units + cycle close → usage line `amount_cents=300` ($3.00) exactly — i.e. `0.0003`¢/unit × 1,000,000 units = `300`¢ (not `0`, which is what rounding the rate to int cents would give; not `300000000`, which is billing `300`¢ *per unit*).
 - [ ] **Unit Price column shows the full-precision rate, not `$0.00` (ADR-054)**: that usage line's Unit Price reads the effective rate (`$0.000003`), not `$0.00`, on the invoice detail page, the PDF, and the public hosted page — `GET /v1/invoices/{id}` line carries `unit_amount_decimal` (e.g. `"0.0003"` cents) alongside the whole-cent `unit_amount_cents`. Quantity × Unit Price reconciles with Amount. (Try the screenshot case too: 1,000 units billed `$3.00` → Unit Price `$0.003`, not `$0.00`.)
 - [ ] Instantiate `anthropic_style` → `c35_sonnet_input` stored as `0.0003` cents/token; 1,000,000 input tokens bill `300`¢, not `$3,000,000`.
-- [ ] **Recipe adoption conformance gate (ADR-083):** on a fresh tenant, create a plan with code `ai_api_pro` but `base_bill_timing=in_advance` (or a non-zero `base_amount_cents`), then `POST /v1/recipes/anthropic_style/instantiate` → **409** naming the diverging field (e.g. *"base fee timing: recipe wants in_arrears, existing is in_advance"*), and the recipe graph does NOT persist (`meters`/`rating_rule_versions`/`recipe_instances` stay at 0 — the tx rolls back) and the operator's plan is unchanged. Reconcile the plan (or instantiate with a different `plan_code`) → instantiate succeeds. *(automated real-PG: `TestService_Instantiate_RefusesDivergentPlan`)*
+- [ ] **Recipe apply never adopts a colliding plan — it mints a born-unique one (ADR-085, supersedes ADR-083):** on a fresh tenant, hand-create a plan with code `ai_api_pro` (any config, e.g. `base_bill_timing=in_advance`), then `POST /v1/recipes/anthropic_style/instantiate` → **201**. The recipe's generated plan lands at `ai_api_pro_2` (first free `<code>_N`), fully wired to the recipe's meter/rules; the hand-created `ai_api_pro` plan is untouched (not mutated, not renamed, not read for comparison) — there is no 409 and no conformance check on plans anymore.
+- [ ] **Meter aggregation-mismatch still refuses loud (ADR-085 meter guard, the one remaining adoption gate):** on a fresh tenant, hand-create a meter with key `tokens` and `aggregation=max` (the recipe declares `sum`), then instantiate `anthropic_style` → **409** naming the diverging field (*"usage aggregation: recipe wants sum, existing is max"*), and nothing persists — any rating rules adopted/created earlier in the same call roll back with it (`rating_rule_versions`/`recipe_instances` stay at their pre-call count). Fix the meter's aggregation, or use a fresh tenant, → instantiate succeeds.
 
 ## FLOW B3: Idempotency
 
@@ -939,11 +940,11 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 - [ ] **Catalog currency (2026-07-05 refresh):** anthropic_style prices the 4.5 generation (opus/sonnet/haiku 4.5) plus legacy 3.x (35 rules total); openai_style prices the gpt-5.x/gpt-4.1 families plus legacy; replicate_style rates are per-second retail (A100 `0.14`¢/s — not the old 14¢/s) with `sum` aggregation over per-interval deltas. Every model family the LiteLLM mapper emits has a recipe rule (CI-locked by `TestModelFamilies_EveryTokenPricedByARecipe`).
 - [ ] Repeat for all 3 recipes — each completes <500ms. (Instantiate **is** audit-logged via the catch-all audit middleware — only `preview` is `MarkSkip`'d; created resources carry `created_by=<key_id>`.)
 
-## FLOW R3: Per-tenant idempotency
+## FLOW R3: Idempotent re-apply, no uninstall (ADR-085)
 
-- [ ] Instantiate same recipe twice → second call 409 `recipe already instantiated`.
-- [ ] Different tenant, same recipe → 201.
-- [ ] `DELETE /v1/recipes/instances/{id}` removes the instance row only — products/prices/meters/webhook/dunning PERSIST (no cascade; see R5).
+- [ ] Instantiate same recipe twice → second call is a **no-op**: `201` with the SAME `id` and `created_objects` as the first call (not a fresh instance, never a 409). Object counts (`meters`/`rating_rule_versions`/`plans`) are unchanged by the second call — no duplicate plan.
+- [ ] Different tenant, same recipe → 201 (fresh instance, its own new objects).
+- [ ] No uninstall exists: there is no `DELETE` route under `/v1/recipes/instances` (removed along with `Force` and the `seed_sample_data` scaffolding) — the badge (`recipe_instances` row) is a permanent record and is never deleted by recipe machinery. To retire the generated plan, archive it via `PATCH /v1/plans/{id}` (existing plan-domain verb) — the badge still names it afterward, truthfully, as what this recipe created.
 
 ## FLOW R4: Atomic rollback
 
@@ -953,7 +954,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 ## FLOW R5: Dashboard UI
 
 - [ ] `/recipes` → 3 cards (anthropic_style, openai_style, replicate_style). Preview opens side panel; Instantiate dialog names side-effects and redirects to `/products` on confirm.
-- [ ] Uninstall from the Installed card → `recipe_instances` row drops; plans/meters/etc. stay (no cascade). Re-install without renaming originals → 422 name collision; re-install after archiving originals → succeeds.
+- [ ] Once installed, the card shows "Installed \<date\> · \<instance id\>" and the dialog's CTA reads "Already installed" (disabled) — no Uninstall action anywhere in the UI.
 
 ---
 

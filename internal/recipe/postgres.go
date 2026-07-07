@@ -75,30 +75,6 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Rec
 	return out, nil
 }
 
-func (s *PostgresStore) GetByID(ctx context.Context, tenantID, id string) (domain.RecipeInstance, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.RecipeInstance{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	row := tx.QueryRowContext(ctx, `
-		SELECT `+recipeInstanceColumns+`
-		FROM recipe_instances WHERE id = $1
-	`, id)
-	inst, err := scanInstance(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.RecipeInstance{}, errs.ErrNotFound
-	}
-	if err != nil {
-		return domain.RecipeInstance{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.RecipeInstance{}, err
-	}
-	return inst, nil
-}
-
 func (s *PostgresStore) GetByKeyTx(ctx context.Context, tx *sql.Tx, tenantID, recipeKey string) (domain.RecipeInstance, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT `+recipeInstanceColumns+`
@@ -137,27 +113,6 @@ func (s *PostgresStore) CreateTx(ctx context.Context, tx *sql.Tx, inst domain.Re
 		return domain.RecipeInstance{}, err
 	}
 	return out, nil
-}
-
-func (s *PostgresStore) DeleteByKeyTx(ctx context.Context, tx *sql.Tx, tenantID, recipeKey string) error {
-	_, err := tx.ExecContext(ctx, `
-		DELETE FROM recipe_instances WHERE tenant_id = $1 AND recipe_key = $2
-	`, tenantID, recipeKey)
-	return err
-}
-
-func (s *PostgresStore) DeleteByIDTx(ctx context.Context, tx *sql.Tx, tenantID, id string) error {
-	res, err := tx.ExecContext(ctx, `
-		DELETE FROM recipe_instances WHERE tenant_id = $1 AND id = $2
-	`, tenantID, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return errs.ErrNotFound
-	}
-	return nil
 }
 
 // rowScanner abstracts QueryRowContext / Rows.Scan into one helper so the
