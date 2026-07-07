@@ -5,7 +5,7 @@ Velox is an open-source usage-based billing engine built in Go. It handles prici
 
 ## Architecture
 - Per-domain packages in `internal/` — each domain owns store, service, handler
-- Zero cross-domain imports between peer packages
+- No cross-domain **concrete-service/store** coupling between peer business domains: a domain never calls another domain's `Service`/`Store` directly. Allowed cross-domain imports are (a) cross-cutting infra (`auth`, `audit`, `session`), (b) shared value types / DTOs / validation helpers (chiefly `tax.*`, `subscription.ListFilter`), and (c) the `billing` coordinator, which orchestrates peers via narrow **consumer-defined** interfaces. Enforced by `internal/arch/boundaries_test.go` — a new cross-domain import edge fails the test until it's justified in the allowlist.
 - Billing engine coordinates via narrow interfaces
 - PostgreSQL with Row-Level Security for tenant isolation
 - chi/v5 for HTTP routing
