@@ -1227,6 +1227,11 @@ export interface CustomerUsageRule {
   dimension_match?: Record<string, string | number | boolean>
   quantity: string
   amount_cents: number
+  // Per-unit price in DECIMAL CENTS (nominal rate for flat rules, effective
+  // amount÷qty for tiered) — the SAME value the invoice line shows. Render with
+  // formatRate so sub-cent rates never collapse to $0.00. Absent on the
+  // FE-synthesized "__other__" catch-all bucket.
+  unit_amount_decimal?: string
 }
 
 export interface RecipeCreatesSummary {

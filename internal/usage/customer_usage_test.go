@@ -314,6 +314,68 @@ func TestCustomerUsageService_Get_SingleMeterFlat(t *testing.T) {
 	}
 }
 
+// The rule row carries the NOMINAL configured rate (what the invoice shows),
+// not the effective amount÷qty — the screenshot case: a flat rule at
+// 0.0015¢/token bills 1,750 tokens at 3¢ (2.625¢ rounded), whose effective rate
+// 0.001714…¢ ≠ nominal 0.0015¢. Regression lock for Activity-panel / invoice
+// unit-price consistency (ADR-054): the FE renders this backend value instead
+// of deriving amount÷qty (which rounded 0.0015¢ down to $0.0000).
+func TestCustomerUsageService_Get_RuleRowShowsNominalUnitRate(t *testing.T) {
+	apr1 := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	may1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	customers := &fakeCustomerLookup{customers: map[string]domain.Customer{
+		"t1/cus_1": {ID: "cus_1", TenantID: "t1"},
+	}}
+	subs := &fakeSubLister{subs: []domain.Subscription{
+		{
+			ID: "sub_1", TenantID: "t1", CustomerID: "cus_1",
+			Status:                    domain.SubscriptionActive,
+			CurrentBillingPeriodStart: &apr1,
+			CurrentBillingPeriodEnd:   &may1,
+			Items:                     []domain.SubscriptionItem{{ID: "itm_1", PlanID: "pln_1", Quantity: 1}},
+		},
+	}}
+	pricing := &fakePricingReader{
+		plans: map[string]domain.Plan{
+			"pln_1": {ID: "pln_1", Name: "Pro", Currency: "USD", MeterIDs: []string{"mtr_1"}},
+		},
+		meters: map[string]domain.Meter{
+			"mtr_1": {ID: "mtr_1", Key: "tokens", Name: "Tokens", Unit: "tokens", Aggregation: "sum", RatingRuleVersionID: "rrv_1"},
+		},
+		rules: map[string]domain.RatingRuleVersion{
+			"rrv_1": {
+				ID: "rrv_1", RuleKey: "tokens_out", Mode: domain.PricingFlat,
+				Currency: "USD", FlatAmountCents: decimal.RequireFromString("0.0015"),
+			},
+		},
+		pricingMap: map[string][]domain.MeterPricingRule{},
+	}
+	store := newAggStore()
+	store.aggs["mtr_1"] = []domain.RuleAggregation{
+		{RuleID: "", RatingRuleVersionID: "rrv_1", AggregationMode: domain.AggSum, Quantity: decimal.NewFromInt(1750)},
+	}
+
+	svc := NewCustomerUsageService(NewService(store), customers, subs, pricing)
+	res, err := svc.Get(context.Background(), "t1", "cus_1", CustomerUsagePeriod{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Meters) != 1 || len(res.Meters[0].Rules) != 1 {
+		t.Fatalf("want 1 meter with 1 rule, got %d meters", len(res.Meters))
+	}
+	row := res.Meters[0].Rules[0]
+	if row.AmountCents != 3 { // 1,750 × 0.0015¢ = 2.625¢ → 3¢
+		t.Fatalf("amount_cents: got %d, want 3", row.AmountCents)
+	}
+	if row.UnitAmountDecimal == nil {
+		t.Fatal("unit_amount_decimal: nil, want nominal 0.0015")
+	}
+	if *row.UnitAmountDecimal != "0.0015" {
+		t.Errorf("unit_amount_decimal: got %q, want 0.0015 (nominal, not effective 0.0017142857…)", *row.UnitAmountDecimal)
+	}
+}
+
 func TestCustomerUsageService_Get_MultiCurrencyTotals(t *testing.T) {
 	apr1 := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	may1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)

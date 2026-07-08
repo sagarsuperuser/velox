@@ -197,6 +197,20 @@ var ErrAmountOverflow = errors.New("amount overflow: exceeds int64 range")
 // guard at the int64-cents conversion boundary.
 var maxInt64Decimal = decimal.NewFromInt(math.MaxInt64)
 
+// NominalUnitAmountDecimal is the configured per-unit rate to DISPLAY for a
+// rule, in DECIMAL CENTS: the flat rate for flat rules, nil for graduated /
+// package rules (which have no single unit rate — callers fall back to the
+// effective amount÷quantity). This is the SINGLE source the invoice line stamp
+// (billing.nominalRate) and the usage / cost-dashboard rule rows both use, so
+// every surface renders the same unit price (ADR-054).
+func NominalUnitAmountDecimal(rule RatingRuleVersion) *decimal.Decimal {
+	if rule.Mode != PricingFlat {
+		return nil
+	}
+	r := rule.FlatAmountCents
+	return &r
+}
+
 // ComputeAmountCents prices a decimal quantity through the given rating rule
 // and returns the result rounded to whole cents. Quantity is decimal so that
 // fractional usage primitives (GPU-hours, cached-token ratios) round-trip

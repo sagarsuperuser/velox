@@ -2227,11 +2227,10 @@ func (e *Engine) handleTrialState(ctx context.Context, sub domain.Subscription, 
 // Returns nil for graduated/package modes: no single nominal rate exists, so
 // those correctly fall back to EffectiveUnitAmountDecimal (the honest blend).
 func nominalRate(rule domain.RatingRuleVersion) *decimal.Decimal {
-	if rule.Mode != domain.PricingFlat {
-		return nil
-	}
-	r := rule.FlatAmountCents
-	return &r
+	// Single source: the usage Activity panel and the public cost dashboard
+	// stamp the same nominal via domain.DisplayUnitAmountDecimalFor, so the
+	// unit price can't drift between the invoice and those surfaces.
+	return domain.NominalUnitAmountDecimal(rule)
 }
 
 // buildLineItems computes the invoice line items and subtotal for one

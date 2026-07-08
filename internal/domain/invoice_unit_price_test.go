@@ -94,6 +94,40 @@ func TestDisplayUnitAmountDecimal(t *testing.T) {
 	}
 }
 
+// DisplayUnitAmountDecimalFor is the LIVE-rule twin of the invoice's
+// DisplayUnitAmountDecimal, used by the usage Activity panel and the public
+// cost dashboard so they show the SAME unit price as the invoice: the nominal
+// configured rate for flat rules (even when cent-rounding makes the effective
+// rate diverge), the effective amount÷quantity for graduated/package.
+func TestDisplayUnitAmountDecimalFor(t *testing.T) {
+	flat := RatingRuleVersion{Mode: PricingFlat, FlatAmountCents: decimal.RequireFromString("0.0015")}
+	graduated := RatingRuleVersion{Mode: PricingGraduated}
+	pkg := RatingRuleVersion{Mode: PricingPackage}
+
+	// Nominal helper: flat → configured rate; non-flat → nil.
+	if got := NominalUnitAmountDecimal(flat); got == nil || got.String() != "0.0015" {
+		t.Fatalf("NominalUnitAmountDecimal(flat): got %v, want 0.0015", got)
+	}
+	if NominalUnitAmountDecimal(graduated) != nil || NominalUnitAmountDecimal(pkg) != nil {
+		t.Fatal("NominalUnitAmountDecimal(non-flat): want nil")
+	}
+
+	// Screenshot case: 1,750 tokens billed 3¢ (2.625¢ rounded) at 0.0015¢/token.
+	// Effective is 0.001714…; the display must show the nominal 0.0015 — matching
+	// the invoice, not the FE's old amount÷qty proxy.
+	if got := DisplayUnitAmountDecimalFor(flat, 3, decimal.NewFromInt(1750)).String(); got != "0.0015" {
+		t.Errorf("flat display: got %q, want 0.0015 (nominal, not effective)", got)
+	}
+	// Graduated → no single nominal → effective amount÷qty.
+	if got := DisplayUnitAmountDecimalFor(graduated, 300, decimal.NewFromInt(1000)).String(); got != "0.3" {
+		t.Errorf("graduated display: got %q, want 0.3 (effective)", got)
+	}
+	// Zero quantity guards to zero on the effective path.
+	if got := DisplayUnitAmountDecimalFor(graduated, 300, decimal.Zero).String(); got != "0" {
+		t.Errorf("zero qty: got %q, want 0", got)
+	}
+}
+
 // The wire's unit_amount_decimal must reflect the nominal rate when stamped, so
 // the dashboard/hosted renderers show the clean rate without any FE change.
 func TestInvoiceLineItem_MarshalJSON_PrefersNominal(t *testing.T) {
