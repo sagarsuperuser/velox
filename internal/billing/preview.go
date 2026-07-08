@@ -194,6 +194,7 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 	// watermark, deferral only exists for non-additive buckets. The
 	// pre-ADR-070 warning-degradation here defeated previewMeter's own
 	// fail-loud contract for exactly the money path it matters on.
+	usageLineCount := 0
 	for _, meterID := range allMeterIDs {
 		meterLines, warnings, err := e.previewMeter(ctx, sub.TenantID, sub.CustomerID, meterID, periodStart, periodEnd)
 		if err != nil {
@@ -201,6 +202,53 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 		}
 		result.Lines = append(result.Lines, meterLines...)
 		result.Warnings = append(result.Warnings, warnings...)
+		usageLineCount += len(meterLines)
+	}
+
+	// Estimate-scope warnings (ADR-045): create_preview is a full-period
+	// estimate that does NOT replicate the two overlays the cycle scan
+	// applies — usage-cap scaling and mid-period segment proration. Rather
+	// than silently overstating a capped sub or misstating one that changed
+	// mid-period, surface the divergence on the existing warnings channel so
+	// the estimate is honest about its own scope. (Replicating the overlays
+	// is the deferred ADR-045 follow-up; this is honesty now, precision when
+	// a design partner turns the features on.)
+	//
+	// Cap: only when there's billable usage the cap could scale — a
+	// configured cap on a zero-usage period can't bind, so no warning.
+	if usageLineCount > 0 && sub.UsageCapUnits != nil && *sub.UsageCapUnits > 0 && sub.OverageAction == "block" {
+		result.Warnings = append(result.Warnings, fmt.Sprintf(
+			"Estimate excludes the subscription's usage cap (%d units per period); if billable usage exceeds the cap, the actual invoice will be lower.",
+			*sub.UsageCapUnits))
+	}
+
+	// Segment proration: a mid-LIFE change within [periodStart, periodEnd]
+	// makes the cycle bill base fees and usage per segment (each at its own
+	// rate × duration), which the full-period estimate flattens. Only plan
+	// swaps, quantity changes, and item removals qualify — the 'add' rows
+	// include every item's INITIAL creation (emitted by the subscription_items
+	// insert trigger, migration 0029), which is not a mid-period change and
+	// would false-positive the warning on every sub in its first period. Same
+	// [periodStart, periodEnd] window the cycle's segment-aware billing keys
+	// off. e.subs is always wired in production and the create_preview path;
+	// the nil-guard only spares narrow subs-less unit tests (the warning is
+	// advisory, never a number).
+	if e.subs != nil {
+		itemChanges, err := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, periodEnd)
+		if err != nil {
+			return PreviewResult{}, fmt.Errorf("preview: list item changes: %w", err)
+		}
+		midLifeChange := false
+		for _, c := range itemChanges {
+			if c.ChangeType != "add" { // plan | quantity | remove
+				midLifeChange = true
+				break
+			}
+		}
+		if midLifeChange {
+			result.Warnings = append(result.Warnings,
+				"Estimate excludes mid-period proration; the plan, quantity, or item set changed during this period, so the actual invoice may rate base fees and usage per segment.")
+		}
 	}
 
 	result.Totals = computePreviewTotals(result.Lines)
