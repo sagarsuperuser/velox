@@ -4,7 +4,8 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatCents, formatRelativeTime, getTenantTimezone } from '@/lib/api'
-import type { Invoice } from '@/lib/api'
+import type { Invoice, Customer } from '@/lib/api'
+import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
 import { Layout } from '@/components/Layout'
 import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 import { SimulatedBadge } from '@/components/TestClockBadge'
@@ -60,6 +61,29 @@ export default function DashboardPage() {
     queryKey: ['dashboard-recent-invoices'],
     queryFn: () => api.listInvoices('limit=5'),
   })
+
+  // Resolve each recent invoice's simulated "now" so the "X ago" label reads
+  // against the test clock, not wall-clock (a clock-advanced invoice's created_at
+  // is simulated). The pin is customer-level and immutable, and subs inherit it
+  // (ADR-027) — so the customer's test_clock_id resolves BOTH subscription and
+  // one-off invoices; no need to fetch subscriptions. Only the ≤5 recent
+  // invoices' customers are fetched (by id), and clocks come from the shared
+  // cached map. Non-pinned customers resolve to undefined → Date.now().
+  const recentCustomerIds = useMemo(
+    () => [...new Set((recentInvoices?.data ?? []).map(i => i.customer_id).filter(Boolean))],
+    [recentInvoices],
+  )
+  const { data: recentCustomers } = useQuery({
+    queryKey: ['dashboard-recent-invoice-customers', recentCustomerIds],
+    queryFn: () => api.listCustomers(`ids=${recentCustomerIds.join(',')}&limit=${recentCustomerIds.length}`),
+    enabled: recentCustomerIds.length > 0,
+  })
+  const customerMap = useMemo(() => {
+    const m: Record<string, Customer> = {}
+    ;(recentCustomers?.data ?? []).forEach(c => { m[c.id] = c })
+    return m
+  }, [recentCustomers])
+  const clockFrozen = useClockFrozenMap()
 
   const chartData = useMemo(() => chartRes?.data ?? [], [chartRes])
   const error = errorObj instanceof Error ? errorObj.message : errorObj ? String(errorObj) : null
@@ -294,14 +318,13 @@ export default function DashboardPage() {
                           {formatCents(inv.amount_due_cents, inv.currency)}
                         </span>
                         <span className="text-xs text-muted-foreground w-16 text-right">
-                          {/* DEFERRED (2026-07-08): on a test-clock invoice, created_at is
-                              simulated, so this reads "just now" against wall-clock. Cosmetic
-                              here — the row already carries a SimulatedBadge — and this feed
-                              fetches only invoices (no sub/customer/clock maps like the
-                              Invoices page builds), so a correct baseline needs those maps or
-                              a backend effective_now. Deferred until a design partner running
-                              clock demos is bothered by the dashboard relative-time. */}
-                          {formatRelativeTime(inv.created_at)}
+                          {/* Relative to the invoice's simulated clock when pinned
+                              (created_at is stamped in simulation time on a clock-advanced
+                              invoice); wall-clock invoices resolve to undefined → Date.now(). */}
+                          {formatRelativeTime(
+                            inv.created_at,
+                            clockNow(clockFrozen, customerMap[inv.customer_id]?.test_clock_id),
+                          )}
                         </span>
                       </div>
                     </Link>
