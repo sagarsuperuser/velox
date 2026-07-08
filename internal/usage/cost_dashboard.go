@@ -106,10 +106,11 @@ type CostDashboardMeter struct {
 }
 
 type CostDashboardRule struct {
-	RuleKey        string         `json:"rule_key"`
-	DimensionMatch map[string]any `json:"dimension_match,omitempty"`
-	Quantity       string         `json:"quantity"`
-	AmountCents    int64          `json:"amount_cents"`
+	RuleKey           string         `json:"rule_key"`
+	DimensionMatch    map[string]any `json:"dimension_match,omitempty"`
+	Quantity          string         `json:"quantity"`
+	AmountCents       int64          `json:"amount_cents"`
+	UnitAmountDecimal *string        `json:"unit_amount_decimal,omitempty"`
 }
 
 type CostDashboardTotal struct {
@@ -206,10 +207,11 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 		rules := make([]CostDashboardRule, 0, len(m.Rules))
 		for _, ru := range m.Rules {
 			rules = append(rules, CostDashboardRule{
-				RuleKey:        ru.RuleKey,
-				DimensionMatch: ru.DimensionMatch,
-				Quantity:       ru.Quantity.String(),
-				AmountCents:    ru.AmountCents,
+				RuleKey:           ru.RuleKey,
+				DimensionMatch:    ru.DimensionMatch,
+				Quantity:          ru.Quantity.String(),
+				AmountCents:       ru.AmountCents,
+				UnitAmountDecimal: ru.UnitAmountDecimal,
 			})
 		}
 		proj.Usage = append(proj.Usage, CostDashboardMeter{

@@ -456,10 +456,35 @@ func (li InvoiceLineItem) EffectiveUnitAmountDecimal() decimal.Decimal {
 	if qty.IsZero() {
 		qty = decimal.NewFromInt(li.Quantity)
 	}
-	if qty.LessThanOrEqual(decimal.Zero) {
+	return EffectiveUnitAmountDecimalFor(li.AmountCents, qty)
+}
+
+// EffectiveUnitAmountDecimalFor is the per-unit price in DECIMAL CENTS derived
+// from an amount and quantity (amount ÷ quantity, capped at 12 decimal places
+// for Stripe unit_amount_decimal parity). It is the honest, full-precision rate
+// that reconciles with the rounded line amount and never collapses a sub-cent
+// rate to 0. Well-defined for blended/tiered lines with no single nominal rate.
+// Returns 0 when quantity ≤ 0. Shared by the invoice line, the usage Activity
+// panel, and the public cost dashboard so the effective rate is computed
+// identically on every surface.
+func EffectiveUnitAmountDecimalFor(amountCents int64, quantity decimal.Decimal) decimal.Decimal {
+	if quantity.LessThanOrEqual(decimal.Zero) {
 		return decimal.Zero
 	}
-	return decimal.NewFromInt(li.AmountCents).DivRound(qty, 12)
+	return decimal.NewFromInt(amountCents).DivRound(quantity, 12)
+}
+
+// DisplayUnitAmountDecimalFor is the per-unit price to SHOW for a LIVE-resolved
+// rule (decimal cents): the configured nominal rate for flat rules, else the
+// effective amount÷quantity. It mirrors InvoiceLineItem.DisplayUnitAmountDecimal
+// — which reads the nominal stamped at invoice build — for surfaces that resolve
+// the rating rule live (the usage Activity panel and the public cost dashboard),
+// so the unit price matches the invoice on every screen (ADR-054).
+func DisplayUnitAmountDecimalFor(rule RatingRuleVersion, amountCents int64, quantity decimal.Decimal) decimal.Decimal {
+	if nominal := NominalUnitAmountDecimal(rule); nominal != nil {
+		return *nominal
+	}
+	return EffectiveUnitAmountDecimalFor(amountCents, quantity)
 }
 
 // DisplayUnitAmountDecimal is the per-unit price to SHOW on invoices (decimal

@@ -151,6 +151,12 @@ type CustomerUsageRule struct {
 	DimensionMatch      map[string]any  `json:"dimension_match,omitempty"`
 	Quantity            decimal.Decimal `json:"quantity"`
 	AmountCents         int64           `json:"amount_cents"`
+	// UnitAmountDecimal is the per-unit price to display (decimal cents): the
+	// configured nominal rate for flat rules, else the effective amount÷qty —
+	// the SAME value the invoice line shows (ADR-054, via
+	// domain.DisplayUnitAmountDecimalFor). Rendered with the decimal-aware rate
+	// formatter so a sub-cent rate never collapses to $0.00.
+	UnitAmountDecimal *string `json:"unit_amount_decimal,omitempty"`
 }
 
 // CustomerUsageTotal is one currency's roll-up across all meters. We
@@ -453,12 +459,18 @@ func (s *CustomerUsageService) rateMeter(ctx context.Context, tenantID, customer
 		totalQty = totalQty.Add(agg.Quantity)
 		totalCents += cents
 
+		// Same display rate the invoice line shows: nominal for flat rules,
+		// effective amount÷qty for tiered — resolved from the same
+		// override-applied ratingRule (ADR-054).
+		unitAmountDecimal := domain.DisplayUnitAmountDecimalFor(ratingRule, cents, agg.Quantity).String()
+
 		out.Rules = append(out.Rules, CustomerUsageRule{
 			RatingRuleVersionID: ratingRule.ID,
 			RuleKey:             ratingRule.RuleKey,
 			DimensionMatch:      dimMatch,
 			Quantity:            agg.Quantity,
 			AmountCents:         cents,
+			UnitAmountDecimal:   &unitAmountDecimal,
 		})
 	}
 

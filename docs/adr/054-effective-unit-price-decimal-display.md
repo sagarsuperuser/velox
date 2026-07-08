@@ -64,6 +64,19 @@ Stamp the actually-billed **nominal** per-unit rate on **flat-mode usage lines**
 
 Result: the screenshot line now shows `$0.000003` (the rate card), not `$0.00000333333333`. Still deferred (a genuine feature, its own trigger): a **per-million display scale** for token meters (`$3.00 / 1M tokens`, the Metronome/Anthropic/OpenAI convention) — needs meter display-scale config; and the parallel `credit_note_line_items` gap (§Risks above).
 
+## Amendment (2026-07-08) — extend to the live usage surfaces
+
+The decision above shipped **invoice-line only**. Two other surfaces show a usage unit price and were still deriving the *effective* `amount ÷ quantity` — on the **frontend**, with `toFixed`, which rounded a sub-cent rate down to **$0.0000**: the customer **Activity panel** (`usage.CustomerUsageRule`) and the **public cost dashboard** (`usage.CostDashboardRule`). Both resolve the rating rule *live* (as-of period open, customer override applied — `CustomerUsageService.rateMeter`), so the authoritative nominal rate was already in hand; the frontend was re-deriving a worse value from `amount_cents` and `quantity`. That is the exact inconsistency this ADR set out to remove, on a different screen — and a `feedback_no_heuristic_proxies` violation (the backend knew the rate; the FE guessed it).
+
+**Change.** Extract the derivation into package `domain` as the single source both billing and the usage view call:
+- `NominalUnitAmountDecimal(rule)` — flat → configured `FlatAmountCents`, nil for graduated/package (`billing.nominalRate` now delegates to it).
+- `EffectiveUnitAmountDecimalFor(amountCents, quantity)` — the shared effective formula, 12dp (`InvoiceLineItem.EffectiveUnitAmountDecimal` now delegates to it).
+- `DisplayUnitAmountDecimalFor(rule, amountCents, quantity)` — the **live-rule twin** of `InvoiceLineItem.DisplayUnitAmountDecimal`: nominal for flat, else effective. The usage view stamps each rule row's new `unit_amount_decimal` from it, mapped through to the public cost-dashboard DTO.
+
+**Frontend.** Renders `unit_amount_decimal` with the decimal-aware `formatRate` and **does not** fall back to a client-side `amount÷qty` — if the backend didn't send it, the row shows no rate, so an absent value is a visible signal rather than a silent proxy (`feedback_no_heuristic_proxies`, `feedback_no_silent_fallbacks`). The FE-synthesized `__other__` catch-all bucket (no single rule) carries no nominal and stays rate-hidden as before.
+
+**No schema change** — the usage view is computed live per request; nothing is persisted (contrast the invoice line, which stamps `nominal_unit_amount_decimal` at build because it can't re-derive on read past an override). Pinned by a `DisplayUnitAmountDecimalFor` domain test (flat nominal wins over the diverging effective; graduated → effective; zero-qty guard) and a `CustomerUsageService.Get` regression that reproduces the screenshot (1,750 tokens billed 3¢ at 0.0015¢/token → row shows nominal `0.0015`, not effective `0.0017142857…`).
+
 ## References
 - ADR-045 (decimal per-unit pricing rates — line amounts stay int64), ADR-053 (single source of truth posture).
 - Memory: `project_decimal_pricing_rates`, `feedback_no_heuristic_proxies`, `project_tax_field_propagation_drift`, `feedback_verify_stripe_parity_claims`.

@@ -21,7 +21,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import { formatInTimeZone } from 'date-fns-tz'
-import { api, formatCents, formatDate, getTenantTimezone } from '@/lib/api'
+import { api, formatCents, formatRate, formatDate, getTenantTimezone } from '@/lib/api'
 import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule, CustomerUsageSubscription, Subscription, Invoice, InvoicePreview } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
@@ -714,7 +714,15 @@ function RuleRow({
 }) {
   const qty = Number(rule.quantity)
   const pct = totalCents > 0 ? (rule.amount_cents / totalCents) * 100 : 0
-  const avgRate = qty > 0 ? rule.amount_cents / 100 / qty : 0
+  // Per-unit price to show, in decimal cents: the backend's unit_amount_decimal
+  // — the SAME nominal rate the invoice shows for flat rules (effective
+  // amount÷qty for tiered), authoritative because it resolves the customer's
+  // negotiated rate. NO client-side fallback: if the backend didn't send it we
+  // show no rate rather than re-deriving amount÷qty — an absent rate is then a
+  // visible signal something's wrong, not silently papered over with a proxy
+  // (no-heuristic-proxies / no-silent-fallbacks). Rendered via formatRate so a
+  // real sub-cent rate never collapses to $0.0000.
+  const rateCents = rule.unit_amount_decimal ?? null
   const isOther = rule.rating_rule_version_id === '__other__'
   const hasDimensions =
     !isOther && rule.dimension_match && Object.keys(rule.dimension_match).length > 0
@@ -759,8 +767,8 @@ function RuleRow({
       <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
         <span>
           {qty.toLocaleString(undefined, { maximumFractionDigits: 4 })} {unit}
-          {avgRate > 0 && !isOther && (
-            <span className="ml-2">@ ${avgRate.toFixed(4)}/{unit}</span>
+          {rateCents != null && Number(rateCents) > 0 && !isOther && (
+            <span className="ml-2">@ {formatRate(rateCents, currency)}/{unit}</span>
           )}
         </span>
         <span>{pct.toFixed(pct < 1 ? 1 : 0)}%</span>
