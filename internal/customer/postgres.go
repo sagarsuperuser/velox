@@ -180,9 +180,12 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	if err != nil {
 		return domain.Customer{}, err
 	}
+	// sim_clock_id is the DURABLE simulated-discriminator: set = test_clock_id
+	// at creation and never touched again, so it survives clock-delete detach
+	// (which nulls test_clock_id). is_simulated is GENERATED from it (ADR-086).
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, additional_emails, status, test_clock_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, NULLIF($9,''), $10, $10)
+		INSERT INTO customers (id, tenant_id, external_id, display_name, email, email_bidx, additional_emails, status, test_clock_id, sim_clock_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, NULLIF($9,''), NULLIF($9,''), $10, $10)
 		RETURNING id, tenant_id, external_id, display_name, email, status, COALESCE(test_clock_id,''), created_at, updated_at
 	`, id, tenantID, c.ExternalID, enc.DisplayName, enc.Email,
 		s.emailBlindIndex(c.Email), storedCC, domain.CustomerStatusActive, c.TestClockID, now,

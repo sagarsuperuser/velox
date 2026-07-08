@@ -65,6 +65,13 @@ The model alone isn't enough; a future engineer must be *unable* to reintroduce 
 - **RLS third axis** — promote `is_simulated` to a fail-closed RLS conjunct on the `TxTenant` read/analytics plane if a forgotten-filter leak ever recurs *after* the arch-test ships. The `TxBypass` sweeps stay on explicit filters regardless (RLS can't reach them).
 - **Post-teardown forensic grouping** — once rows cascade away, "which clock produced this" is unanswerable; acceptable by design. Trigger: a named audit need → capture a summary audit row at teardown before the cascade.
 
+## Implementation refinements (as built, 2026-07-09)
+
+- **Stamp mechanism: explicit at the writer, not a session-var `DEFAULT`.** §1 favored auto-stamping `sim_clock_id` from an `app.sim_clock_id` session var (the `livemode` pattern). In practice `sim_clock_id` depends on the *customer's* clock, resolved per-write, and the clock id isn't reliably on `ctx` at write time (the invoice service already avoids `clock.IsSimulated(ctx)` for this reason and looks the customer up). So each writer stamps `sim_clock_id` explicitly — for `customers` it's the `test_clock_id` supplied at creation; for customer-scoped rows (usage, credit) it's a shared resolver of the customer's pin, mirroring the proven `customerOnTestClock` → `is_simulated` write. The stamping discipline is guarded by the schema-completeness + write-chokepoint arch-tests (a new sim-bearing table/writer that forgets the stamp fails the build).
+- **FK deferred to Phase 3.** `sim_clock_id` is a plain `text` column in Phase 2 (the durable discriminator only). The `REFERENCES test_clocks(id) ON DELETE CASCADE` lands in Phase 3, where the teardown cascade needs it — so the Phase-2 migrations stay additive and cleanly reversible.
+- **`customers` joins the sim-bearing set.** The plane table's tables were the billing rows; `customers` also needs the durable flag, because the analytics `new_customers` / `active_customers` metrics must keep excluding a simulated customer *after* its clock is deleted (the pin is nulled then). Migration 0143 adds it.
+- **Analytics gated per-plane-slice.** Customer metrics gate on `customers.is_simulated` (0143); invoice metrics (revenue, paid/failed/open counts) gate on the existing `invoices.is_simulated`; the subscription + dunning-recovery metrics gate once those tables gain the discriminator — each in its own slice.
+
 ## References
 
 - ADR-016 (superseded), ADR-029 (extended), ADR-030 (reaffirmed, incl. audit exception), ADR-070 (rule-version as-of), ADR-027 (customer-level pin at creation).

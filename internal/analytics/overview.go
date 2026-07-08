@@ -123,10 +123,15 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		sql  string
 		args []any
 	}{
+		// is_simulated = false: never count test-clock-simulated customers in the
+		// operator dashboard. Their created_at is simulated time (a clock-pinned
+		// customer is stamped at frozen_time), so a wall-clock window would place
+		// them in the wrong period; the durable is_simulated flag (ADR-086,
+		// migration 0143) excludes them and survives clock-delete detach.
 		{"active_customers", &resp.ActiveCustomers,
-			`SELECT COUNT(*) FROM customers WHERE status = 'active'`, nil},
+			`SELECT COUNT(*) FROM customers WHERE status = 'active' AND is_simulated = false`, nil},
 		{"new_customers", &resp.NewCustomers,
-			`SELECT COUNT(*) FROM customers WHERE created_at >= $1 AND created_at < $2`,
+			`SELECT COUNT(*) FROM customers WHERE created_at >= $1 AND created_at < $2 AND is_simulated = false`,
 			[]any{period.Start, period.End}},
 		{"active_subs", &resp.ActiveSubs,
 			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active'`, nil},
