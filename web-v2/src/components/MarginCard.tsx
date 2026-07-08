@@ -80,8 +80,8 @@ export function MarginCard({ customerId, customerTestClockId }: { customerId: st
             </select>
             {preset === 'custom' && (
               <>
-                <DatePicker value={customFrom} onChange={setCustomFrom} placeholder="From" className="w-36" />
-                <DatePicker value={customTo} onChange={setCustomTo} placeholder="To" className="w-36"
+                <DatePicker value={customFrom} onChange={setCustomFrom} placeholder="From" className="w-40" />
+                <DatePicker value={customTo} onChange={setCustomTo} placeholder="To" className="w-40"
                   minDate={customFrom ? new Date(customFrom + 'T00:00:00') : undefined} />
               </>
             )}

@@ -33,9 +33,10 @@ interface ComboboxProps {
   serverFiltered?: boolean
 }
 
-// Searchable dropdown built on cmdk. Matches the DatePicker positioning
-// pattern used elsewhere in the app (ref + outside-click + escape, flip-up
-// when space is tight). No Radix Popover dep; fewer layers, consistent look.
+// Searchable dropdown built on cmdk with a hand-rolled anchored popover
+// (ref + outside-click + escape, flip-up when space is tight). No Radix/Base UI
+// Popover dep here; fewer layers, consistent look. (DatePicker used to share
+// this pattern but has since moved to Base UI's Popover — see date-picker.tsx.)
 export function Combobox({
   value,
   onChange,
@@ -97,7 +98,6 @@ export function Combobox({
     // Right-align when the trigger sits close enough to the viewport's
     // right edge that the popover (which can grow up to 32rem wide for
     // long labels like "America/Los_Angeles (UTC-08:00)") would clip.
-    // Mirrors the DatePicker's edge-clamping logic.
     const popoverWidth = 384 // px, matches md (~24rem) — close enough
     setAlignRight(window.innerWidth - rect.left < popoverWidth)
   }, [open])
