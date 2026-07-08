@@ -1,34 +1,26 @@
 key: openai_style
 version: 3.0.0
-name: OpenAI-style AI inference
+name: OpenAI (GPT) token pricing
 summary: |
-  Per-token billing across model × token_type for the GPT family plus
-  embedding models. One multi-dim `tokens` meter. Designed for inference
-  platforms reselling OpenAI API access.
+  Ready-made pricing for reselling OpenAI (GPT) API access. Bills each
+  customer per token — with separate rates for every GPT and embedding
+  model and for input, output, and cached tokens — on a monthly plan.
 description: |
-  Models the public OpenAI pricing page: the current lineup (gpt-5.1,
-  gpt-5, gpt-5-mini, gpt-5-nano, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano)
-  plus the legacy families proxies still route (gpt-4-turbo, gpt-4o,
-  gpt-4o-mini, gpt-3.5-turbo) and three embedding models. Token billing
-  is broken out by the `token_type` event dimension (ADR-044):
+  Sets up everything you need to bill customers for OpenAI usage:
 
-    - input        base input (uncached)
-    - output       generated tokens
-    - cache_read   cached-input hit (discounted; chat models only)
+    • A usage meter that counts tokens
+    • Per-token prices for the current GPT-5 and GPT-4.1 models, the older
+      GPT-4 / 3.5 models, and OpenAI's embedding models
+    • Separate rates for input, output, and cached input — cached input is
+      discounted, matching OpenAI's pricing (OpenAI has no separate
+      cache-write fee)
+    • A monthly plan your customers subscribe to
+    • Automatic payment retries and a notifications endpoint you can point
+      at your own systems
 
-  OpenAI charges no separate cache-WRITE fee (prompt caching is automatic),
-  so there are no cache_write_* roles here — unlike anthropic_style. Roles
-  are DISJOINT, so each (model, token_type) is exactly one rule at equal
-  priority; no boolean `cached` flag and no priority tie-break. The
-  provider mapper normalizes OpenAI's cached_tokens (a SUBSET of
-  prompt_tokens) into additive-disjoint input + cache_read quantities.
-  Embedding models charge per input token only (matched by model alone).
-
-  All flat amounts are cents PER TOKEN, carried as decimals (the meter is
-  denominated in tokens). A published per-million price divides by 1,000,000:
-  $10.00 / 1M = 0.001 cents/token (Stripe `unit_amount_decimal` model — sub-
-  cent rates bill linearly and exactly). Operators override `currency`, the
-  customer-facing `plan_name`, and the slug `plan_code` at instantiation.
+  Prices start at OpenAI's public list rates — a starting point you'll edit
+  to your own margins after setup. Before installing, you can set the
+  currency and the plan's name.
 
 overridable:
   - key: currency

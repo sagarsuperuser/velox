@@ -1,39 +1,26 @@
 key: anthropic_style
 version: 3.0.0
-name: Anthropic-style AI inference
+name: Anthropic (Claude) token pricing
 summary: |
-  Per-token billing across model × token_type. One multi-dim `tokens` meter;
-  five disjoint token roles per model (input, output, cache_read,
-  cache_write_5m, cache_write_1h). Monthly billing. For inference platforms
-  reselling LLM API access.
+  Ready-made pricing for reselling Claude (Anthropic) API access. Bills each
+  customer per token — with separate rates for every model and for input,
+  output, and cached tokens — on a monthly plan.
 description: |
-  Models the public Anthropic pricing page: the current 4.5 generation
-  (claude-opus-4.5, claude-sonnet-4.5, claude-haiku-4.5) plus the legacy
-  claude-3.x families still carried by proxies mid-migration
-  (claude-3.5-sonnet, claude-3-opus, claude-3-sonnet, claude-3-haiku),
-  billed per-million-tokens. Each model carries five token roles,
-  matching how Anthropic itemizes and prices token usage (ADR-044):
+  Sets up everything you need to bill customers for Claude (Anthropic) usage:
 
-    - input          base input (uncached)
-    - output         generated tokens
-    - cache_read     prompt-cache hit            (0.1× input)
-    - cache_write_5m  5-minute cache write       (1.25× input)
-    - cache_write_1h  1-hour cache write         (2× input)
+    • A usage meter that counts tokens
+    • Per-token prices for every current Claude model (Opus, Sonnet, and
+      Haiku 4.5) and the older Claude 3.x models, matching Anthropic's
+      public pricing page
+    • Separate rates for input, output, and cached tokens — cache reads and
+      writes are cheaper, exactly as Anthropic prices them
+    • A monthly plan your customers subscribe to
+    • Automatic payment retries and a notifications endpoint you can point
+      at your own systems
 
-  Roles live in the `token_type` event dimension and are DISJOINT, so each
-  (model, token_type) pair is exactly one rule at equal priority — no
-  priority tie-breaking and no boolean `cached` flag (a boolean can't
-  distinguish read from 5m-write from 1h-write, which are three prices).
-  Each provider mapper (e.g. LiteLLM) is responsible for emitting these
-  roles as additive-disjoint quantities; the engine never does role math.
-
-  Cache rates are derived from each model's input rate (0.1× / 1.25× / 2×).
-  All flat amounts are cents PER TOKEN, carried as decimals (the meter is
-  denominated in tokens). A published per-million price divides by 1,000,000:
-  $3.00 / 1M tokens = 300 cents / 1,000,000 = 0.0003 cents/token. This is the
-  Stripe `unit_amount_decimal` model — sub-cent rates bill linearly and
-  exactly, with no per-million rounding. Operators override `currency`,
-  `plan_name`, and `plan_code` at instantiation; the rest is fixed for v1.
+  Prices start at Anthropic's public list rates — a starting point you'll
+  edit to your own margins after setup. Before installing, you can set the
+  currency and the plan's name.
 
 overridable:
   - key: currency
