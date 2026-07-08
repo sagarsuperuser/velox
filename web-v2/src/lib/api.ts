@@ -1855,8 +1855,13 @@ export function formatDateTime(iso: string, timezone?: string): string {
   })
 }
 
-export function formatRelativeTime(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+// nowISO overrides the wall-clock baseline: pass the owning entity's test-clock
+// frozen_time when it's clock-pinned, so a simulated-timestamp row reads relative
+// to simulation time instead of collapsing to "just now". Undefined → Date.now()
+// (the wall-clock callers — api-key expiry, "Updated X ago", webhook events).
+export function formatRelativeTime(iso: string, nowISO?: string): string {
+  const nowMs = nowISO ? new Date(nowISO).getTime() : Date.now()
+  const seconds = Math.floor((nowMs - new Date(iso).getTime()) / 1000)
   if (seconds < 60) return 'just now'
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes}m ago`
