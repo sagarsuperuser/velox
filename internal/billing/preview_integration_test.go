@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -513,4 +514,143 @@ func TestCreatePreview_ExplicitSubscriptionWrongCustomer(t *testing.T) {
 	if got := errs.Field(err); got != "subscription_id" {
 		t.Errorf("field: got %q want subscription_id", got)
 	}
+}
+
+// setUsageCap turns on a blocking per-period usage cap on an existing sub.
+// usage_cap_units lives on the subscription (not the item), so this UPDATE
+// doesn't fire the subscription_items change trigger.
+func (f *previewFixture) setUsageCap(t *testing.T, ctx context.Context, subID string, capUnits int64) {
+	t.Helper()
+	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin cap tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE subscriptions SET usage_cap_units = $2, overage_action = 'block' WHERE id = $1`,
+		subID, capUnits); err != nil {
+		t.Fatalf("set usage cap: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit cap: %v", err)
+	}
+}
+
+// seedItemChange records a mid-period plan change in subscription_item_changes,
+// the row ListItemChangesInPeriod reads to trigger segment-aware billing.
+// livemode=false matches the WithLivemode(false) test ctx and the sub's row
+// under the table's RLS policy.
+func (f *previewFixture) seedItemChange(t *testing.T, ctx context.Context, subID, toPlanID string, changedAt time.Time) {
+	t.Helper()
+	tx, err := f.db.BeginTx(ctx, postgres.TxTenant, f.tenantID)
+	if err != nil {
+		t.Fatalf("begin change tx: %v", err)
+	}
+	defer postgres.Rollback(tx)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO subscription_item_changes
+			(tenant_id, livemode, subscription_id, change_type, to_plan_id, changed_at, created_at)
+		VALUES ($1, false, $2, 'plan', $3, $4, now())
+	`, f.tenantID, subID, toPlanID, changedAt); err != nil {
+		t.Fatalf("insert item change: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit change: %v", err)
+	}
+}
+
+// TestCreatePreview_EstimateScopeWarnings pins the Tier-1 honesty warnings:
+// create_preview is a full-period estimate that doesn't replicate usage-cap
+// scaling or mid-period segment proration (ADR-045), so it must SAY SO on the
+// warnings channel rather than silently hand back a number the cycle won't
+// match. Clean subs (the common/wedge case) stay warning-free.
+func TestCreatePreview_EstimateScopeWarnings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newPreviewFixture(t, "Create Preview Warnings")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+
+	cycleStart := time.Now().UTC().Truncate(time.Hour).Add(-120 * time.Hour)
+	cycleEnd := cycleStart.Add(30 * 24 * time.Hour)
+
+	rrv, err := f.pricingSvc.CreateRatingRule(ctx, f.tenantID, pricing.CreateRatingRuleInput{
+		RuleKey: "warn_flat", Name: "Warn Flat",
+		Mode: domain.PricingFlat, Currency: "USD", FlatAmountCents: decimal.NewFromInt(1),
+	})
+	if err != nil {
+		t.Fatalf("create rrv: %v", err)
+	}
+	meter, err := f.pricingSvc.CreateMeter(ctx, f.tenantID, pricing.CreateMeterInput{
+		Key: "warn_tokens", Name: "Warn Tokens", Unit: "tokens",
+		Aggregation: "sum", RatingRuleVersionID: rrv.ID,
+	})
+	if err != nil {
+		t.Fatalf("create meter: %v", err)
+	}
+
+	ingest := func(custID string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			ts := cycleStart.Add(time.Duration(i) * time.Hour)
+			if _, err := f.usageSvc.Ingest(ctx, f.tenantID, usage.IngestInput{
+				CustomerID: custID, MeterID: meter.ID,
+				Quantity: decimal.NewFromInt(10), Timestamp: &ts,
+			}); err != nil {
+				t.Fatalf("ingest: %v", err)
+			}
+		}
+	}
+	warns := func(ws []string, substr string) bool {
+		for _, w := range ws {
+			if strings.Contains(w, substr) {
+				return true
+			}
+		}
+		return false
+	}
+	preview := func(custID string) billing.PreviewResult {
+		t.Helper()
+		res, err := f.preview.CreatePreview(ctx, f.tenantID, billing.CreatePreviewRequest{CustomerID: custID})
+		if err != nil {
+			t.Fatalf("CreatePreview: %v", err)
+		}
+		return res
+	}
+
+	t.Run("clean sub (no cap, no change) has no scope warnings", func(t *testing.T) {
+		custID, _, _ := f.seedSubscription(t, ctx, "cus_clean", "pln_clean", meter.ID, cycleStart, cycleEnd)
+		ingest(custID, 100)
+		res := preview(custID)
+		if len(res.Warnings) != 0 {
+			t.Errorf("clean sub must have no scope warnings, got %v", res.Warnings)
+		}
+	})
+
+	t.Run("blocking usage cap surfaces the cap warning", func(t *testing.T) {
+		custID, _, subID := f.seedSubscription(t, ctx, "cus_cap", "pln_cap", meter.ID, cycleStart, cycleEnd)
+		f.setUsageCap(t, ctx, subID, 500) // 100×10 = 1000 units > 500 cap
+		ingest(custID, 100)
+		res := preview(custID)
+		if !warns(res.Warnings, "usage cap") {
+			t.Errorf("capped sub must warn the estimate excludes the cap, got %v", res.Warnings)
+		}
+		if warns(res.Warnings, "mid-period") {
+			t.Errorf("capped sub with no change must NOT emit the segment warning, got %v", res.Warnings)
+		}
+	})
+
+	t.Run("mid-period item change surfaces the segment warning", func(t *testing.T) {
+		custID, planID, subID := f.seedSubscription(t, ctx, "cus_seg", "pln_seg", meter.ID, cycleStart, cycleEnd)
+		f.seedItemChange(t, ctx, subID, planID, cycleStart.Add(24*time.Hour))
+		ingest(custID, 10)
+		res := preview(custID)
+		if !warns(res.Warnings, "mid-period proration") {
+			t.Errorf("mid-period-changed sub must warn about segment proration, got %v", res.Warnings)
+		}
+		if warns(res.Warnings, "usage cap") {
+			t.Errorf("uncapped sub must NOT emit the cap warning, got %v", res.Warnings)
+		}
+	})
 }

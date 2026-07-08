@@ -243,7 +243,8 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 - [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
 - [ ] Each Tokens line's **Unit Price** shows the clean configured rate (a terminating decimal matching the recipe's per-token rate, e.g. `$0.000003`), NOT a repeating/inflated `$0.00000333333333` (ADR-054 amendment: flat usage lines display the stamped nominal rate, not effective amount÷qty).
 - [ ] Invoice has the $99 base line covering the UPCOMING period; the base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
-- [ ] Usage line totals equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045).
+- [ ] Usage line totals equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045). This clean sub's preview `warnings` array is **empty**.
+- [ ] **Preview is honest about its own scope**: `create_preview` for a sub WITH a blocking `usage_cap_units` returns a `warnings[]` entry naming the excluded cap ("…excludes the subscription's usage cap…"); a sub that had a mid-period plan/quantity/item change this period returns a "…excludes mid-period proration…" warning. A brand-new sub in its first period does NOT (the initial item-creation row isn't a mid-period change).
 
 ### S2.5 Public cost dashboard
 - [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
