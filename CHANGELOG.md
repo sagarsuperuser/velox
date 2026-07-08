@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Security
+
+- **Go toolchain bumped 1.25.11 → 1.25.12 (2026-07-09).** Picks up the `crypto/tls` fix for GO-2026-5856 (a Go standard-library vulnerability that `govulncheck` began flagging in CI); no application code change — go.mod + the CI `go-version` pins only.
+
 ### Fixed
 
 - **The date-picker calendar no longer gets clipped inside a card (2026-07-08).** The shared `DatePicker` rendered its calendar as an in-flow absolute popover, so every `Card`'s `overflow-hidden` (there for rounded corners) cut it off at the card edge — most visibly on the customer **Margin** card, where the open calendar showed only its first week. It now renders through Base UI's `Popover` (Portal/Positioner/Popup — the same primitive `dropdown-menu`/`select`/`tooltip` use), so the calendar portals to `<body>` and escapes the clip. Base UI (not a hand-rolled portal) so a date-picker used *inside* a dialog (credit-grant / API-key expiry / subscription pause) stays dialog-safe: a calendar-day click doesn't dismiss the enclosing dialog. Also: the selected day now reads distinctly from a hovered one, and opening keeps the caret in the input (so ArrowDown on a half-typed date no longer flashes an error). Shared component — the fix lands on every date field.
