@@ -210,6 +210,18 @@ ADRs explaining the load-bearing decisions live in [`docs/adr/`](docs/adr/).
 
 ---
 
+## Engineering
+
+Velox moves money, so correctness is the product, not a feature. The disciplines that show up in the code:
+
+- **Money-path changes follow a written protocol, not judgment.** Any change to an invoice, payment, credit, or state machine goes through the [money-path robustness playbook](docs/dev/money-path-robustness-playbook.md): enumerate the state's *complete* site-set — every writer, effect-firer, gated reader, crash point — before writing a line, because local reasoning is exactly how money bugs ship. Nine named failure classes, each with the gate that closes it.
+- **Invariants are enforced by machines, not convention.** Tenant isolation is Postgres Row-Level Security, proven by integration tests that fail if a query escapes its tenant. Exactly-once auto-charge is a compare-and-swap claim that holds through a dual-leader failover — no double charge when a Postgres failover hands two schedulers the same lock. A new cross-domain import fails an [architecture test](internal/arch/boundaries_test.go) until it's justified in an allowlist. `time.Now()` on a clock-pinned entity fails a lint. The rule: if a mistake can recur, a machine catches the next one.
+- **Tests hit real Postgres, never mocks.** A green suite means migrations, RLS, and the money math work end-to-end — including concurrent-claimer collision tests and mutation-verified assertions (break the logic on purpose; the test must fail).
+- **Decisions are written down — including the reversals.** [84 ADRs](docs/adr/) record the load-bearing calls, and the honest ones: a per-subscription timezone snapshot was built, shipped, then *deleted* once org-level proved the complete abstraction (ADR-074 → 077). When a design keeps spawning guard machinery, the model is treated as wrong, not the guards as missing.
+- **Audited like production, pre-launch.** A [117-finding end-to-end audit](docs/dev/audit-2026-07-02-full-product.md) remediated in gated PRs; an [N=2 HA-readiness audit](docs/dev/ha-readiness-2026-07-06.md) that names every single-point-of-failure before the word "production" gets used.
+
+---
+
 ## API surface (selected)
 
 ```
@@ -272,7 +284,6 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
 ### In flight
 
-- **Seeking our first design partner** — AI-infra at $1M–$50M ARR (see Contributing)
 - **AI-native primitive sharpening** — per-token, model-tier, prompt/completion split surfacing in dashboard + invoices
 
 ### Explicitly deferred (on hold pending design partner)
@@ -310,9 +321,9 @@ Integration tests exercise real Postgres with RLS enforced. Per project conventi
 
 ## Contributing
 
-Velox is open source under MIT. We're early and looking for design partners: 12 months of white-glove support for your self-hosted deployment — we pair on install, upgrades, and pricing-model setup — in exchange for weekly check-ins and a co-branded case study. If you run AI inference, a vector DB, or any usage-heavy SaaS at $1M–$50M ARR and Stripe Billing is starting to chafe — open an issue or email `partners@velox.dev`.
+Velox is open source under MIT. Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Major features land with a design RFC alongside the code, so the reasoning is reviewable before the implementation is; read any `docs/design-*.md` or the [ADRs](docs/adr/) for the pattern.
 
-For code contributions, see [`CONTRIBUTING.md`](CONTRIBUTING.md). Major features land with a design RFC alongside the code — read any `docs/design-*.md` for the pattern.
+Running AI inference, a vector DB, or usage-heavy SaaS, and Stripe Billing is starting to chafe? Open an issue — happy to help you get a self-hosted deployment going.
 
 ---
 
