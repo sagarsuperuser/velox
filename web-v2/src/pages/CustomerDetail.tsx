@@ -784,15 +784,17 @@ export default function CustomerDetailPage() {
       </Card>
 
       {/* Usage This Period — multi-dim cost dashboard backed by
-          GET /v1/customers/{id}/usage. Operator-facing surface. */}
+          GET /v1/customers/{id}/usage. Operator-facing surface.
+          customerTestClockId pins its relative-time/window surfaces to the
+          customer's simulated clock (ADR-027) instead of wall-clock. */}
       <div className="mt-6">
-        <CostDashboard customerId={id!} />
+        <CostDashboard customerId={id!} customerTestClockId={customer.test_clock_id} />
       </div>
 
       {/* Margin — rated usage revenue vs provider COGS (ADR-079).
           Operator-only; never rendered on customer-facing surfaces. */}
       <div className="mt-6">
-        <MarginCard customerId={id!} />
+        <MarginCard customerId={id!} customerTestClockId={customer.test_clock_id} />
       </div>
 
       {/* Commit / credit-grant burndown — per-grant drawn vs remaining
