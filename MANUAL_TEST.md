@@ -216,9 +216,14 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 - [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
 - [ ] Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
 
-### S2.2 Customer + day-1 invoice
-- [ ] Create customer `external_id=cus_demo_ai` with PM `4242 4242 4242 4242`. Note its internal `id` (`cus_…`) from the response — used as `customer_id` below.
-- [ ] Create active subscription on `ai_api_pro` → day-1 invoice generated: `billing_reason=subscription_create`, $99 base only, auto-charged.
+### S2.2 Customer (pinned to a test clock) + day-1 invoice
+- [ ] **Mint the test clock FIRST** — S2.4 advances it to force cycle-close, so the customer must be pinned to it *at creation* (a wall-clock customer can't be re-pinned later; pin is create-time only, ADR-027):
+  ```bash
+  CLK=$(curl -sS -X POST "$API/v1/test-clocks" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"s2\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq -r .id)
+  ```
+- [ ] Create customer `external_id=cus_demo_ai` **pinned to `$CLK`** (pass `test_clock_id` in the create body, or Customers → New → tick **Pin to test clock**). Then add PM `4242 4242 4242 4242` via Add payment method → Stripe Checkout (needs the Stripe webhook forwarder running so `setup_intent.succeeded` attaches the PM). Note the internal `id` (`cus_…`) from the response — used as `customer_id` below.
+- [ ] Create active subscription on `ai_api_pro` → it **auto-inherits the customer's clock** → day-1 invoice generated: `billing_reason=subscription_create`, in_advance base (prorated to the partial first period for a mid-period start — full $99 only when started at a period boundary), auto-charged.
 
 ### S2.3 LiteLLM ingest
 - [ ] POST a LiteLLM payload directly (simulates the proxy callback):
@@ -238,8 +243,8 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 - [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-sonnet-4.5` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-sonnet-4-5-20250929` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
 
 ### S2.4 Hybrid invoice at cycle close
-- [ ] Mint a test clock + advance ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape).
-- [ ] `POST /v1/billing/run` → 1 cycle invoice generated.
+- [ ] Advance the clock `$CLK` (minted in S2.2) ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape) → the test-clock **catchup worker** closes the cycle and generates the cycle invoice on its own.
+- [ ] (Backstop) `POST /v1/billing/run` → returns `invoices_generated:0` here, because catchup already closed the clock-pinned cycle; it only generates for non-clock subs the wall-clock scheduler is due to bill.
 - [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
 - [ ] Each Tokens line's **Unit Price** shows the clean configured rate (a terminating decimal matching the recipe's per-token rate, e.g. `$0.000003`), NOT a repeating/inflated `$0.00000333333333` (ADR-054 amendment: flat usage lines display the stamped nominal rate, not effective amount÷qty).
 - [ ] Invoice has the $99 base line covering the UPCOMING period; the base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
