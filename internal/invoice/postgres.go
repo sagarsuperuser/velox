@@ -1957,11 +1957,14 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 	// TxBypass crosses tenants for the scheduler sweep; livemode must still
 	// be honoured explicitly from ctx (see scheduler fan-out in #13).
 	//
-	// The NOT EXISTS clock-exclusion uses the subscriptions JOIN target
-	// (not invoices.subscription_id directly) so we exclude only invoices
-	// whose owning sub is clock-pinned. One-off invoices (subscription_id
-	// is empty / unknown) fall through and remain cron-eligible — they
-	// don't have a sub to be clock-pinned to.
+	// Simulated (test-clock) invoices are excluded by their OWN durable
+	// is_simulated flag, not by a subscriptions join. The join missed a
+	// customer-pinned one-off (empty subscription_id → nothing to join
+	// through), which then leaked into this wall-clock sweep and got
+	// auto-charged/dunned against sim time (ADR-029 violation). Gating on
+	// is_simulated catches every simulated invoice — sub-owned or one-off
+	// — while the catchup path (ListAutoChargePendingForClock) charges the
+	// simulated ones in sim time. Mirrors ListPendingTaxReversal's gate.
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+invCols+` FROM invoices i
 		WHERE i.auto_charge_pending = TRUE
@@ -1969,11 +1972,7 @@ func (s *PostgresStore) ListAutoChargePending(ctx context.Context, limit int) ([
 		  AND i.status = 'finalized'
 		  AND i.amount_due_cents > 0
 		  AND i.livemode = $1
-		  AND NOT EXISTS (
-		    SELECT 1 FROM subscriptions s
-		    WHERE s.id = i.subscription_id
-		      AND s.test_clock_id IS NOT NULL
-		  )
+		  AND i.is_simulated = false
 		ORDER BY i.created_at ASC
 		LIMIT $2
 	`, postgres.Livemode(ctx), limit)
@@ -2031,11 +2030,7 @@ func (s *PostgresStore) ListFailedWithoutDunningRun(ctx context.Context, olderTh
 		  AND NOT EXISTS (
 		    SELECT 1 FROM invoice_dunning_runs r WHERE r.invoice_id = i.id
 		  )
-		  AND NOT EXISTS (
-		    SELECT 1 FROM subscriptions s
-		    WHERE s.id = i.subscription_id
-		      AND s.test_clock_id IS NOT NULL
-		  )
+		  AND i.is_simulated = false
 		ORDER BY i.updated_at ASC
 		LIMIT $3
 	`, postgres.Livemode(ctx), olderThan, limit)

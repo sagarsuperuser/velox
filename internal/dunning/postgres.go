@@ -575,11 +575,13 @@ func (s *PostgresStore) ListDueRuns(ctx context.Context, tenantID string, dueBef
 		FROM invoice_dunning_runs r
 		WHERE r.next_action_at <= $1 AND r.paused = false
 			AND r.state NOT IN ('resolved', 'escalated')
+			-- Exclude runs whose invoice is simulated by the invoice's OWN
+			-- durable is_simulated flag (not a subscriptions join, which
+			-- missed customer-pinned one-offs). The catchup counterpart
+			-- ListDueRunsForClock drives simulated dunning in sim time.
 			AND NOT EXISTS (
 			  SELECT 1 FROM invoices i
-			  JOIN subscriptions s ON s.id = i.subscription_id
-			  WHERE i.id = r.invoice_id
-			    AND s.test_clock_id IS NOT NULL
+			  WHERE i.id = r.invoice_id AND i.is_simulated = true
 			)
 		ORDER BY r.next_action_at ASC LIMIT $2
 		FOR UPDATE SKIP LOCKED
