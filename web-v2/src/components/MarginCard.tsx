@@ -10,6 +10,7 @@ import {
 import { formatCents } from '@/lib/api'
 import { endOfDayInTZ, startOfDayInTZ } from '@/lib/dates'
 import { useGetV1CustomersIdMargin } from '@/lib/gen/queries.gen'
+import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
 
 const WINDOW_PRESETS = [
   { key: '7d', label: 'Last 7 days', days: 7 },
@@ -25,10 +26,17 @@ const WINDOW_PRESETS = [
 // Attribution is honest by design: per-model margin shows only where
 // pricing rules pin the model; everything else appears as "not
 // model-attributed" rather than being split by heuristic.
-export function MarginCard({ customerId }: { customerId: string }) {
+export function MarginCard({ customerId, customerTestClockId }: { customerId: string; customerTestClockId?: string }) {
   const [preset, setPreset] = useState<typeof WINDOW_PRESETS[number]['key']>('30d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
+
+  // For a clock-pinned customer, anchor the preset window's upper bound to the
+  // clock's frozen_time: provider-costed usage events are stamped in simulation
+  // time (usage/service.go), so a wall-clock "last 30 days" sits before them and
+  // the card reads "$0.00 / Margin —". Custom absolute dates are left untouched.
+  const clockFrozen = useClockFrozenMap()
+  const effectiveNowISO = clockNow(clockFrozen, customerTestClockId)
 
   const params = useMemo(() => {
     if (preset === 'custom') {
@@ -36,10 +44,10 @@ export function MarginCard({ customerId }: { customerId: string }) {
       return { from: startOfDayInTZ(customFrom), to: endOfDayInTZ(customTo) }
     }
     const days = WINDOW_PRESETS.find(p => p.key === preset)?.days ?? 30
-    const to = new Date()
+    const to = effectiveNowISO ? new Date(effectiveNowISO) : new Date()
     const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
     return { from: from.toISOString(), to: to.toISOString() }
-  }, [preset, customFrom, customTo])
+  }, [preset, customFrom, customTo, effectiveNowISO])
 
   const { data: rep, isLoading } = useGetV1CustomersIdMargin(customerId, params, {
     query: { enabled: params !== undefined },
