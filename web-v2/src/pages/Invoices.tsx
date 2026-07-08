@@ -475,9 +475,20 @@ export default function InvoicesPage() {
                             <DueBadge
                               dueAt={inv.due_at}
                               warningDays={3}
-                              now={inv.subscription_id && subTestClockMap[inv.subscription_id]
-                                ? clockFrozenMap[subTestClockMap[inv.subscription_id]]
-                                : undefined}
+                              // Resolve the simulated "now" from the invoice's own clock:
+                              // a subscription invoice inherits the sub's pin; a MANUAL
+                              // one-off invoice has no sub, so fall back to the customer's
+                              // pin (ADR-027). Without the customer fallback a one-off
+                              // invoice on a clock-pinned customer counted its due-date
+                              // against wall-clock and understated urgency — "Due in 61d"
+                              // (green) while the engine sees it past due (mirrors
+                              // InvoiceDetail.tsx:207). Wall-clock invoices resolve to '' →
+                              // clockFrozenMap[''] is undefined → DueBadge uses Date.now().
+                              now={clockFrozenMap[
+                                (inv.subscription_id && subTestClockMap[inv.subscription_id]) ||
+                                customerMap[inv.customer_id]?.test_clock_id ||
+                                ''
+                              ]}
                             />
                           )}
                           {inv.status === 'draft' && (

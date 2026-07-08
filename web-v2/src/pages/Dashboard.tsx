@@ -294,6 +294,13 @@ export default function DashboardPage() {
                           {formatCents(inv.amount_due_cents, inv.currency)}
                         </span>
                         <span className="text-xs text-muted-foreground w-16 text-right">
+                          {/* DEFERRED (2026-07-08): on a test-clock invoice, created_at is
+                              simulated, so this reads "just now" against wall-clock. Cosmetic
+                              here — the row already carries a SimulatedBadge — and this feed
+                              fetches only invoices (no sub/customer/clock maps like the
+                              Invoices page builds), so a correct baseline needs those maps or
+                              a backend effective_now. Deferred until a design partner running
+                              clock demos is bothered by the dashboard relative-time. */}
                           {formatRelativeTime(inv.created_at)}
                         </span>
                       </div>
