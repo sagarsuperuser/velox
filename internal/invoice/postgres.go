@@ -2201,11 +2201,7 @@ func (s *PostgresStore) ListPendingTaxRetry(ctx context.Context, batch int, retr
 		  AND COALESCE(i.tax_error_code, '') = ANY($2)
 		  AND i.tax_retry_count < $3
 		  AND (i.tax_next_retry_at IS NULL OR i.tax_next_retry_at <= now())
-		  AND NOT EXISTS (
-		    SELECT 1 FROM subscriptions s
-		    WHERE s.id = i.subscription_id
-		      AND s.test_clock_id IS NOT NULL
-		  )
+		  AND i.is_simulated = false
 		ORDER BY i.tax_next_retry_at ASC NULLS FIRST
 		LIMIT $4
 	`, livemode, postgres.StringArray(retryableCodes), maxAttempts, batch)
@@ -2280,11 +2276,7 @@ func (s *PostgresStore) ListPendingTaxCommit(ctx context.Context, batch int, liv
 		  AND COALESCE(i.tax_calculation_id, '') <> ''
 		  AND COALESCE(i.tax_transaction_id, '') = ''
 		  AND i.updated_at > now() - interval '24 hours'
-		  AND NOT EXISTS (
-		    SELECT 1 FROM subscriptions s
-		    WHERE s.id = i.subscription_id
-		      AND s.test_clock_id IS NOT NULL
-		  )
+		  AND i.is_simulated = false
 		ORDER BY i.updated_at ASC
 		LIMIT $2
 	`, livemode, batch)
