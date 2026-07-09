@@ -133,6 +133,16 @@ type TaxRetrier interface {
 	RetryPendingTaxForClock(ctx context.Context, tenantID, clockID string, batch int) (int, []error)
 }
 
+// ClawbackRetrier is the narrow hook the catchup orchestrator uses to issue a
+// clock's DEFERRED simulated clawback drafts — a downgrade clawback whose source
+// invoice was in-flight (ADR-059 defer) when created and has since settled.
+// Implemented by *creditnote.Service via RetryPendingClawbackIssueForClock.
+// Takes frozenTime so Issue() stamps the credit note and its ledger / tax
+// effects in simulated time. ADR-029 disjoint flows.
+type ClawbackRetrier interface {
+	RetryPendingClawbackIssueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, batch int) (int, []error)
+}
+
 // CreditExpirer is the narrow hook the catchup orchestrator uses to
 // expire grants belonging to clock-pinned customers. ADR-029 Phase 4.
 // Takes frozenTime explicitly so the per-grant `expires_at < now`
@@ -165,6 +175,7 @@ type Service struct {
 	trialExpirer  TrialExpirer
 	pauseResumer  PauseResumer
 	taxRetry      TaxRetrier
+	clawback      ClawbackRetrier
 	creditExpirer CreditExpirer
 	dunning       DunningProcessor
 }
@@ -228,6 +239,15 @@ func (s *Service) SetCreditExpirer(c CreditExpirer) {
 // always wires this with the real invoice service. ADR-029 Phase 2.
 func (s *Service) SetTaxRetrier(t TaxRetrier) {
 	s.taxRetry = t
+}
+
+// SetClawbackRetrier wires the per-clock clawback-issue phase (ADR-029). When
+// nil, catchup skips it and a deferred simulated clawback waits for a later
+// advance that has the wiring; production wires the creditnote Service. Runs
+// after the charge phase so a source invoice that just settled this advance is
+// terminal by the time the deferred clawback re-drives.
+func (s *Service) SetClawbackRetrier(c ClawbackRetrier) {
+	s.clawback = c
 }
 
 // SetTrialExpirer wires the per-clock trial-expiry phase (Phase 0.5).
@@ -639,6 +659,18 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 			if _, enrollErrs := s.billing.EnrollStalledForDunningForClock(ctx, job.TenantID, job.ClockID, 100); len(enrollErrs) > 0 {
 				runErrs = append(runErrs, enrollErrs...)
 			}
+		}
+
+		// Phase 3.7 (ADR-029): issue this clock's DEFERRED simulated clawback
+		// drafts. Runs AFTER the charge phase so a source invoice that just
+		// settled this advance is terminal by now and its deferred clawback
+		// (ADR-059) can re-drive; the wall-clock reconciler skips simulated
+		// rows, so this is their only issuer. frozen_time is bound so Issue()
+		// stamps the note + its ledger / tax effects in simulated time.
+		if s.clawback != nil {
+			clawbackCount, clawbackErrs := s.clawback.RetryPendingClawbackIssueForClock(ctx, job.TenantID, job.ClockID, frozen, 100)
+			sum.ClawbacksIssued = clawbackCount
+			runErrs = append(runErrs, clawbackErrs...)
 		}
 
 		// Phases 4 and 5 both need frozen_time — already read once at

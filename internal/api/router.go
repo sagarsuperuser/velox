@@ -787,6 +787,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// would be stranded until an operator manually clicked Retry tax
 	// per invoice.
 	testClockSvc.SetTaxRetrier(invoiceSvc)
+	// ADR-029 Phase 3.7: issue a clock's deferred simulated clawback drafts in
+	// the catchup orchestrator against frozen_time. The wall-clock clawback
+	// reconciler skips simulated rows, so without this a simulated downgrade
+	// whose source was in-flight would strand its clawback draft.
+	testClockSvc.SetClawbackRetrier(creditNoteSvc)
 	// ADR-029 Phase 4: credit expiry for clock-pinned customers' grants
 	// runs in the catchup orchestrator against the clock's frozen_time.
 	testClockSvc.SetCreditExpirer(creditSvc)

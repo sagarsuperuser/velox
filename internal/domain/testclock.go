@@ -78,6 +78,9 @@ type AdvanceSummary struct {
 	// ChargesRetried is the number of auto-charge-pending invoices the charge
 	// retry phase attempted this advance (Phase 3).
 	ChargesRetried int `json:"charges_retried"`
+	// ClawbacksIssued is the number of deferred simulated clawback credit-note
+	// drafts issued this advance (Phase 3.7, ADR-029).
+	ClawbacksIssued int `json:"clawbacks_issued"`
 	// CreditsExpired is the number of credit grants that expired in the
 	// simulated span (Phase 4).
 	CreditsExpired int `json:"credits_expired"`

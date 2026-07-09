@@ -105,6 +105,13 @@ func (m *memStore) ListPendingClawbackDrafts(_ context.Context, _ int, _ bool) (
 	return out, nil
 }
 
+// ListPendingClawbackDraftsForClock mirrors the wall-clock double for the
+// catchup path; the double ignores clock scoping (the real test_clock_id filter
+// is covered by the real-Postgres store test).
+func (m *memStore) ListPendingClawbackDraftsForClock(_ context.Context, _, _ string, _ int) ([]domain.CreditNote, error) {
+	return m.ListPendingClawbackDrafts(context.Background(), 0, false)
+}
+
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.CreditNote, error) {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {

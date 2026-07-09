@@ -678,6 +678,7 @@ export interface AdvanceSummary {
   thresholds_fired: number
   tax_retried: number
   charges_retried: number
+  clawbacks_issued: number
   credits_expired: number
   dunning_advanced: number
   had_errors: boolean
