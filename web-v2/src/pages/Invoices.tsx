@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
 import { DueBadge } from '@/components/DueBadge'
+import { effectiveNow } from '@/lib/effectiveNow'
 import { SimulatedBadge } from '@/components/TestClockBadge'
 
 import { Button } from '@/components/ui/button'
@@ -483,12 +484,12 @@ export default function InvoicesPage() {
                               // against wall-clock and understated urgency — "Due in 61d"
                               // (green) while the engine sees it past due (mirrors
                               // InvoiceDetail.tsx:207). Wall-clock invoices resolve to '' →
-                              // clockFrozenMap[''] is undefined → DueBadge uses Date.now().
-                              now={clockFrozenMap[
+                              // clockFrozenMap[''] is undefined → effectiveNow() → wall time.
+                              now={effectiveNow(clockFrozenMap[
                                 (inv.subscription_id && subTestClockMap[inv.subscription_id]) ||
                                 customerMap[inv.customer_id]?.test_clock_id ||
                                 ''
-                              ]}
+                              ])}
                             />
                           )}
                           {inv.status === 'draft' && (

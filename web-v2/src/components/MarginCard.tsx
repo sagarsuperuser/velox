@@ -9,8 +9,9 @@ import {
 } from '@/components/ui/table'
 import { formatCents } from '@/lib/api'
 import { endOfDayInTZ, startOfDayInTZ } from '@/lib/dates'
+import { rollingWindow } from '@/lib/effectiveNow'
 import { useGetV1CustomersIdMargin } from '@/lib/gen/queries.gen'
-import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
+import { useEffectiveNow } from '@/hooks/useClockFrozenMap'
 
 const WINDOW_PRESETS = [
   { key: '7d', label: 'Last 7 days', days: 7 },
@@ -35,8 +36,7 @@ export function MarginCard({ customerId, customerTestClockId }: { customerId: st
   // clock's frozen_time: provider-costed usage events are stamped in simulation
   // time (usage/service.go), so a wall-clock "last 30 days" sits before them and
   // the card reads "$0.00 / Margin —". Custom absolute dates are left untouched.
-  const clockFrozen = useClockFrozenMap()
-  const effectiveNowISO = clockNow(clockFrozen, customerTestClockId)
+  const now = useEffectiveNow(customerTestClockId)
 
   const params = useMemo(() => {
     if (preset === 'custom') {
@@ -44,10 +44,8 @@ export function MarginCard({ customerId, customerTestClockId }: { customerId: st
       return { from: startOfDayInTZ(customFrom), to: endOfDayInTZ(customTo) }
     }
     const days = WINDOW_PRESETS.find(p => p.key === preset)?.days ?? 30
-    const to = effectiveNowISO ? new Date(effectiveNowISO) : new Date()
-    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000)
-    return { from: from.toISOString(), to: to.toISOString() }
-  }, [preset, customFrom, customTo, effectiveNowISO])
+    return rollingWindow(days, now)
+  }, [preset, customFrom, customTo, now])
 
   const { data: rep, isLoading } = useGetV1CustomersIdMargin(customerId, params, {
     query: { enabled: params !== undefined },

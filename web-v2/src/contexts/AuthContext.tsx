@@ -107,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // BroadcastChannel unavailable — storage event handles it.
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- cross-tab sync timestamp; genuinely wall-clock, unrelated to any test clock
       localStorage.setItem('velox:mode-sync', JSON.stringify({ livemode, ts: Date.now() }))
     } catch {
       // Private-mode Safari throws on localStorage write — accept

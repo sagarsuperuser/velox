@@ -12,6 +12,7 @@ import {
   type Invoice,
   type Customer,
 } from '@/lib/api'
+import { effectiveNow, sinceMs, untilMs, type EffectiveNow } from '@/lib/effectiveNow'
 import { Layout } from '@/components/Layout'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { showApiError } from '@/lib/formErrors'
@@ -51,18 +52,6 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 import { Loader2 } from 'lucide-react'
 
 // effectiveNowMs resolves the "now" baseline for relative-time
-// formatting on dunning rows. When effectiveNowISO is provided (the
-// run's owning sub is clock-pinned and the backend embedded the
-// clock's frozen_time on the row), use that; otherwise fall back to
-// wall-clock. Replaces the prior 24h-divergence heuristic.
-function effectiveNowMs(effectiveNowISO?: string): number {
-  if (effectiveNowISO) {
-    const ts = new Date(effectiveNowISO).getTime()
-    if (!Number.isNaN(ts)) return ts
-  }
-  return Date.now()
-}
-
 // Human labels for the resolution enum — raw values like
 // "payment_recovered" are backend identifiers, not operator copy.
 const RESOLUTION_LABELS: Record<string, string> = {
@@ -72,10 +61,8 @@ const RESOLUTION_LABELS: Record<string, string> = {
   invoice_not_collectible: 'Uncollectible',
 }
 
-function relativeTime(dateStr: string, effectiveNowISO?: string): string {
-  const now = effectiveNowMs(effectiveNowISO)
-  const then = new Date(dateStr).getTime()
-  const diffMs = now - then
+function relativeTime(dateStr: string, now: EffectiveNow): string {
+  const diffMs = sinceMs(dateStr, now)
   const diffMins = Math.floor(diffMs / 60000)
   if (diffMins < 1) return 'just now'
   if (diffMins < 60) return `${diffMins}m ago`
@@ -87,10 +74,8 @@ function relativeTime(dateStr: string, effectiveNowISO?: string): string {
   return formatDateTime(dateStr)
 }
 
-function futureRelativeTime(dateStr: string, effectiveNowISO?: string): string {
-  const now = effectiveNowMs(effectiveNowISO)
-  const then = new Date(dateStr).getTime()
-  const diffMs = then - now
+function futureRelativeTime(dateStr: string, now: EffectiveNow): string {
+  const diffMs = untilMs(dateStr, now)
   if (diffMs < 0) return 'overdue'
   const diffMins = Math.floor(diffMs / 60000)
   if (diffMins < 60) return `in ${diffMins}m`
@@ -381,12 +366,12 @@ function RunsTab() {
                           </TableCell>
                           <TableCell>
                             {run.next_action_at
-                              ? <span className="text-xs text-muted-foreground" title={formatDateTime(run.next_action_at)}>{futureRelativeTime(run.next_action_at, run.effective_now)}</span>
+                              ? <span className="text-xs text-muted-foreground" title={formatDateTime(run.next_action_at)}>{futureRelativeTime(run.next_action_at, effectiveNow(run.effective_now))}</span>
                               : <span className="text-xs text-muted-foreground">{'\u2014'}</span>
                             }
                           </TableCell>
                           <TableCell>
-                            <span className="text-xs text-muted-foreground" title={formatDateTime(run.created_at)}>{relativeTime(run.created_at, run.effective_now)}</span>
+                            <span className="text-xs text-muted-foreground" title={formatDateTime(run.created_at)}>{relativeTime(run.created_at, effectiveNow(run.effective_now))}</span>
                           </TableCell>
                         </TableRow>
 

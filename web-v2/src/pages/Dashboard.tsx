@@ -3,9 +3,10 @@ import { usePageTitle } from '@/hooks/usePageTitle'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { formatInTimeZone } from 'date-fns-tz'
-import { api, formatCents, formatRelativeTime, getTenantTimezone } from '@/lib/api'
+import { api, formatCents, getTenantTimezone } from '@/lib/api'
 import type { Invoice, Customer } from '@/lib/api'
-import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
+import { timeAgo, wallClockNow } from '@/lib/effectiveNow'
+import { useEffectiveNowResolver } from '@/hooks/useClockFrozenMap'
 import { Layout } from '@/components/Layout'
 import { FeedSkeleton } from '@/components/ui/TableSkeleton'
 import { SimulatedBadge } from '@/components/TestClockBadge'
@@ -83,7 +84,7 @@ export default function DashboardPage() {
     ;(recentCustomers?.data ?? []).forEach(c => { m[c.id] = c })
     return m
   }, [recentCustomers])
-  const clockFrozen = useClockFrozenMap()
+  const resolveNow = useEffectiveNowResolver()
 
   const chartData = useMemo(() => chartRes?.data ?? [], [chartRes])
   const error = errorObj instanceof Error ? errorObj.message : errorObj ? String(errorObj) : null
@@ -138,7 +139,9 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
           {dataUpdatedAt > 0 && (
             <p className="text-xs text-muted-foreground mt-1" aria-live="polite">
-              Updated {formatRelativeTime(new Date(dataUpdatedAt).toISOString())}
+              {/* Query-freshness is genuinely wall-clock: it reports when THIS
+                  browser last refetched, independent of any test clock. */}
+              Updated {timeAgo(new Date(dataUpdatedAt).toISOString(), wallClockNow())}
             </p>
           )}
         </div>
@@ -320,10 +323,10 @@ export default function DashboardPage() {
                         <span className="text-xs text-muted-foreground w-16 text-right">
                           {/* Relative to the invoice's simulated clock when pinned
                               (created_at is stamped in simulation time on a clock-advanced
-                              invoice); wall-clock invoices resolve to undefined → Date.now(). */}
-                          {formatRelativeTime(
+                              invoice); wall-clock invoices resolve to wall time. */}
+                          {timeAgo(
                             inv.created_at,
-                            clockNow(clockFrozen, customerMap[inv.customer_id]?.test_clock_id),
+                            resolveNow(customerMap[inv.customer_id]?.test_clock_id),
                           )}
                         </span>
                       </div>

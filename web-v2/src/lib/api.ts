@@ -909,6 +909,7 @@ export function pollIntervalForInvoice(invoice?: Invoice): number | false {
   if (invoice.payment_status === 'succeeded' || invoice.payment_status === 'paid') {
     if (invoice.paid_at) {
       const paidAtMs = Date.parse(invoice.paid_at)
+      // eslint-disable-next-line no-restricted-syntax -- poll-freshness window is real elapsed wall-clock, not simulated time
       if (!isNaN(paidAtMs) && Date.now() - paidAtMs < 30_000) return 5000
     }
     return false
@@ -1861,18 +1862,6 @@ export function formatDateTime(iso: string, timezone?: string): string {
   })
 }
 
-// nowISO overrides the wall-clock baseline: pass the owning entity's test-clock
-// frozen_time when it's clock-pinned, so a simulated-timestamp row reads relative
-// to simulation time instead of collapsing to "just now". Undefined → Date.now()
-// (the wall-clock callers — api-key expiry, "Updated X ago", webhook events).
-export function formatRelativeTime(iso: string, nowISO?: string): string {
-  const nowMs = nowISO ? new Date(nowISO).getTime() : Date.now()
-  const seconds = Math.floor((nowMs - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return 'just now'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
-}
+// Relative-time formatting moved to lib/effectiveNow (timeAgo) — it requires a
+// branded EffectiveNow anchor so a clock-pinned surface can't silently fall back
+// to wall-clock. See lib/effectiveNow.ts.
