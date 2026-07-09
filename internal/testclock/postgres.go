@@ -22,7 +22,7 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 const clockCols = `id, tenant_id, name, frozen_time, status,
-	created_at, updated_at, deleted_at,
+	created_at, updated_at,
 	COALESCE(last_failure_reason,''), last_advance_summary`
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.TestClock) (domain.TestClock, error) {
@@ -75,7 +75,7 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Te
 	defer postgres.Rollback(tx)
 
 	var clk domain.TestClock
-	err = tx.QueryRowContext(ctx, `SELECT `+clockCols+` FROM test_clocks WHERE id = $1 AND deleted_at IS NULL`, id).
+	err = tx.QueryRowContext(ctx, `SELECT `+clockCols+` FROM test_clocks WHERE id = $1`, id).
 		Scan(scanDest(&clk)...)
 	if err == sql.ErrNoRows {
 		return domain.TestClock{}, errs.ErrNotFound
@@ -92,7 +92,6 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Tes
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+clockCols+` FROM test_clocks
-		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC LIMIT 500
 	`)
 	if err != nil {
@@ -111,21 +110,69 @@ func (s *PostgresStore) List(ctx context.Context, tenantID string) ([]domain.Tes
 	return clocks, rows.Err()
 }
 
-// Delete soft-deletes a clock and cascade-cancels every subscription
-// pinned to it, atomically (ADR-016). Hard delete left silent
-// orphans: subs detached via ON DELETE SET NULL with simulated
-// next_billing_at the wall-clock scheduler couldn't reconcile.
+// clockTeardownStatements are the ordered DELETEs that tear down a test
+// clock's ENTIRE simulated customer graph (ADR-086, Design B). Order is
+// bottom-up so the customer_id / invoice_id RESTRICT FKs (migration 0015)
+// never trip — every child is gone before its parent. Every statement is
+// transitively keyed on the clock's customer set `test_clock_id = $1`, so
+// only livemode=false rows are ever reachable (a live customer has
+// test_clock_id NULL; a test clock is always livemode=false by CHECK).
 //
-// Idempotent on the clock: re-deleting an already-deleted clock
-// returns errs.ErrNotFound (the live filter hides it). Idempotent
-// on subs: the WHERE clause skips subs already canceled / archived
-// so a partial-failure retry doesn't trample manual operator state.
+// Tables with ON DELETE CASCADE from a parent (subscription_items /
+// _changes / _thresholds via subscriptions; payment_methods / portal via
+// customers) would be removed automatically, but the payment_methods and
+// portal rows are deleted explicitly so this list is the complete,
+// self-documenting record the completeness arch-test asserts against.
 //
-// Generated invoices are intentionally NOT touched. Velox's
-// invoice immutability rule (terminal-state finalized/paid/voided
-// rows never mutate) takes precedence; the simulated timestamps on
-// those invoices remain self-evident from the now-deleted clock,
-// and any future audit query can still resolve them via id.
+// NOT torn down (survivors): the audit log and all tenant config — meters,
+// plans, coupons, dunning_policies, api_keys, stripe_webhook_events. Keep
+// this list in sync with TestTeardownCoversEverySimulatedTable.
+var clockTeardownStatements = []string{
+	// Invoice sub-graph — children first (leaves have no customer_id; keyed via parent).
+	`DELETE FROM invoice_dunning_events WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1))`,
+	`DELETE FROM invoice_dunning_runs   WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1))`,
+	`DELETE FROM tax_calculations       WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1))`,
+	`DELETE FROM credit_note_line_items WHERE credit_note_id IN (SELECT id FROM credit_notes WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1))`,
+	`DELETE FROM credit_notes           WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM invoice_line_items     WHERE invoice_id IN (SELECT id FROM invoices WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1))`,
+	`DELETE FROM payment_update_tokens  WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM coupon_redemptions     WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM invoices               WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	// Usage + credit — the ledger MUST precede subscriptions: its
+	// source_subscription_item_id RESTRICT-references subscription_items,
+	// which cascades away when subscriptions is deleted.
+	`DELETE FROM billed_entries         WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM usage_events           WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM customer_credit_ledger WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	// Subscriptions — CASCADE removes subscription_items / _changes / _thresholds.
+	`DELETE FROM subscriptions          WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	// Per-customer config + portal (customer_discounts / payment_methods /
+	// portal also ON DELETE CASCADE from the customer; deleted explicitly so
+	// the set is the complete self-documenting record the arch-test asserts).
+	`DELETE FROM customer_price_overrides    WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM customer_billing_profiles   WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM customer_discounts          WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM payment_methods             WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM customer_portal_sessions    WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	`DELETE FROM customer_portal_magic_links WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id = $1)`,
+	// The customers themselves LAST (before the clock): customers.test_clock_id
+	// is ON DELETE SET NULL, so deleting the clock first would silently detach
+	// every customer and leak the whole set.
+	`DELETE FROM customers WHERE test_clock_id = $1`,
+}
+
+// Delete tears down a test clock and its ENTIRE simulated customer graph in
+// one transaction (ADR-086, Design B — complete teardown, supersedes ADR-016's
+// soft-delete + detach). After it runs no simulated row survives, so no
+// wall-clock plane (auto-charge, dunning, usage-aggregation, credit-expiry,
+// analytics) can ever act on one — the class the ADR dissolves.
+//
+// Safety: see clockTeardownStatements — every DELETE is keyed transitively on
+// `test_clock_id = $clock`, and a test clock is always livemode=false, so no
+// live-mode row is reachable; the clock row's own DELETE adds `livemode=false`
+// as belt. Runs under TxTenant (RLS confines it to the tenant).
+//
+// Idempotent: re-deleting a gone clock returns errs.ErrNotFound.
 func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
@@ -133,50 +180,28 @@ func (s *PostgresStore) Delete(ctx context.Context, tenantID, id string) error {
 	}
 	defer postgres.Rollback(tx)
 
-	res, err := tx.ExecContext(ctx,
-		`UPDATE test_clocks SET deleted_at = now(), updated_at = now()
-		 WHERE id = $1 AND deleted_at IS NULL`, id)
-	if err != nil {
+	// Existence first: tearing down a gone clock hits an empty customer set
+	// (harmless), but the contract is ErrNotFound.
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM test_clocks WHERE id = $1)`, id).Scan(&exists); err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if !exists {
 		return errs.ErrNotFound
 	}
 
-	// Cascade-cancel pinned subs. Filter excludes subs already in
-	// terminal states so an operator who manually canceled a sub
-	// before deleting the clock keeps the more-specific state. Subs
-	// KEEP their test_clock_id — they're now in a terminal state (no
-	// further billing), and the retained pointer is the denormalized
-	// "which clock did this belong to" cache (ADR-027). The stale
-	// simulation-time period fields are exactly why subs are canceled
-	// rather than detached: a detached sub would carry sim-time
-	// next_billing_at the wall-clock scheduler can't reconcile and
-	// would misfire (the bug ADR-016 was written to kill).
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE subscriptions SET status = 'canceled', updated_at = now()
-		 WHERE test_clock_id = $1 AND status NOT IN ('canceled', 'archived')`, id,
-	); err != nil {
-		return fmt.Errorf("cascade-cancel pinned subs: %w", err)
+	for i, stmt := range clockTeardownStatements {
+		if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
+			return fmt.Errorf("clock teardown step %d: %w", i, err)
+		}
 	}
 
-	// Detach pinned customers — realize the customers.test_clock_id
-	// `ON DELETE SET NULL` that ADR-016's soft-delete defeated (the row
-	// isn't DELETEd, so the FK cascade never fires). Unlike subs, a
-	// customer has no period fields to go stale, so detaching is safe:
-	// it returns the customer to wall-clock so its NEXT subscription is
-	// a clean, billable wall-clock sub instead of inheriting this dead
-	// clock and stranding (excluded from both the cron — pinned — and
-	// the catchup path — clock deleted). Without this the customer-level
-	// pin (ADR-027) keeps spawning stranded subs after the clock is
-	// gone. "Which customers were on this clock" stays answerable
-	// through the canceled subs' retained pointers.
+	// The clock row itself, last — its customers are already gone, so the
+	// ON DELETE SET NULL fires on nothing. Guarded livemode=false.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE customers SET test_clock_id = NULL, updated_at = now()
-		 WHERE test_clock_id = $1`, id,
-	); err != nil {
-		return fmt.Errorf("detach pinned customers: %w", err)
+		`DELETE FROM test_clocks WHERE id = $1 AND livemode = false`, id); err != nil {
+		return fmt.Errorf("delete test clock: %w", err)
 	}
 
 	return tx.Commit()
@@ -237,14 +262,12 @@ func (s *PostgresStore) transitionWithReason(
 	if clearReason {
 		query = `UPDATE test_clocks SET status = $1, last_failure_reason = NULL,
 			updated_at = now()
-			WHERE id = $2 AND status = ANY($3) AND deleted_at IS NULL
-			RETURNING ` + clockCols
+			WHERE id = $2 AND status = ANY($3)			RETURNING ` + clockCols
 		args = []any{to, id, postgres.StringArray(allowedFrom)}
 	} else {
 		query = `UPDATE test_clocks SET status = $1, last_failure_reason = $2,
 			updated_at = now()
-			WHERE id = $3 AND status = ANY($4) AND deleted_at IS NULL
-			RETURNING ` + clockCols
+			WHERE id = $3 AND status = ANY($4)			RETURNING ` + clockCols
 		args = []any{to, truncateReason(reason), id, postgres.StringArray(allowedFrom)}
 	}
 	err = tx.QueryRowContext(ctx, query, args...).Scan(scanDest(&clk)...)
@@ -294,11 +317,11 @@ func (s *PostgresStore) transition(ctx context.Context, tenantID, id, to string,
 	var args []any
 	if frozenTime != nil {
 		query = `UPDATE test_clocks SET status = $1, frozen_time = $2, updated_at = now()
-			WHERE id = $3 AND status = ANY($4) AND deleted_at IS NULL RETURNING ` + clockCols
+			WHERE id = $3 AND status = ANY($4) RETURNING ` + clockCols
 		args = []any{to, *frozenTime, id, postgres.StringArray(allowedFrom)}
 	} else {
 		query = `UPDATE test_clocks SET status = $1, updated_at = now()
-			WHERE id = $2 AND status = ANY($3) AND deleted_at IS NULL RETURNING ` + clockCols
+			WHERE id = $2 AND status = ANY($3) RETURNING ` + clockCols
 		args = []any{to, id, postgres.StringArray(allowedFrom)}
 	}
 	err = tx.QueryRowContext(ctx, query, args...).Scan(scanDest(&clk)...)
@@ -383,8 +406,7 @@ func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestCloc
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+clockCols+` FROM test_clocks
-		WHERE status = 'advancing' AND deleted_at IS NULL
-		ORDER BY updated_at ASC
+		WHERE status = 'advancing'		ORDER BY updated_at ASC
 		LIMIT 1000
 	`)
 	if err != nil {
@@ -406,7 +428,7 @@ func (s *PostgresStore) ListAllAdvancing(ctx context.Context) ([]domain.TestCloc
 func scanDest(c *domain.TestClock) []any {
 	return []any{
 		&c.ID, &c.TenantID, &c.Name, &c.FrozenTime, &c.Status,
-		&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
+		&c.CreatedAt, &c.UpdatedAt,
 		&c.LastFailureReason, advanceSummaryScan{&c.LastAdvanceSummary},
 	}
 }
@@ -457,7 +479,7 @@ func (s *PostgresStore) SaveAdvanceSummary(ctx context.Context, tenantID, id str
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE test_clocks SET last_advance_summary = $1::jsonb, updated_at = now()
-		 WHERE id = $2 AND deleted_at IS NULL`,
+		 WHERE id = $2`,
 		summaryJSON, id,
 	); err != nil {
 		return err

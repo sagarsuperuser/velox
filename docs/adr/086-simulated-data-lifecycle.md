@@ -1,71 +1,61 @@
-# ADR-086: Simulated-data lifecycle — one durable discriminator + clock-delete teardown
+# ADR-086: Simulated-data lifecycle — durable `is_simulated` sweep-gates + clock-delete teardown
 
-**Status:** Accepted (2026-07-09). Phase 1 shipped (#417); Phases 2–4 pending.
-**Supersedes:** ADR-016 (test-clock soft-delete + cancel-subs + detach-customers → **hard-delete cascade**).
-**Extends:** ADR-029 (fully-disjoint test-clock flows — now *enforced* by a durable discriminator + an arch-test, not case-by-case predicates).
+**Status:** Accepted 2026-07-09; **revised 2026-07-09** after the design-B pivot — this file replaces the original "immutable `sim_clock_id` discriminator on every sim-bearing table" plan (see *Alternatives considered — why not a durable discriminator on every table*).
+**Supersedes:** ADR-016 (test-clock soft-delete + cancel-subs + detach-customers → **complete hard-delete teardown**).
+**Extends:** ADR-029 (fully-disjoint test-clock flows).
 **Reaffirms:** ADR-030 (simulated time on clock-pinned entities stays; `created_at` is domain time) **and its audit exception** (the audit log is always wall-clock).
 
 ## Context
 
-In **test mode** (`livemode=false`), two time domains share one dataset: **wall-clock** (real-test data + every cron sweep on `time.Now()`) and **simulated** (test-clock-pinned entities whose billing timestamps are stamped at the clock's `frozen_time`). An adversarial audit found **24 defects** where a wall-clock plane (auto-charge, dunning, credit-expiry, usage-billing, analytics, ~8 FE surfaces) processes a *simulated* record against wall-clock time. All are test-mode-only (no live-money impact), but they violate ADR-029 invariants, corrupt demos/QA, and lie in the UI.
+In **test mode** (`livemode=false`) two time domains share one dataset: **wall-clock** (real-test data + every cron sweep on `time.Now()`) and **simulated** (test-clock-pinned entities whose billing timestamps are stamped at the clock's `frozen_time`). An adversarial audit found **24 defects** where a wall-clock plane (auto-charge, dunning, tax, credit-expiry, usage-billing, analytics, ~8 FE surfaces) processes a *simulated* record against wall-clock time. All are test-mode-only (no live-money impact), but they violate ADR-029, corrupt demos/QA, and lie in the UI.
 
-## Root cause — one defect, 24 symptoms
+The 24 split into **two independent problems**:
 
-Every plane decides *"is this simulated?"* by reading the **mutable pin** (`test_clock_id` on the customer/subscription), not a **durable fact**. Deleting a clock nulls/orphans the pin while the simulated timestamps remain, so the "skip me, I'm simulated" signal vanishes and the wall-clock planes grab the rows. Aggravating: the durable flag is **inconsistently present** — `invoices` and `credit_notes` carry `is_simulated`, but `usage_events`, the credit ledger, `subscriptions`, and `invoice_dunning_runs` do not.
+1. **Live-clock leak.** While a clock is alive, a simulated invoice stamped at `frozen_time` can look "due"/"overdue" to a wall-clock sweep *right now* and get auto-charged or dunned — even though nothing was deleted. ADR-029 requires wall-clock sweeps to skip simulated rows.
+2. **Deleted-clock leak.** The old model (ADR-016) *soft*-deleted the clock and detached its customers (`test_clock_id → NULL`), leaving the simulated rows behind with their pin nulled. The "skip me, I'm simulated" pin vanished and every wall-clock plane grabbed the orphans. The pin-join also missed customer-pinned **one-off** invoices (no subscription to join through).
 
-This ADR fixes the **root**, not the 24 leaves.
+## Decision
 
-## Decision — the model
+Two targeted mechanisms, one per problem — **no new per-row discriminator, no write-chokepoint** (see *Alternatives considered*).
 
-1. **Immutable birth-stamp.** Every sim-bearing row carries `sim_clock_id` (written **once** at creation, auto-stamped from a session var via a column `DEFAULT`, exactly as `livemode` is auto-set today — writers never name it). `is_simulated` becomes a **generated column** `GENERATED ALWAYS AS (sim_clock_id IS NOT NULL) STORED` — one source of truth, no dual-write, no drift, un-nullable.
+### 1. Live-clock half — money sweeps gate on the durable `is_simulated` (shipped #417/#420)
 
-2. **The pin is demoted.** `customers.test_clock_id` / `subscriptions.test_clock_id` become pure *"which plane does this entity's **next** write land in"* pointers with **zero operational readers**. Because treatment keys on the immutable stamp, **detaching the pin can never change how an existing row is treated.**
+Every wall-clock money sweep is **invoice-anchored** (auto-charge `ListAutoChargePending`; dunning `ListDueRuns` / `ListFailedWithoutDunningRun`; tax `ListPendingTaxRetry` / `ListPendingTaxCommit`). `invoices` already carries a durable `is_simulated` flag (migration 0109, stamped once at write from `customerOnTestClock`); `credit_notes` too (0117). The sweeps now filter `AND i.is_simulated = false` instead of the old mutable pin-join. Because `is_simulated` is stamped at creation and never mutates, detaching or deleting the clock can't flip an existing invoice back into a wall-clock sweep. This closes the money-critical live-clock leaks with **zero schema change** — the flag was already there.
 
-3. **Every operational plane keys on `is_simulated`, uniformly.** Wall-clock plane processes `is_simulated = false`; the catchup/Advance plane processes `is_simulated = true AND sim_clock_id = $clock` against that clock's `frozen_time`. The money sweeps run under `TxBypass` (which skips RLS), so they use **explicit predicates** — an RLS-only design would falsely claim safety over the exact paths where money moves.
+### 2. Deleted-clock half — clock delete = **complete teardown** (this ADR's change)
 
-4. **Clock-delete = teardown.** A single guarded `DELETE FROM test_clocks`; foreign keys do the rest. `sim_clock_id … REFERENCES test_clocks(id) ON DELETE CASCADE` on every sim-bearing table evaporates all of that clock's simulated entities, **including the customer** (`customers.test_clock_id … ON DELETE CASCADE` — the customer was born into the sandbox and goes with it; the Stripe test-clock model). The cascade is keyed on **`sim_clock_id`, which is `NULL` on every live row**, so live financial rows are structurally unreachable and migration-0015's `RESTRICT` guards stay intact. The old soft-delete + cancel-subs + detach dance (ADR-016) is gone; `canceled_at = NULL` phantom-MRR dissolves because the subs are deleted, not canceled.
+Deleting a test clock **hard-deletes the clock and tears down its entire simulated customer graph** in one `TxTenant` transaction (`internal/testclock.Delete`): every customer pinned to the clock (`customers.test_clock_id = $clock`) and every row those customers own — invoices with their line-item / dunning / tax children, credit notes, subscriptions (+ items / changes / thresholds via CASCADE), usage events, the credit ledger, per-customer config, and portal rows — deleted **bottom-up** so migration-0015's `RESTRICT` guards never trip, and the customers **last** (before the clock) so `customers.test_clock_id`'s `ON DELETE SET NULL` fires on nothing. After it runs **no simulated row survives**, so *no* wall-clock plane — money or not, invoice-anchored or not — can ever act on a stranded simulated row. The deleted-clock class is dissolved wholesale, not sweep-by-sweep.
 
-5. **No physical/domain time split.** `created_at` / `updated_at` stay simulated (`clock.Now`) on clock-pinned entities — **reaffirming ADR-030.** We deliberately do **not** rewrite the ~148 `clock.Now` write sites, because:
-   - The **wall-clock forensic layer already exists**: the audit log stamps `created_at = time.Now().UTC()` unconditionally (ADR-030 audit exception, `internal/audit/audit.go`), carrying the simulated instant as `sim_effective_at` metadata. "When did this *really* happen?" is answered there.
-   - Investigation confirmed the only **wall-clock-semantic** readers of entity `created_at` are (a) `analytics/overview.go` count metrics — gated on `is_simulated` in Phase 2 — and (b) the pricing as-of resolution (see Known limitations). Everything else is display, stable-cursor, or ordering, where sim-time is harmless. In production there are no clocks, so `created_at` is already wall-clock everywhere.
+This is the Stripe test-clock model: the customer is born into the sandbox and is discarded with it. History is not lost — the clock deletion is recorded in the audit log (wall-clock, ADR-030 exception). The old soft-delete + cancel-subs + detach dance (ADR-016) is gone, and with it the `test_clocks.deleted_at` column, its partial index, and the 8 now-vestigial `deleted_at IS NULL` read filters (migration 0144). Phantom-MRR from `canceled_at = NULL` subs dissolves because the subs are *deleted*, not canceled.
 
-## The anti-regression guards — why this dissolves the class instead of playing whack-a-mole
+### 3. Anti-regression — a mechanized **completeness** guard (two layers)
 
-The model alone isn't enough; a future engineer must be *unable* to reintroduce the defect. Mechanized, not documented:
+Teardown is only safe if it is *complete*: a simulated table left out of the delete set silently re-opens the deleted-clock leak. Two arch-tests make completeness un-forgettable, discovering the live schema from `information_schema` / `pg_constraint` (no hand-maintained list):
 
-- **Sweep-filter arch-test** (sibling to `internal/arch/boundaries_test.go`): any store/sweep `SELECT` over a sim-bearing table must carry an `is_simulated` predicate, with an explicit allowlist for the catchup `…ForClock` paths (filter the other way) and single-row `GET`s (plane-neutral). Honest caveat: "is this a wall sweep" isn't perfectly decidable, so this is an allowlist-backed gate, not airtight — escalation is the RLS third-axis, deferred below.
-- **Write-chokepoint** — sim-capable writes funnel through one `WithSimulation(clockID)` / `OpenCustomerWriteTx(customerID)` site that resolves the pin and sets the session var; an arch-test asserts every creation door goes through it, **including the LiteLLM ingest door** (the #406 lint-scope lesson).
-- **Schema-completeness test**: every sim-bearing table has `sim_clock_id` + generated `is_simulated` + `ON DELETE CASCADE`.
-- **FE**: the relative-time helper takes a **required** anchor param, so a simulated row's badge *cannot* fall back to `Date.now()` (no default to fall back to).
+- **Layer A — customer-scope completeness** (`TestTeardownCoversEverySimulatedTable`). Every table with a `customer_id` column must be either in the teardown delete set or in an explicit `teardownKeepAllowlist` with a written reason. A new customer-owned table added later fails CI until it is classified. This is the guard that caught the two real gaps found while building: `customer_discounts` missing from the delete set, and `customer_payment_setups` (a table that had been dropped from the schema).
+- **Layer B — FK-closure integrity** (`TestTeardownLeavesNoDanglingReference`). For every foreign key whose *parent* rows the teardown deletes, the *child* rows must be deleted too — otherwise the teardown aborts (RESTRICT / NO ACTION child) or leaks a nulled reference (SET NULL — the exact original bug shape, `customers.test_clock_id`). CASCADE children are folded into the deleted set first; any non-cascade FK into that closure whose child sits outside it fails, with no seed data required.
 
-## Planes — the complete list (nothing hidden in a follow-up)
+A real-Postgres integration test (`TestDelete_TearsDownSimulatedGraph_KeepsEverythingElse`) exercises the actual ordered DELETEs and the pinned-vs-unpinned survivor discrimination; a mutation-verify confirms Layer B bites when a table is dropped from the set.
 
-| Plane | Today | Target predicate | Phase |
-|---|---|---|---|
-| auto-charge `ListAutoChargePending` | pin-join | `is_simulated = false` | 1 ✅ |
-| dunning `ListDueRuns`, `ListFailedWithoutDunningRun` | pin-join | `is_simulated = false` | 1 ✅ |
-| tax `ListPendingTaxRetry` / `ListPendingTaxCommit` | pin-join | `is_simulated = false` | 2 |
-| credit `ListExpiredGrants` + drain aggregation | customer-pin | `is_simulated = false` (needs `sim_clock_id` on the ledger) | 2 |
-| usage `AggregateForBillingPeriod` family | none | match the aggregating entity's discriminator (needs `sim_clock_id` on `usage_events`) | 2 |
-| analytics `overview.go` (`new_customers`, failed-invoice, dunning counts) | none | `is_simulated = false` | 2 |
-| **audit — entity creation** (currently only update/rotate emit rows) | not audited | emit a wall-clock create audit row | 2 |
-| FE relative-time / Due / Expiry / cycle badges | mutable pin → wall-clock fallback | `is_simulated` + server `effective_now` | 4 |
+## Alternatives considered — why not a durable discriminator on every table
 
-## Phased build
+The first design (a full day of panels) proposed the *comprehensive* fix: add an immutable `sim_clock_id` birth-stamp to **every** sim-bearing table, derive `is_simulated` as a `GENERATED` column from it, funnel all sim-capable writes through a `WithSimulation(clockID)` chokepoint, `ON DELETE CASCADE` the stamp, and add a sweep-filter arch-test asserting every sweep carries an `is_simulated` predicate. It would have worked. It was rejected because it is **containment machinery for a problem teardown deletes outright**:
 
-- **Phase 1 — SHIPPED (#417).** Auto-charge + dunning sweep gates on `is_simulated`. No schema; independently mergeable; closed the ADR-029 one-off leak.
-- **Phase 2.** `sim_clock_id` + generated `is_simulated` + auto-stamp `DEFAULT` + `CHECK (NOT (is_simulated AND livemode))` + partial indexes on the four tables that lack it; convert `invoices`/`credit_notes` bools to generated; flip tax/credit/usage/analytics to the uniform rule; audit entity creation; the write-chokepoint + the arch-tests. Migration (next number, verified across branches; pre-launch → reset the `livemode=false` dataset, no backfill).
-- **Phase 3.** `ON DELETE CASCADE` on `sim_clock_id`, `ON DELETE CASCADE` on `customers.test_clock_id`; replace `testclock.Delete` with the guarded hard `DELETE`; schema-completeness + sweep arch-tests. Makes the entire *deleted-clock* half structurally impossible.
-- **Phase 4.** API ships `is_simulated` + `effective_now` per row; the FE relative-time helper takes a required anchor.
+- It adds a column + generated column + `CHECK` + partial index to ~7 tables, a write-chokepoint that every creation door must route through (including the LiteLLM ingest door — the #406 lint-scope lesson), and a sweep arch-test whose core predicate — *"is this `SELECT` a wall-clock sweep?"* — **isn't decidable**, so it ships as an allowlist-backed gate, not an airtight one. That is the complexity-accretion smell: each guard spawns the next.
+- Its entire payoff over teardown is *keeping* simulated rows readable after a clock is deleted. At **zero customers, pre-launch**, discarding a deleted sandbox's data is a non-cost — it is exactly what Stripe test clocks do.
+- Teardown's completeness is **enumerable** (Layer A/B walk the schema and fail closed); the discriminator's sweep-safety is **not** (the undecidable predicate). The smaller design carries the *stronger* guarantee.
+
+The live-clock half still needs a durable flag — but only on the **money sweeps**, which are all invoice-anchored, and `invoices.is_simulated` already exists. So the discriminator's one genuinely-needed piece was already in the schema; the rest was apparatus to avoid deleting test data.
 
 ## Known limitations & deferred (each with a trigger)
 
-- **No `created_at` time-split** (§5) — trigger to revisit: a compliance/debugging need for wall-clock timestamps on *test* data beyond what the audit log provides.
-- **Pricing `GetRuleByKeyAsOf`** compares a rule's wall-clock `created_at` against a sim `asOf` (`pricing/postgres.go:126`). Correct for forward-advanced clocks and single-version rules (≈all usage) and it never errors (fallback to the earliest active version); a clock anchored *behind* a version's real creation time, combined with a *multi-version* rule, prices with an older version. **Documented, not fixed** — trigger: an operator hits it on a real simulation.
-- **RLS third axis** — promote `is_simulated` to a fail-closed RLS conjunct on the `TxTenant` read/analytics plane if a forgotten-filter leak ever recurs *after* the arch-test ships. The `TxBypass` sweeps stay on explicit filters regardless (RLS can't reach them).
-- **Post-teardown forensic grouping** — once rows cascade away, "which clock produced this" is unanswerable; acceptable by design. Trigger: a named audit need → capture a summary audit row at teardown before the cascade.
+- **Non-money live-clock gates** — credit-expiry (`ListExpiredGrants`), usage-aggregation, and analytics counts over non-invoice tables are **deferred**, not built via a discriminator: they are test-mode-only, carry no live-money impact, and are narrow (the wall-clock billing scheduler already excludes clock-pinned subs, ADR-028). Trigger: an operator hits one in a real simulation.
+- **No `created_at` time-split** — `created_at` / `updated_at` stay simulated (`clock.Now`) on clock-pinned entities, reaffirming ADR-030; the wall-clock forensic layer is the audit log (`sim_effective_at` metadata carries the simulated instant). Trigger: a compliance/debugging need beyond the audit log.
+- **Pricing `GetRuleByKeyAsOf`** compares a rule's wall-clock `created_at` against a sim `asOf` (`pricing/postgres.go`). Correct for forward-advanced clocks and single-version rules (≈all usage) and it never errors (fallback to the earliest active version). Trigger: an operator hits it with a behind-anchored clock on a multi-version rule.
+- **Post-teardown forensic grouping** — once the rows are gone, "which clock produced this" is unanswerable; acceptable by design. Trigger: a named audit need → capture a summary audit row at teardown before the delete.
 
 ## References
 
-- ADR-016 (superseded), ADR-029 (extended), ADR-030 (reaffirmed, incl. audit exception), ADR-070 (rule-version as-of), ADR-027 (customer-level pin at creation).
-- The 24-finding clock-delete-detach audit and the four-candidate design panel (2026-07-08/09) that this consolidates.
+- ADR-016 (superseded), ADR-029 (extended), ADR-030 (reaffirmed, incl. audit exception), ADR-027 (customer-level pin at creation), ADR-028 (disjoint wall-clock / catchup billing planes).
+- The 24-finding clock-delete-detach audit and the four-candidate design panel (2026-07-08/09); the Design-A → Design-B pivot (2026-07-09).
+- Implemented by migration 0144 + `internal/testclock` (teardown + Layer A/B completeness arch-tests + real-Postgres integration test) and the invoice/dunning/tax `is_simulated` sweep gates (#417/#420).

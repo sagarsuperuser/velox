@@ -1164,7 +1164,7 @@ func (s *PostgresStore) GetDueBillingForClock(ctx context.Context, tenantID, clo
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
-		JOIN test_clocks tc ON tc.id = s.test_clock_id AND tc.deleted_at IS NULL
+		JOIN test_clocks tc ON tc.id = s.test_clock_id
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.test_clock_id = $1
 		  AND s.next_billing_at <= tc.frozen_time
