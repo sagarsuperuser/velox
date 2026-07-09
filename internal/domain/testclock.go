@@ -33,12 +33,6 @@ type TestClock struct {
 	Status     TestClockStatus `json:"status"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
-	// DeletedAt marks a soft-deleted clock (ADR-016). API responses
-	// omit deleted clocks entirely — read paths filter
-	// deleted_at IS NULL — but the field is exposed on the JSON so
-	// background tooling and migrations that bypass the live filter
-	// can identify deleted rows without a second query.
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// LastFailureReason is the error captured when an advance
 	// transitioned the clock to status='internal_failure'. Cleared
 	// on the next successful advance. ADR-018.

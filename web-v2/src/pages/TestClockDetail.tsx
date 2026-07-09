@@ -394,16 +394,22 @@ export default function TestClockDetailPage() {
             <AlertDialogDescription>
               {attachedCustomers.length > 0 || subs.length > 0 ? (
                 <>
-                  This removes the clock and cancels every active subscription it drives
-                  ({subs.length === 1 ? '1 subscription' : `${subs.length} subscriptions`}
+                  This permanently deletes the clock and everything in its sandbox
                   {attachedCustomers.length > 0 && (
-                    <> across {attachedCustomers.length === 1 ? '1 customer' : `${attachedCustomers.length} customers`}</>
-                  )}).
-                  Generated invoices and other downstream data stay in place.
+                    <> — {attachedCustomers.length === 1 ? '1 customer' : `${attachedCustomers.length} customers`}
+                    {subs.length > 0 && (
+                      <> and {subs.length === 1 ? 'their subscription' : `their ${subs.length} subscriptions`}</>
+                    )}</>
+                  )}
+                  {attachedCustomers.length === 0 && subs.length > 0 && (
+                    <> — {subs.length === 1 ? '1 subscription' : `${subs.length} subscriptions`}</>
+                  )}
+                  {' '}— along with every simulated invoice, usage record, and credit created on it.
+                  This can't be undone; real data is never touched.
                 </>
               ) : (
                 <>
-                  This removes the clock. No customers or subscriptions are pinned to it; nothing else changes.
+                  This permanently deletes the clock. No customers or subscriptions are pinned to it; nothing else is affected.
                 </>
               )}
             </AlertDialogDescription>
