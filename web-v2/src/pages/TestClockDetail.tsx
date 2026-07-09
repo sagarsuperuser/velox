@@ -38,6 +38,7 @@ function LastAdvanceCard({ summary }: { summary: AdvanceSummary }) {
       ['Spending thresholds crossed', summary.thresholds_fired],
       ['Tax retries', summary.tax_retried],
       ['Auto-charges retried', summary.charges_retried],
+      ['Clawbacks issued', summary.clawbacks_issued],
       ['Credit grants expired', summary.credits_expired],
       ['Dunning steps advanced', summary.dunning_advanced],
     ] as Array<[string, number]>

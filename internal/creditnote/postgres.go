@@ -208,6 +208,7 @@ func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int
 	rows, err := tx.QueryContext(ctx, `SELECT `+cnReadCols+`
 		FROM credit_notes
 		WHERE livemode = $1
+		  AND is_simulated = false
 		  AND issue_pending
 		  AND status = 'draft'
 		  AND NOT EXISTS (
@@ -218,6 +219,56 @@ func (s *PostgresStore) ListPendingClawbackDrafts(ctx context.Context, batch int
 		  )
 		ORDER BY updated_at ASC
 		LIMIT $2`, livemode, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var notes []domain.CreditNote
+	for rows.Next() {
+		var cn domain.CreditNote
+		var metaJSON []byte
+		if err := rows.Scan(cnScanDest(&cn, &metaJSON)...); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metaJSON, &cn.Metadata)
+		notes = append(notes, cn)
+	}
+	return notes, rows.Err()
+}
+
+// ListPendingClawbackDraftsForClock is the catchup counterpart to
+// ListPendingClawbackDrafts (ADR-029 disjoint flows): it returns the pending
+// auto-issue clawback drafts owned by ONE test clock's simulated customers, so
+// the advance path can re-issue a deferred simulated clawback in simulated time
+// — instead of leaving it to the wall-clock reconciler, which no longer touches
+// simulated rows (is_simulated=false above). Scoped to the clock's customer set
+// (test_clock_id = $2), with the same in-flight-source defer (ADR-059) as the
+// wall-clock scan.
+func (s *PostgresStore) ListPendingClawbackDraftsForClock(ctx context.Context, tenantID, clockID string, batch int) ([]domain.CreditNote, error) {
+	if batch <= 0 {
+		batch = 50
+	}
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+cnReadCols+`
+		FROM credit_notes
+		WHERE tenant_id = $1
+		  AND customer_id IN (SELECT id FROM customers WHERE test_clock_id = $2)
+		  AND issue_pending
+		  AND status = 'draft'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM invoices i
+		    WHERE i.id = credit_notes.invoice_id
+		      AND i.tenant_id = credit_notes.tenant_id
+		      AND i.payment_status IN ('processing', 'unknown')
+		  )
+		ORDER BY updated_at ASC
+		LIMIT $3`, tenantID, clockID, batch)
 	if err != nil {
 		return nil, err
 	}

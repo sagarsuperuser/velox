@@ -30,6 +30,9 @@ type Store interface {
 	// post-commit Issue() hasn't succeeded yet (issue_pending, status='draft'),
 	// cross-tenant + scoped by livemode, for RetryPendingClawbackIssue.
 	ListPendingClawbackDrafts(ctx context.Context, batch int, livemode bool) ([]domain.CreditNote, error)
+	// ListPendingClawbackDraftsForClock is the catchup counterpart, scoped to one
+	// test clock's simulated customers (ADR-029 disjoint flows).
+	ListPendingClawbackDraftsForClock(ctx context.Context, tenantID, clockID string, batch int) ([]domain.CreditNote, error)
 	// ListPendingCreditNoteTaxReversal returns issued credit notes whose
 	// post-commit upstream tax reversal failed (tax_reversal_pending),
 	// cross-tenant + scoped by livemode, for RetryPendingCreditNoteTaxReversal.

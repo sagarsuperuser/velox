@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -416,6 +418,37 @@ func (s *Service) RetryPendingClawbackIssue(ctx context.Context, batch int) (int
 	if err != nil {
 		return 0, []error{fmt.Errorf("list pending clawback drafts: %w", err)}
 	}
+	var errsOut []error
+	issued := 0
+	for _, cn := range drafts {
+		if _, err := s.Issue(ctx, cn.TenantID, cn.ID); err != nil {
+			errsOut = append(errsOut, fmt.Errorf("re-issue clawback credit note %s: %w", cn.ID, err))
+			continue
+		}
+		issued++
+	}
+	return issued, errsOut
+}
+
+// RetryPendingClawbackIssueForClock is the catchup counterpart to
+// RetryPendingClawbackIssue (ADR-029 disjoint flows). The Advance path calls it
+// per clock to issue that clock's DEFERRED simulated clawback drafts — the ones
+// whose source invoice was in-flight when the downgrade ran (ADR-059 defer) and
+// has since settled on a later advance. The wall-clock reconciler skips
+// simulated rows (is_simulated=false), so without this a simulated clawback
+// would either never complete or, pre-fix, get issued against wall-clock time.
+//
+// It binds the clock's frozen_time as effective-now, so every clock.Now(ctx)
+// inside Issue()'s coordinator tx — issued_at, updated_at, the credit-ledger
+// grant (paid source) or amount_due relief (unpaid), and the post-commit tax
+// reversal — lands in SIMULATED time, mirroring the engine's in-band bind on the
+// initial downgrade. Per-row errors are collected, not aborted-on.
+func (s *Service) RetryPendingClawbackIssueForClock(ctx context.Context, tenantID, clockID string, frozenTime time.Time, batch int) (int, []error) {
+	drafts, err := s.store.ListPendingClawbackDraftsForClock(ctx, tenantID, clockID, batch)
+	if err != nil {
+		return 0, []error{fmt.Errorf("list pending clawback drafts for clock %s: %w", clockID, err)}
+	}
+	ctx = clock.WithEffectiveNow(ctx, frozenTime)
 	var errsOut []error
 	issued := 0
 	for _, cn := range drafts {
