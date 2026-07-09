@@ -124,37 +124,37 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		args []any
 	}{
 		{"active_customers", &resp.ActiveCustomers,
-			`SELECT COUNT(*) FROM customers WHERE status = 'active'`, nil},
+			`SELECT COUNT(*) FROM customers WHERE status = 'active'` + notSimCustomer, nil},
 		{"new_customers", &resp.NewCustomers,
-			`SELECT COUNT(*) FROM customers WHERE created_at >= $1 AND created_at < $2`,
+			`SELECT COUNT(*) FROM customers WHERE created_at >= $1 AND created_at < $2` + notSimCustomer,
 			[]any{period.Start, period.End}},
 		{"active_subs", &resp.ActiveSubs,
-			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active'`, nil},
+			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active'` + notSimSubBare, nil},
 		{"trialing_subs", &resp.TrialingSubs,
-			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND trial_end_at IS NOT NULL AND trial_end_at > now()`, nil},
+			`SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND trial_end_at IS NOT NULL AND trial_end_at > now()` + notSimSubBare, nil},
 		{"outstanding_ar", &resp.OutstandingAR,
-			`SELECT COALESCE(SUM(amount_due_cents), 0) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded' AND currency = $1`,
+			`SELECT COALESCE(SUM(amount_due_cents), 0) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded' AND currency = $1` + notSimInvoice,
 			[]any{defaultCurrency}},
 		{"avg_invoice", &resp.AvgInvoiceValue,
-			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3`,
+			`SELECT COALESCE(AVG(total_amount_cents), 0)::bigint FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3` + notSimInvoice,
 			[]any{defaultCurrency, period.Start, period.End}},
 		{"paid_invoices", &resp.PaidInvoices,
-			`SELECT COUNT(*) FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3`,
+			`SELECT COUNT(*) FROM invoices WHERE status = 'paid' AND currency = $1 AND paid_at >= $2 AND paid_at < $3` + notSimInvoice,
 			[]any{defaultCurrency, period.Start, period.End}},
 		{"failed_payments", &resp.FailedPayments,
-			`SELECT COUNT(*) FROM invoices WHERE payment_status = 'failed' AND created_at >= $1 AND created_at < $2`,
+			`SELECT COUNT(*) FROM invoices WHERE payment_status = 'failed' AND created_at >= $1 AND created_at < $2` + notSimInvoice,
 			[]any{period.Start, period.End}},
 		{"open_invoices", &resp.OpenInvoices,
-			`SELECT COUNT(*) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded'`, nil},
+			`SELECT COUNT(*) FROM invoices WHERE status = 'finalized' AND payment_status != 'succeeded'` + notSimInvoice, nil},
 		{"dunning_active", &resp.DunningActive,
 			// Terminal states are 'resolved' and 'escalated' — see
 			// domain.DunningRunState. Pre-fix this read 'exhausted',
 			// which is not a real state, so 'escalated' runs slipped
 			// through and the dashboard reported every terminal-escalated
 			// invoice as still actively retrying.
-			`SELECT COUNT(*) FROM invoice_dunning_runs WHERE state NOT IN ('resolved', 'escalated')`, nil},
+			`SELECT COUNT(*) FROM invoice_dunning_runs WHERE state NOT IN ('resolved', 'escalated')` + notSimViaInvoice, nil},
 		{"usage_events", &resp.UsageEvents,
-			`SELECT COUNT(*) FROM usage_events WHERE timestamp >= $1 AND timestamp < $2`,
+			`SELECT COUNT(*) FROM usage_events WHERE timestamp >= $1 AND timestamp < $2` + notSimViaCustomer,
 			[]any{period.Start, period.End}},
 		// Issued credit notes whose Stripe refund leg is failed/pending — i.e.
 		// a customer is owed money that hasn't been pushed back yet. The refund
@@ -184,6 +184,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	// order-independent and exact.
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(amount_cents), 0) FROM customer_credit_ledger
+		WHERE customer_id IN (SELECT id FROM customers WHERE test_clock_id IS NULL)
 	`).Scan(&resp.CreditBalance)
 	if err != nil {
 		slog.Error("analytics overview: credit balance", "error", err)
@@ -229,6 +230,7 @@ func currentMRR(ctx context.Context, tx *sql.Tx, currency string) (int64, error)
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.status = 'active'
 		  AND p.currency = $1
+		  AND s.test_clock_id IS NULL
 	`, currency).Scan(&v)
 	return v, err
 }
@@ -297,6 +299,7 @@ func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any, currency string) (
 		  AND s.activated_at IS NOT NULL
 		  AND s.activated_at <= $1
 		  AND (s.canceled_at IS NULL OR s.canceled_at > $1)
+		  AND s.test_clock_id IS NULL
 	`, t, currency).Scan(&v)
 	return v, err
 }
@@ -321,7 +324,7 @@ func sumPaidRevenue(ctx context.Context, tx *sql.Tx, start, end any, currency st
 	err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(total_amount_cents), 0)
 		FROM invoices
-		WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2 AND currency = $3
+		WHERE status = 'paid' AND paid_at >= $1 AND paid_at < $2 AND currency = $3 AND is_simulated = false
 	`, start, end, currency).Scan(&v)
 	return v, err
 }
@@ -349,6 +352,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any, currenc
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.activated_at >= $1 AND s.activated_at < $2
 		  AND p.currency = $3
+		  AND s.test_clock_id IS NULL
 	`, start, end, currency).Scan(&m.New); err != nil {
 		return m, err
 	}
@@ -365,6 +369,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any, currenc
 		JOIN plans p ON p.id = si.plan_id
 		WHERE s.canceled_at >= $1 AND s.canceled_at < $2
 		  AND p.currency = $3
+		  AND s.test_clock_id IS NULL
 	`, start, end, currency).Scan(&m.Churned); err != nil {
 		return m, err
 	}
@@ -399,6 +404,7 @@ func computeMRRMovement(ctx context.Context, tx *sql.Tx, start, end any, currenc
 			  AND s.activated_at IS NOT NULL
 			  AND s.activated_at < $1
 			  AND (s.canceled_at IS NULL OR s.canceled_at >= $2)
+			  AND s.test_clock_id IS NULL
 		) d
 	`, start, end, currency).Scan(&m.Expansion, &m.Contraction)
 	if err != nil {
@@ -416,7 +422,7 @@ func churnRate(ctx context.Context, tx *sql.Tx, start, end any, _ bool) float64 
 	var canceled, activeAtStart int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM subscriptions
-		WHERE canceled_at >= $1 AND canceled_at < $2
+		WHERE canceled_at >= $1 AND canceled_at < $2 AND test_clock_id IS NULL
 	`, start, end).Scan(&canceled); err != nil {
 		return 0
 	}
@@ -425,6 +431,7 @@ func churnRate(ctx context.Context, tx *sql.Tx, start, end any, _ bool) float64 
 		WHERE activated_at IS NOT NULL
 		  AND activated_at <= $1
 		  AND (canceled_at IS NULL OR canceled_at > $1)
+		  AND test_clock_id IS NULL
 	`, start).Scan(&activeAtStart); err != nil {
 		return 0
 	}
@@ -441,13 +448,13 @@ func dunningRecoveryRate(ctx context.Context, tx *sql.Tx, start, end any) float6
 	var opened, recovered int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM invoice_dunning_runs
-		WHERE created_at >= $1 AND created_at < $2
+		WHERE created_at >= $1 AND created_at < $2 AND invoice_id IN (SELECT id FROM invoices WHERE is_simulated = false)
 	`, start, end).Scan(&opened); err != nil {
 		return 0
 	}
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM invoice_dunning_runs
-		WHERE created_at >= $1 AND created_at < $2 AND state = 'resolved'
+		WHERE created_at >= $1 AND created_at < $2 AND state = 'resolved' AND invoice_id IN (SELECT id FROM invoices WHERE is_simulated = false)
 	`, start, end).Scan(&recovered); err != nil {
 		return 0
 	}

@@ -51,7 +51,7 @@ func (h *Handler) usageAnalytics(w http.ResponseWriter, r *http.Request) {
 		       COUNT(*) AS events,
 		       COALESCE(SUM(quantity), 0) AS qty
 		FROM usage_events
-		WHERE timestamp >= $3 AND timestamp < $4
+		WHERE timestamp >= $3 AND timestamp < $4 AND customer_id IN (SELECT id FROM customers WHERE test_clock_id IS NULL)
 		GROUP BY 1
 		ORDER BY 1
 	`, period.Trunc, dateFmt, period.Start, period.End)
@@ -82,6 +82,7 @@ func (h *Handler) usageAnalytics(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN usage_events ue
 		  ON ue.meter_id = m.id
 		 AND ue.timestamp >= $1 AND ue.timestamp < $2
+		 AND ue.customer_id IN (SELECT id FROM customers WHERE test_clock_id IS NULL)
 		GROUP BY m.id, m.name, m.key
 		HAVING COUNT(ue.id) > 0
 		ORDER BY events DESC
@@ -110,7 +111,7 @@ func (h *Handler) usageAnalytics(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(quantity), 0)
 		FROM usage_events
-		WHERE timestamp >= $1 AND timestamp < $2
+		WHERE timestamp >= $1 AND timestamp < $2 AND customer_id IN (SELECT id FROM customers WHERE test_clock_id IS NULL)
 	`, period.Start, period.End).Scan(&totalEvents, &totalQuantity); err != nil {
 		slog.Error("analytics usage: totals", "error", err)
 		respond.InternalError(w, r)

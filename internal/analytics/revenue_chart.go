@@ -48,7 +48,7 @@ func (h *Handler) revenueChart(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(SUM(total_amount_cents), 0) AS revenue_cents,
 		       COUNT(*) AS invoice_count
 		FROM invoices
-		WHERE status = 'paid' AND currency = $5 AND paid_at >= $3 AND paid_at < $4
+		WHERE status = 'paid' AND currency = $5 AND paid_at >= $3 AND paid_at < $4 AND is_simulated = false
 		GROUP BY 1
 		ORDER BY 1
 	`, period.Trunc, dateFmt, period.Start, period.End, currency)
