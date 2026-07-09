@@ -22,9 +22,10 @@ import { useQuery } from '@tanstack/react-query'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import { formatInTimeZone } from 'date-fns-tz'
 import { api, formatCents, formatRate, formatDate, getTenantTimezone } from '@/lib/api'
-import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule, CustomerUsageSubscription, Subscription, Invoice, InvoicePreview } from '@/lib/api'
+import type { CustomerUsage, CustomerUsageMeter, CustomerUsageRule, Subscription, Invoice, InvoicePreview } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { useClockFrozenMap, clockNow } from '@/hooks/useClockFrozenMap'
+import { cycleProgress, rollingWindow, sinceMs, type EffectiveNow } from '@/lib/effectiveNow'
+import { useEffectiveNow, useEffectiveNowResolver } from '@/hooks/useClockFrozenMap'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -60,12 +61,11 @@ function UpcomingInvoicesSection({ customerId }: { customerId: string }) {
     queryFn: () => api.listSubscriptions(`customer_id=${encodeURIComponent(customerId)}`),
   })
 
-  // Per-sub test-clock frozen_time — the "now" baseline for this sub's cycle
-  // bar and last-invoice "X ago". Resolved per subscription (not customer)
-  // because the period bounds and invoice created_at were stamped on the sub's
-  // own clock. Wall-clock subs (no test_clock_id) resolve to undefined and the
-  // cards fall back to Date.now().
-  const clockFrozen = useClockFrozenMap()
+  // Per-sub effective-now — the "now" baseline for this sub's cycle bar and
+  // last-invoice "X ago". Resolved per subscription (not customer) because the
+  // period bounds and invoice created_at were stamped on the sub's own clock.
+  // Wall-clock subs (no test_clock_id) resolve to wall time.
+  const resolveNow = useEffectiveNowResolver()
 
   const activeSubs = useMemo(
     () =>
@@ -112,7 +112,7 @@ function UpcomingInvoicesSection({ customerId }: { customerId: string }) {
               key={sub.id}
               sub={sub}
               customerId={customerId}
-              effectiveNow={clockNow(clockFrozen, sub.test_clock_id)}
+              effectiveNow={resolveNow(sub.test_clock_id)}
             />
           ))}
           {hidden > 0 && (
@@ -139,7 +139,7 @@ function UpcomingInvoicesSection({ customerId }: { customerId: string }) {
   )
 }
 
-function UpcomingInvoiceCard({ sub, customerId, effectiveNow }: { sub: Subscription; customerId: string; effectiveNow?: string }) {
+function UpcomingInvoiceCard({ sub, customerId, effectiveNow }: { sub: Subscription; customerId: string; effectiveNow: EffectiveNow }) {
   // Projected next invoice — Stripe Tier 1 create_preview parity.
   // Per-sub call so multi-sub customers see their projections
   // independently rather than rolled-up. Failures are silent — the
@@ -218,25 +218,8 @@ function planNameFromPreview(preview: InvoicePreview | null | undefined): string
   return preview?.plan_name
 }
 
-// cycleProgress computes elapsed/total days + percent for a billing period.
-// nowISO is the "now" baseline: pass the owning subscription's test-clock
-// frozen_time when clock-pinned — the period bounds are stamped in simulation
-// time (subscription/service.go binds clock.Now(ctx)), so measuring against
-// wall-clock Date.now() shows "Day 0 of 31 · 0%" even a full cycle into the
-// simulation. Undefined for wall-clock subs → Date.now(). Kept a plain helper so
-// the impure clock read stays out of the component render body (react-hooks/purity).
-function cycleProgress(start: string, end: string, nowISO?: string): { daysIn: number; totalDays: number; pct: number } {
-  const startMs = new Date(start).getTime()
-  const endMs = new Date(end).getTime()
-  const nowMs = nowISO ? new Date(nowISO).getTime() : Date.now()
-  const totalDays = Math.max(1, Math.round((endMs - startMs) / 86_400_000))
-  const daysIn = Math.max(0, Math.min(totalDays, Math.round((nowMs - startMs) / 86_400_000)))
-  const pct = totalDays > 0 ? Math.min(100, (daysIn / totalDays) * 100) : 0
-  return { daysIn, totalDays, pct }
-}
-
-function CycleProgress({ start, end, label, now: nowISO }: { start: string; end: string; label?: string; now?: string }) {
-  const { daysIn, totalDays, pct } = cycleProgress(start, end, nowISO)
+function CycleProgress({ start, end, label, now }: { start: string; end: string; label?: string; now: EffectiveNow }) {
+  const { daysIn, totalDays, pct } = cycleProgress(start, end, now)
 
   return (
     <div className="space-y-1">
@@ -294,7 +277,7 @@ function ProjectionBreakdown({ preview }: { preview: InvoicePreview }) {
   )
 }
 
-function LastInvoiceLine({ invoice, effectiveNow }: { invoice: Invoice; effectiveNow?: string }) {
+function LastInvoiceLine({ invoice, effectiveNow }: { invoice: Invoice; effectiveNow: EffectiveNow }) {
   const tone =
     invoice.payment_status === 'succeeded'
       ? 'success'
@@ -328,13 +311,12 @@ function LastInvoiceLine({ invoice, effectiveNow }: { invoice: Invoice; effectiv
   )
 }
 
-// nowISO: the "now" baseline (an entity's test-clock frozen_time when pinned);
-// undefined falls back to wall-clock. Resolved here, inside a plain helper, so
-// the impure Date.now() stays out of any component render body.
-function timeAgo(iso: string, nowISO?: string): string {
-  const nowMs = nowISO ? new Date(nowISO).getTime() : Date.now()
-  const ms = nowMs - new Date(iso).getTime()
-  const m = Math.floor(ms / 60_000)
+// timeAgo — CostDashboard's richer "X ago" ladder (adds weeks/months tails, for
+// invoices that can be months old in a long simulation). Requires an anchor;
+// build it with the resolver so a simulated-future invoice doesn't collapse to
+// "just now".
+function timeAgo(iso: string, now: EffectiveNow): string {
+  const m = Math.floor(sinceMs(iso, now) / 60_000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
   const h = Math.floor(m / 60)
@@ -360,19 +342,16 @@ const ACTIVITY_PRESETS: { value: ActivityPreset; label: string }[] = [
   { value: 'last_90d', label: '90d' },
 ]
 
-// nowISO anchors the rolling window's upper bound. For a clock-pinned customer
-// pass the clock's frozen_time: usage events are stamped in simulation time
-// (usage/service.go), so a wall-clock "last 30d" window sits entirely before the
-// simulated events and the chart reads $0. Undefined → wall-clock. The 'cycle'
-// preset is left undefined on purpose — the backend defaults it to the
-// frozen_time cycle. Plain helper so the impure fallback stays out of render.
-function activityPresetToParams(p: ActivityPreset, nowISO?: string): { from?: string; to?: string } | undefined {
+// activityPresetToParams anchors the rolling window's upper bound to `now`. For
+// a clock-pinned customer that's the clock's frozen_time: usage events are
+// stamped in simulation time (usage/service.go), so a wall-clock "last 30d"
+// window sits entirely before the simulated events and the chart reads $0. The
+// 'cycle' preset returns undefined on purpose — the backend defaults it to the
+// frozen_time cycle.
+function activityPresetToParams(p: ActivityPreset, now: EffectiveNow): { from?: string; to?: string } | undefined {
   if (p === 'cycle') return undefined
   const days = p === 'last_7d' ? 7 : p === 'last_30d' ? 30 : 90
-  const nowMs = nowISO ? new Date(nowISO).getTime() : Date.now()
-  const to = new Date(nowMs)
-  const from = new Date(nowMs - days * 86_400_000).toISOString()
-  return { from, to: to.toISOString() }
+  return rollingWindow(days, now)
 }
 
 function ActivitySection({ customerId, customerTestClockId }: { customerId: string; customerTestClockId?: string }) {
@@ -381,15 +360,15 @@ function ActivitySection({ customerId, customerTestClockId }: { customerId: stri
   // Anchor the rolling window to the customer's simulated "now" when pinned to a
   // test clock, so the 7/30/90d presets frame the simulated usage rather than a
   // wall-clock window that predates it. Keyed into the query so a clock advance
-  // refetches; wall-clock customers key on 'wall' and behave as before.
-  const clockFrozen = useClockFrozenMap()
-  const effectiveNowISO = clockNow(clockFrozen, customerTestClockId)
+  // refetches; a wall-clock customer's anchor is stable across renders (captured
+  // at mount) so it doesn't churn the query.
+  const now = useEffectiveNow(customerTestClockId)
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['customer-usage', customerId, preset, effectiveNowISO ?? 'wall'],
+    queryKey: ['customer-usage', customerId, preset, now],
     queryFn: async () => {
       try {
-        return await api.customerUsage(customerId, activityPresetToParams(preset, effectiveNowISO))
+        return await api.customerUsage(customerId, activityPresetToParams(preset, now))
       } catch (err) {
         // 422 customer_has_no_subscription is the documented "no current
         // cycle" state — surface as an empty result so the section
@@ -777,12 +756,3 @@ function RuleRow({
   )
 }
 
-// Re-export the legacy CycleHeader so any consumer that imported it
-// individually (none today, but the previous file exported it) doesn't
-// break. Prefer CycleProgress for new code — it's the rebuilt version
-// with cleaner copy and tighter layout.
-export function CycleHeader({ sub }: { sub: CustomerUsageSubscription }) {
-  return (
-    <CycleProgress start={sub.current_period_start} end={sub.current_period_end} />
-  )
-}

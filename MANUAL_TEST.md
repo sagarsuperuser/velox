@@ -1222,6 +1222,7 @@ Policy configuration surface — distinct from the dunning state machine under c
 ## FLOW C1: Credits lifecycle
 
 - [ ] Grant $50 expires 30d → balance $50, ledger Expires column populated.
+- [ ] **Credit-expiry date reads the customer's simulated now (ADR-086):** on a clock-pinned customer advanced to e.g. 2027, the Grant Credit dialog's expiry-date picker floor and its "must be a future date" check reject a real-today date (it's *past* in simulated time) — anchored on the clock's `frozen_time`, not wall-clock. Same on the invoice composer's prepaid-credit line.
 - [ ] Run billing → applied, amount_due reduced, Stripe charged remainder. Ledger entry "Applied to invoice <number>".
 - [ ] Grant $500 + $79 invoice → fully credited, amount_due $0, balance $421, Stripe NOT charged.
 - [ ] Deduct $20 → confirmation → balance reduced, ledger entry.

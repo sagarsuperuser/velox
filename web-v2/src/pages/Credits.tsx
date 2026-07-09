@@ -14,6 +14,7 @@ import type { Customer, CreditBalance } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
+import { useEffectiveNow } from '@/hooks/useClockFrozenMap'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
@@ -571,6 +572,13 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
     defaultValues: { amount: '', description: '', expiresAt: '', promotional: false },
   })
 
+  // Credit-expiry floor reads the selected customer's simulated now when
+  // clock-pinned (same class as CustomerDetail's expiry validation): a wall-clock
+  // floor would block valid sim-future dates or admit sim-past ones. Re-resolves
+  // as the dialog's customer selection changes.
+  const activeCustomer = customers?.find(c => c.id === selectedCustomer)
+  const now = useEffectiveNow(activeCustomer?.test_clock_id)
+
   // One idempotency key per dialog OPEN. Retries on transient failure
   // (network, 5xx) replay through the API's Idempotency middleware and
   // converge on the same ledger entry — no double-grant / double-deduct.
@@ -719,7 +727,7 @@ function CreditDialog({ mode, customerId, customerName, customers, open, onOpenC
                         value={field.value}
                         onChange={field.onChange}
                         placeholder="Never expires"
-                        minDate={new Date()}
+                        minDate={new Date(now)}
                       />
                       <FormDescription>Leave empty for credits that never expire. Past dates are blocked — a credit that expires before today would be unusable.</FormDescription>
                     </FormItem>

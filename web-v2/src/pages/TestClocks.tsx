@@ -157,7 +157,11 @@ function CreateClockDialog({ onClose }: { onClose: () => void }) {
   // DatePicker (consistent with API Keys / Coupons / Credits) handles
   // the date and a small text input handles HH:mm.
   const tz = getTenantTimezone() || 'UTC'
+  // A brand-new clock's start defaults to the real present — genuinely wall-clock
+  // (there is no simulated "now" yet; this is the moment the operator creates it).
+  // eslint-disable-next-line no-restricted-syntax -- new-clock start defaults to real now
   const [datePart, setDatePart] = useState(() => formatInTimeZone(new Date(), tz, 'yyyy-MM-dd'))
+  // eslint-disable-next-line no-restricted-syntax -- new-clock start defaults to real now
   const [timePart, setTimePart] = useState(() => formatInTimeZone(new Date(), tz, 'HH:mm'))
   const [pickerError, setPickerError] = useState('')
 

@@ -8,6 +8,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { api, formatDate, formatDateTime, type WebhookEndpoint } from '@/lib/api'
+import { untilMs, wallClockNow } from '@/lib/effectiveNow'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 
@@ -177,7 +178,7 @@ function EndpointsTab() {
                   // server-side \u2014 we just stop showing the banner.
                   const rotationActive =
                     !!ep.secondary_secret_expires_at &&
-                    new Date(ep.secondary_secret_expires_at) > new Date()
+                    untilMs(ep.secondary_secret_expires_at, wallClockNow()) > 0
                   return (
                   <TableRow key={ep.id}>
                     <TableCell className="font-mono text-sm max-w-xs" title={ep.url}>

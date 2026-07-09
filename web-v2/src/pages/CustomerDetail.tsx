@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import { useEffectiveNow } from '@/hooks/useClockFrozenMap'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, Controller } from 'react-hook-form'
@@ -1717,6 +1718,11 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
   // net_payment_term_days (the backend computes due_at = issued_at + N).
   const [paymentTermDays, setPaymentTermDays] = useState(30)
   const [lines, setLines] = useState<ComposerLine[]>([blankLine()])
+  // Anchor date validation on the customer's simulated "now" when clock-pinned:
+  // a customer frozen at 2027 must reject a 2026 credit-expiry (past in sim
+  // time), which a wall-clock "today" would wrongly accept as "future". Surfaced
+  // by the no-restricted-syntax relative-time gate (ADR-086 Phase 4).
+  const now = useEffectiveNow(customer?.test_clock_id)
   const [errors, setErrors] = useState<{
     lines?: Record<number, { description?: string; quantity?: string; unit_amount_cents?: string; commit?: string }>
     form?: string
@@ -1791,7 +1797,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
         } else {
           commitGranted = granted
           if (l.commitExpiresAt) {
-            const today = new Date().toISOString().slice(0, 10)
+            const today = new Date(now).toISOString().slice(0, 10)
             if (l.commitExpiresAt <= today) {
               errs.commit = 'Credit expiry must be a future date'
             } else {

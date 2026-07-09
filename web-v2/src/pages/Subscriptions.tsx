@@ -41,6 +41,7 @@ import { TableSkeleton } from '@/components/ui/TableSkeleton'
 import { Plus, Search, Download, ArrowUpDown, ArrowUp, ArrowDown, Repeat } from 'lucide-react'
 import { EmptyState } from '@/components/EmptyState'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { effectiveNow } from '@/lib/effectiveNow'
 
 const PAGE_SIZE = 25
 
@@ -370,7 +371,7 @@ export default function SubscriptionsPage() {
                             expiresAt={sub.trial_end_at}
                             label="Trial ends"
                             warningDays={3}
-                            now={sub.test_clock_id ? clockFrozenMap[sub.test_clock_id] : undefined}
+                            now={effectiveNow(sub.test_clock_id ? clockFrozenMap[sub.test_clock_id] : undefined)}
                           />
                         </div>
                       </TableCell>

@@ -11,6 +11,7 @@ import { Layout } from '@/components/Layout'
 import { TestClockBanner } from '@/components/TestClockBanner'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
+import { effectiveNow } from '@/lib/effectiveNow'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
 
@@ -122,6 +123,12 @@ export default function SubscriptionDetailPage() {
     enabled: !!id,
     retry: false,
   })
+
+  // Simulated "now" as a Date (the clock's frozen_time when this sub is pinned,
+  // else wall time) — the single anchor for the lifecycle timeline's past/future
+  // dots and the date-picker floors below. A sub frozen in the past must not
+  // offer wall-clock dates its engine would treat as far-future.
+  const nowDate = new Date(effectiveNow(sub?.test_clock_id ? testClock?.frozen_time : undefined))
 
   // Activity timeline (T0-18) — chronological feed of lifecycle events
   // pulled from the audit log. Separate query key from the period-
@@ -339,7 +346,7 @@ export default function SubscriptionDetailPage() {
             <>
               <Button variant="outline" onClick={() => {
                 const tz = getTenantTimezone() || 'UTC'
-                const seed = sub.trial_end_at ? new Date(sub.trial_end_at) : new Date()
+                const seed = sub.trial_end_at ? new Date(sub.trial_end_at) : nowDate
                 seed.setDate(seed.getDate() + 7)
                 setExtendTrialDate(formatInTimeZone(seed, tz, 'yyyy-MM-dd'))
                 setExtendTrialTime(formatInTimeZone(seed, tz, 'HH:mm'))
@@ -366,7 +373,7 @@ export default function SubscriptionDetailPage() {
           )}
           <Badge variant={statusVariant(sub.status)}>{sub.status}</Badge>
           {sub.status === 'trialing' && sub.trial_end_at && (
-            <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} now={testClock?.frozen_time} />
+            <ExpiryBadge expiresAt={sub.trial_end_at} label="Trial ends" warningDays={3} now={effectiveNow(sub.test_clock_id ? testClock?.frozen_time : undefined)} />
           )}
         </div>
       </div>
@@ -439,10 +446,8 @@ export default function SubscriptionDetailPage() {
         // "now" baseline must read from the test clock for clock-pinned
         // subs — otherwise every dot reads as past for any sub whose
         // sim time is older than wall-clock (the common case during a
-        // catchup demo). Same pattern the ExpiryBadge uses.
-        const now = sub.test_clock_id && testClock?.frozen_time
-          ? new Date(testClock.frozen_time)
-          : new Date()
+        // catchup demo). nowDate is the sub's simulated now (see above).
+        const now = nowDate
 
         timelinePoints.push({
           label: 'Created',
@@ -1148,7 +1153,7 @@ export default function SubscriptionDetailPage() {
               value={pauseResumesAt}
               onChange={setPauseResumesAt}
               placeholder="Pick a date"
-              minDate={new Date()}
+              minDate={nowDate}
             />
             <p className="text-xs text-muted-foreground">
               Leave blank to pause indefinitely; you can resume manually any time. Set a date to auto-resume — the next cycle on or after this date bills normally.
@@ -1265,7 +1270,7 @@ export default function SubscriptionDetailPage() {
               time={extendTrialTime}
               onDateChange={setExtendTrialDate}
               onTimeChange={setExtendTrialTime}
-              minDate={sub.trial_end_at ? new Date(sub.trial_end_at) : new Date()}
+              minDate={sub.trial_end_at ? new Date(sub.trial_end_at) : nowDate}
             />
             <p className="text-xs text-muted-foreground">
               Times are in your tenant timezone ({getTenantTimezone() || 'UTC'}).

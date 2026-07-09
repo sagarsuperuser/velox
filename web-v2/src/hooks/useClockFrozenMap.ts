@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { effectiveNow, type EffectiveNow } from '@/lib/effectiveNow'
 
 // useClockFrozenMap returns a `test_clock_id -> frozen_time` lookup so any
 // relative-time / cycle-progress surface can compute its "now" baseline from
@@ -41,4 +42,36 @@ export function clockNow(
   testClockId?: string | null,
 ): string | undefined {
   return testClockId ? map[testClockId] : undefined
+}
+
+// useEffectiveNow is the single-entity path: one clock pin, one stable anchor.
+// The returned EffectiveNow is memoized on the frozen-time map + the pin, so it
+// is safe to feed a useMemo dependency array or a React-Query queryKey without
+// churning every render (a wall-clock entity's Date.now() is captured once at
+// mount, exactly as the prior in-memo fallback did). Use in detail pages and
+// per-customer cards; use useEffectiveNowResolver for lists of mixed pins.
+export function useEffectiveNow(testClockId?: string | null): EffectiveNow {
+  const map = useClockFrozenMap()
+  // Memoize on the RESOLVED frozen_time string, not [map, testClockId]: an
+  // unpinned entity resolves to undefined and keeps one wall-clock anchor for
+  // the mount (so a background test-clocks refetch can't churn a queryKey built
+  // from it), while a pinned entity recomputes only when its clock advances.
+  const frozen = clockNow(map, testClockId)
+  return useMemo(() => effectiveNow(frozen), [frozen])
+}
+
+// useEffectiveNowResolver is the ergonomic path for list/feed components that
+// render many entities of differing clock pins. It bundles the frozen-time map
+// fetch and returns a resolver: pass an entity's own test_clock_id and get its
+// EffectiveNow anchor (frozen_time when pinned, wall time when not). Feed the
+// result straight into the required-anchor helpers in lib/effectiveNow.
+//
+//   const resolveNow = useEffectiveNowResolver()
+//   ...timeAgo(inv.created_at, resolveNow(customer.test_clock_id))
+export function useEffectiveNowResolver(): (testClockId?: string | null) => EffectiveNow {
+  const map = useClockFrozenMap()
+  return useCallback(
+    (testClockId?: string | null) => effectiveNow(clockNow(map, testClockId)),
+    [map],
+  )
 }

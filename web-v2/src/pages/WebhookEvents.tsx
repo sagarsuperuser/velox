@@ -7,10 +7,13 @@ import { Activity, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import {
   api,
   formatDateTime,
-  formatRelativeTime,
   type WebhookEventStreamFrame,
   type WebhookDeliveryView,
 } from '@/lib/api'
+// Webhook deliveries are infrastructure egress — never clock-pinned — so their
+// timestamps are genuinely wall-clock (wallClockNow), same family as the audit
+// log and email outbox (ADR-030 forensic layer).
+import { timeAgo, wallClockNow } from '@/lib/effectiveNow'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -246,7 +249,7 @@ function FrameRows({
           <StatusBadge status={frame.status} />
         </TableCell>
         <TableCell className="text-muted-foreground" title={formatDateTime(frame.created_at)}>
-          {formatRelativeTime(frame.created_at)}
+          {timeAgo(frame.created_at, wallClockNow())}
         </TableCell>
         <TableCell className="text-right">
           <Button
@@ -362,15 +365,15 @@ function DeliveryRow({
             endpoint {delivery.endpoint_id}
           </div>
           <div className="text-xs text-muted-foreground mt-1" title={formatDateTime(delivery.attempted_at)}>
-            attempted {formatRelativeTime(delivery.attempted_at)}
+            attempted {timeAgo(delivery.attempted_at, wallClockNow())}
             {delivery.completed_at && (
               <>
-                {' \u00b7 completed '}{formatRelativeTime(delivery.completed_at)}
+                {' \u00b7 completed '}{timeAgo(delivery.completed_at, wallClockNow())}
               </>
             )}
             {delivery.next_retry_at && (
               <>
-                {' \u00b7 next retry '}{formatRelativeTime(delivery.next_retry_at)}
+                {' \u00b7 next retry '}{timeAgo(delivery.next_retry_at, wallClockNow())}
               </>
             )}
           </div>

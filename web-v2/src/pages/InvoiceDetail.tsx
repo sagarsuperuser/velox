@@ -17,6 +17,7 @@ import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineI
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { taxReasonLabel } from '@/lib/taxReasons'
 import { DueBadge } from '@/components/DueBadge'
+import { effectiveNow } from '@/lib/effectiveNow'
 import { Layout } from '@/components/Layout'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, creditNoteReasonLabel } from '@/lib/status'
@@ -750,12 +751,12 @@ export default function InvoiceDetailPage() {
         }
         retrying={retryTaxMutation.isPending}
         charging={collectMutation.isPending}
-        // ADR-030 / simulated-time discipline: pass the owning sub's
-        // test-clock frozen_time so "since X ago" reads against
-        // simulated time, not wall-clock. Without this, a sub frozen
-        // at 2024-02-01 on a wall-clock 2026-05-15 dashboard shows
-        // "since 833d ago" on a fresh attention state.
-        effectiveNowISO={testClock?.frozen_time}
+        // ADR-030 / simulated-time discipline: anchor "since X ago" on the
+        // owning sub's test-clock frozen_time, not wall-clock. Without this, a
+        // sub frozen at 2024-02-01 on a wall-clock 2026-05-15 dashboard shows
+        // "since 833d ago" on a fresh attention state. effectiveNow(undefined)
+        // for a wall-clock invoice → wall time.
+        now={effectiveNow(testClock?.frozen_time)}
       />
 
       {/* Operator context — diagnostic detail (dunning, payment intent
@@ -874,7 +875,7 @@ export default function InvoiceDetailPage() {
                     invoices ('paid' is never the value), so the
                     badge leaked onto paid rows. */}
                 {invoice.due_at && invoice.status === 'finalized' && (
-                  <DueBadge dueAt={invoice.due_at} warningDays={3} now={testClock?.frozen_time} />
+                  <DueBadge dueAt={invoice.due_at} warningDays={3} now={effectiveNow(testClock?.frozen_time)} />
                 )}
               </div>
             </div>

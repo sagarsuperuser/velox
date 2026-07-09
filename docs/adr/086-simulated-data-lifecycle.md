@@ -37,6 +37,18 @@ Teardown is only safe if it is *complete*: a simulated table left out of the del
 
 A real-Postgres integration test (`TestDelete_TearsDownSimulatedGraph_KeepsEverythingElse`) exercises the actual ordered DELETEs and the pinned-vs-unpinned survivor discrimination; a mutation-verify confirms Layer B bites when a table is dropped from the set.
 
+### 4. FE relative-time surfaces — a required-anchor helper (this change)
+
+The **~8 frontend surfaces** in the audit (Context) render values *relative to "now"* — "X ago", "in N days", cycle %, rolling usage windows, due/expiry badges. On a clock-pinned entity "now" is the clock's `frozen_time`, not wall-clock; the earlier #410/#411/#413 sweep fixed the *instances* by threading an optional `nowISO`, but every helper still ended in `?? Date.now()` — a **forgettable** fallback (a new surface that omits the anchor silently reverts to wall-clock, wrong only once a clock is advanced). That residual is the same shape as the sweep leaks: correctness by discipline, not by construction.
+
+This change converts the discipline into a **mechanized gate** (`web-v2/src/lib/effectiveNow.ts`):
+
+- A **branded `EffectiveNow`** type. The only ways to make one are `effectiveNow(frozenISO)` (entity surfaces — `frozen_time` when pinned, wall time when not) and `wallClockNow()` (an *explicit, greppable* wall-clock opt-in for the forensic/egress layer — audit log, email/webhook outbox, reaffirming ADR-030 — and never-pinned entities like API keys / webhook endpoints). Every relative-time helper **requires** an `EffectiveNow`, with **no `?? Date.now()` anywhere** — so "did you handle the test clock?" becomes a **compile error**, not a runtime bug. This is the stronger, enumerable guarantee, the same principle the teardown chose over the discriminator.
+- A **second, independent** gate: an ESLint `no-restricted-syntax` rule bans raw `Date.now()` / argless `new Date()` in app code, so a *hand-rolled* relative-time computation can't bypass the helpers. Genuine calendar/infra uses opt out with a one-line reason; the date-infra modules (`lib/dates.ts`, the date-picker) are exempted.
+- The gate immediately caught **two real latent bugs the instance-sweep missed** — both *input validation*, not display: a clock-pinned customer's **credit-expiry** date validation (the CustomerDetail invoice composer and the Credits grant dialog) checked "must be a future date" against wall-clock, so a customer frozen in 2027 would wrongly accept a 2026 (sim-past) expiry. Both now anchor on the customer's effective-now.
+
+The helper sits over the existing client-side frozen-time resolution (`useClockFrozenMap`); if the backend later ships `effective_now` per row (the `InvoiceDunningRun.effective_now` pattern is the template), `effectiveNow()` takes that value with **no call-site change**. A pure-logic drift-guard (`web-v2/tests/effectiveNow.test.ts`, `npm test`, no new runner) proves each helper measures against the anchor — a frozen-2027 assertion a leaked `Date.now()` would fail.
+
 ## Alternatives considered — why not a durable discriminator on every table
 
 The first design (a full day of panels) proposed the *comprehensive* fix: add an immutable `sim_clock_id` birth-stamp to **every** sim-bearing table, derive `is_simulated` as a `GENERATED` column from it, funnel all sim-capable writes through a `WithSimulation(clockID)` chokepoint, `ON DELETE CASCADE` the stamp, and add a sweep-filter arch-test asserting every sweep carries an `is_simulated` predicate. It would have worked. It was rejected because it is **containment machinery for a problem teardown deletes outright**:
@@ -59,3 +71,4 @@ The live-clock half still needs a durable flag — but only on the **money sweep
 - ADR-016 (superseded), ADR-029 (extended), ADR-030 (reaffirmed, incl. audit exception), ADR-027 (customer-level pin at creation), ADR-028 (disjoint wall-clock / catchup billing planes).
 - The 24-finding clock-delete-detach audit and the four-candidate design panel (2026-07-08/09); the Design-A → Design-B pivot (2026-07-09).
 - Implemented by migration 0144 + `internal/testclock` (teardown + Layer A/B completeness arch-tests + real-Postgres integration test) and the invoice/dunning/tax `is_simulated` sweep gates (#417/#420).
+- FE relative-time required-anchor helper: `web-v2/src/lib/effectiveNow.ts` (branded `EffectiveNow` + `effectiveNow`/`wallClockNow`), the `useEffectiveNow` / `useEffectiveNowResolver` hooks, the `no-restricted-syntax` lint gate (`web-v2/eslint.config.js`), and the drift-guard (`web-v2/tests/effectiveNow.test.ts`); builds on the #410/#411/#413 relative-time audit.

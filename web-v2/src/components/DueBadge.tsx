@@ -1,15 +1,16 @@
 import { Badge } from '@/components/ui/badge'
+import { daysUntil, type EffectiveNow } from '@/lib/effectiveNow'
 
 interface DueBadgeProps {
   dueAt?: string | null
   warningDays?: number
   className?: string
-  // Reference time for the comparison. Pass the test clock's
-  // frozen_time when the invoice is on a clock so the badge reads
-  // relative to simulation time, not wall-clock. Engine actions
-  // (auto-charge retries, dunning) fire on simulation time; the
-  // badge has to match or it understates urgency.
-  now?: string | Date
+  // Reference "now" for the comparison — REQUIRED. Build it with
+  // effectiveNow(clockFrozen) so a clock-pinned invoice reads relative
+  // to simulation time, or wallClockNow() for a genuinely real-time
+  // surface. Engine actions (auto-charge retries, dunning) fire on
+  // simulation time; the badge has to match or it understates urgency.
+  now: EffectiveNow
 }
 
 // DueBadge renders an invoice's due-date status as the operator-
@@ -25,10 +26,7 @@ interface DueBadgeProps {
 export function DueBadge({ dueAt, warningDays = 3, className, now }: DueBadgeProps) {
   if (!dueAt) return null
 
-  const referenceMs = now
-    ? (typeof now === 'string' ? new Date(now).getTime() : now.getTime())
-    : Date.now()
-  const days = Math.ceil((new Date(dueAt).getTime() - referenceMs) / 86400000)
+  const days = daysUntil(dueAt, now)
 
   if (days < 0) {
     const overdue = Math.abs(days)

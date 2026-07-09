@@ -5,7 +5,8 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { api, formatDate, formatRelativeTime, type ApiKeyInfo } from '@/lib/api'
+import { api, formatDate, type ApiKeyInfo } from '@/lib/api'
+import { timeAgo, sinceMs, untilMs, wallClockNow, type EffectiveNow } from '@/lib/effectiveNow'
 import { addDaysInTZ, endOfDayInTZ, formatExpiryHintInTZ } from '@/lib/dates'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
@@ -57,10 +58,12 @@ const createApiKeySchema = z.object({
 
 type CreateApiKeyData = z.infer<typeof createApiKeySchema>
 
-function relativeTime(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
-  const days = Math.floor(seconds / 86400)
-  if (days < 7) return formatRelativeTime(dateStr)
+// API keys are platform/tenant-scoped and never clock-pinned, so their
+// timestamps are genuinely wall-clock — callers pass wallClockNow(). The
+// required anchor keeps the choice explicit rather than an implicit Date.now().
+function relativeTime(dateStr: string, now: EffectiveNow): string {
+  const days = Math.floor(sinceMs(dateStr, now) / 86_400_000)
+  if (days < 7) return timeAgo(dateStr, now)
   return formatDate(dateStr)
 }
 
@@ -84,7 +87,7 @@ function keyTypeLabel(type: string): string {
 }
 
 function isExpired(key: ApiKeyInfo): boolean {
-  return !!key.expires_at && new Date(key.expires_at) < new Date()
+  return !!key.expires_at && untilMs(key.expires_at, wallClockNow()) < 0
 }
 
 export default function ApiKeysPage() {
@@ -197,16 +200,16 @@ export default function ApiKeysPage() {
                       <div>
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium text-foreground">{k.name}</p>
-                          <ExpiryBadge expiresAt={k.expires_at} />
+                          <ExpiryBadge expiresAt={k.expires_at} now={wallClockNow()} />
                         </div>
                         <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded mt-1 inline-block">
                           {k.key_prefix}--------
                         </code>
                         <div className="flex items-center gap-4 mt-2">
                           <Badge variant={keyTypeVariant(k.key_type)}>{keyTypeLabel(k.key_type)}</Badge>
-                          <span className="text-xs text-muted-foreground">Created {relativeTime(k.created_at)}</span>
+                          <span className="text-xs text-muted-foreground">Created {relativeTime(k.created_at, wallClockNow())}</span>
                           <span className="text-xs text-muted-foreground">
-                            {k.last_used_at ? `Last used ${relativeTime(k.last_used_at)}` : 'Never used'}
+                            {k.last_used_at ? `Last used ${relativeTime(k.last_used_at, wallClockNow())}` : 'Never used'}
                           </span>
                           {k.expires_at && (
                             <span className="text-xs text-muted-foreground flex items-center gap-1">
@@ -258,7 +261,7 @@ export default function ApiKeysPage() {
                             <code className="text-xs font-mono text-muted-foreground">{k.key_prefix}----</code>
                             <Badge variant={statusBadgeVariant('expired')}>expired</Badge>
                             <span className="text-xs text-muted-foreground">
-                              Expired {k.expires_at ? relativeTime(k.expires_at) : ''}
+                              Expired {k.expires_at ? relativeTime(k.expires_at, wallClockNow()) : ''}
                             </span>
                           </div>
                           <Button variant="outline" size="sm"
@@ -294,7 +297,7 @@ export default function ApiKeysPage() {
                             <code className="text-xs font-mono text-muted-foreground">{k.key_prefix}----</code>
                             <Badge variant="destructive">revoked</Badge>
                           </div>
-                          <span className="text-xs text-muted-foreground">Revoked {k.revoked_at ? relativeTime(k.revoked_at) : ''}</span>
+                          <span className="text-xs text-muted-foreground">Revoked {k.revoked_at ? relativeTime(k.revoked_at, wallClockNow()) : ''}</span>
                         </div>
                       </CardContent>
                     </Card>
@@ -469,7 +472,7 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   // through. A 0-day-from-now expiry is also a foot-gun for prod
   // workflows, hence the tomorrow-or-later floor (matches GitHub PAT
   // minimum and the FLOW K2 doc bullet).
-  const tomorrow = new Date()
+  const tomorrow = new Date(wallClockNow())
   tomorrow.setDate(tomorrow.getDate() + 1)
   tomorrow.setHours(0, 0, 0, 0)
 
