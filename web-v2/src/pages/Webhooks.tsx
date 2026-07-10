@@ -347,6 +347,13 @@ function EndpointsTab() {
 // never emitted is worse than omitting it — a subscriber gets silence forever.
 const EVENT_GROUPS: { label: string; events: { type: string; description: string }[] }[] = [
   {
+    label: 'Payment method',
+    events: [
+      { type: 'payment_method.attached', description: 'A payment method landed on a customer (Checkout setup completed)' },
+      { type: 'payment_method.updated', description: "A customer's payment-method setup completed or refreshed (card brand + last4)" },
+    ],
+  },
+  {
     label: 'Invoice',
     events: [
       { type: 'invoice.finalized', description: 'Invoice finalized and ready for payment' },

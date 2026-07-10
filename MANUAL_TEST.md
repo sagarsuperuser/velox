@@ -1278,6 +1278,8 @@ The credit-note refund leg: operator retry, async webhook reconciliation, proact
 
 ## FLOW W0: Outbound webhook endpoint config (2026-07-05)
 
+- [ ] **`payment_method.*` events are subscribable:** the endpoint dialog's event picker shows a **Payment method** group (attached / updated); creating an endpoint subscribed to `payment_method.attached`, then completing a card setup, delivers the event (pre-fix the subscription itself was rejected as "Velox never emits it").
+
 - [ ] Create endpoint with `events: ["invoice.payment_failed"]` → **422** naming the unknown type (the engine never emits it — pre-fix this subscription received silence forever). `["payment.failed"]`, `["invoice.*"]`, and `["*"]` all pass; `["nonexistent.*"]` → 422.
 - [ ] `PATCH /v1/webhook-endpoints/endpoints/{id}` with a new URL + `active: true` → endpoint updated, **signing secret unchanged** (receiver keeps verifying). Dashboard → Webhooks → **Edit** shows URL/description/active + the same event picker as create, prefilled.
 - [ ] Instantiate a recipe → its webhook endpoint (inactive, placeholder URL) subscribes to REAL event names (`payment.failed`, `subscription.item.updated`); Edit it to a real URL + active → deliveries flow.

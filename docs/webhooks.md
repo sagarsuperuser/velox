@@ -147,6 +147,8 @@ what endpoint validation enforces. Summary:
 | `invoice.voided` | Invoice voided |
 | `payment.succeeded` | Charge collected (carries the PaymentIntent id; transactional) |
 | `payment.failed` | Charge attempt failed (transactional) |
+| `payment_method.attached` | A payment method landed on a customer (Checkout setup completed) — queued invoices charge on the next sweep |
+| `payment_method.updated` | A customer's payment-method setup completed/refreshed (carries card brand + last4) |
 | `payment.duplicate_charge` | A second charge succeeded on an already-paid invoice — refund needed |
 | `payment.amount_mismatch` | A charge settled for a different amount than was owed at settle |
 | `payment.received_on_voided_invoice` | Money landed on a voided invoice — refund owed |
