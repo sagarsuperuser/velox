@@ -230,7 +230,22 @@ Four non-negotiable patterns:
 
 ---
 
-## 6. Current posture (as of 2026-07-02)
+## 6. Current posture (as of 2026-07-11)
+
+**Update (2026-07-11).** Since the 2026-07-02 census below: the simulated-data
+lifecycle became its own design-of-record (**ADR-086** — is_simulated gates on
+all five wall-clock money sweeps, clock teardown, branded `EffectiveNow` on the
+FE; supersedes ADR-016); the HA/N=2 posture is documented in
+`ha-readiness-2026-07-06.md` (10 hazards, 17 verified-safe; build trigger =
+production cutover); and the 2026-07-10 design-quality review
+(`design-review-2026-07-10.md`) shipped a fix-now batch (#427–#440) including
+the `domain.TaxFacts` embed (class-A/B adjacent: the tax-fact field-drop class
+is now a compile error), typed effect outcomes (`domain.NotifyOutcome` — a
+skipped effect is never a silent nil), and fail-loud parity on the cancel
+builder. Proposed playbook **class J (rendered/asserted truth)** and the
+containment trip-wire live in that review pending adoption here.
+
+## 6a. Census posture (as of 2026-07-02)
 
 Classes **A** (exactly-once), **B** (money-event dual-writes), **D** (concurrency
 C1–C4), and **H** (tenant isolation) are locked and test-covered — don't

@@ -2274,7 +2274,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// Labels: a plan change names the two plans; a quantity change
 			// reuses one plan name, so the seat counts carry the contrast
 			// (Stripe's "Unused time on 1 × Pro" shape). The boundary date
-			// renders in the sub's billing timezone (ADR-074), not the host zone.
+			// renders in the sub's billing timezone (ADR-077), not the host zone.
 			labelLoc := h.tenantLoc(ctx, sub.TenantID)
 			creditDesc := upgradeCreditLabel(oldPlan, spec.changeAt, labelLoc)
 			chargeDesc := upgradeChargeLabel(newPlan, spec.changeAt, labelLoc)
@@ -2666,7 +2666,7 @@ func prorationMemo(spec itemProrationSpec, oldPlan, newPlan domain.Plan) string 
 // proration boundary date. The date is the change instant; finance/ops read
 // these on the invoice, so no engineering jargon.
 // The proration-boundary date in these labels renders in loc — the sub's
-// billing timezone (ADR-074) — not the raw process zone, so the persisted,
+// billing timezone (ADR-077) — not the raw process zone, so the persisted,
 // customer-facing invoice-line description doesn't shift a calendar day on a
 // non-UTC deployment (ADR-075 audit).
 func upgradeCreditLabel(oldPlan domain.Plan, at time.Time, loc *time.Location) string {

@@ -4570,7 +4570,7 @@ func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscriptio
 	}
 
 	// Civil-day dates on the customer-facing credit-note / ledger description
-	// render in the sub's billing timezone (ADR-074/075), not UTC — a raw UTC
+	// render in the tenant billing timezone (ADR-077), not UTC — a raw UTC
 	// render prints the prior calendar day for a positive-offset billing zone.
 	loc := e.tenantLocation(ctx, sub.TenantID)
 	desc := fmt.Sprintf("Cancel proration — unused portion of %s base fee (period %s to %s, canceled %s)",
@@ -5174,7 +5174,7 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 	}
 
 	// Civil-day dates on the customer-facing credit-note / ledger description
-	// render in the sub's billing timezone (ADR-074/075), not UTC.
+	// render in the tenant billing timezone (ADR-077), not UTC.
 	loc := e.tenantLocation(ctx, sub.TenantID)
 	desc := fmt.Sprintf("Plan-swap refund — unused portion of %s base fee (period %s to %s, swapped %s)",
 		sub.Code,

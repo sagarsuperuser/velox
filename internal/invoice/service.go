@@ -536,7 +536,7 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 	// (ADR-058 follow-up). Storage stays half-open; this is the single
 	// backend-authored value every render surface (PDF, hosted, dashboard, list)
 	// shows, so the inclusive end can't drift across runtimes. Anchored in the
-	// invoice's OWN billing TZ (copied from the sub's ADR-074 snapshot at
+	// invoice's OWN billing TZ (denormalized onto the invoice at
 	// creation), not the live tenant TZ — so the inclusive last-day step lands on
 	// the right civil date even after the tenant changes its timezone.
 	inv.BillingPeriodDisplay = domain.FormatInclusivePeriod(
@@ -545,7 +545,7 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 }
 
 // invoiceDisplayLoc resolves the timezone an invoice's period is anchored in:
-// the denormalized snapshot (ADR-074) when present, else the live tenant TZ for
+// the denormalized snapshot (ADR-077) when present, else the live tenant TZ for
 // ad-hoc/manual invoices with no owning subscription and legacy rows created
 // before the snapshot column existed (preserving their prior display exactly).
 func (s *Service) invoiceDisplayLoc(ctx context.Context, inv domain.Invoice) *time.Location {

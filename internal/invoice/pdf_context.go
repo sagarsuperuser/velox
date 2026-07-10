@@ -72,7 +72,7 @@ func BuildPDFContext(
 			// Inclusive-last-day period string (ADR-058): fetch paths that
 			// bypass the service read decorator (hosted GetByPublicToken)
 			// arrive without it — author it here from the same domain helper.
-			// Anchored in the invoice's own billing TZ (ADR-074 snapshot),
+			// Anchored in the invoice's own denormalized billing TZ (ADR-077),
 			// falling back to the tenant TZ for ad-hoc/legacy invoices — the
 			// same resolution the service decorator (invoiceDisplayLoc) uses.
 			if inv.BillingPeriodDisplay == "" {

@@ -634,7 +634,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	// The org's billing timezone (ADR-077) — every sub in a tenant bills in
 	// the one org zone (default UTC). This resolves it once for the first
 	// period's civil-day math; it is NOT snapshotted onto the sub (a per-sub
-	// timezone was ADR-074, superseded — no peer bills each subscription in
+	// timezone was ADR-074, superseded by ADR-077 — no peer bills each subscription in
 	// its own zone, and it caused a divergence class that cost ~8 render bugs).
 	loc := s.tenantLocation(ctx, tenantID)
 

@@ -174,7 +174,7 @@ type viewInvoice struct {
 	PaidAt              *time.Time `json:"paid_at,omitempty"`
 	VoidedAt            *time.Time `json:"voided_at,omitempty"`
 	// BillingTimezone lets the PUBLIC hosted page render the civil-day dates
-	// above (Issued/Due/Paid/Voided) in the invoice's billing timezone (ADR-074).
+	// above (Issued/Due/Paid/Voided) in the invoice's billing timezone (ADR-077).
 	// The page is unauthenticated, so the SPA never learns the tenant timezone
 	// on its own — without this it would fall back to the *viewer's* browser zone
 	// and could print a due date a day off from (and contradicting) the PDF.

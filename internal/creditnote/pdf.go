@@ -61,7 +61,7 @@ type OriginalInvoiceInfo struct {
 	IssuedAt *time.Time
 	Currency string
 	// BillingTimezone is the original invoice's billing-calendar timezone
-	// (ADR-074). The CN's Issued/Invoice-Date/Voided civil dates render in this
+	// (ADR-077). The CN's Issued/Invoice-Date/Voided civil dates render in this
 	// zone (falling back to UTC when empty), so a non-UTC deployment doesn't
 	// print a day-shifted date on a customer-retained credit note (ADR-075).
 	BillingTimezone string
@@ -128,7 +128,7 @@ func RenderPDF(
 		symbol = "$"
 	}
 
-	// Civil dates render in the original invoice's billing timezone (ADR-074),
+	// Civil dates render in the original invoice's billing timezone (ADR-077),
 	// UTC when unknown — never the raw process zone (ADR-075 audit).
 	docLoc := domain.LoadLocationOrUTC(orig.BillingTimezone)
 
