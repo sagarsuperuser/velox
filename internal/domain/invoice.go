@@ -204,7 +204,7 @@ type Invoice struct {
 	BillingPeriodStart  time.Time  `json:"billing_period_start"`
 	BillingPeriodEnd    time.Time  `json:"billing_period_end"`
 	// BillingTimezone is the IANA timezone the period boundaries above are
-	// civil-midnight in — copied from the subscription's snapshot (ADR-074) at
+	// civil-midnight in — copied from the subscription's snapshot (ADR-077) at
 	// invoice creation and immutable thereafter. BillingPeriodDisplay is computed
 	// in THIS zone, not the live tenant TZ, so the inclusive last-day step lands
 	// on the right civil date even after a tenant changes its timezone. Empty for

@@ -1116,7 +1116,7 @@ func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, ru
 	}
 	nextRetry := "TBD"
 	if run.NextActionAt != nil {
-		// Render the retry date in the invoice's billing timezone (ADR-074),
+		// Render the retry date in the invoice's billing timezone (ADR-077),
 		// UTC when unknown — not the raw process zone, so the customer-facing
 		// "we'll try again on <date>" line doesn't shift a day on a non-UTC
 		// deployment (ADR-075 audit).

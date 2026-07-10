@@ -388,7 +388,7 @@ func RenderPDF(ctx context.Context, inv domain.Invoice, lineItems []domain.Invoi
 		y += 14
 	}
 
-	// Civil dates render in the invoice's billing timezone (ADR-074 snapshot),
+	// Civil dates render in the invoice's own denormalized billing timezone (ADR-077),
 	// falling back to UTC for legacy/ad-hoc invoices — NOT the raw process zone.
 	// The document's Period row already uses this zone; the Issued/Due/Paid/Void
 	// dates must match, or a non-UTC deployment prints a day-shifted calendar
