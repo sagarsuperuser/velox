@@ -832,7 +832,11 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			slog.Warn("threshold scan: failed to apply credits — flagging for retry; auto-charge skipped to avoid overcharge",
 				"invoice_id", inv.ID, "error", err)
 			creditApplyOK = false
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 		}
 	}
 
@@ -904,7 +908,11 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
 				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
-					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+						// A failed set(true) is a liveness sink: the invoice stays
+						// invisible to RetryPendingCharges forever (playbook class G).
+						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+					}
 				}
 			}
 		} else {
@@ -912,7 +920,11 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 				"invoice_id", inv.ID,
 				"customer_id", sub.CustomerID,
 			)
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
 					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
