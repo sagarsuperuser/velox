@@ -101,11 +101,15 @@ func TestThresholdScan_NoPM_QueuesAndNotifies(t *testing.T) {
 	}
 }
 
-// TestThresholdScan_NoPM_DraftInvoiceSkipsCollect pins the Finalized gate: a
-// tax-pending threshold invoice is a DRAFT — it must be neither charged nor
-// queued nor notified (its total isn't final; the tax-retry chain finalizes it
-// and that path's collect takes over). Deleting the gate makes this fail.
-func TestThresholdScan_NoPM_DraftInvoiceSkipsCollect(t *testing.T) {
+// TestThresholdScan_NoPM_DraftInvoiceQueuesButStaysQuiet pins the draft arm:
+// a tax-pending threshold invoice is a DRAFT — never charged (the charger
+// refuses non-finalized invoices) and never emailed (totals aren't final),
+// but it MUST be queued (auto_charge_pending=true): the flag is inert while
+// draft (ListAutoChargePending filters status='finalized') and is what makes
+// the sweep collect the invoice the moment tax retry finalizes it — there is
+// no collect arm on the tax-retry path itself. Dropping the draft-queue arm
+// makes this fail.
+func TestThresholdScan_NoPM_DraftInvoiceQueuesButStaysQuiet(t *testing.T) {
 	engine, invoices, charger, notifier := thresholdNoPMFixture()
 	// Force a tax defer -> the threshold invoice lands tax_status=pending, draft.
 	engine.SetTaxProviderResolver(stubResolver(&stubProvider{err: fmt.Errorf("stripe tax down")}))
@@ -124,8 +128,8 @@ func TestThresholdScan_NoPM_DraftInvoiceSkipsCollect(t *testing.T) {
 	if len(charger.got) != 0 {
 		t.Errorf("a draft must never be charged, got %d calls", len(charger.got))
 	}
-	if inv.AutoChargePending {
-		t.Error("a draft must not be queued for charge-on-attach")
+	if !inv.AutoChargePending {
+		t.Error("a tax-deferred draft must be queued (inert while draft; collected by the sweep once tax retry finalizes it)")
 	}
 	if len(notifier.got) != 0 {
 		t.Errorf("a draft must not trigger the no-PM notification, got %d", len(notifier.got))
