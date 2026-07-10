@@ -1239,6 +1239,15 @@ func TestCreateEndpoint_RejectsUnknownEventNames(t *testing.T) {
 			t.Errorf("phantom event %q must be rejected at create", bad)
 		}
 	}
+	// The two payment_method.* events were EMITTED long before they were
+	// admitted to the catalog — a subscriber to events Velox actually fires
+	// was told "Velox never emits it" (2026-07-10 design census). Pin their
+	// acceptance so the emit-catalog gap can't silently reopen.
+	if _, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
+		URL: "http://localhost:9099/hook", Events: []string{"payment_method.attached", "payment_method.updated"},
+	}); err != nil {
+		t.Errorf("payment_method.* events are emitted and must be subscribable: %v", err)
+	}
 	// Real names, the bare wildcard, and prefix wildcards all pass.
 	if _, err := svc.CreateEndpoint(ctx, "t1", CreateEndpointInput{
 		URL: "http://localhost:9099/hook", Events: []string{"payment.failed", "subscription.item.updated", "invoice.*"},

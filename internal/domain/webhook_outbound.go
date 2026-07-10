@@ -96,6 +96,18 @@ const (
 	EventInvoicePaymentRecorded = "invoice.payment_recorded"
 	EventPaymentSucceeded       = "payment.succeeded"
 	EventPaymentFailed          = "payment.failed"
+	// EventPaymentMethodAttached fires when a payment method lands on a
+	// customer via a completed Checkout setup (setup_intent.succeeded) —
+	// the webhook-side signal that charge-on-attach will now proceed for
+	// any queued invoices. Payload: customer_id, stripe_payment_method_id.
+	EventPaymentMethodAttached = "payment_method.attached"
+	// EventPaymentMethodUpdated fires when a customer's payment-method
+	// setup completes/refreshes (hosted update-payment / portal flow) with
+	// card metadata. Payload: customer_id, stripe_customer_id, card_brand,
+	// card_last4. Both payment_method.* events were EMITTED long before
+	// they were admitted to this catalog — subscriptions to them were
+	// rejected as "Velox never emits it" (2026-07-10 design census).
+	EventPaymentMethodUpdated = "payment_method.updated"
 	// EventPaymentDuplicateCharge fires when a SECOND, different
 	// PaymentIntent succeeds against an already-paid invoice (two devices,
 	// a stale-but-live Checkout session): money was captured twice and
@@ -182,6 +194,8 @@ var KnownWebhookEventTypes = map[string]bool{
 	EventPaymentDuplicateCharge:             true,
 	EventPaymentAmountMismatch:              true,
 	EventPaymentReceivedOnVoidedInvoice:     true,
+	EventPaymentMethodAttached:              true,
+	EventPaymentMethodUpdated:               true,
 	EventSubscriptionCreated:                true,
 	EventSubscriptionActivated:              true,
 	EventSubscriptionCanceled:               true,

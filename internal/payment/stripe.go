@@ -929,7 +929,7 @@ func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string
 		"stripe_pm_id", pmID,
 	)
 
-	s.fireEvent(ctx, tenantID, "payment_method.attached", map[string]any{
+	s.fireEvent(ctx, tenantID, domain.EventPaymentMethodAttached, map[string]any{
 		"customer_id":              customerID,
 		"stripe_payment_method_id": pmID,
 	})
@@ -1189,7 +1189,7 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		"card_last4", setup.CardLast4,
 	)
 
-	s.fireEvent(ctx, tenantID, "payment_method.updated", map[string]any{
+	s.fireEvent(ctx, tenantID, domain.EventPaymentMethodUpdated, map[string]any{
 		"customer_id":        customerID,
 		"stripe_customer_id": event.CustomerExternalID,
 		"card_brand":         setup.CardBrand,
