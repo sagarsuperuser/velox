@@ -2422,10 +2422,17 @@ type ItemThresholdInput struct {
 // always-array of per-item caps. Either AmountGTE or ItemThresholds (or both)
 // must be set — a body with neither is rejected as no-op.
 //
-// ResetBillingCycle defaults to true at PATCH time when omitted (matches the
-// migration column default and Stripe's reset_billing_cycle behavior). The
-// pointer-on-field shape lets the handler distinguish "not supplied" (apply
-// default) from "explicitly false".
+// ResetBillingCycle defaults to FALSE at PATCH time when omitted — the
+// threshold fire bills mid-cycle and the period anchor stays put, which is
+// Stripe's documented default (reset_billing_cycle_anchor=false; the earlier
+// comment claimed the opposite and was verified wrong, 2026-07-10 design
+// review). Keep-anchor is also the safer silent default: it avoids the
+// ADR-066 §5 {in_advance × reset=true} interaction entirely for operators
+// who never chose a value. The pointer-on-field shape lets the handler
+// distinguish "not supplied" (apply default) from an explicit choice.
+// (The 0056 column default remains TRUE — historical and inert: every
+// threshold write flows through this PATCH, which always stores an
+// explicit value.)
 type BillingThresholdsInput struct {
 	AmountGTE         int64                `json:"amount_gte,omitempty"`
 	ResetBillingCycle *bool                `json:"reset_billing_cycle,omitempty"`
@@ -2501,7 +2508,7 @@ func (s *Service) SetBillingThresholds(ctx context.Context, tenantID, id string,
 		})
 	}
 
-	resetCycle := true
+	resetCycle := false
 	if input.ResetBillingCycle != nil {
 		resetCycle = *input.ResetBillingCycle
 	}

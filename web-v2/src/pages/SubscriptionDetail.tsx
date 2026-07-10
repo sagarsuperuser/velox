@@ -1743,7 +1743,7 @@ function EditBillingThresholdsDialog({ subscription, items, planById, onClose, o
   const [amountStr, setAmountStr] = useState(
     existing?.amount_gte != null ? (existing.amount_gte / 100).toFixed(2) : ''
   )
-  const [resetCycle, setResetCycle] = useState(existing?.reset_billing_cycle ?? true)
+  const [resetCycle, setResetCycle] = useState(existing?.reset_billing_cycle ?? false)
   const [perItem, setPerItem] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {}
     for (const t of existing?.item_thresholds ?? []) {
