@@ -708,6 +708,8 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B7: Plan change + proration
 
+- [ ] **Tax-deferred proration invoice auto-retries:** with Stripe Tax made to fail (bad key), an immediate plan change produces a DRAFT proration invoice whose API row carries `tax_status=pending`, a non-empty `tax_error_code` (e.g. `provider_auth`), `tax_pending_reason`, and `tax_deferred_at`; fix the key → the tax-retry worker finalizes it within a tick — no manual Retry click needed.
+
 - [ ] In_arrears sub upgrade immediately → no immediate proration invoice/credit; cycle close emits per-segment lines (FLOW B20).
 - [ ] In_arrears sub downgrade immediately → no immediate credit grant; cycle close emits per-segment lines.
 - [ ] In_advance sub upgrade immediately + source invoice paid → immediate proration invoice for the delta lands in customer's invoices, with `auto_charge_pending=true`. It **auto-collects** like a cycle invoice — a customer with a saved card is charged on the next scheduler tick (wall-clock subs) or the next clock **Advance** (clock-pinned subs); it does NOT sit at `pending` forever waiting for a manual Collect Payment.
