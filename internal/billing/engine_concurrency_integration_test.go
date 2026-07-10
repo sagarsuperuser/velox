@@ -87,9 +87,10 @@ func TestConcurrentBilling_ExactlyOneInvoice(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, tenant.NewSettingsStore(db), nil, nil, fakeClk,
+		nil, tenant.NewSettingsStore(db), testPaymentSetupsNoPM{}, testChargerSentinel{}, fakeClk,
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	// Fire N billing runs at the same instant against the one due sub.
 	const N = 4
@@ -175,9 +176,10 @@ func TestManualRunVsSchedulerRace_ExactlyOneInvoice(t *testing.T) {
 	engine := billing.NewEngine(
 		&subStoreAdapter{subStore}, &usageStoreAdapter{usage.NewPostgresStore(db)},
 		&pricingStoreAdapter{pricing.NewPostgresStore(db)}, &invoiceStoreAdapter{invoiceStore},
-		nil, tenant.NewSettingsStore(db), nil, nil, clock.NewFake(periodEnd.Add(time.Nanosecond)),
+		nil, tenant.NewSettingsStore(db), testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodEnd.Add(time.Nanosecond)),
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	var (
 		wg       sync.WaitGroup
@@ -255,9 +257,10 @@ func TestRunCycleForTenant_BillsOnlyCallerLivemode(t *testing.T) {
 	engine := billing.NewEngine(
 		&subStoreAdapter{subStore}, &usageStoreAdapter{usage.NewPostgresStore(db)},
 		&pricingStoreAdapter{pricing.NewPostgresStore(db)}, &invoiceStoreAdapter{invoiceStore},
-		nil, tenant.NewSettingsStore(db), nil, nil, clock.NewFake(periodEnd.Add(time.Nanosecond)),
+		nil, tenant.NewSettingsStore(db), testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodEnd.Add(time.Nanosecond)),
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	// Run in TEST mode — must bill only the test-mode sub.
 	testCtx := postgres.WithLivemode(context.Background(), false)

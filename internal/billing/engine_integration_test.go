@@ -343,13 +343,14 @@ func TestFullBillingCycle_E2E(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, fakeClk,
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, fakeClk,
 	)
 	// Production engine always has a tax resolver wired; the
 	// engine fails loudly without one (ApplyTaxToLineItems → error).
 	// Test harness wires NoneProvider explicitly so the integration
 	// path matches production shape.
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	count, errs := engine.RunCycle(ctx, 50)
 	if len(errs) > 0 {
@@ -509,9 +510,10 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, fakeClk,
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, fakeClk,
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	engine.SetCreditGranter(creditSvc)
 	// Issuers are REQUIRED post-#442: the paid-source cancel credit routes
 	// through the real creditnote.Service (Issue grants the balance via the
@@ -720,9 +722,10 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 			&usageStoreAdapter{usageStore},
 			&pricingStoreAdapter{pricingStore},
 			&invoiceStoreAdapter{invoiceStore},
-			nil, settingsStore, nil, nil, clock.NewFake(periodStart.Add(time.Hour)),
+			nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodStart.Add(time.Hour)),
 		)
 		e.SetTaxProviderResolver(tax.NewResolver(nil))
+		e.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 		e.SetCreditGranter(creditSvc)
 		e.SetInvoiceVoider(invoiceSvc)
 		e.SetCreditNoteAdjuster(creditNoteSvc)

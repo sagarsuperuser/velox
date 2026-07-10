@@ -113,9 +113,10 @@ func TestCancelCredit_DraftFailure_RealTxRollsBackCancel(t *testing.T) {
 	e := billing.NewEngine(
 		&subStoreAdapter{subStore}, &usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore}, &invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, clock.NewFake(periodStart.Add(time.Hour)),
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodStart.Add(time.Hour)),
 	)
 	e.SetTaxProviderResolver(tax.NewResolver(nil))
+	e.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	e.SetCreditGranter(creditSvc)
 	e.SetCreditNoteAdjuster(&failingDraftAdjuster{err: errInjectedDraftFail})
 	// Real headroom reader (required post-#442); no prior CNs exist, so the
@@ -217,9 +218,10 @@ func TestCancelCredit_PaidInAdvance_DraftAtomicAndReconcilerRecovers(t *testing.
 	e := billing.NewEngine(
 		&subStoreAdapter{subStore}, &usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore}, &invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, clock.NewFake(periodStart.Add(time.Hour)),
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodStart.Add(time.Hour)),
 	)
 	e.SetTaxProviderResolver(tax.NewResolver(nil))
+	e.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	e.SetCreditGranter(creditSvc)
 	e.SetInvoiceVoider(invoiceSvc)
 	e.SetCreditNoteAdjuster(creditNoteSvc)

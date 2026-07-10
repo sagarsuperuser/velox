@@ -884,7 +884,7 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// No email while draft — totals aren't final. (2026-07-10 design
 	// review; the earlier fix skipped drafts entirely, which recreated the
 	// original silent gap one hop later for tax-deferred fires.)
-	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && inv.Status != domain.InvoiceFinalized {
+	if creditApplyOK && inv.AmountDueCents > 0 && inv.Status != domain.InvoiceFinalized {
 		if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
 			// A failed set(true) is a liveness sink — the invoice would be
 			// invisible to RetryPendingCharges forever (playbook class G).
@@ -894,49 +894,8 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			)
 		}
 	}
-	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
-		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
-		if pmReady {
-			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
-			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
-					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-						// A failed set(true) is a liveness sink: the invoice stays
-						// invisible to RetryPendingCharges forever (playbook class G).
-						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-					}
-				}
-			}
-		} else {
-			slog.Info("threshold fire: no payment method, queuing for scheduler retry + notifying customer",
-				"invoice_id", inv.ID,
-				"customer_id", sub.CustomerID,
-			)
-			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-				// A failed set(true) is a liveness sink: the invoice stays
-				// invisible to RetryPendingCharges forever (playbook class G).
-				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-			}
-			if e.noPMNotifier != nil {
-				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
-					switch {
-					case err != nil:
-						slog.Warn("threshold fire: no-payment-method notification failed",
-							"invoice_id", inv.ID,
-							"error", err,
-						)
-					case outcome == domain.NotifySkippedNoEmail:
-						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
-					default:
-						slog.Info("setup-link email queued", "invoice_id", inv.ID)
-					}
-				}
-			}
-		}
+	if creditApplyOK && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
+		e.collectAfterFinalize(ctx, sub, inv, "threshold fire")
 	}
 
 	// Emit subscription.threshold_crossed before the optional cycle reset

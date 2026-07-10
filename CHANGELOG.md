@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A transient payment-setup read error no longer emails "payment method needed" to customers who have a card on file (2026-07-11, ADR-087).** All four post-finalize collect paths conflated "couldn't determine payment state" with "no payment method"; the shared collection pipeline now queues the invoice for the retry sweep (which re-resolves) and stays quiet. Same fix class: an invoice whose pre-charge reload failed used to silently drop out of every retry path — it now lands on the retry sweep too. The four hand-copied collect blocks (cycle close, day-1, final-on-cancel, threshold fire) are now one pipeline, so this class can't re-drift per-site.
+
 ### Security
 
 - **Go toolchain bumped 1.25.11 → 1.25.12 (2026-07-09).** Picks up the `crypto/tls` fix for GO-2026-5856 (a Go standard-library vulnerability that `govulncheck` began flagging in CI); no application code change — go.mod + the CI `go-version` pins only.

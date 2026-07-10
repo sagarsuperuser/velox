@@ -3228,70 +3228,8 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// charging it would be a state-violation; dunning is also off the table
 	// because finalize hasn't happened. This is the Stripe-parity behavior:
 	// pause_collection neuters the financial side without touching the cycle.
-	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && !collectionPaused {
-		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
-
-		if pmReady {
-			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-
-			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
-			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
-					slog.Warn("auto-charge failed, marking for retry",
-						"invoice_id", inv.ID,
-						"error", err,
-					)
-					// Mark for scheduler-based retry instead of losing the failure
-					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-						// A failed set(true) is a liveness sink: the invoice stays
-						// invisible to RetryPendingCharges forever (playbook class G).
-						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-					}
-				} else {
-					slog.Info("auto-charge succeeded", "invoice_id", inv.ID)
-				}
-			}
-		} else {
-			// No PM ready: queue for the scheduler-retry path AND
-			// notify the customer. RetryPendingCharges checks PM on
-			// each tick — skips when still missing, charges
-			// immediately when the customer attaches one (Chargebee's
-			// "Collect Invoice on Card Update"). The notifier sends
-			// the same "Action required: payment method needed" email
-			// Stripe sends on charge failures, so the customer learns
-			// about the gap from email — not from the invoice silently
-			// going overdue weeks later.
-			slog.Info("no payment method at finalize, queuing for scheduler retry",
-				"invoice_id", inv.ID,
-				"customer_id", sub.CustomerID,
-			)
-			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-				// A failed set(true) is a liveness sink: the invoice stays
-				// invisible to RetryPendingCharges forever (playbook class G).
-				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-			}
-			if e.noPMNotifier != nil {
-				// Reload the invoice so the notifier sees the just-
-				// finalized state (invoice number, totals).
-				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
-					switch {
-					case err != nil:
-						slog.Warn("no-payment-method notification failed",
-							"invoice_id", inv.ID,
-							"error", err,
-						)
-					case outcome == domain.NotifySkippedNoEmail:
-						slog.Info("setup-link email skipped: customer has no email on file",
-							"invoice_id", inv.ID)
-					default:
-						slog.Info("setup-link email queued", "invoice_id", inv.ID)
-					}
-				}
-			}
-		}
+	if creditApplyOK && inv.AmountDueCents > 0 && !collectionPaused {
+		e.collectAfterFinalize(ctx, sub, inv, "cycle close")
 	}
 
 	// Advance billing cycle (or fire scheduled cancel if due). Uses
@@ -3626,52 +3564,13 @@ func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscri
 		}
 	}
 
-	// Auto-charge: PM ready → synchronous charge; no PM → queue +
-	// notify. Mirrors the post-finalize block in billOnePeriod.
-	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
-
-		if pmReady {
-			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
-			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
-					slog.Warn("subscription_create auto-charge failed, marking for retry",
-						"invoice_id", inv.ID,
-						"error", err,
-					)
-					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-						// A failed set(true) is a liveness sink: the invoice stays
-						// invisible to RetryPendingCharges forever (playbook class G).
-						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-					}
-				}
-			}
-		} else {
-			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-				// A failed set(true) is a liveness sink: the invoice stays
-				// invisible to RetryPendingCharges forever (playbook class G).
-				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-			}
-			if e.noPMNotifier != nil {
-				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
-					switch {
-					case err != nil:
-						slog.Warn("subscription_create no-PM notification failed",
-							"invoice_id", inv.ID,
-							"error", err,
-						)
-					case outcome == domain.NotifySkippedNoEmail:
-						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
-					default:
-						slog.Info("setup-link email queued", "invoice_id", inv.ID)
-					}
-				}
-			}
-		}
+	// Auto-charge (or queue + notify) via the shared pipeline. NOTE: no
+	// credit-apply and no pause gate here — a day-1 invoice is created at
+	// subscribe time, before any pause can exist; credits-at-create is a
+	// deliberate open question recorded in the design review (D2), not a
+	// pipeline concern.
+	if inv.AmountDueCents > 0 {
+		e.collectAfterFinalize(ctx, sub, inv, "subscription_create")
 	}
 }
 
@@ -4374,48 +4273,10 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 		}
 	}
 
-	// Auto-charge: mirrors the post-finalize block in billOnePeriod /
-	// BillOnCreate. PM ready → synchronous attempt; no PM → queue +
-	// notify (dunning takes over on a real failure).
-	if e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
-		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
-		if pmReady {
-			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
-			if err == nil && chargeInv.AmountDueCents > 0 {
-				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
-					slog.Warn("final-on-cancel auto-charge failed, marking for retry",
-						"invoice_id", inv.ID, "error", err)
-					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-						// A failed set(true) is a liveness sink: the invoice stays
-						// invisible to RetryPendingCharges forever (playbook class G).
-						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-					}
-				}
-			}
-		} else {
-			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
-				// A failed set(true) is a liveness sink: the invoice stays
-				// invisible to RetryPendingCharges forever (playbook class G).
-				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
-			}
-			if e.noPMNotifier != nil {
-				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
-					switch {
-					case err != nil:
-						slog.Warn("final-on-cancel no-PM notification failed",
-							"invoice_id", inv.ID, "error", err)
-					case outcome == domain.NotifySkippedNoEmail:
-						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
-					default:
-						slog.Info("setup-link email queued", "invoice_id", inv.ID)
-					}
-				}
-			}
-		}
+	// Auto-charge (or queue + notify) via the shared pipeline; dunning takes
+	// over on a real decline (inline in the charger).
+	if inv.AmountDueCents > 0 {
+		e.collectAfterFinalize(ctx, sub, inv, "final on cancel")
 	}
 
 	slog.Info("subscription_cancel final invoice generated",

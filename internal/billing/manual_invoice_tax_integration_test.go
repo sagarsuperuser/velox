@@ -75,9 +75,10 @@ func TestManualInvoice_TaxComputedAtFinalize(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, clock.Real(),
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.Real(),
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
 	invoiceSvc.SetTaxRetrier(engine)
@@ -200,9 +201,10 @@ func TestManualInvoice_TaxInclusive_TotalEqualsGross(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, clock.Real(),
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.Real(),
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
 	invoiceSvc.SetTaxRetrier(engine)

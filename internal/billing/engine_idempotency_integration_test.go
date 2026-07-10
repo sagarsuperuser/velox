@@ -74,9 +74,10 @@ func TestBilling_SamePeriodTwice_IdempotentSkip(t *testing.T) {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, tenant.NewSettingsStore(db), nil, nil, fakeClk,
+		nil, tenant.NewSettingsStore(db), testPaymentSetupsNoPM{}, testChargerSentinel{}, fakeClk,
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 
 	// Run 1: bills the period.
 	count1, errs1 := engine.RunCycle(ctx, 50)

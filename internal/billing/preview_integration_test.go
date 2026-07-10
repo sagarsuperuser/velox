@@ -63,7 +63,7 @@ func newPreviewFixture(t *testing.T, name string) *previewFixture {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, nil,
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, nil,
 	)
 
 	preview := billing.NewPreviewService(engine, customerStore, subStore)
