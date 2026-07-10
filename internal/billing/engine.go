@@ -4571,14 +4571,17 @@ func (e *Engine) unusedBaseForPeriod(ctx context.Context, sub domain.Subscriptio
 }
 
 // prepareCancelCredit runs the guards + day-based unused-base math for a
-// mid-period cancel. ok=false means there is nothing to credit (credits unwired,
-// not canceled, clean cancel at/after period end, no in_advance items, or zero
+// mid-period cancel. ok=false means there is nothing to credit (not
+// canceled, clean cancel at/after period end, no in_advance items, or zero
 // unused) — both cancel-credit paths no-op. Error only on a malformed sub
 // (canceled with no canceled_at) or a plan lookup failure.
+//
+// creditGranter is REQUIRED (boot fails closed if unwired, #442) — the old
+// nil arm silently returned "nothing to credit", turning a missing wiring
+// into an unrefunded customer. Deleted 2026-07-10 (design-review redesign
+// #3 stage 2): a nil granter here is now a test-fixture bug, not a silent
+// $0 refund.
 func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscription) (cancelCreditInputs, bool, error) {
-	if e.creditGranter == nil {
-		return cancelCreditInputs{}, false, nil
-	}
 	if sub.Status != domain.SubscriptionCanceled {
 		return cancelCreditInputs{}, false, nil
 	}
@@ -4692,9 +4695,6 @@ func (e *Engine) BillOnPlanSwapDraftsTx(ctx context.Context, tx *sql.Tx, sub dom
 // (the shared arithmetic lives in unusedBaseForPeriod), swap-flavored
 // description. ok=false = nothing to credit.
 func (e *Engine) prepareSwapCredit(ctx context.Context, sub domain.Subscription, at time.Time) (cancelCreditInputs, bool, error) {
-	if e.creditGranter == nil {
-		return cancelCreditInputs{}, false, nil
-	}
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
 		return cancelCreditInputs{}, false, nil
 	}
@@ -5190,9 +5190,6 @@ func (e *Engine) BillOnPlanSwapImmediate(ctx context.Context, sub domain.Subscri
 	)
 	defer span.End()
 
-	if e.creditGranter == nil {
-		return 0, nil
-	}
 	if sub.CurrentBillingPeriodStart == nil || sub.CurrentBillingPeriodEnd == nil {
 		return 0, nil
 	}
