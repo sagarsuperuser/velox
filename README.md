@@ -7,20 +7,23 @@
 [![CI](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml/badge.svg)](https://github.com/sagarsuperuser/velox/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Release](https://img.shields.io/github/v/tag/sagarsuperuser/velox?label=release)](CHANGELOG.md)
+
+**Pre-1.0.** The public API is stabilising but not yet frozen — breaking changes land on MINOR until 1.0.0 ([versioning policy](CHANGELOG.md)).
 
 Velox owns the layer above PaymentIntent: pricing, subscriptions, multi-dimensional usage metering, invoicing, dunning, and credits. Stripe still does cards under the hood. The 0.5% Stripe Billing fee disappears, and customer billing data never leaves your infrastructure.
 
 Built for three market truths Stripe Billing structurally cannot serve:
 
 1. **AI/LLM apps need multi-dimensional pricing.** Real model pricing today is `model × token_type × tier × context-window`, where `token_type` is a disjoint role (`input`, `output`, `cache_read`, `cache_write_5m`, `cache_write_1h`). Stripe's Meter API forces one Meter per dimension combination — many Meters and ugly subscription wiring just to model a single model's token roles. Velox treats dimensions as first-class on the meter — and ingests straight from a LiteLLM proxy spend callback, no SDK.
-2. **AI infra sells commit + usage.** "$10k prepaid commit, drawn down against metered usage" is the default AI-infra contract. Stripe Billing has no commit primitive; the engines that do (Orb, Metronome) are closed-source SaaS. In Velox a commit line on an invoice funds a credit block at finalize (atomic, fund-once); usage drains it — promotional credits first — with `credit.balance_low` / `depleted` / `recovered` webhooks to drive top-up nudges.
+2. **AI infra sells commit + usage.** "$10k prepaid commit, drawn down against metered usage" is the default AI-infra contract. Stripe Billing has no commit primitive; the engines that do (Orb, Metronome) are closed-source SaaS. In Velox a commit line on an invoice funds a credit block at finalize (atomic, fund-once); usage drains it — promotional credits first — with `credit.balance_low` / `_depleted` / `_recovered` webhooks to drive top-up nudges.
 3. **Regulated tenants cannot put customer billing data on Stripe's servers.** EU GDPR-strict, India RBI data localization, healthcare-adjacent SaaS, government procurement. Stripe's whole model is "send us the data." Velox runs in your VPC.
 
 ---
 
 ## The wedge in code
 
-Bill Anthropic-style multi-dimensional pricing (model × token_type) with **one meter**, sell a prepaid commit against it, and see per-customer margin — five calls, no Stripe Billing objects. (API from `make dev`, key from `make bootstrap` — see Quick start.)
+Bill Anthropic-style multi-dimensional pricing (model × token_type) with **one meter**, sell a prepaid commit against it, and see per-customer margin — five steps, no Stripe Billing objects. (API from `make dev`, key from `make bootstrap` — see Quick start.)
 
 ```bash
 # 1. Create one meter for "tokens"
@@ -41,6 +44,7 @@ curl -X POST http://localhost:8080/v1/usage-events \
 
 # 3. Define one pricing rule per (dimension subset, rate)
 curl -X POST http://localhost:8080/v1/meters/$METER_ID/pricing-rules \
+  -H "Authorization: Bearer $VELOX_SECRET" \
   -d '{
     "dimension_match": {"model": "gpt-4", "token_type": "input"},
     "rating_rule_version_id": "rrv_gpt4_input",
@@ -50,6 +54,7 @@ curl -X POST http://localhost:8080/v1/meters/$METER_ID/pricing-rules \
 
 # 4. Sell a $10k prepaid commit for $9k — the credit block funds when the
 #    invoice finalizes, and usage draws it down
+#    ($INVOICE_ID: a draft one-off invoice from POST /v1/invoices — elided for brevity)
 curl -X POST http://localhost:8080/v1/invoices/$INVOICE_ID/line-items \
   -H "Authorization: Bearer $VELOX_SECRET" \
   -d '{"description": "Annual commit", "line_type": "add_on",
@@ -88,7 +93,7 @@ Token roles are disjoint, so each `{model, token_type}` is exactly one rule at e
 - **LiteLLM drop-in** — point your proxy's spend callback at `POST /v1/integrations/litellm/spend`; calls become dimensioned token events (`model`, `token_type`) with idempotent replay dedupe — no SDK, no schema work
 - **Prepaid commits + drawdown** — sell "pay $9k, get $10k" commits as invoice lines; the credit block funds atomically at finalize and usage draws it down, promotional credits first (ADR-078)
 - **Per-customer margin (COGS) in-app** — maintain your provider rates once (`/v1/provider-costs`); every usage event is stamped with provider cost at ingest; `GET /v1/customers/{id}/margin` answers "which customers lose us money?" — per-model where pricing rules pin `model`, honest `unattributed_revenue` bucket otherwise (ADR-079)
-- **Decimal quantities** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens
+- **Decimal quantities & rates** — `NUMERIC(38, 12)` for fractional GPU-hours and partial tokens; decimal per-unit prices so $3.00 / 1M tokens bills linearly and exactly (Stripe `unit_amount_decimal` model) while invoice totals stay whole cents
 - **Per-rule aggregation modes** — `sum`, `count`, `last_during_period`, `last_ever`, `max`
 - **Pricing recipes** — one call instantiates products + prices + meters + dunning (`anthropic_style`, `openai_style`, `replicate_style`)
 - **Customer cost visibility** — per-customer usage/cost breakdown in the dashboard, plus a token-authenticated public JSON endpoint (`/v1/public/cost-dashboard/{token}`, rotatable per-customer token) your app can render — "$4.31 of GPT-4 today" with a projected bill. A packaged embeddable widget is roadmap, not shipped.
@@ -146,6 +151,8 @@ Stating these loudly so the wrong customers self-select out:
 
 ## Quick start
 
+Prereqs: Docker, Go 1.25+, Node 20+ (dashboard), `jq` (demo script).
+
 ```bash
 git clone https://github.com/sagarsuperuser/velox.git && cd velox
 
@@ -200,7 +207,7 @@ web-v2/                     — operator dashboard (React 19 + TypeScript + Tail
 ```
 
 Design rules:
-- **Per-domain packages** — each domain owns its store, service, and handler. Zero cross-domain imports between peer packages.
+- **Per-domain packages** — each domain owns its store, service, and handler. No peer domain touches another's service or store; the imports that do cross domains — cross-cutting infra (auth, audit, session), shared value types, the billing coordinator's narrow interfaces — are pinned edge-by-edge in an allowlist.
 - **Row-Level Security** — every tenant-scoped query runs inside an RLS-enforced transaction. Proven by integration tests.
 - **PaymentIntent-only Stripe** — no Stripe Billing/Invoices. We own invoices end-to-end; Stripe executes the card charge.
 - **Billing engine as coordinator** — orchestrates across domains via narrow interfaces, not a god object.
@@ -216,8 +223,8 @@ Velox moves money, so correctness is the product, not a feature. The disciplines
 
 - **Money-path changes follow a written protocol, not judgment.** Any change to an invoice, payment, credit, or state machine goes through the [money-path robustness playbook](docs/dev/money-path-robustness-playbook.md): enumerate the state's *complete* site-set — every writer, effect-firer, gated reader, crash point — before writing a line, because local reasoning is exactly how money bugs ship. Nine named failure classes, each with the gate that closes it.
 - **Invariants are enforced by machines, not convention.** Tenant isolation is Postgres Row-Level Security, proven by integration tests that fail if a query escapes its tenant. Exactly-once auto-charge is a compare-and-swap claim that holds through a dual-leader failover — no double charge when a Postgres failover hands two schedulers the same lock. A new cross-domain import fails an [architecture test](internal/arch/boundaries_test.go) until it's justified in an allowlist. `time.Now()` on a clock-pinned entity fails a lint. The rule: if a mistake can recur, a machine catches the next one.
-- **Tests hit real Postgres, never mocks.** A green suite means migrations, RLS, and the money math work end-to-end — including concurrent-claimer collision tests and mutation-verified assertions (break the logic on purpose; the test must fail).
-- **Decisions are written down — including the reversals.** [84 ADRs](docs/adr/) record the load-bearing calls, and the honest ones: a per-subscription timezone snapshot was built, shipped, then *deleted* once org-level proved the complete abstraction (ADR-074 → 077). When a design keeps spawning guard machinery, the model is treated as wrong, not the guards as missing.
+- **The database is never mocked.** Every test that touches a database touches real Postgres — ~75k lines of Go test code against ~83k of production Go — so a green suite means migrations, RLS, and the money math work end-to-end, including concurrent-claimer collision tests and mutation-verified assertions (break the logic on purpose; the test must fail).
+- **Decisions are written down — including the reversals.** [80+ ADRs](docs/adr/) record the load-bearing calls, and the honest ones: a per-subscription timezone snapshot was built, shipped, then *deleted* once org-level proved the complete abstraction (ADR-074 → 077). When a design keeps spawning guard machinery, the model is treated as wrong, not the guards as missing.
 - **Audited like production, pre-launch.** A [117-finding end-to-end audit](docs/dev/audit-2026-07-02-full-product.md) remediated in gated PRs; an [N=2 HA-readiness audit](docs/dev/ha-readiness-2026-07-06.md) that names every single-point-of-failure before the word "production" gets used.
 
 ---
@@ -270,15 +277,9 @@ API keys are salted-SHA-256 hashed at rest; rotation supports an optional grace 
 
 - **Team invites (Jul 2026, ADR-081)** — invite teammates by email (tokenized single-use accept links, member removal with session revocation); kills the shared-password reality and gives the audit log real per-person actors. No RBAC yet — every member has full access, roles recorded for the future split
 - **Provider cost tables + margin (Jul 2026, ADR-079)** — enter what you pay LLM providers; every usage event is stamped with its COGS at ingest; per-customer margin report (billed vs cost by model) — the report every other billing engine makes you build in your warehouse
-- **Prepaid commits + drawdown (Jul 2026, ADR-078)** — sell commit + usage: a commit line on an invoice funds a credit block at finalize (fund-once, atomic), promotional credits drain before paid, balance-threshold webhooks (`credit.balance_low/depleted/recovered`), void retires the unfunded remainder
-- **Full-product audit hardening (Jul 2026)** — a 117-finding end-to-end audit remediated in 13 gated PRs: threshold billing exactness, checkout/trial state-machine races, credit expiry atomicity, price-change semantics (pinned per-period resolution), transport delivery leases (no more duplicate emails/webhooks under load), self-host truth (one bootstrap, real `APP_DATABASE_URL`, race-safe migrations), and honest MRR analytics
-- **Operator search that actually searches** — server-side `?search=` on customers (matches encrypted name/email post-decryption), invoices, and subscriptions; invoice date-range + past-due filters; ⌘K palette queries the full dataset
-- **Multi-dimensional meters** — one meter, N pricing rules, decimal quantities (`NUMERIC(38, 12)`), all five aggregation modes
-- **Decimal per-unit rates** — sub-cent-per-unit pricing (e.g. $3.00 / 1M tokens) bills linearly and exactly via decimal unit prices (Stripe `unit_amount_decimal` model); invoice totals stay whole cents
-- **Pricing recipes** — `anthropic_style`, `openai_style`, `replicate_style`; recipe-picker UI; one-click uninstall
-- **`create_preview`, billing thresholds** — Stripe Tier-1 surfaces with multi-dim parity
-- **Customer cost visibility** — dashboard cost view plus token-authenticated public cost JSON (rotatable per-customer token)
-- **Stripe-grade billing primitives** — subscriptions (trial/pause/cancel/plan-change with proration), credit notes, dunning, hosted invoice page, transactional outbox
+- **Prepaid commits + drawdown (Jul 2026, ADR-078)** — sell commit + usage: a commit line on an invoice funds a credit block at finalize (fund-once, atomic), promotional credits drain before paid, balance-threshold webhooks (`credit.balance_low/_depleted/_recovered`), void retires the unfunded remainder
+- **Full-product audit hardening (Jul 2026)** — a 117-finding end-to-end audit remediated in 16 gated PRs: threshold billing exactness, checkout/trial state-machine races, credit expiry atomicity, price-change semantics (pinned per-period resolution), transport delivery leases (no more duplicate emails/webhooks under load), self-host truth (one bootstrap, real `APP_DATABASE_URL`, race-safe migrations), and honest MRR analytics
+- **Operator search that actually searches (Jun 2026)** — server-side `?search=` on customers (matches encrypted name/email post-decryption), invoices, and subscriptions; invoice date-range + past-due filters; ⌘K palette queries the full dataset
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
@@ -300,7 +301,7 @@ These are paused — not killed. They land when a real customer names the specif
 
 ## Tech stack
 
-**Backend** — Go 1.25, chi/v5 router, PostgreSQL 16 with RLS, `shopspring/decimal` for money, `go-pdf/fpdf` for invoices, Prometheus metrics.
+**Backend** — Go 1.25, chi/v5 router, PostgreSQL 16 with RLS, `shopspring/decimal` for money, `signintech/gopdf` for invoices, Prometheus metrics.
 
 **Frontend** — React 19, TypeScript, Vite, TailwindCSS, shadcn/ui, Lucide icons.
 
@@ -315,7 +316,7 @@ make test                # unit tests only
 make test-integration    # full integration suite (needs Postgres)
 ```
 
-Integration tests exercise real Postgres with RLS enforced. Per project convention, tests must hit a real database — never mocks — so a passing test means migrations and RLS work end-to-end.
+Integration tests exercise real Postgres with RLS enforced. Per project convention the database is never mocked — no sqlmock, no mock framework in the repo — so a passing suite means migrations and RLS work end-to-end.
 
 ---
 
