@@ -3775,7 +3775,17 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 	// segment is billed at its own rate × (segment_days / cycle_days).
 	// No mid-period changes → single segment from periodStart to
 	// canceledAt, matching the pre-segment-aware single-line behavior.
-	itemChanges, _ := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, canceledAt)
+	//
+	// Fail-loud parity with buildLineItems (2026-07-10 design review):
+	// pre-fix the error was swallowed (`_ =`), so a transient DB failure
+	// here silently billed a changed sub's FINAL invoice as a single
+	// full-window line at the current plan's rate — mis-billing with no
+	// operator signal. Per feedback_no_silent_fallbacks the cancel bill
+	// fails instead; the operator's cancel retries.
+	itemChanges, err := e.subs.ListItemChangesInPeriod(ctx, sub.TenantID, sub.ID, periodStart, canceledAt)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list item changes on cancel: %w", err)
+	}
 	changesByItem := map[string][]domain.SubscriptionItemChange{}
 	for _, c := range itemChanges {
 		changesByItem[c.SubscriptionItemID] = append(changesByItem[c.SubscriptionItemID], c)
@@ -3790,7 +3800,11 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 			}
 			pl, err := e.pricing.GetPlan(ctx, sub.TenantID, pid)
 			if err != nil {
-				continue
+				// Fail-loud parity with buildLineItems: a segment whose
+				// plan can't be hydrated would otherwise be silently
+				// DROPPED downstream (the seg loop skips unknown plans)
+				// — underbilling the final invoice with no signal.
+				return nil, 0, fmt.Errorf("get segment plan %s on cancel: %w", pid, err)
 			}
 			plans[pid] = pl
 		}
