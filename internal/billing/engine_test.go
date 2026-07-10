@@ -3233,7 +3233,7 @@ func TestBillOnCancel_UnpaidPrebillRelief(t *testing.T) {
 			invoices: []domain.Invoice{{
 				ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
 				Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
-				SubtotalCents: subtotal, TaxAmountCents: tax, TotalAmountCents: total,
+				SubtotalCents: subtotal, TaxFacts: domain.TaxFacts{TaxAmountCents: tax}, TotalAmountCents: total,
 				AmountDueCents: amountDue, AmountPaidCents: amountPaid,
 			}},
 			lineItems: []domain.InvoiceLineItem{{

@@ -20,7 +20,7 @@ import (
 func TestCreditUnusedPrebill(t *testing.T) {
 	sub := domain.Subscription{ID: "sub_1", TenantID: "t1", CustomerID: "cus_1", Code: "starter"}
 	// PAID source invoice carrying 10% tax: net 6000 + tax 600 = 6600 gross.
-	src := domain.Invoice{ID: "inv_1", SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600}
+	src := domain.Invoice{ID: "inv_1", SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600}
 	const net = int64(2000)
 	wantGross := money.RoundHalfToEven(net*6600, 6000) // 2200 — net + the 10% tax slice
 
@@ -117,7 +117,7 @@ func TestBillOnCancel_PaidPrebillReversesTax(t *testing.T) {
 		invoices: []domain.Invoice{{
 			ID: "inv_1", TenantID: "t1", SubscriptionID: "sub_1",
 			Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 			AmountDueCents: 0, AmountPaidCents: 6600,
 		}},
 		lineItems: []domain.InvoiceLineItem{{

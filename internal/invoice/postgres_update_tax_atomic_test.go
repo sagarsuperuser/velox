@@ -33,8 +33,7 @@ func TestUpdateTaxAtomic_RejectsNonDraft(t *testing.T) {
 	}
 
 	_, err := store.UpdateTaxAtomic(ctx, tenantID, invID, domain.InvoiceTaxRetryUpdate{
-		TaxAmountCents:   100,
-		TaxStatus:        domain.InvoiceTaxOK,
+		TaxFacts:         domain.TaxFacts{TaxAmountCents: 100, TaxStatus: domain.InvoiceTaxOK},
 		TotalAmountCents: 600,
 		SubtotalCents:    500,
 	}, nil)
@@ -76,9 +75,10 @@ func TestUpdateTaxAtomic_ConcurrentSerializes(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			_, err := store.UpdateTaxAtomic(ctx, tenantID, invID, domain.InvoiceTaxRetryUpdate{
-				TaxAmountCents:   taxCents,
-				TaxRate:          20,
-				TaxStatus:        domain.InvoiceTaxOK,
+				TaxFacts: domain.TaxFacts{
+					TaxAmountCents: taxCents, TaxRate: 20,
+					TaxStatus: domain.InvoiceTaxOK,
+				},
 				SubtotalCents:    subtotal,
 				DiscountCents:    0,
 				TotalAmountCents: total,

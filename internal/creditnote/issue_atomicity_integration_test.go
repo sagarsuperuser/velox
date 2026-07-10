@@ -167,9 +167,9 @@ func TestListPendingCreditNoteTaxReversal_FindsMarkerlessOrphan(t *testing.T) {
 		inv, err := invStore.Create(ctx, tenantID, domain.Invoice{
 			CustomerID: cust.ID, InvoiceNumber: num,
 			Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-			Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1000,
+			Currency: "USD", SubtotalCents: 10000,
+			TaxFacts:         domain.TaxFacts{TaxAmountCents: 1000, TaxProvider: "stripe_tax"},
 			TotalAmountCents: 11000, AmountPaidCents: 11000,
-			TaxProvider:        "stripe_tax",
 			BillingPeriodStart: now.Add(-30 * 24 * time.Hour), BillingPeriodEnd: now,
 			IssuedAt: &issuedAt,
 		})

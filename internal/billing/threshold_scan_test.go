@@ -818,9 +818,11 @@ func TestScanThresholds_ProbeHealsStrandedZeroDue(t *testing.T) {
 	fireAt := time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
 	invoices.invoices = append(invoices.invoices, domain.Invoice{
 		ID: "vlx_inv_stranded", SubscriptionID: "sub_1", TenantID: "t1",
-		Status:             domain.InvoiceFinalized,
-		PaymentStatus:      domain.PaymentPending,
-		TaxStatus:          domain.InvoiceTaxOK,
+		Status:        domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentPending,
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxOK,
+		},
 		AmountDueCents:     0,
 		BillingReason:      domain.BillingReasonThreshold,
 		BillingPeriodStart: periodStart,

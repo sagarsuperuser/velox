@@ -92,52 +92,16 @@ type ProrationCreditGranter interface {
 // totals plus per-line mutations to the supplied line-item slice. Duplicates
 // billing.TaxApplication so subscription package doesn't import billing.
 type ProrationTaxResult struct {
-	TaxAmountCents int64
-	TaxRate        float64 // ADR-042/043: percent rate (4-decimal precision).
-	TaxName        string
-	TaxCountry     string
-	TaxID          string
-	// TaxProvider / TaxCalculationID carry the provider provenance so the
-	// proration invoice records WHICH engine computed the tax and (for
-	// stripe_tax) the calculation id needed to commit a reportable tax
-	// transaction. Dropping these was the bug: the proration invoice showed
-	// a tax amount but blank tax_provider, and the Stripe Tax calculation
-	// was never committed — so the tax was charged but never reported.
-	TaxProvider      string
-	TaxCalculationID string
-	// TaxReverseCharge / TaxExemptReason carry the customer's exemption
-	// status onto the proration invoice — the same fields the cycle/create
-	// paths stamp. Dropping them was a bug: a reverse_charge or exempt
-	// customer's mid-cycle proration invoice came out with
-	// tax_reverse_charge=false and a blank exempt reason, so the legally
-	// required reverse-charge / exemption legend silently vanished on
-	// exactly those invoices (the rest of the customer's invoices carry it).
-	TaxReverseCharge bool
-	TaxExemptReason  string
-	SubtotalCents    int64
-	DiscountCents    int64
-	// TaxStatus signals whether the provider's tax calculation
-	// succeeded (ok) or was deferred (pending / failed). Drives the
-	// proration invoice's finalized-vs-draft decision via
-	// domain.InvoiceFinalizationStatus — consistent with the engine's
-	// billOnePeriod + BillOnCreate gates. Pre-fix proration invoices
-	// finalized regardless of tax status, lying about authoritative
-	// amounts when calculation was deferred.
-	TaxStatus domain.InvoiceTaxStatus
-	// TaxDeferredAt / TaxPendingReason / TaxErrorCode carry the deferral
-	// facts onto the proration invoice. Dropping these was the THIRD
-	// field-drop bug on this mirror (see the two documented above): a
-	// deferred proration invoice landed with tax_error_code='' — which
-	// never matches the tax-retry reconciler's retryable-code filter
-	// (billing/tax_retry.go taxRetryableCodes) — so it was NEVER
-	// auto-retried; it sat draft until an operator manually clicked
-	// Retry off a context-free banner. This mirror exists so
-	// subscription doesn't import billing; the drift class it breeds is
-	// slated for dissolution into a shared domain.TaxFacts value type
-	// (2026-07-10 design review, redesign #1).
-	TaxDeferredAt    *time.Time
-	TaxPendingReason string
-	TaxErrorCode     string
+	// TaxFacts: the shared 13-field calculation bundle (domain/tax_facts.go).
+	// This mirror's flat fields produced THREE documented field-drop bugs
+	// (provider provenance never committed; the reverse-charge/exemption
+	// legend vanishing; the deferral facts missing so deferred proration
+	// invoices were never auto-retried) — the embedded shared type makes a
+	// fourth structurally impossible: a new tax fact added to TaxFacts is
+	// carried here with zero edits.
+	domain.TaxFacts
+	SubtotalCents int64
+	DiscountCents int64
 }
 
 // ProrationTaxApplier resolves and applies tax against a proration invoice's
@@ -2348,24 +2312,15 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// tax; if Stripe Tax returned customer_data_invalid the
 			// invoice finalized with TaxAmountCents=0, lying about
 			// authoritative amounts.
-			Status:           domain.InvoiceFinalizationStatus(taxResult.TaxStatus, sub.PauseCollection),
-			PaymentStatus:    domain.PaymentPending,
-			Currency:         effectivePlan.Currency,
-			SubtotalCents:    taxResult.SubtotalCents,
-			DiscountCents:    taxResult.DiscountCents,
-			TaxRate:          taxResult.TaxRate,
-			TaxName:          taxResult.TaxName,
-			TaxCountry:       taxResult.TaxCountry,
-			TaxID:            taxResult.TaxID,
-			TaxProvider:      taxResult.TaxProvider,
-			TaxCalculationID: taxResult.TaxCalculationID,
-			TaxReverseCharge: taxResult.TaxReverseCharge,
-			TaxExemptReason:  taxResult.TaxExemptReason,
-			TaxAmountCents:   taxResult.TaxAmountCents,
-			TaxStatus:        taxResult.TaxStatus,
-			TaxDeferredAt:    taxResult.TaxDeferredAt,
-			TaxPendingReason: taxResult.TaxPendingReason,
-			TaxErrorCode:     taxResult.TaxErrorCode,
+			Status:        domain.InvoiceFinalizationStatus(taxResult.TaxStatus, sub.PauseCollection),
+			PaymentStatus: domain.PaymentPending,
+			Currency:      effectivePlan.Currency,
+			SubtotalCents: taxResult.SubtotalCents,
+			DiscountCents: taxResult.DiscountCents,
+			// ONE struct assignment carries every tax fact — the 13
+			// hand-copied lines this replaces produced three documented
+			// field-drop bugs on this writer alone (see domain/tax_facts.go).
+			TaxFacts: taxResult.TaxFacts,
 			// Denormalized zone at issue (ADR-077) — every engine writer
 			// stamps this; the proration writer was the one omission.
 			BillingTimezone:    h.tenantLoc(ctx, sub.TenantID).String(),

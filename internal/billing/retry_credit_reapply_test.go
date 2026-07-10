@@ -64,7 +64,7 @@ func pendingInvoice() domain.Invoice {
 	return domain.Invoice{
 		ID: "inv_1", TenantID: "t1", CustomerID: "cus_1",
 		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
-		TaxStatus: domain.InvoiceTaxOK, InvoiceNumber: "VLX-1",
+		TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK}, InvoiceNumber: "VLX-1",
 		AutoChargePending: true, AmountDueCents: 1000,
 	}
 }

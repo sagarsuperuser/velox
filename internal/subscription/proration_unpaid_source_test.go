@@ -34,7 +34,7 @@ func TestUpdateItem_Downgrade_UnpaidSource_AdjustsNotRefundableCredit(t *testing
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentPending,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 			AmountDueCents: 6600,
 		},
 	}
@@ -103,7 +103,7 @@ func TestUpdateItem_Downgrade_UnpaidSource_CapsAtAmountDue(t *testing.T) {
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentPending,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 			AmountDueCents: 500, AmountPaidCents: 6100,
 		},
 	}

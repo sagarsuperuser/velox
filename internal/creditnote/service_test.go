@@ -857,7 +857,7 @@ func TestCreate_SmartBucketTaxResidual(t *testing.T) {
 	inv := domain.Invoice{
 		ID: "inv_split", TenantID: "t1", CustomerID: "cus_1",
 		Status: domain.InvoicePaid, Currency: "INR",
-		TotalAmountCents: 8260, TaxAmountCents: 1260,
+		TotalAmountCents: 8260, TaxFacts: domain.TaxFacts{TaxAmountCents: 1260},
 		AmountPaidCents: 8260,
 	}
 	store := newMemStore()
@@ -914,7 +914,7 @@ func TestCreate_PartialCNUsesPureProportional(t *testing.T) {
 	inv := domain.Invoice{
 		ID: "inv_partial", TenantID: "t1", CustomerID: "cus_1",
 		Status: domain.InvoicePaid, Currency: "INR",
-		TotalAmountCents: 8260, TaxAmountCents: 1260,
+		TotalAmountCents: 8260, TaxFacts: domain.TaxFacts{TaxAmountCents: 1260},
 		AmountPaidCents: 8260,
 	}
 	store := newMemStore()

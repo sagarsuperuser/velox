@@ -83,7 +83,7 @@ func TestUpdateItem_Downgrade_RoutesGrossTaxReversingCreditNote(t *testing.T) {
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 		},
 	}
 	credits := &creditsMock{}
@@ -158,12 +158,12 @@ func TestUpdateItem_Downgrade_LIFOAcrossFundingInvoices(t *testing.T) {
 	}}
 	baseInv := domain.Invoice{
 		ID: "base_inv", PaymentStatus: domain.PaymentSucceeded,
-		SubtotalCents: 2000, TaxAmountCents: 200, TotalAmountCents: 2200,
+		SubtotalCents: 2000, TaxFacts: domain.TaxFacts{TaxAmountCents: 200}, TotalAmountCents: 2200,
 		CreatedAt: proPeriodStart,
 	}
 	upInv := domain.Invoice{
 		ID: "up_inv", PaymentStatus: domain.PaymentSucceeded,
-		SubtotalCents: 4000, TaxAmountCents: 400, TotalAmountCents: 4400,
+		SubtotalCents: 4000, TaxFacts: domain.TaxFacts{TaxAmountCents: 400}, TotalAmountCents: 4400,
 		CreatedAt: proPeriodStart.AddDate(0, 0, 5), // newer → LIFO targets this first
 	}
 	invoices := &invoicesMock{
@@ -216,7 +216,7 @@ func TestUpdateItem_Downgrade_FallsBackToNetGrantWhenIssuerUnwired(t *testing.T)
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 		},
 	}
 	credits := &creditsMock{}
@@ -264,7 +264,7 @@ func TestUpdateItem_QuantityDecrease_RoutesGrossCreditNote(t *testing.T) {
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 3000, TaxAmountCents: 300, TotalAmountCents: 3300,
+			SubtotalCents: 3000, TaxFacts: domain.TaxFacts{TaxAmountCents: 300}, TotalAmountCents: 3300,
 		},
 	}
 	credits := &creditsMock{}

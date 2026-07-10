@@ -106,7 +106,7 @@ func TestRemoveItem_ClawbackDraftCreateFailure_RealTxRollsBackItemDelete(t *test
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 6000, TaxAmountCents: 600, TotalAmountCents: 6600,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{TaxAmountCents: 600}, TotalAmountCents: 6600,
 			CreatedAt: proPeriodStart,
 		},
 	}

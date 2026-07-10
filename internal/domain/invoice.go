@@ -138,41 +138,22 @@ type Invoice struct {
 	Currency       string               `json:"currency"`
 	SubtotalCents  int64                `json:"subtotal_cents"`
 	DiscountCents  int64                `json:"discount_cents"`
-	TaxAmountCents int64                `json:"tax_amount_cents"`
-	TaxRate        float64              `json:"tax_rate"` // Percent rate (4-decimal precision via NUMERIC(7,4)). 7.25 = 7.25%. ADR-042/043.
-	TaxName        string               `json:"tax_name,omitempty"`
-	TaxCountry     string               `json:"tax_country,omitempty"`
-	TaxID          string               `json:"tax_id,omitempty"`
-	// Durable audit snapshot of the tax decision. Written once at invoice
-	// build time and never mutated so a finalized invoice remains
-	// reconstructable even after the upstream provider's tax_calculation
-	// expires (Stripe Tax: 24 h). TaxCalculationID is the provider ref used
-	// by Commit to create a tax_transaction at finalize time.
-	TaxProvider      string `json:"tax_provider,omitempty"`
-	TaxCalculationID string `json:"tax_calculation_id,omitempty"`
+	// TaxFacts is the 13-field tax-calculation bundle, embedded untagged so
+	// its JSON keys promote FLAT — the wire shape is byte-identical to the
+	// former flat fields (pinned by TestInvoiceTaxFactsWireCompat). See
+	// tax_facts.go for why this is one shared type instead of hand-copied
+	// mirrors.
+	TaxFacts
 	// TaxTransactionID is the committed upstream transaction reference
 	// (Stripe Tax: tx_xxx), captured at finalize time. Durable upstream
 	// record of the tax decision and the handle the provider needs for
 	// a later reversal when a credit note is issued against this invoice.
 	// Empty for providers without durable state (none, manual) and for
-	// invoices whose finalize has not committed tax yet.
+	// invoices whose finalize has not committed tax yet. Invoice-only
+	// lifecycle — deliberately NOT part of TaxFacts (written at Commit,
+	// not produced by the calculation), like the retry bookkeeping below.
 	TaxTransactionID string `json:"tax_transaction_id,omitempty"`
-	TaxReverseCharge bool   `json:"tax_reverse_charge,omitempty"`
-	TaxExemptReason  string `json:"tax_exempt_reason,omitempty"`
-	// TaxStatus gates finalize: only invoices with TaxStatus=ok are
-	// finalizable. Pending/failed invoices carry no committed tax yet and
-	// are either awaiting retry or awaiting operator intervention.
-	TaxStatus        InvoiceTaxStatus `json:"tax_status,omitempty"`
-	TaxDeferredAt    *time.Time       `json:"tax_deferred_at,omitempty"`
-	TaxRetryCount    int              `json:"tax_retry_count,omitempty"`
-	TaxPendingReason string           `json:"tax_pending_reason,omitempty"`
-	// TaxErrorCode is the typed classification of TaxPendingReason —
-	// one of customer_data_invalid / jurisdiction_unsupported /
-	// provider_outage / provider_auth / unknown. Lets the operator
-	// UX branch on cause (fix-customer-data vs wait-for-provider) and
-	// lets webhook consumers route alerts. Empty for invoices defered
-	// before this column existed (migration 0067).
-	TaxErrorCode string `json:"tax_error_code,omitempty"`
+	TaxRetryCount    int    `json:"tax_retry_count,omitempty"`
 
 	// PaymentAnomaly* is the durable settle-path anomaly marker (ADR-068):
 	// kind is the per-cause event name (payment.duplicate_charge /
@@ -339,21 +320,10 @@ type InvoiceTaxRetryUpdate struct {
 	// gross, so these are smaller than the operator-entered gross; persisting
 	// them keeps subtotal − discount + tax == gross. In exclusive mode they
 	// equal the stored header values (a no-op write).
-	SubtotalCents    int64
-	DiscountCents    int64
-	TaxAmountCents   int64
-	TaxRate          float64 // ADR-042/043: percent rate (4-decimal precision).
-	TaxName          string
-	TaxCountry       string
-	TaxID            string
-	TaxProvider      string
-	TaxCalculationID string
-	TaxReverseCharge bool
-	TaxExemptReason  string
-	TaxStatus        InvoiceTaxStatus
-	TaxDeferredAt    *time.Time
-	TaxPendingReason string
-	TaxErrorCode     string
+	SubtotalCents int64
+	DiscountCents int64
+	// TaxFacts: the shared 13-field calculation bundle (see tax_facts.go).
+	TaxFacts
 	TotalAmountCents int64
 	// TaxNextRetryAt schedules the next reconciler attempt. nil
 	// means "ready now"; a future timestamp gates the row out of

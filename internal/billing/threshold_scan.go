@@ -726,31 +726,18 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// not now, so two ticks fired against the same in-flight cycle dedup
 	// to the same row even though their wall-clock differs.
 	invoiceRow := domain.Invoice{
-		CustomerID:       sub.CustomerID,
-		SubscriptionID:   sub.ID,
-		BillingTimezone:  e.tenantLocation(ctx, sub.TenantID).String(),
-		InvoiceNumber:    invoiceNumber,
-		Status:           invStatus,
-		PaymentStatus:    domain.PaymentPending,
-		Currency:         invoiceCurrency,
-		SubtotalCents:    taxApp.SubtotalCents,
-		DiscountCents:    taxApp.DiscountCents,
-		TaxRate:          taxApp.TaxRate,
-		TaxName:          taxApp.TaxName,
-		TaxCountry:       taxApp.TaxCountry,
-		TaxID:            taxApp.TaxID,
-		TaxAmountCents:   taxApp.TaxAmountCents,
-		TaxProvider:      taxApp.TaxProvider,
-		TaxCalculationID: taxApp.TaxCalculationID,
-		TaxReverseCharge: taxApp.TaxReverseCharge,
-		TaxExemptReason:  taxApp.TaxExemptReason,
-		TaxStatus:        taxApp.TaxStatus,
-		TaxDeferredAt:    taxApp.TaxDeferredAt,
-		TaxPendingReason: taxApp.TaxPendingReason,
-		// TaxErrorCode lets the dashboard banner + webhook consumers
-		// branch on cause (fix-customer-data vs provider-outage). Was
-		// the one TaxApplication field this writer dropped.
-		TaxErrorCode:       taxApp.TaxErrorCode,
+		CustomerID:      sub.CustomerID,
+		SubscriptionID:  sub.ID,
+		BillingTimezone: e.tenantLocation(ctx, sub.TenantID).String(),
+		InvoiceNumber:   invoiceNumber,
+		Status:          invStatus,
+		PaymentStatus:   domain.PaymentPending,
+		Currency:        invoiceCurrency,
+		SubtotalCents:   taxApp.SubtotalCents,
+		DiscountCents:   taxApp.DiscountCents,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go) —
+		// this writer once dropped TaxErrorCode by hand-copy; now impossible.
+		TaxFacts:           taxApp.TaxFacts,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,

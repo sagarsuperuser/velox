@@ -231,7 +231,7 @@ func TestBillOnePeriod_DeferredMaxBucket_BilledExactlyOnceAtClose(t *testing.T) 
 	invoices.invoices = append(invoices.invoices, domain.Invoice{
 		ID: "vlx_inv_fire", SubscriptionID: "sub_1", TenantID: "t1",
 		Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-		TaxStatus:          domain.InvoiceTaxOK,
+		TaxFacts:           domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		BillingReason:      domain.BillingReasonThreshold,
 		BillingPeriodStart: periodStart,
 		BillingPeriodEnd:   fireAt,
