@@ -438,19 +438,25 @@ func TestRetryProviderConfigErrors_FlushesStuckRows(t *testing.T) {
 	// and tax-OK (already healthy — should be skipped).
 	store.invoices["inv_stuck_a"] = domain.Invoice{
 		ID: "inv_stuck_a", TenantID: "t1", CustomerID: "cus_a",
-		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxPending,
-		TaxErrorCode: "provider_not_configured", BillingReason: "subscription_cycle",
-		Currency: "USD", CreatedAt: now,
+		Status: domain.InvoiceDraft,
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxPending, TaxErrorCode: "provider_not_configured",
+		},
+		BillingReason: "subscription_cycle",
+		Currency:      "USD", CreatedAt: now,
 	}
 	store.invoices["inv_stuck_b"] = domain.Invoice{
 		ID: "inv_stuck_b", TenantID: "t1", CustomerID: "cus_b",
-		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxFailed,
-		TaxErrorCode: "provider_auth", BillingReason: "subscription_cycle",
-		Currency: "USD", CreatedAt: now,
+		Status: domain.InvoiceDraft,
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxFailed, TaxErrorCode: "provider_auth",
+		},
+		BillingReason: "subscription_cycle",
+		Currency:      "USD", CreatedAt: now,
 	}
 	store.invoices["inv_healthy"] = domain.Invoice{
 		ID: "inv_healthy", TenantID: "t1", CustomerID: "cus_c",
-		Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxOK,
+		Status: domain.InvoiceDraft, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		BillingReason: "subscription_cycle", Currency: "USD", CreatedAt: now,
 	}
 
@@ -1458,7 +1464,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 		// is purely the draft status gate, not the tax gate).
 		store.invoices["inv_draft"] = domain.Invoice{
 			ID: "inv_draft", TenantID: "t1",
-			Status: domain.InvoiceDraft, TaxStatus: domain.InvoiceTaxOK,
+			Status: domain.InvoiceDraft, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		}
 		_, err := store.MarkPaid(ctx, "t1", "inv_draft", "", now)
 		if err == nil {
@@ -1473,7 +1479,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 		// invariant against future refactors.
 		store.invoices["inv_finalized_tax_pending"] = domain.Invoice{
 			ID: "inv_finalized_tax_pending", TenantID: "t1",
-			Status: domain.InvoiceFinalized, TaxStatus: domain.InvoiceTaxPending,
+			Status: domain.InvoiceFinalized, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxPending},
 		}
 		_, err := store.MarkPaid(ctx, "t1", "inv_finalized_tax_pending", "", now)
 		if err == nil {
@@ -1484,7 +1490,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 	t.Run("rejects voided (terminal)", func(t *testing.T) {
 		store.invoices["inv_voided"] = domain.Invoice{
 			ID: "inv_voided", TenantID: "t1",
-			Status: domain.InvoiceVoided, TaxStatus: domain.InvoiceTaxOK,
+			Status: domain.InvoiceVoided, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		}
 		_, err := store.MarkPaid(ctx, "t1", "inv_voided", "", now)
 		if err == nil {
@@ -1495,7 +1501,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 	t.Run("allows finalized + tax_status=ok", func(t *testing.T) {
 		store.invoices["inv_ok"] = domain.Invoice{
 			ID: "inv_ok", TenantID: "t1",
-			Status: domain.InvoiceFinalized, TaxStatus: domain.InvoiceTaxOK,
+			Status: domain.InvoiceFinalized, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 			AmountDueCents: 7000,
 		}
 		out, err := store.MarkPaid(ctx, "t1", "inv_ok", "", now)
@@ -1510,7 +1516,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 	t.Run("allows uncollectible (Stripe-parity recovery)", func(t *testing.T) {
 		store.invoices["inv_unc"] = domain.Invoice{
 			ID: "inv_unc", TenantID: "t1",
-			Status: domain.InvoiceUncollectible, TaxStatus: domain.InvoiceTaxOK,
+			Status: domain.InvoiceUncollectible, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		}
 		_, err := store.MarkPaid(ctx, "t1", "inv_unc", "", now)
 		if err != nil {
@@ -1521,7 +1527,7 @@ func TestMarkPaid_StoreGate_RejectsDraftAndTaxPending(t *testing.T) {
 	t.Run("idempotent on already-paid", func(t *testing.T) {
 		store.invoices["inv_paid"] = domain.Invoice{
 			ID: "inv_paid", TenantID: "t1",
-			Status: domain.InvoicePaid, TaxStatus: domain.InvoiceTaxOK,
+			Status: domain.InvoicePaid, TaxFacts: domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		}
 		_, err := store.MarkPaid(ctx, "t1", "inv_paid", "", now)
 		if err != nil {
@@ -1554,19 +1560,27 @@ func TestRetryPendingTaxCommit(t *testing.T) {
 	// The orphan: commit succeeded at Stripe, local tax_transaction_id lost.
 	store.invoices["orphan"] = domain.Invoice{
 		ID: "orphan", TenantID: "t1", Status: domain.InvoiceFinalized,
-		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
-		TaxCalculationID: "taxcalc_1", TaxTransactionID: "",
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
+			TaxCalculationID: "taxcalc_1",
+		},
+		TaxTransactionID: "",
 	}
 	// Already committed — excluded.
 	store.invoices["committed"] = domain.Invoice{
 		ID: "committed", TenantID: "t1", Status: domain.InvoiceFinalized,
-		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
-		TaxCalculationID: "taxcalc_2", TaxTransactionID: "tx_2",
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxOK, TaxProvider: "stripe_tax",
+			TaxCalculationID: "taxcalc_2",
+		},
+		TaxTransactionID: "tx_2",
 	}
 	// Manual provider (no calc id, nothing to commit) — excluded.
 	store.invoices["manual"] = domain.Invoice{
 		ID: "manual", TenantID: "t1", Status: domain.InvoiceFinalized,
-		TaxStatus: domain.InvoiceTaxOK, TaxProvider: "manual",
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxOK, TaxProvider: "manual",
+		},
 	}
 
 	recovered, errs := svc.RetryPendingTaxCommit(ctx, 50)

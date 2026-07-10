@@ -43,7 +43,7 @@ func TestCreate_ProportionalTaxBreakdown(t *testing.T) {
 				ID: "inv_taxed", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoiceFinalized, Currency: "USD",
 				SubtotalCents:    10000,
-				TaxAmountCents:   1800,
+				TaxFacts:         domain.TaxFacts{TaxAmountCents: 1800},
 				TotalAmountCents: 11800,
 				AmountDueCents:   11800,
 			},
@@ -88,7 +88,7 @@ func TestCreate_ZeroTaxInvoiceLeavesZeroTaxOnCN(t *testing.T) {
 				ID: "inv_notax", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoiceFinalized, Currency: "USD",
 				SubtotalCents:    10000,
-				TaxAmountCents:   0,
+				TaxFacts:         domain.TaxFacts{TaxAmountCents: 0},
 				TotalAmountCents: 10000,
 				AmountDueCents:   10000,
 			},
@@ -127,7 +127,7 @@ func TestIssue_TaxReversalOnPaidInvoiceWithTransaction(t *testing.T) {
 			"inv_paid": {
 				ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1800,
+				Currency: "USD", SubtotalCents: 10000, TaxFacts: domain.TaxFacts{TaxAmountCents: 1800},
 				TotalAmountCents: 11800, AmountPaidCents: 11800,
 				StripePaymentIntentID: "pi_1",
 				TaxTransactionID:      "tx_upstream_1",
@@ -184,7 +184,7 @@ func TestIssue_NoReversalWhenInvoiceHasNoTransactionID(t *testing.T) {
 			"inv_manual": {
 				ID: "inv_manual", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1800,
+				Currency: "USD", SubtotalCents: 10000, TaxFacts: domain.TaxFacts{TaxAmountCents: 1800},
 				TotalAmountCents: 11800, AmountPaidCents: 11800,
 				StripePaymentIntentID: "pi_2",
 				// TaxTransactionID deliberately empty.
@@ -255,7 +255,7 @@ func TestIssue_ReversalFailureStillIssuesCN(t *testing.T) {
 			"inv_paid": {
 				ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1800,
+				Currency: "USD", SubtotalCents: 10000, TaxFacts: domain.TaxFacts{TaxAmountCents: 1800},
 				TotalAmountCents: 11800, AmountPaidCents: 11800,
 				StripePaymentIntentID: "pi_4",
 				TaxTransactionID:      "tx_upstream_2",
@@ -301,7 +301,7 @@ func TestRetryPendingCreditNoteTaxReversal_ReDrivesAndClears(t *testing.T) {
 			"inv_paid": {
 				ID: "inv_paid", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1800,
+				Currency: "USD", SubtotalCents: 10000, TaxFacts: domain.TaxFacts{TaxAmountCents: 1800},
 				TotalAmountCents: 11800, AmountPaidCents: 11800,
 				StripePaymentIntentID: "pi_5",
 				TaxTransactionID:      "tx_upstream_3",
@@ -357,7 +357,7 @@ func TestRetryPendingCreditNoteTaxReversal_RecoversMarkerlessOrphan(t *testing.T
 			"inv_tax": {
 				ID: "inv_tax", TenantID: "t1", CustomerID: "cus_1",
 				Status: domain.InvoicePaid, PaymentStatus: domain.PaymentSucceeded,
-				Currency: "USD", SubtotalCents: 10000, TaxAmountCents: 1000,
+				Currency: "USD", SubtotalCents: 10000, TaxFacts: domain.TaxFacts{TaxAmountCents: 1000},
 				TotalAmountCents: 11000, AmountPaidCents: 11000,
 				TaxTransactionID: "tx_upstream_orphan",
 			},

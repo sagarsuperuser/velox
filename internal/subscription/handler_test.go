@@ -513,10 +513,12 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	credits := &creditsMock{}
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
-			TaxAmountCents: 185,
-			TaxRate:        18.50,
-			TaxName:        "VAT",
-			TaxCountry:     "GB",
+			TaxFacts: domain.TaxFacts{
+				TaxAmountCents: 185,
+				TaxRate:        18.50,
+				TaxName:        "VAT",
+				TaxCountry:     "GB",
+			},
 		},
 	}
 
@@ -655,10 +657,12 @@ func TestUpdateItem_ProrationDeferredTaxCarriesRetryFacts(t *testing.T) {
 	deferredAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	taxMock := &prorationTaxApplierMock{
 		result: ProrationTaxResult{
-			TaxStatus:        domain.InvoiceTaxPending,
-			TaxErrorCode:     string(tax.ErrCodeProviderOutage),
-			TaxPendingReason: "stripe tax: request timed out",
-			TaxDeferredAt:    &deferredAt,
+			TaxFacts: domain.TaxFacts{
+				TaxStatus:        domain.InvoiceTaxPending,
+				TaxErrorCode:     string(tax.ErrCodeProviderOutage),
+				TaxPendingReason: "stripe tax: request timed out",
+				TaxDeferredAt:    &deferredAt,
+			},
 		},
 	}
 

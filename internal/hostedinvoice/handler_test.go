@@ -137,7 +137,7 @@ func seedFinalized(t *testing.T, fi *fakeInvoices, fc *fakeCustomers, fs *fakeSe
 		PaymentStatus:    domain.PaymentPending,
 		Currency:         "USD",
 		SubtotalCents:    10000,
-		TaxAmountCents:   1620,
+		TaxFacts:         domain.TaxFacts{TaxAmountCents: 1620},
 		TotalAmountCents: 11620,
 		AmountDueCents:   11620,
 		IssuedAt:         &now,

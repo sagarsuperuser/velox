@@ -35,12 +35,14 @@ func prorationTaxCommitHandler(t *testing.T, taxMock *prorationTaxApplierMock) (
 func TestUpdateItem_ProrationStampsProviderAndCommitsTax(t *testing.T) {
 	ctx := context.Background()
 	taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
-		TaxAmountCents:   151,
-		TaxRate:          8.875,
-		TaxName:          "Sales Tax",
-		TaxProvider:      "stripe_tax",
-		TaxCalculationID: "taxcalc_test_1",
-		TaxStatus:        domain.InvoiceTaxOK,
+		TaxFacts: domain.TaxFacts{
+			TaxAmountCents:   151,
+			TaxRate:          8.875,
+			TaxName:          "Sales Tax",
+			TaxProvider:      "stripe_tax",
+			TaxCalculationID: "taxcalc_test_1",
+			TaxStatus:        domain.InvoiceTaxOK,
+		},
 	}}
 	h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
 
@@ -79,10 +81,10 @@ func TestUpdateItem_ProrationCarriesExemptionStatus(t *testing.T) {
 	t.Run("reverse_charge flag flows to the invoice", func(t *testing.T) {
 		ctx := context.Background()
 		taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
-			TaxAmountCents:   0,
-			TaxProvider:      "stripe_tax",
-			TaxReverseCharge: true,
-			TaxStatus:        domain.InvoiceTaxOK,
+			TaxFacts: domain.TaxFacts{
+				TaxProvider: "stripe_tax", TaxReverseCharge: true,
+				TaxStatus: domain.InvoiceTaxOK,
+			},
 		}}
 		h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
 		body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
@@ -103,10 +105,10 @@ func TestUpdateItem_ProrationCarriesExemptionStatus(t *testing.T) {
 	t.Run("exempt reason flows to the invoice", func(t *testing.T) {
 		ctx := context.Background()
 		taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
-			TaxAmountCents:  0,
-			TaxProvider:     "manual",
-			TaxExemptReason: "Reseller certificate",
-			TaxStatus:       domain.InvoiceTaxOK,
+			TaxFacts: domain.TaxFacts{
+				TaxProvider: "manual", TaxExemptReason: "Reseller certificate",
+				TaxStatus: domain.InvoiceTaxOK,
+			},
 		}}
 		h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
 		body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
@@ -131,12 +133,14 @@ func TestUpdateItem_ProrationCarriesExemptionStatus(t *testing.T) {
 func TestUpdateItem_ProrationManualProviderDoesNotCommit(t *testing.T) {
 	ctx := context.Background()
 	taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{
-		TaxAmountCents: 145,
-		TaxRate:        7.25,
-		TaxName:        "Sales Tax",
-		TaxProvider:    "manual",
-		// no TaxCalculationID — manual provider computes locally
-		TaxStatus: domain.InvoiceTaxOK,
+		TaxFacts: domain.TaxFacts{
+			TaxAmountCents: 145,
+			TaxRate:        7.25,
+			TaxName:        "Sales Tax",
+			TaxProvider:    "manual",
+			// no TaxCalculationID — manual provider computes locally
+			TaxStatus: domain.InvoiceTaxOK,
+		},
 	}}
 	h, invoices, subID, itemID := prorationTaxCommitHandler(t, taxMock)
 

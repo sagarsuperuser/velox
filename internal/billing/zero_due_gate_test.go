@@ -76,9 +76,11 @@ func TestBillOnePeriod_AlreadyExistsHealsStrandedZeroDue(t *testing.T) {
 	periodEnd := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	invoices.invoices = append(invoices.invoices, domain.Invoice{
 		ID: "vlx_inv_stranded_cycle", SubscriptionID: "sub_1", TenantID: "t1",
-		Status:             domain.InvoiceFinalized,
-		PaymentStatus:      domain.PaymentPending,
-		TaxStatus:          domain.InvoiceTaxOK,
+		Status:        domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentPending,
+		TaxFacts: domain.TaxFacts{
+			TaxStatus: domain.InvoiceTaxOK,
+		},
 		AmountDueCents:     0,
 		BillingReason:      domain.BillingReasonSubscriptionCycle,
 		BillingPeriodStart: periodStart,

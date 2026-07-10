@@ -1173,25 +1173,12 @@ func (e *Engine) EffectiveNowForCustomer(ctx context.Context, tenantID, customer
 // Pending invoices are persisted without tax amounts and are blocked from
 // finalize until a retry worker completes the calculation.
 type TaxApplication struct {
-	TaxAmountCents   int64
-	TaxRate          float64 // ADR-042/043: percent rate persists to invoices.tax_rate NUMERIC(7,4).
-	TaxName          string
-	TaxCountry       string
-	TaxID            string
-	SubtotalCents    int64
-	DiscountCents    int64
-	TaxProvider      string
-	TaxCalculationID string
-	TaxReverseCharge bool
-	TaxExemptReason  string
-	TaxStatus        domain.InvoiceTaxStatus
-	TaxDeferredAt    *time.Time
-	TaxPendingReason string
-	// TaxErrorCode is the typed classification of TaxPendingReason
-	// (one of customer_data_invalid / jurisdiction_unsupported /
-	// provider_outage / provider_auth / unknown). Populated by
-	// tax.Classify on the deferral path; empty for ok results.
-	TaxErrorCode string
+	// TaxFacts: the shared 13-field calculation bundle (see
+	// domain/tax_facts.go) — writers copy it onto invoices as ONE struct
+	// assignment instead of 13 hand-mirrored fields.
+	domain.TaxFacts
+	SubtotalCents int64
+	DiscountCents int64
 }
 
 // truncateReason clips a provider error string to a sensible length before
@@ -1296,7 +1283,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	app := TaxApplication{
 		SubtotalCents: subtotal,
 		DiscountCents: discount,
-		TaxStatus:     domain.InvoiceTaxOK,
+		TaxFacts:      domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 	}
 
 	// Pin tenant_id on ctx before resolving the provider. The
@@ -2992,13 +2979,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// In tax-inclusive mode the engine back-calculates net subtotal/discount
 	// from the gross inputs; in exclusive mode these pass through unchanged,
 	// so the caller always reads the authoritative values off the result.
-	taxAmountCents := taxApp.TaxAmountCents
-	taxRate := taxApp.TaxRate
-	taxName := taxApp.TaxName
-	taxCountry := taxApp.TaxCountry
-	taxID := taxApp.TaxID
-
-	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxAmountCents
+	totalWithTax := taxApp.SubtotalCents - taxApp.DiscountCents + taxApp.TaxAmountCents
 	dueAt := now.AddDate(0, 0, netDays)
 
 	// Single source of truth for the draft/finalized decision —
@@ -3037,28 +3018,17 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
 	// provides idempotency — duplicate calls return an error instead of double-billing.
 	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
-		CustomerID:         sub.CustomerID,
-		SubscriptionID:     sub.ID,
-		BillingTimezone:    e.tenantLocation(ctx, sub.TenantID).String(),
-		InvoiceNumber:      invoiceNumber,
-		Status:             invStatus,
-		PaymentStatus:      domain.PaymentPending,
-		Currency:           invoiceCurrency,
-		SubtotalCents:      taxApp.SubtotalCents,
-		DiscountCents:      taxApp.DiscountCents,
-		TaxRate:            taxRate,
-		TaxName:            taxName,
-		TaxCountry:         taxCountry,
-		TaxID:              taxID,
-		TaxAmountCents:     taxAmountCents,
-		TaxProvider:        taxApp.TaxProvider,
-		TaxCalculationID:   taxApp.TaxCalculationID,
-		TaxReverseCharge:   taxApp.TaxReverseCharge,
-		TaxExemptReason:    taxApp.TaxExemptReason,
-		TaxStatus:          taxApp.TaxStatus,
-		TaxDeferredAt:      taxApp.TaxDeferredAt,
-		TaxPendingReason:   taxApp.TaxPendingReason,
-		TaxErrorCode:       taxApp.TaxErrorCode,
+		CustomerID:      sub.CustomerID,
+		SubscriptionID:  sub.ID,
+		BillingTimezone: e.tenantLocation(ctx, sub.TenantID).String(),
+		InvoiceNumber:   invoiceNumber,
+		Status:          invStatus,
+		PaymentStatus:   domain.PaymentPending,
+		Currency:        invoiceCurrency,
+		SubtotalCents:   taxApp.SubtotalCents,
+		DiscountCents:   taxApp.DiscountCents,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go).
+		TaxFacts:           taxApp.TaxFacts,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: invoicePeriodStart,
@@ -3305,7 +3275,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		"invoice_id", inv.ID,
 		"subscription_id", sub.ID,
 		"total_cents", totalWithTax,
-		"tax_rate", taxRate,
+		"tax_rate", taxApp.TaxRate,
 		"line_items", len(lineItems),
 	)
 
@@ -3576,24 +3546,13 @@ func (e *Engine) buildOnCreateInvoice(ctx context.Context, sub domain.Subscripti
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
 		// TaxAmountCents=0, lying about authoritative amounts.
-		Status:             domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
-		PaymentStatus:      domain.PaymentPending,
-		Currency:           invoiceCurrency,
-		SubtotalCents:      taxApp.SubtotalCents,
-		DiscountCents:      taxApp.DiscountCents,
-		TaxRate:            taxApp.TaxRate,
-		TaxName:            taxApp.TaxName,
-		TaxCountry:         taxApp.TaxCountry,
-		TaxID:              taxApp.TaxID,
-		TaxAmountCents:     taxApp.TaxAmountCents,
-		TaxProvider:        taxApp.TaxProvider,
-		TaxCalculationID:   taxApp.TaxCalculationID,
-		TaxReverseCharge:   taxApp.TaxReverseCharge,
-		TaxExemptReason:    taxApp.TaxExemptReason,
-		TaxStatus:          taxApp.TaxStatus,
-		TaxDeferredAt:      taxApp.TaxDeferredAt,
-		TaxPendingReason:   taxApp.TaxPendingReason,
-		TaxErrorCode:       taxApp.TaxErrorCode,
+		Status:        domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
+		PaymentStatus: domain.PaymentPending,
+		Currency:      invoiceCurrency,
+		SubtotalCents: taxApp.SubtotalCents,
+		DiscountCents: taxApp.DiscountCents,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go).
+		TaxFacts:           taxApp.TaxFacts,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
@@ -4301,24 +4260,13 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 		// Pre-fix this path hardcoded Finalized regardless of tax;
 		// invoices with tax_status=pending finalized with
 		// TaxAmountCents=0, lying about authoritative amounts.
-		Status:             domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
-		PaymentStatus:      domain.PaymentPending,
-		Currency:           invoiceCurrency,
-		SubtotalCents:      taxApp.SubtotalCents,
-		DiscountCents:      taxApp.DiscountCents,
-		TaxRate:            taxApp.TaxRate,
-		TaxName:            taxApp.TaxName,
-		TaxCountry:         taxApp.TaxCountry,
-		TaxID:              taxApp.TaxID,
-		TaxAmountCents:     taxApp.TaxAmountCents,
-		TaxProvider:        taxApp.TaxProvider,
-		TaxCalculationID:   taxApp.TaxCalculationID,
-		TaxReverseCharge:   taxApp.TaxReverseCharge,
-		TaxExemptReason:    taxApp.TaxExemptReason,
-		TaxStatus:          taxApp.TaxStatus,
-		TaxDeferredAt:      taxApp.TaxDeferredAt,
-		TaxPendingReason:   taxApp.TaxPendingReason,
-		TaxErrorCode:       taxApp.TaxErrorCode,
+		Status:        domain.InvoiceFinalizationStatus(taxApp.TaxStatus, sub.PauseCollection),
+		PaymentStatus: domain.PaymentPending,
+		Currency:      invoiceCurrency,
+		SubtotalCents: taxApp.SubtotalCents,
+		DiscountCents: taxApp.DiscountCents,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go).
+		TaxFacts:           taxApp.TaxFacts,
 		TotalAmountCents:   totalWithTax,
 		AmountDueCents:     totalWithTax,
 		BillingPeriodStart: periodStart,
@@ -5627,21 +5575,10 @@ func (e *Engine) computeAndPersistInvoiceTax(ctx context.Context, tenantID, invo
 	}
 
 	update := domain.InvoiceTaxRetryUpdate{
-		SubtotalCents:    taxApp.SubtotalCents,
-		DiscountCents:    taxApp.DiscountCents,
-		TaxAmountCents:   taxApp.TaxAmountCents,
-		TaxRate:          taxApp.TaxRate,
-		TaxName:          taxApp.TaxName,
-		TaxCountry:       taxApp.TaxCountry,
-		TaxID:            taxApp.TaxID,
-		TaxProvider:      taxApp.TaxProvider,
-		TaxCalculationID: taxApp.TaxCalculationID,
-		TaxReverseCharge: taxApp.TaxReverseCharge,
-		TaxExemptReason:  taxApp.TaxExemptReason,
-		TaxStatus:        taxApp.TaxStatus,
-		TaxDeferredAt:    taxApp.TaxDeferredAt,
-		TaxPendingReason: taxApp.TaxPendingReason,
-		TaxErrorCode:     taxApp.TaxErrorCode,
+		SubtotalCents: taxApp.SubtotalCents,
+		DiscountCents: taxApp.DiscountCents,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go).
+		TaxFacts:         taxApp.TaxFacts,
 		TotalAmountCents: totalWithTax,
 		TaxNextRetryAt:   nextTaxRetry(ctx, taxApp.TaxStatus, taxApp.TaxErrorCode, inv.TaxRetryCount),
 	}

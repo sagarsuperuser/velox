@@ -84,7 +84,7 @@ func TestAddItem_ProrationInvoiceCreateFailure_RollsBackItemAdd(t *testing.T) {
 	invoices := &invoicesMock{
 		sourceInvoice: domain.Invoice{
 			ID: "src_inv", PaymentStatus: domain.PaymentSucceeded,
-			SubtotalCents: 6000, TaxAmountCents: 0, TotalAmountCents: 6000, CreatedAt: proPeriodStart,
+			SubtotalCents: 6000, TaxFacts: domain.TaxFacts{}, TotalAmountCents: 6000, CreatedAt: proPeriodStart,
 		},
 		createInvoiceErr: errors.New("simulated proration invoice write failure"),
 	}

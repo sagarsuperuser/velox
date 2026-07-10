@@ -12,7 +12,9 @@ func draft() Invoice {
 		ID:            "vlx_inv_test",
 		Status:        InvoiceDraft,
 		PaymentStatus: PaymentPending,
-		TaxStatus:     InvoiceTaxOK,
+		TaxFacts: TaxFacts{
+			TaxStatus: InvoiceTaxOK,
+		},
 	}
 }
 
@@ -534,7 +536,7 @@ func TestClassify_PaymentProcessing_AgeAware(t *testing.T) {
 	base := func(updatedAgo time.Duration, simulated bool) Invoice {
 		return Invoice{
 			ID: "vlx_inv_test", Status: InvoiceFinalized,
-			PaymentStatus: PaymentProcessing, TaxStatus: InvoiceTaxOK,
+			PaymentStatus: PaymentProcessing, TaxFacts: TaxFacts{TaxStatus: InvoiceTaxOK},
 			UpdatedAt: now.Add(-updatedAgo), IsSimulated: simulated,
 		}
 	}
@@ -580,7 +582,7 @@ func TestClassify_PaymentProcessing_AgeAware(t *testing.T) {
 func TestClassify_PaymentUnconfirmed_NoDeadAction(t *testing.T) {
 	inv := Invoice{
 		ID: "vlx_inv_test", Status: InvoiceFinalized,
-		PaymentStatus: PaymentUnknown, TaxStatus: InvoiceTaxOK,
+		PaymentStatus: PaymentUnknown, TaxFacts: TaxFacts{TaxStatus: InvoiceTaxOK},
 	}
 	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Code != "payment.unconfirmed" {

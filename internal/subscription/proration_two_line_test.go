@@ -109,7 +109,7 @@ func TestUpdateItem_PlanUpgrade_TwoLineTaxApportionsAndTiesOut(t *testing.T) {
 	invoices := &invoicesMock{sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded}}
 	credits := &creditsMock{}
 	// 10% tax on the 1500 net = 150.
-	taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{TaxAmountCents: 150, TaxRate: 10, TaxName: "VAT"}}
+	taxMock := &prorationTaxApplierMock{result: ProrationTaxResult{TaxFacts: domain.TaxFacts{TaxAmountCents: 150, TaxRate: 10, TaxName: "VAT"}}}
 
 	h := NewHandler(svc)
 	h.SetProrationDeps(plans, invoices, credits)

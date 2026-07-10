@@ -829,21 +829,11 @@ func (a *prorationTaxApplierAdapter) ApplyTaxToLineItems(ctx context.Context, te
 		return subscription.ProrationTaxResult{}, err
 	}
 	return subscription.ProrationTaxResult{
-		TaxAmountCents:   r.TaxAmountCents,
-		TaxRate:          r.TaxRate,
-		TaxName:          r.TaxName,
-		TaxCountry:       r.TaxCountry,
-		TaxID:            r.TaxID,
-		TaxProvider:      r.TaxProvider,
-		TaxCalculationID: r.TaxCalculationID,
-		TaxReverseCharge: r.TaxReverseCharge,
-		TaxExemptReason:  r.TaxExemptReason,
-		SubtotalCents:    r.SubtotalCents,
-		DiscountCents:    r.DiscountCents,
-		TaxStatus:        r.TaxStatus,
-		TaxDeferredAt:    r.TaxDeferredAt,
-		TaxPendingReason: r.TaxPendingReason,
-		TaxErrorCode:     r.TaxErrorCode,
+		// ONE assignment carries every tax fact (see domain/tax_facts.go) —
+		// this hand-copy dropped fields three separate times; now impossible.
+		TaxFacts:      r.TaxFacts,
+		SubtotalCents: r.SubtotalCents,
+		DiscountCents: r.DiscountCents,
 	}, nil
 }
 

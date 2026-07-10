@@ -27,8 +27,7 @@ func TestRetryPendingTaxReversal(t *testing.T) {
 		store.invoices["inv_rev"] = domain.Invoice{
 			ID: "inv_rev", TenantID: "t1", CustomerID: "c",
 			Status:           domain.InvoiceVoided,
-			TaxProvider:      "stripe_tax",
-			TaxStatus:        domain.InvoiceTaxOK,
+			TaxFacts:         domain.TaxFacts{TaxProvider: "stripe_tax", TaxStatus: domain.InvoiceTaxOK},
 			TaxTransactionID: "tx_1",
 			TotalAmountCents: 1000, AmountDueCents: 1000,
 		}
@@ -79,7 +78,7 @@ func TestRetryPendingTaxReversal(t *testing.T) {
 		svc := NewService(store, nil, newMemNumberer())
 		store.invoices["inv_rev"] = domain.Invoice{
 			ID: "inv_rev", TenantID: "t1", Status: domain.InvoiceVoided,
-			TaxProvider: "stripe_tax", TaxTransactionID: "tx_1", TotalAmountCents: 1000, AmountDueCents: 1000,
+			TaxFacts: domain.TaxFacts{TaxProvider: "stripe_tax"}, TaxTransactionID: "tx_1", TotalAmountCents: 1000, AmountDueCents: 1000,
 		}
 		recovered, errs := svc.RetryPendingTaxReversal(ctx, 50)
 		if recovered != 0 || len(errs) != 0 {

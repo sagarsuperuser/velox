@@ -127,16 +127,18 @@ func TestRenderPDF_ThreeChannelCN_WithTaxReversal(t *testing.T) {
 	periodEnd := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
 	inv := domain.Invoice{
-		ID:                 "vlx_inv_3ch",
-		InvoiceNumber:      "VLX-202604-0042",
-		Status:             domain.InvoiceFinalized,
-		PaymentStatus:      domain.PaymentSucceeded,
-		Currency:           "INR",
-		SubtotalCents:      7000,
-		TaxAmountCents:     1260,
-		TaxRate:            18.00,
-		TaxName:            "IGST",
-		TaxCountry:         "IN",
+		ID:            "vlx_inv_3ch",
+		InvoiceNumber: "VLX-202604-0042",
+		Status:        domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentSucceeded,
+		Currency:      "INR",
+		SubtotalCents: 7000,
+		TaxFacts: domain.TaxFacts{
+			TaxAmountCents: 1260,
+			TaxRate:        18.00,
+			TaxName:        "IGST",
+			TaxCountry:     "IN",
+		},
 		TotalAmountCents:   8260,
 		AmountPaidCents:    8260,
 		AmountDueCents:     0,
@@ -250,7 +252,9 @@ func minimalReverseChargeInvoice() domain.Invoice {
 		IssuedAt:           &now,
 		DueAt:              &due,
 		NetPaymentTermDays: 30,
-		TaxReverseCharge:   true,
+		TaxFacts: domain.TaxFacts{
+			TaxReverseCharge: true,
+		},
 	}
 }
 
