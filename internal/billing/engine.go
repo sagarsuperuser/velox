@@ -267,8 +267,9 @@ type NoPaymentMethodNotifier interface {
 // outcome is a deliberate skip (the adapter swallows it), matching the
 // declined-card path's behaviour when dunning is off.
 //
-// Optional — when nil, the engine skips enrollment (local dev,
-// integration tests). Wire in router.go via SetDunningStarter.
+// REQUIRED — boot fails closed if unwired (#442); the old nil skip left
+// card-less invoices out of dunning forever. Wire in router.go via
+// SetDunningStarter.
 type DunningStarter interface {
 	StartDunning(ctx context.Context, tenantID, invoiceID, customerID string, failureAt time.Time) error
 }
@@ -283,7 +284,8 @@ type DunningStarter interface {
 // is idempotent (no active run → no-op via GetActiveRunByInvoice) so it's safe to
 // call on every settle, and it is best-effort post-commit — a failure logs and
 // never fails the settle; the dunning.processRun paid-pre-check is the durable
-// backstop. Optional — when nil the engine skips it. Wire via SetDunningResolver.
+// backstop. REQUIRED — boot fails closed if unwired (#442). Wire via
+// SetDunningResolver.
 type DunningResolver interface {
 	ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error
 }
@@ -820,12 +822,11 @@ func (e *Engine) SetDunningResolver(d DunningResolver) {
 // invoice that just settled via a BACKGROUND path that bypasses the invoice
 // handler's dunning resolve. Idempotent state-correctness (no active run →
 // no-op), NOT money-exactly-once: post-commit, a failure logs and never fails the
-// settle (the dunning.processRun paid-pre-check is the durable backstop). nil
-// resolver (local dev / tests) → no-op.
+// settle (the dunning.processRun paid-pre-check is the durable backstop).
 func (e *Engine) resolveDunningRecovered(ctx context.Context, tenantID, invoiceID string) {
-	if e.dunningResolver == nil {
-		return
-	}
+	// dunningResolver is REQUIRED (boot fails closed, #442) — the old nil
+	// no-op left a recovered invoice's dunning run active until the
+	// processRun paid-pre-check caught it.
 	if err := e.dunningResolver.ResolveByInvoice(ctx, tenantID, invoiceID, domain.ResolutionPaymentRecovered); err != nil {
 		slog.WarnContext(ctx, "failed to resolve dunning after background credit settle",
 			"invoice_id", invoiceID, "error", err)
@@ -5232,9 +5233,6 @@ func (e *Engine) RetryPendingChargesForClock(ctx context.Context, tenantID, cloc
 // the no-card ones. StartDunning is idempotent, so any invoice that
 // still carries a run is a no-op.
 func (e *Engine) EnrollStalledForDunning(ctx context.Context, limit int) (int, []error) {
-	if e.dunningStarter == nil {
-		return 0, nil
-	}
 	pending, err := e.invoices.ListAutoChargePending(ctx, limit)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list stalled auto-charge for dunning: %w", err)}
@@ -5248,9 +5246,6 @@ func (e *Engine) EnrollStalledForDunning(ctx context.Context, limit int) (int, [
 // reaches a terminal under test clocks too, not only on the wall clock.
 // ADR-029 disjoint flows.
 func (e *Engine) EnrollStalledForDunningForClock(ctx context.Context, tenantID, clockID string, limit int) (int, []error) {
-	if e.dunningStarter == nil {
-		return 0, nil
-	}
 	pending, err := e.invoices.ListAutoChargePendingForClock(ctx, tenantID, clockID, limit)
 	if err != nil {
 		return 0, []error{fmt.Errorf("list stalled auto-charge for dunning (clock %s): %w", clockID, err)}
@@ -5275,9 +5270,9 @@ const failedDunningBackfillCoolOff = 10 * time.Minute
 // inline during Advance. Shares enrollStalledForDunning's body, so it inherits the
 // adapter's "dunning disabled" swallow and dunningFailureAt simulated-time anchoring.
 func (e *Engine) EnrollFailedWithoutDunning(ctx context.Context, limit int) (int, []error) {
-	if e.dunningStarter == nil {
-		return 0, nil
-	}
+	// dunningStarter is REQUIRED (boot fails closed, #442) — the old nil
+	// early-returns in the three enroll sweeps silently left card-less
+	// invoices out of dunning forever.
 	// Cool-off cutoff. The sweep is livemode-only (clock-pinned rows are excluded
 	// by the store query), so a real-time cutoff against updated_at is correct and
 	// never touches simulated time.

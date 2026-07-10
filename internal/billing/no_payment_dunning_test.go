@@ -25,6 +25,22 @@ func (d *recordingDunningStarter) StartDunning(_ context.Context, _, invoiceID, 
 	return nil
 }
 
+// recordingDunningResolver backs the settle-path tests: post-#442 the
+// resolver is a required collaborator, so any fixture whose flow can
+// MarkPaid an invoice must wire one.
+type recordingDunningResolver struct {
+	resolved []string
+	err      error
+}
+
+func (d *recordingDunningResolver) ResolveByInvoice(_ context.Context, _, invoiceID string, _ domain.DunningResolution) error {
+	if d.err != nil {
+		return d.err
+	}
+	d.resolved = append(d.resolved, invoiceID)
+	return nil
+}
+
 func noPMEngine(t *testing.T, inv *mockInvoices) *Engine {
 	t.Helper()
 	return wireBaseTax(NewEngine(
@@ -53,19 +69,6 @@ func TestEnrollStalledForDunning_EnrollsCardlessInvoice(t *testing.T) {
 	}
 	if len(starter.started) != 1 || starter.started[0] != "inv_1" {
 		t.Fatalf("StartDunning calls = %v, want [inv_1]", starter.started)
-	}
-}
-
-// TestEnrollStalledForDunning_NoStarterIsInert verifies the sweep is a
-// no-op when no DunningStarter is wired (local dev / integration tests) —
-// it must not panic or touch the invoice store.
-func TestEnrollStalledForDunning_NoStarterIsInert(t *testing.T) {
-	inv := &mockInvoices{invoices: []domain.Invoice{pendingInvoice()}}
-	engine := noPMEngine(t, inv) // no SetDunningStarter
-
-	swept, errsOut := engine.EnrollStalledForDunning(context.Background(), 10)
-	if swept != 0 || len(errsOut) != 0 {
-		t.Fatalf("expected inert no-op, got swept=%d errs=%v", swept, errsOut)
 	}
 }
 
