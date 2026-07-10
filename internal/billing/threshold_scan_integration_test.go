@@ -225,9 +225,14 @@ func TestThresholdScan_AmountCrossFiresEarly(t *testing.T) {
 	// 100 events × qty 10 × 1c = 1000c subtotal.
 	f.ingestUsage(t, ctx, 100, 10)
 
-	// Configure amount threshold at 500c — well below 1000c.
+	// Configure amount threshold at 500c — well below 1000c. This test
+	// exercises RESET semantics, so reset_billing_cycle is explicit: the
+	// omitted-field default flipped to false (keep-anchor, Stripe parity)
+	// on 2026-07-10.
+	resetCycle := true
 	if _, err := f.subSvc.SetBillingThresholds(ctx, f.tenantID, f.subID, subscription.BillingThresholdsInput{
-		AmountGTE: 500,
+		AmountGTE:         500,
+		ResetBillingCycle: &resetCycle,
 	}); err != nil {
 		t.Fatalf("set threshold: %v", err)
 	}
@@ -258,7 +263,7 @@ func TestThresholdScan_AmountCrossFiresEarly(t *testing.T) {
 		t.Errorf("billing_period_start: got %v, want %v", inv.BillingPeriodStart, f.cycleStart)
 	}
 
-	// Cycle reset: with reset_billing_cycle=true (default), the sub's
+	// Cycle reset: with reset_billing_cycle=true (explicit), the sub's
 	// current_billing_period_start should now be the fire-time, not the
 	// original cycleStart.
 	updated, err := f.subStore.Get(ctx, f.tenantID, f.subID)
