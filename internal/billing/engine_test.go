@@ -298,7 +298,8 @@ type mockSubs struct {
 	// itemChanges feeds ListItemChangesInPeriod. Tests that exercise
 	// segment-aware billing seed this with the change rows the DB
 	// trigger would have produced (migration 0029).
-	itemChanges []domain.SubscriptionItemChange
+	itemChanges    []domain.SubscriptionItemChange
+	itemChangesErr error
 	// updateBillingCycleErr, when set, makes UpdateBillingCycle fail — used to
 	// drive the idempotent-skip heal path's loud-fail (a failed watermark
 	// advance must surface, not be swallowed).
@@ -534,6 +535,9 @@ func (m *mockSubs) ListWithThresholds(_ context.Context, _ bool, _ string, _ int
 }
 
 func (m *mockSubs) ListItemChangesInPeriod(_ context.Context, _, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.SubscriptionItemChange, error) {
+	if m.itemChangesErr != nil {
+		return nil, m.itemChangesErr
+	}
 	var out []domain.SubscriptionItemChange
 	for _, c := range m.itemChanges {
 		if c.SubscriptionID != subscriptionID {
