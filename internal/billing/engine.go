@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -557,6 +558,44 @@ type InvoiceWriter interface {
 	// retry. Used by Engine.RetryTaxForInvoice to persist the recomputed
 	// per-line and invoice-level tax fields atomically.
 	UpdateTaxAtomic(ctx context.Context, tenantID, invoiceID string, update domain.InvoiceTaxRetryUpdate, lineItems []domain.InvoiceLineItem) (domain.Invoice, error)
+}
+
+// MustValidate panics unless every collaborator field on the Engine is
+// wired, naming ALL nil fields in one message. The composition root calls it
+// after the last Set* — so a production boot with a missing collaborator
+// fails closed at startup instead of silently changing money math at 3am
+// (the 2026-07-10 design review found ~10 prod paths whose nil-collaborator
+// arms diverge on money: a nil creditGranter silently skips a cancel refund,
+// a nil creditNoteAdjuster skips a tax reversal, a nil creditHeadroom
+// disables the #276-#278 overcharge cap).
+//
+// Why boot-time and not construction-time: the engine and its peer services
+// are mutually referential (invoiceSvc needs the engine as clock resolver;
+// the engine needs invoiceSvc as invoice voider), so a fully-populated
+// construction-time deps struct is not achievable without restructuring the
+// services — the setters exist BECAUSE of that cycle. Boot-validate is the
+// minimal complete mechanism: same guarantee, no restructuring. Tests that
+// construct partial engines deliberately do not call this.
+//
+// Reflection walks the struct's interface fields so a future 26th
+// collaborator cannot be forgotten here (drift-guarded by
+// TestMustValidate_CoversEveryCollaborator).
+func (e *Engine) MustValidate() {
+	v := reflect.ValueOf(e).Elem()
+	t := v.Type()
+	var missing []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Type.Kind() != reflect.Interface {
+			continue // sync.Map bookkeeping etc. — collaborators are interfaces
+		}
+		if v.Field(i).IsNil() {
+			missing = append(missing, f.Name)
+		}
+	}
+	if len(missing) > 0 {
+		panic(fmt.Sprintf("billing.Engine misconfigured — nil collaborators: %s (every field must be wired before serving; see MustValidate doc)", strings.Join(missing, ", ")))
+	}
 }
 
 func NewEngine(subs SubscriptionReader, usage UsageAggregator, pricing PricingReader, invoices InvoiceWriter, credits CreditApplier, settings SettingsReader, paymentSetups PaymentReadiness, charger InvoiceCharger, clk clock.Clock, profiles ...BillingProfileReader) *Engine {

@@ -841,6 +841,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// calculation expiry window.
 	engine.SetTaxProviderResolver(tax.NewResolver(stripeClients))
 	engine.SetTaxCalculationStore(tax.NewPostgresStore(db))
+	// Last engine collaborator is wired above — fail closed NOW if any is
+	// missing, naming every nil field, instead of silently diverging on a
+	// money path at runtime (2026-07-10 design review, redesign #3 stage 1).
+	engine.MustValidate()
 
 	// Invoice finalize commits the upstream Stripe Tax calculation into a
 	// tax_transaction so the tenant's Stripe Tax reports reflect the final
