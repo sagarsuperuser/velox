@@ -51,7 +51,7 @@ var allowedCrossDomainImports = map[string][]string{
 	"pricing":        {"auth"},
 	"recipe":         {"audit", "auth"},
 	"session":        {"auth"},
-	"subscription":   {"audit", "auth"},
+	"subscription":   {"audit", "auth", "tax"}, // tax = shared value types/classification (ADR-052 class; used for deferral-fact stamping on proration invoices)
 	"tenant":         {"auth"},
 	"tenantstripe":   {"auth"},
 	"testclock":      {"auth"},

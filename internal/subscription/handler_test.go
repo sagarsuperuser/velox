@@ -18,6 +18,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // ---------------------------------------------------------------------------
@@ -612,6 +613,86 @@ func TestUpdateItem_ProrationTaxErrorDefersToDraft(t *testing.T) {
 	}
 	if inv.TaxAmountCents != 0 {
 		t.Errorf("invoice TaxAmountCents = %d, want 0 (no tax computed yet)", inv.TaxAmountCents)
+	}
+	// Deferral facts (2026-07-10 fix): without a retryable tax_error_code the
+	// tax-retry reconciler's filter (billing/tax_retry.go taxRetryableCodes)
+	// skips the invoice FOREVER — deferred-to-draft was only half the fix.
+	if inv.TaxErrorCode != string(tax.ErrCodeProviderOutage) {
+		t.Errorf("invoice TaxErrorCode = %q, want %q (503 classifies as outage; must be retryable)", inv.TaxErrorCode, tax.ErrCodeProviderOutage)
+	}
+	if inv.TaxDeferredAt == nil {
+		t.Error("invoice TaxDeferredAt must be stamped on deferral")
+	}
+	if inv.TaxPendingReason == "" {
+		t.Error("invoice TaxPendingReason must carry the provider error")
+	}
+}
+
+// TestUpdateItem_ProrationDeferredTaxCarriesRetryFacts pins the OTHER deferral
+// route: the engine's ApplyTaxToLineItems defers internally (returns nil error
+// with tax_status=pending and the deferral facts populated). Pre-fix the
+// ProrationTaxResult mirror lacked TaxDeferredAt/TaxPendingReason/TaxErrorCode
+// entirely — the adapter dropped them, the row landed tax_error_code=”, and
+// the tax-retry reconciler never picked the invoice up (third documented
+// field-drop on this mirror). Also pins BillingTimezone, which every engine
+// writer stamps and this writer omitted.
+func TestUpdateItem_ProrationDeferredTaxCarriesRetryFacts(t *testing.T) {
+	ctx := context.Background()
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItem(t, store, tenantID, "cus_1", "plan_old")
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	invoices := &invoicesMock{
+		sourceInvoice: domain.Invoice{ID: "src_inv", PaymentStatus: domain.PaymentSucceeded},
+	}
+	credits := &creditsMock{}
+	deferredAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	taxMock := &prorationTaxApplierMock{
+		result: ProrationTaxResult{
+			TaxStatus:        domain.InvoiceTaxPending,
+			TaxErrorCode:     string(tax.ErrCodeProviderOutage),
+			TaxPendingReason: "stripe tax: request timed out",
+			TaxDeferredAt:    &deferredAt,
+		},
+	}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetProrationTaxApplier(taxMock)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_new", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(invoices.createdInvoices) != 1 {
+		t.Fatalf("got %d invoices, want 1", len(invoices.createdInvoices))
+	}
+	inv := invoices.createdInvoices[0]
+	if inv.Status != domain.InvoiceDraft {
+		t.Errorf("invoice Status = %q, want draft", inv.Status)
+	}
+	if inv.TaxErrorCode != string(tax.ErrCodeProviderOutage) {
+		t.Errorf("TaxErrorCode = %q, want %q (dropped by the pre-fix DTO mirror)", inv.TaxErrorCode, tax.ErrCodeProviderOutage)
+	}
+	if inv.TaxDeferredAt == nil || !inv.TaxDeferredAt.Equal(deferredAt) {
+		t.Errorf("TaxDeferredAt = %v, want %v", inv.TaxDeferredAt, deferredAt)
+	}
+	if inv.TaxPendingReason != "stripe tax: request timed out" {
+		t.Errorf("TaxPendingReason = %q, want the provider reason", inv.TaxPendingReason)
+	}
+	if inv.BillingTimezone != "UTC" {
+		t.Errorf("BillingTimezone = %q, want %q (unwired settings resolve UTC; engine writers all stamp this)", inv.BillingTimezone, "UTC")
 	}
 }
 

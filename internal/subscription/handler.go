@@ -24,6 +24,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // PlanReader reads plan data for proration calculations.
@@ -123,6 +124,20 @@ type ProrationTaxResult struct {
 	// finalized regardless of tax status, lying about authoritative
 	// amounts when calculation was deferred.
 	TaxStatus domain.InvoiceTaxStatus
+	// TaxDeferredAt / TaxPendingReason / TaxErrorCode carry the deferral
+	// facts onto the proration invoice. Dropping these was the THIRD
+	// field-drop bug on this mirror (see the two documented above): a
+	// deferred proration invoice landed with tax_error_code='' — which
+	// never matches the tax-retry reconciler's retryable-code filter
+	// (billing/tax_retry.go taxRetryableCodes) — so it was NEVER
+	// auto-retried; it sat draft until an operator manually clicked
+	// Retry off a context-free banner. This mirror exists so
+	// subscription doesn't import billing; the drift class it breeds is
+	// slated for dissolution into a shared domain.TaxFacts value type
+	// (2026-07-10 design review, redesign #1).
+	TaxDeferredAt    *time.Time
+	TaxPendingReason string
+	TaxErrorCode     string
 }
 
 // ProrationTaxApplier resolves and applies tax against a proration invoice's
@@ -2233,6 +2248,18 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 				slog.WarnContext(ctx, "tax apply failed on proration, deferring invoice to draft for retry",
 					"error", err, "subscription_id", sub.ID)
 				taxResult.TaxStatus = domain.InvoiceTaxPending
+				// Stamp the deferral facts the tax-retry reconciler keys on —
+				// classified like the engine's deferral path (engine.go
+				// ApplyTaxToLineItems). Without a retryable tax_error_code the
+				// reconciler's filter skips the invoice forever.
+				taxResult.TaxErrorCode = string(tax.Classify(err))
+				reason := tax.CleanMessage(err.Error())
+				if len(reason) > 500 {
+					reason = reason[:500]
+				}
+				taxResult.TaxPendingReason = reason
+				deferredAt := now
+				taxResult.TaxDeferredAt = &deferredAt
 			} else {
 				taxResult = r
 			}
@@ -2321,21 +2348,27 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 			// tax; if Stripe Tax returned customer_data_invalid the
 			// invoice finalized with TaxAmountCents=0, lying about
 			// authoritative amounts.
-			Status:             domain.InvoiceFinalizationStatus(taxResult.TaxStatus, sub.PauseCollection),
-			PaymentStatus:      domain.PaymentPending,
-			Currency:           effectivePlan.Currency,
-			SubtotalCents:      taxResult.SubtotalCents,
-			DiscountCents:      taxResult.DiscountCents,
-			TaxRate:            taxResult.TaxRate,
-			TaxName:            taxResult.TaxName,
-			TaxCountry:         taxResult.TaxCountry,
-			TaxID:              taxResult.TaxID,
-			TaxProvider:        taxResult.TaxProvider,
-			TaxCalculationID:   taxResult.TaxCalculationID,
-			TaxReverseCharge:   taxResult.TaxReverseCharge,
-			TaxExemptReason:    taxResult.TaxExemptReason,
-			TaxAmountCents:     taxResult.TaxAmountCents,
-			TaxStatus:          taxResult.TaxStatus,
+			Status:           domain.InvoiceFinalizationStatus(taxResult.TaxStatus, sub.PauseCollection),
+			PaymentStatus:    domain.PaymentPending,
+			Currency:         effectivePlan.Currency,
+			SubtotalCents:    taxResult.SubtotalCents,
+			DiscountCents:    taxResult.DiscountCents,
+			TaxRate:          taxResult.TaxRate,
+			TaxName:          taxResult.TaxName,
+			TaxCountry:       taxResult.TaxCountry,
+			TaxID:            taxResult.TaxID,
+			TaxProvider:      taxResult.TaxProvider,
+			TaxCalculationID: taxResult.TaxCalculationID,
+			TaxReverseCharge: taxResult.TaxReverseCharge,
+			TaxExemptReason:  taxResult.TaxExemptReason,
+			TaxAmountCents:   taxResult.TaxAmountCents,
+			TaxStatus:        taxResult.TaxStatus,
+			TaxDeferredAt:    taxResult.TaxDeferredAt,
+			TaxPendingReason: taxResult.TaxPendingReason,
+			TaxErrorCode:     taxResult.TaxErrorCode,
+			// Denormalized zone at issue (ADR-077) — every engine writer
+			// stamps this; the proration writer was the one omission.
+			BillingTimezone:    h.tenantLoc(ctx, sub.TenantID).String(),
 			TotalAmountCents:   netProrated,
 			AmountDueCents:     netProrated,
 			BillingPeriodStart: periodStart,
