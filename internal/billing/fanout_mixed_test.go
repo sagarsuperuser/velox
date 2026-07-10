@@ -53,6 +53,7 @@ func TestSettleUnusedAcrossFunding_MixedPaidUnpaid_NoSilentDrop(t *testing.T) {
 	e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, pricing, inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 	e.SetCreditGranter(&fakeCreditGranter{})
 	e.SetCreditNoteAdjuster(adjuster)
+	e.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 	e.SetInvoiceVoider(&fakeInvoiceVoider{})
 
 	credited, err := e.BillOnCancel(context.Background(), sub)

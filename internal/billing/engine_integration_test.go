@@ -521,6 +521,7 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	creditNoteSvc.SetNumberGenerator(settingsStore)
 	engine.SetInvoiceVoider(invoiceSvc)
 	engine.SetCreditNoteAdjuster(creditNoteSvc)
+	engine.SetCreditHeadroomReader(creditNoteSvc)
 
 	// --- Slice 2: BillOnCreate emits day-1 invoice ---
 	dayOneInv, err := engine.BillOnCreate(ctx, sub)
@@ -725,6 +726,7 @@ func TestBillOnCancel_UnpaidPrebillRelief_E2E(t *testing.T) {
 		e.SetCreditGranter(creditSvc)
 		e.SetInvoiceVoider(invoiceSvc)
 		e.SetCreditNoteAdjuster(creditNoteSvc)
+		e.SetCreditHeadroomReader(creditNoteSvc)
 		return e
 	}
 

@@ -48,6 +48,7 @@ func TestBillOnCancel_PaidPrebillReversesTax(t *testing.T) {
 	e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, pricing, inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 	e.SetCreditGranter(g)
 	e.SetCreditNoteAdjuster(a)
+	e.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 	netUnused := money.RoundHalfToEven(6000*16, 31)            // pre-fix bare grant
 	grossUnused := money.RoundHalfToEven(netUnused*6600, 6000) // grossed up by the invoice's tax

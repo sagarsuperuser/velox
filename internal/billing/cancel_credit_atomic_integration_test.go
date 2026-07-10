@@ -118,6 +118,10 @@ func TestCancelCredit_DraftFailure_RealTxRollsBackCancel(t *testing.T) {
 	e.SetTaxProviderResolver(tax.NewResolver(nil))
 	e.SetCreditGranter(creditSvc)
 	e.SetCreditNoteAdjuster(&failingDraftAdjuster{err: errInjectedDraftFail})
+	// Real headroom reader (required post-#442); no prior CNs exist, so the
+	// cap stays the full invoice total — the draft failure under test is
+	// injected by the adjuster, not a cap rejection.
+	e.SetCreditHeadroomReader(creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, nil))
 
 	cust, err := customerStore.Create(ctx, tenantID, domain.Customer{ExternalID: "cus_rb", DisplayName: "RB"})
 	if err != nil {

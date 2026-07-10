@@ -66,6 +66,7 @@ func TestBillOnCancel_FansAcrossUpgradeInvoice(t *testing.T) {
 	e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, pricing, inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 	e.SetCreditGranter(granter)
 	e.SetCreditNoteAdjuster(adjuster)
+	e.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 	credited, err := e.BillOnCancel(context.Background(), sub)
 	if err != nil {
