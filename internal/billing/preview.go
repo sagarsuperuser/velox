@@ -43,6 +43,13 @@ type PreviewLine struct {
 	// threshold scan classifies non-additive buckets with it (ADR-066 §4);
 	// the public create_preview wire is unchanged.
 	AggregationMode domain.AggregationMode `json:"-"`
+	// PlanID + BaseBillTiming identify the base_fee line's plan, internal-
+	// only (json:"-"): the threshold fire consumes them to skip prepaid
+	// in_advance bases and prorate reset-mode bases PER LINE — replacing a
+	// positional parallel-array contract that silently mis-attributed
+	// plans if the emission order ever changed (2026-07-10 design review).
+	PlanID         string            `json:"-"`
+	BaseBillTiming domain.BillTiming `json:"-"`
 	// NominalUnitAmountDecimal carries the flat-mode configured per-unit rate
 	// (decimal cents) from the OVERRIDE-APPLIED rule, internal-only (json:"-")
 	// so an overage invoice line built from this preview shows the clean
@@ -174,6 +181,8 @@ func (e *Engine) previewWithWindow(ctx context.Context, sub domain.Subscription,
 			Quantity:        decimal.NewFromInt(it.Quantity),
 			UnitAmountCents: plan.BaseAmountCents,
 			AmountCents:     baseFee,
+			PlanID:          plan.ID,
+			BaseBillTiming:  plan.BaseBillTiming,
 		})
 	}
 

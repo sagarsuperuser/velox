@@ -423,23 +423,12 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	// in_advance base fees are billed up front by BillOnCreate / cycle close,
 	// so they must NOT count toward the threshold running total or ride along
 	// on the early-finalize invoice — doing so double-bills the prepaid base.
-	// previewWithWindow emits one base_fee line per item (in sub.Items order)
-	// whose plan has BaseAmountCents > 0; mirror that ordering to know each
-	// base_fee preview line's plan. Predicate matches billOnePeriod's base
-	// loop (engine.go base-segment skip). Usage lines pass through unchanged.
-	basePlans := make([]domain.Plan, 0, len(sub.Items))
-	baseQtys := make([]int64, 0, len(sub.Items))
-	for _, it := range sub.Items {
-		plan, err := e.pricing.GetPlan(ctx, sub.TenantID, it.PlanID)
-		if err != nil {
-			return thresholdEval{}, fmt.Errorf("get plan %s: %w", it.PlanID, err)
-		}
-		if plan.BaseAmountCents <= 0 {
-			continue
-		}
-		basePlans = append(basePlans, plan)
-		baseQtys = append(baseQtys, it.Quantity)
-	}
+	// Each base_fee preview line carries its own PlanID + BaseBillTiming
+	// (stamped at emission, json:"-"), so the skip/proration below matches
+	// PER LINE — the previous parallel-array rebuild of the preview's
+	// emission order silently mis-attributed plans if that order ever
+	// changed (2026-07-10 design review: positional contract between a
+	// display surface and a money writer).
 
 	// Roll up TWO totals across the previewed lines (ADR-066 §4 subtotal
 	// split). capRunning is the amount_gte comparison + event payload — the
@@ -453,13 +442,16 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 	var capRunning, billedSubtotal int64
 	reset := sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle
 	currency := ""
-	baseFeeIdx := 0
 	lineItems := make([]domain.InvoiceLineItem, 0, len(preview.Lines))
 	for _, pl := range preview.Lines {
 		if pl.LineType == "base_fee" {
-			idx := baseFeeIdx
-			baseFeeIdx++
-			if idx < len(basePlans) && basePlans[idx].BaseBillTiming == domain.BillInAdvance {
+			if pl.PlanID == "" {
+				// Every base_fee line is stamped at emission; an unstamped
+				// line means a new producer bypassed the contract — fail
+				// loud rather than guess whose base this is (money path).
+				return thresholdEval{}, fmt.Errorf("threshold fire: base_fee preview line %q has no plan stamp", pl.Description)
+			}
+			if pl.BaseBillTiming == domain.BillInAdvance {
 				// Already prepaid — skip from running total and line items.
 				continue
 			}
@@ -477,9 +469,12 @@ func (e *Engine) evaluateThresholds(ctx context.Context, sub domain.Subscription
 			// every render surface. reset=false is untouched: the cycle close
 			// bills only the post-fire residual and skips base when a threshold
 			// watermark exists, so the full base here stays correct.
-			if idx < len(basePlans) && sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle {
-				plan := basePlans[idx]
-				qty := baseQtys[idx]
+			if sub.BillingThresholds != nil && sub.BillingThresholds.ResetBillingCycle {
+				plan, err := e.pricing.GetPlan(ctx, sub.TenantID, pl.PlanID)
+				if err != nil {
+					return thresholdEval{}, fmt.Errorf("get plan %s for base proration: %w", pl.PlanID, err)
+				}
+				qty := pl.Quantity.IntPart()
 				loc := e.tenantLocation(ctx, sub.TenantID)
 				fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, loc, sub.BillingAnchorDay).Sub(periodStart))
 				segDays := roundDays(now.Sub(periodStart))
