@@ -513,6 +513,14 @@ func TestBillTiming_InAdvance_E2E(t *testing.T) {
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
 	engine.SetCreditGranter(creditSvc)
+	// Issuers are REQUIRED post-#442: the paid-source cancel credit routes
+	// through the real creditnote.Service (Issue grants the balance via the
+	// cnGrantAdapter), matching production wiring.
+	invoiceSvc := invoice.NewService(invoiceStore, clock.Real(), settingsStore)
+	creditNoteSvc := creditnote.NewService(creditnote.NewPostgresStore(db), invoiceStore, nil, &cnGrantAdapter{creditSvc})
+	creditNoteSvc.SetNumberGenerator(settingsStore)
+	engine.SetInvoiceVoider(invoiceSvc)
+	engine.SetCreditNoteAdjuster(creditNoteSvc)
 
 	// --- Slice 2: BillOnCreate emits day-1 invoice ---
 	dayOneInv, err := engine.BillOnCreate(ctx, sub)
