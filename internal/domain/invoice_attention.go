@@ -287,7 +287,9 @@ type AttentionContext struct {
 	// CustomerHasEmail is true ONLY when the customer confirmably has an
 	// email address on file. Consumed only by the no_payment_method
 	// classifier: the engine's finalize-time setup-link email
-	// (NotifyNoPaymentMethod) skips silently when there's no address, so
+	// (NotifyNoPaymentMethod) skips when there's no address (a typed,
+	// reported skip since 2026-07-10 — but per-invoice send state still
+	// isn't observable here), so
 	// the banner must not claim "we emailed a link" — and must not offer a
 	// resend that cannot send — in that case. Zero-value (false) is the
 	// conservative default and also covers "couldn't determine" (read
@@ -713,7 +715,7 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 	//
 	// The message splits on whether the customer has an email on file,
 	// because the engine's finalize-time setup-link email
-	// (NotifyNoPaymentMethod) SILENTLY skips when the customer has no
+	// (NotifyNoPaymentMethod) skips when the customer has no
 	// address — the adapter treats a missing email as "a delivery gap,
 	// not a billing failure" and returns without sending. A single
 	// hardcoded "the customer has been emailed a setup link" then lied
@@ -759,7 +761,7 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. The customer has been emailed a setup link — the engine will auto-charge once a method is attached. Resend the link if they haven't acted, or open the customer page to copy the link and share it with them directly.",
+		Message:  "No payment method on file. The engine emails the customer a setup link when an invoice finalizes and auto-charges once a method is attached — the invoice timeline and Sent emails show whether it was delivered. Resend the link if they haven't acted, or open the customer page to copy it and share it directly.",
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionSendReminder, Label: "Resend setup link"},

@@ -244,7 +244,7 @@ var _ clock.Resolver = (*Engine)(nil)
 // Optional — when nil, engine skips the notification (local dev,
 // integration tests). Wire in router.go via SetNoPaymentMethodNotifier.
 type NoPaymentMethodNotifier interface {
-	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error)
 }
 
 // DunningStarter enrolls a stuck invoice into a dunning campaign.
@@ -3246,7 +3246,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			// Stripe sends on charge failures, so the customer learns
 			// about the gap from email — not from the invoice silently
 			// going overdue weeks later.
-			slog.Info("no payment method at finalize, queuing for scheduler retry + notifying customer",
+			slog.Info("no payment method at finalize, queuing for scheduler retry",
 				"invoice_id", inv.ID,
 				"customer_id", sub.CustomerID,
 			)
@@ -3259,11 +3259,18 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				// Reload the invoice so the notifier sees the just-
 				// finalized state (invoice number, totals).
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
+					switch {
+					case err != nil:
 						slog.Warn("no-payment-method notification failed",
 							"invoice_id", inv.ID,
 							"error", err,
 						)
+					case outcome == domain.NotifySkippedNoEmail:
+						slog.Info("setup-link email skipped: customer has no email on file",
+							"invoice_id", inv.ID)
+					default:
+						slog.Info("setup-link email queued", "invoice_id", inv.ID)
 					}
 				}
 			}
@@ -3633,11 +3640,17 @@ func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscri
 			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
+					switch {
+					case err != nil:
 						slog.Warn("subscription_create no-PM notification failed",
 							"invoice_id", inv.ID,
 							"error", err,
 						)
+					case outcome == domain.NotifySkippedNoEmail:
+						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
+					default:
+						slog.Info("setup-link email queued", "invoice_id", inv.ID)
 					}
 				}
 			}
@@ -4359,9 +4372,15 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
+					switch {
+					case err != nil:
 						slog.Warn("final-on-cancel no-PM notification failed",
 							"invoice_id", inv.ID, "error", err)
+					case outcome == domain.NotifySkippedNoEmail:
+						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
+					default:
+						slog.Info("setup-link email queued", "invoice_id", inv.ID)
 					}
 				}
 			}
