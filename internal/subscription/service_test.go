@@ -3064,6 +3064,26 @@ func TestSetBillingThresholds(t *testing.T) {
 		return svc, sub
 	}
 
+	t.Run("omitted reset_billing_cycle defaults to FALSE (keep-anchor, Stripe parity)", func(t *testing.T) {
+		// 2026-07-10 design review: the old default was true behind a
+		// comment claiming Stripe parity — verified wrong (Stripe's
+		// reset_billing_cycle_anchor defaults to false). Silent-default
+		// operators also stay clear of the ADR-066 §5 {in_advance ×
+		// reset=true} interaction.
+		store := newMemStore()
+		subID, _ := seedSubWithItem(t, store, "t1", "cus_1", "plan_old")
+		svc := NewService(store, nil)
+		sub, err := svc.SetBillingThresholds(context.Background(), "t1", subID, BillingThresholdsInput{
+			AmountGTE: 100000,
+		})
+		if err != nil {
+			t.Fatalf("SetBillingThresholds: %v", err)
+		}
+		if sub.BillingThresholds == nil || sub.BillingThresholds.ResetBillingCycle {
+			t.Errorf("omitted reset_billing_cycle must default to false, got %+v", sub.BillingThresholds)
+		}
+	})
+
 	t.Run("rejects empty body", func(t *testing.T) {
 		svc, sub := newSubFixture(t)
 		_, err := svc.SetBillingThresholds(ctx, "t1", sub.ID, BillingThresholdsInput{})
@@ -3185,8 +3205,8 @@ func TestSetBillingThresholds(t *testing.T) {
 		if updated.BillingThresholds.AmountGTE != 500000 {
 			t.Errorf("amount_gte: got %d, want 500000", updated.BillingThresholds.AmountGTE)
 		}
-		if !updated.BillingThresholds.ResetBillingCycle {
-			t.Error("reset_billing_cycle should default to true when omitted")
+		if updated.BillingThresholds.ResetBillingCycle {
+			t.Error("reset_billing_cycle must default to FALSE when omitted (keep-anchor, Stripe parity — 2026-07-10)")
 		}
 	})
 
