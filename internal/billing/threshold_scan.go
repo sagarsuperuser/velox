@@ -876,15 +876,47 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	}
 
 	// Auto-charge: synchronous with timeout, same behaviour as the cycle scan.
-	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 {
-		if stripeCusID, stripePMID, err := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID); err == nil &&
-			stripePMID != "" && stripeCusID != "" {
+	//
+	// The no-PM arm mirrors billOnePeriod's post-finalize block exactly.
+	// Pre-fix the else was MISSING here: a customer with no payment method
+	// crossing a spend threshold got a finalized invoice that was never
+	// queued for charge-on-attach (auto_charge_pending stayed false, so
+	// RetryPendingCharges never saw it — attaching a card later charged
+	// nothing) and never notified — it sat payment_pending until it aged
+	// into overdue. Cycle-close invoices took the correct arm; threshold
+	// fires silently did nothing (2026-07-10 design-census finding).
+	//
+	// Gated on Finalized: a tax-pending threshold invoice is a DRAFT
+	// (paused subs never reach here — the scan skips them at entry), and
+	// queueing or emailing a customer about a draft would chase payment
+	// the invoice isn't ready to collect; the tax-retry chain finalizes
+	// it and its own collect path takes over.
+	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
+		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
+		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
+		if pmReady {
 			chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			chargeInv, err := e.invoices.GetInvoice(chargeCtx, sub.TenantID, inv.ID)
 			if err == nil && chargeInv.AmountDueCents > 0 {
 				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+				}
+			}
+		} else {
+			slog.Info("threshold fire: no payment method, queuing for scheduler retry + notifying customer",
+				"invoice_id", inv.ID,
+				"customer_id", sub.CustomerID,
+			)
+			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if e.noPMNotifier != nil {
+				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
+					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+						slog.Warn("threshold fire: no-payment-method notification failed",
+							"invoice_id", inv.ID,
+							"error", err,
+						)
+					}
 				}
 			}
 		}
