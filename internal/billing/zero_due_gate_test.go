@@ -19,6 +19,7 @@ func setupZeroCycleEngine(t *testing.T) (*Engine, *thresholdMockSubs, *mockInvoi
 	t.Helper()
 	engine, subs, invoices := setupThresholdEngine(nil, 1000)
 	engine.clock = clock.NewFake(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)) // == next_billing_at
+	engine.SetDunningResolver(&recordingDunningResolver{})                    // $0 auto-paid settle resolves dunning (required post-#442)
 	mp := engine.pricing.(*mockPricing)
 	pln := mp.plans["pln_1"]
 	pln.BaseAmountCents = 0

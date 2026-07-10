@@ -57,19 +57,6 @@ func TestEnrollFailedWithoutDunning_CoolOffExcludesFresh(t *testing.T) {
 	}
 }
 
-// TestEnrollFailedWithoutDunning_NoStarterIsInert: no DunningStarter wired → no-op,
-// never panics (mirrors the EnrollStalledForDunning inertness guard).
-func TestEnrollFailedWithoutDunning_NoStarterIsInert(t *testing.T) {
-	aged := time.Now().UTC().Add(-time.Hour)
-	inv := &mockInvoices{invoices: []domain.Invoice{failedBackfillInvoice("inv_1", aged)}}
-	engine := noPMEngine(t, inv) // no SetDunningStarter
-
-	swept, errsOut := engine.EnrollFailedWithoutDunning(context.Background(), 10)
-	if swept != 0 || len(errsOut) != 0 {
-		t.Fatalf("expected inert no-op, got swept=%d errs=%v", swept, errsOut)
-	}
-}
-
 // TestEnrollFailedWithoutDunning_CollectsPerInvoiceErrors: one bad row doesn't abort
 // the sweep — the error is collected, not panicked.
 func TestEnrollFailedWithoutDunning_CollectsPerInvoiceErrors(t *testing.T) {

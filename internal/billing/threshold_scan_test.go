@@ -769,6 +769,9 @@ func TestFireThreshold_ZeroTotal_AutoPaid(t *testing.T) {
 	}
 	engine, _, invoices := setupThresholdEngine(thresholds, 1500)
 	engine.clock = clock.NewFake(time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC))
+	// The $0 auto-paid settle resolves dunning (required post-#442).
+	resolver := &recordingDunningResolver{}
+	engine.SetDunningResolver(resolver)
 	// Free-rate the plan: $0 base + $0/call — the cap is quantity-based, so
 	// it crosses with a $0 running total.
 	mp := engine.pricing.(*mockPricing)
