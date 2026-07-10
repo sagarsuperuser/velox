@@ -886,11 +886,28 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 	// into overdue. Cycle-close invoices took the correct arm; threshold
 	// fires silently did nothing (2026-07-10 design-census finding).
 	//
-	// Gated on Finalized: a tax-pending threshold invoice is a DRAFT
-	// (paused subs never reach here — the scan skips them at entry), and
-	// queueing or emailing a customer about a draft would chase payment
-	// the invoice isn't ready to collect; the tax-retry chain finalizes
-	// it and its own collect path takes over.
+	// A tax-pending threshold invoice is a DRAFT (paused subs never reach
+	// here — the scan skips them at entry). A draft cannot be collected
+	// NOW: the charger refuses non-finalized invoices (payment/stripe.go
+	// chargeInvoice guard) and the pending-charge sweep filters
+	// status='finalized' (invoice/postgres.go ListAutoChargePending). But
+	// there is NO collect arm after the tax-retry chain finalizes it
+	// (computeTaxAndPersist → UpdateTaxAtomic returns; nothing charges) —
+	// so queue the flag NOW: it stays inert while the invoice is draft and
+	// the sweep picks the invoice up the moment tax retry finalizes it.
+	// No email while draft — totals aren't final. (2026-07-10 design
+	// review; the earlier fix skipped drafts entirely, which recreated the
+	// original silent gap one hop later for tax-deferred fires.)
+	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && inv.Status != domain.InvoiceFinalized {
+		if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+			// A failed set(true) is a liveness sink — the invoice would be
+			// invisible to RetryPendingCharges forever (playbook class G).
+			slog.Warn("threshold fire: failed to queue tax-deferred draft for charge-on-finalize",
+				"invoice_id", inv.ID,
+				"error", err,
+			)
+		}
+	}
 	if creditApplyOK && e.charger != nil && e.paymentSetups != nil && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
 		stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
 		pmReady := psErr == nil && stripePMID != "" && stripeCusID != ""
