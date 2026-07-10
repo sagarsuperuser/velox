@@ -3144,6 +3144,7 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 		engine.SetCreditNoteAdjuster(adjuster)
+		engine.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 		cents, err := engine.BillOnCancel(context.Background(), makeSub())
 		if err != nil {
@@ -3184,6 +3185,7 @@ func TestBillOnCancel_PaidCheck(t *testing.T) {
 		engine.SetCreditGranter(granter)
 		engine.SetInvoiceVoider(voider)
 		engine.SetCreditNoteAdjuster(adjuster)
+		engine.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 		cents, err := engine.BillOnCancel(context.Background(), makeSub())
 		if err != nil {
@@ -3275,6 +3277,7 @@ func TestBillOnCancel_UnpaidPrebillRelief(t *testing.T) {
 		e.SetCreditGranter(g)
 		e.SetInvoiceVoider(v)
 		e.SetCreditNoteAdjuster(a)
+		e.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 		return e, g, v, a
 	}
 
@@ -3435,6 +3438,7 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), paidInvoices(), nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 		engine.SetCreditNoteAdjuster(adjuster)
+		engine.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), swapAt)
 		if err != nil {
@@ -3494,6 +3498,7 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		engine.SetCreditGranter(granter)
 		engine.SetInvoiceVoider(voider)
 		engine.SetCreditNoteAdjuster(adjuster)
+		engine.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 		cents, err := engine.BillOnPlanSwapImmediate(context.Background(), makeAdvanceSub(), swapAt)
 		if err != nil {
@@ -3545,6 +3550,7 @@ func TestBillOnPlanSwapImmediate(t *testing.T) {
 		engine := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, makePricing(), inv, nil, &mockSettings{}, nil, nil, billingTestClock()))
 		engine.SetCreditGranter(granter)
 		engine.SetCreditNoteAdjuster(adjuster)
+		engine.SetCreditHeadroomReader(&fakeCreditHeadroom{})
 
 		// at = a moment just after stubStart so the strict-after gate
 		// fires (`!at.After(periodStart)` would short-circuit if at==

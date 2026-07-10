@@ -4978,14 +4978,15 @@ func (e *Engine) allocateUnusedAcrossFunding(ctx context.Context, sub domain.Sub
 		//     is skipped rather than credited beyond real money in.
 		switch {
 		case src.PaymentStatus == domain.PaymentSucceeded && src.TotalAmountCents > 0:
-			grossCap := src.TotalAmountCents
-			if e.creditHeadroom != nil {
-				credited, err := e.creditHeadroom.CreditedCents(ctx, sub.TenantID, src.ID)
-				if err != nil {
-					return nil, fmt.Errorf("read creditable headroom for %s: %w", src.ID, err)
-				}
-				grossCap = src.TotalAmountCents - credited
+			// creditHeadroom is REQUIRED (boot fails closed, #442) — the old
+			// nil arm used the FULL invoice total as the cap, silently
+			// disabling the #276-#278 overcharge guard (a source already
+			// partially credited by a prior CN could be over-credited).
+			credited, err := e.creditHeadroom.CreditedCents(ctx, sub.TenantID, src.ID)
+			if err != nil {
+				return nil, fmt.Errorf("read creditable headroom for %s: %w", src.ID, err)
 			}
+			grossCap := src.TotalAmountCents - credited
 			if grossCap < 0 {
 				grossCap = 0
 			}
