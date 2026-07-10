@@ -79,12 +79,13 @@ func newThresholdFixture(t *testing.T, name string) *thresholdFixture {
 		&usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore},
 		&invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, nil,
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, nil,
 	)
 	// Production wires a tax resolver; engine fails loudly without
 	// one (no silent zero-tax fallback). NoneProvider is the
 	// minimal wiring for tests that don't exercise tax behavior.
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	engine.SetTxRunner(db)
 
 	ctx := postgres.WithLivemode(context.Background(), false)

@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -274,7 +275,31 @@ func TestBillSubscription_LoopsUntilCaughtUp(t *testing.T) {
 
 func wireBaseTax(e *Engine) *Engine {
 	e.SetTaxProviderResolver(tax.NewResolver(nil))
+	// Collect-pipeline collaborators are REQUIRED post-#442 — the old
+	// charger/paymentSetups/noPMNotifier nil guards are deleted, so any
+	// fixture whose flow reaches collectAfterFinalize needs them wired.
+	// Defaults (only when the fixture didn't provide its own): no ready PM
+	// → the pipeline takes the queue+notify arm; the sentinel charger errors
+	// if a test somehow reaches a charge without wiring a real fake.
+	if e.paymentSetups == nil {
+		e.paymentSetups = &fakePaymentSetups{ready: false}
+	}
+	if e.charger == nil {
+		e.charger = sentinelCharger{}
+	}
+	if e.noPMNotifier == nil {
+		e.noPMNotifier = &fakeNoPMNotifier{}
+	}
 	return e
+}
+
+// sentinelCharger backs wireBaseTax's default: unit fixtures default to a
+// not-ready PM, so a charge call means the test wired ready-PM without its
+// own charger fake — surface that as a loud error, not a silent success.
+type sentinelCharger struct{}
+
+func (sentinelCharger) ChargeInvoice(_ context.Context, _ string, inv domain.Invoice, _, _ string) (domain.Invoice, error) {
+	return inv, errors.New("sentinelCharger: fixture reached ChargeInvoice without wiring a charger fake")
 }
 
 type mockSettings struct{ next int }
@@ -713,6 +738,10 @@ type mockInvoices struct {
 	// of inserting — used to drive the idempotent-skip heal path (set to
 	// errs.ErrAlreadyExists) and failure tests.
 	createErr error
+	// getErr, when set, is returned by GetInvoice — drives the
+	// collectAfterFinalize reload-failure arms without breaking the mock's
+	// other by-ID lookups (SetAutoChargePending still succeeds).
+	getErr error
 }
 
 func (m *mockInvoices) CreateInvoice(_ context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -741,6 +770,9 @@ func (m *mockInvoices) ApplyCreditAmount(_ context.Context, _, id string, amount
 }
 
 func (m *mockInvoices) GetInvoice(_ context.Context, _, id string) (domain.Invoice, error) {
+	if m.getErr != nil {
+		return domain.Invoice{}, m.getErr
+	}
 	for _, inv := range m.invoices {
 		if inv.ID == id {
 			return inv, nil

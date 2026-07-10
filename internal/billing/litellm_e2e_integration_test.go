@@ -154,9 +154,10 @@ func TestLiteLLM_WedgeE2E(t *testing.T) {
 	engine := billing.NewEngine(
 		&subStoreAdapter{subStore}, &usageStoreAdapter{usageStore},
 		&pricingStoreAdapter{pricingStore}, &invoiceStoreAdapter{invoiceStore},
-		nil, settingsStore, nil, nil, clock.NewFake(periodEnd.Add(time.Nanosecond)),
+		nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.NewFake(periodEnd.Add(time.Nanosecond)),
 	)
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
+	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	if _, errs := engine.RunCycle(ctx, 50); len(errs) > 0 {
 		t.Fatalf("RunCycle: %v", errs)
 	}

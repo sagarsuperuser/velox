@@ -3,6 +3,8 @@ package billing
 import (
 	"strings"
 	"testing"
+
+	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
 // TestMustValidate_NamesEveryNilCollaborator pins the boot-fail-closed
@@ -10,7 +12,11 @@ import (
 // wired engine panics at MustValidate with EVERY missing collaborator named
 // — not just the first — so one boot failure yields one complete fix.
 func TestMustValidate_NamesEveryNilCollaborator(t *testing.T) {
-	e := wireBaseTax(NewEngine(&mockSubs{}, &mockUsage{}, &mockPricing{}, &mockInvoices{}, nil, &mockSettings{}, nil, nil, billingTestClock()))
+	// Construct WITHOUT wireBaseTax: that helper now defaults the collect
+	// collaborators (paymentSetups/charger/noPMNotifier), and this test needs
+	// them nil to assert they are named.
+	e := NewEngine(&mockSubs{}, &mockUsage{}, &mockPricing{}, &mockInvoices{}, nil, &mockSettings{}, nil, nil, billingTestClock())
+	e.SetTaxProviderResolver(tax.NewResolver(nil))
 	defer func() {
 		r := recover()
 		if r == nil {

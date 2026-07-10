@@ -53,7 +53,7 @@ func TestManualInvoice_IsSimulatedFromCustomerPin(t *testing.T) {
 
 	// Engine as the clock.Resolver — wired like production for the customer-pin
 	// path. Only customers + testClocks are exercised here; other deps unused.
-	engine := billing.NewEngine(nil, nil, nil, nil, nil, settingsStore, nil, nil, clock.Real())
+	engine := billing.NewEngine(nil, nil, nil, nil, nil, settingsStore, testPaymentSetupsNoPM{}, testChargerSentinel{}, clock.Real())
 	engine.SetCustomerReader(customerStore)
 	engine.SetTestClockReader(testClockStore)
 
