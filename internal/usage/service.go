@@ -13,6 +13,10 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+
+	"log/slog"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Service struct {
@@ -160,6 +164,32 @@ func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput
 // composes the domain row, WITHOUT writing it. Split from ingest so
 // BatchIngest can validate every event up front and then hand the whole
 // slice to one store transaction (all-or-nothing).
+// lateUsageEvents surfaces the "silent half" of late ingestion (2026-07-10
+// design review): a live event stamped >24h in the past MAY fall inside an
+// already-finalized period, where it is stored but never billed (see the
+// KNOWN BEHAVIOR note below). Classifying precisely needs a per-event
+// subscription lookup this hot path deliberately avoids, and the true-up
+// policy itself is a deferred DP decision — but the OPERATOR VISIBILITY is
+// not deferred: this counter + a WARN make the late stream observable.
+// Backfill-origin events are excluded (documented-safe intentional path).
+var lateUsageEvents *prometheus.CounterVec
+
+func init() {
+	c := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "velox_usage_late_event_total",
+		Help: "Live-origin usage events ingested with a timestamp >24h in the past — may fall in an already-finalized (unbillable) period.",
+	}, []string{"origin"})
+	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			lateUsageEvents = are.ExistingCollector.(*prometheus.CounterVec)
+		} else {
+			panic(err)
+		}
+	} else {
+		lateUsageEvents = c
+	}
+}
+
 func (s *Service) prepare(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
 	if strings.TrimSpace(input.CustomerID) == "" {
 		return domain.UsageEvent{}, errs.Required("customer_id")
@@ -221,9 +251,20 @@ func (s *Service) prepare(ctx context.Context, tenantID string, input IngestInpu
 	// break legitimate retries / stream pipelines. Intentional historical
 	// posting into closed periods goes through Backfill (origin='backfill',
 	// documented safe). Deferred decision (no design partner yet): whether
-	// to true-up closed periods, reject past a window, or surface a
-	// late-event counter — all need a billing-policy call, not a silent
-	// per-event subscription lookup on this hot path.
+	// to true-up closed periods or reject past a window — both need a
+	// billing-policy call, not a silent per-event subscription lookup on
+	// this hot path. The late-event COUNTER half shipped 2026-07-10 (see
+	// lateUsageEvents above): >24h-late live events are counted + WARNed
+	// so the stream is observable while the policy stays deferred.
+	if origin != domain.UsageOriginBackfill && ts.Before(now.Add(-24*time.Hour)) {
+		lateUsageEvents.WithLabelValues(string(origin)).Inc()
+		slog.WarnContext(ctx, "late usage event (>24h past) — may fall in an already-finalized period and go unbilled",
+			"customer_id", input.CustomerID,
+			"meter_id", input.MeterID,
+			"timestamp", ts,
+			"origin", string(origin),
+		)
+	}
 	return domain.UsageEvent{
 		CustomerID:     input.CustomerID,
 		MeterID:        input.MeterID,
