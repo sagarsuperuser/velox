@@ -418,12 +418,6 @@ type SubscriptionReader interface {
 	// clock-driven time travel.
 	FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
-	// ClearPauseCollection nulls the pause_collection_* columns. Called by
-	// the cycle scan to auto-resume a sub whose pause_collection.resumes_at
-	// has passed. Mirrors the explicit DELETE /pause-collection in the
-	// store-side semantics.
-	ClearPauseCollection(ctx context.Context, tenantID, id string) (domain.Subscription, error)
-
 	// ActivateAfterTrialWithBill atomically transitions a sub from
 	// 'trialing' to 'active' AND runs billFn (the day-1 in_advance invoice)
 	// in the SAME tx (ADR-056 — the old post-flip bill was a revenue leak on
@@ -474,7 +468,6 @@ type SubscriptionReader interface {
 // customer-usage endpoint, and the create_preview surface all call it —
 // preview math == invoice math by construction.
 type UsageAggregator interface {
-	AggregateForBillingPeriod(ctx context.Context, tenantID, customerID string, meterIDs []string, from, to time.Time) (map[string]decimal.Decimal, error)
 	AggregateForBillingPeriodByAgg(ctx context.Context, tenantID, customerID string, meters map[string]string, from, to time.Time) (map[string]decimal.Decimal, error)
 	AggregateByPricingRules(ctx context.Context, tenantID, customerID, meterID string, defaultMode domain.AggregationMode, from, to time.Time) ([]domain.RuleAggregation, error)
 }
@@ -506,23 +499,12 @@ type PricingReader interface {
 
 // InvoiceWriter creates invoices and line items.
 type InvoiceWriter interface {
-	CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	// CreateInvoiceWithLineItemsTx is the in-tx variant — used by BillOnCreateTx
 	// so the cross-interval plan-swap can insert the new-period invoice on the
 	// coordinator's tx, atomically with the plan write + watermark advance.
 	CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
-	CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error)
-	ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
-	// FindBaseInvoiceForPeriod returns the invoice carrying the in_advance
-	// base-fee line for a subscription's period (line's
-	// billing_period_start = periodStart). Gates proration-credit emission
-	// in BillOnCancel — only paid in_advance invoices warrant a refund-
-	// style credit. Industry-aligned: Chargebee distinguishes Refundable
-	// (paid source) vs Adjustment (unpaid source) credits; Stripe warns
-	// to disable proration when the source invoice is unpaid.
-	FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error)
 	// FindFundingInvoicesForPeriod returns EVERY non-voided/non-uncollectible
 	// invoice that prepaid the period — the day-1 base invoice AND any
 	// mid-period upgrade / quantity-increase proration invoice issued against
@@ -533,12 +515,6 @@ type InvoiceWriter interface {
 	// credit-note cap. ErrNotFound when nothing funded the period (trial / pure
 	// in_arrears) so callers keep their existing no-op behavior.
 	FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error)
-	// LatestThresholdPeriodEnd returns the latest billing_period_end of
-	// the subscription's non-voided threshold-fired invoices whose
-	// billing_period_start falls inside [periodStart, periodEnd).
-	// billOnePeriod treats it as the cycle's "already billed through"
-	// watermark. errs.ErrNotFound when no threshold invoice exists.
-	LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error)
 	// GetLatestThresholdInvoiceForCycle returns the newest non-voided
 	// threshold-fired invoice whose billing_period_start falls inside
 	// [periodStart, periodEnd) — the same predicate as

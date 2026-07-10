@@ -170,18 +170,6 @@ type invoiceWriterAdapter struct {
 	store *invoice.PostgresStore
 }
 
-func (a *invoiceWriterAdapter) CreateInvoice(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
-	return a.store.Create(ctx, tenantID, inv)
-}
-
-func (a *invoiceWriterAdapter) CreateLineItem(ctx context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
-	return a.store.CreateLineItem(ctx, tenantID, item)
-}
-
-func (a *invoiceWriterAdapter) ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
-	return a.store.ApplyCredits(ctx, tenantID, id, amountCents)
-}
-
 func (a *invoiceWriterAdapter) GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
 	return a.store.Get(ctx, tenantID, id)
 }
@@ -234,16 +222,8 @@ func (a *invoiceWriterAdapter) UpdateTaxAtomic(ctx context.Context, tenantID, in
 	return a.store.UpdateTaxAtomic(ctx, tenantID, invoiceID, update, lineItems)
 }
 
-func (a *invoiceWriterAdapter) FindBaseInvoiceForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart time.Time) (domain.Invoice, error) {
-	return a.store.FindBaseInvoiceForPeriod(ctx, tenantID, subscriptionID, periodStart)
-}
-
 func (a *invoiceWriterAdapter) FindFundingInvoicesForPeriod(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) ([]domain.Invoice, error) {
 	return a.store.FindFundingInvoicesForPeriod(ctx, tenantID, subscriptionID, periodStart, periodEnd)
-}
-
-func (a *invoiceWriterAdapter) LatestThresholdPeriodEnd(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (time.Time, error) {
-	return a.store.LatestThresholdPeriodEnd(ctx, tenantID, subscriptionID, periodStart, periodEnd)
 }
 
 func (a *invoiceWriterAdapter) GetLatestThresholdInvoiceForCycle(ctx context.Context, tenantID, subscriptionID string, periodStart, periodEnd time.Time) (domain.Invoice, error) {
