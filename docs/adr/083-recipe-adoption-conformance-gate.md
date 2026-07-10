@@ -1,7 +1,7 @@
 # ADR-083: Recipe adoption conformance gate — refuse to adopt a divergent plan/meter, never silently
 
 **Date:** 2026-07-07
-**Status:** Accepted
+**Status:** Superseded by ADR-085 (2026-07-08) — plans are never adopted by code anymore (each apply mints a fresh born-unique plan), so the conformance gate this ADR built has nothing left to gate
 
 ## Context
 

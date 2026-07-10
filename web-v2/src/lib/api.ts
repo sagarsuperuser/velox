@@ -450,12 +450,8 @@ export const api = {
   instantiateRecipe: (data: {
     key: string
     overrides?: Record<string, string | number | boolean>
-    seed_sample_data?: boolean
-    force?: boolean
     idempotency_key?: string
   }) => apiRequest<RecipeInstance>('POST', '/recipes/instantiate', data),
-  deleteRecipeInstance: (id: string) =>
-    apiRequest<{ status: string }>('DELETE', `/recipes/instances/${id}`),
 
   // Audit Log
   // Response shape depends on pagination mode: offset (?offset=) returns
@@ -1276,7 +1272,7 @@ export interface RecipePreview {
   objects: {
     products?: { code: string; name: string; description?: string }[]
     meters?: { key: string; name: string; unit: string; aggregation: string }[]
-    rating_rules?: { rule_key: string; mode: string; currency: string; flat_amount_cents?: string }[]
+    rating_rules?: { key: string; name?: string; mode: string; currency: string; flat_amount_cents?: string }[]
     pricing_rules?: {
       meter_key: string
       rating_rule_key: string
@@ -1286,7 +1282,7 @@ export interface RecipePreview {
     }[]
     plans?: { code: string; name: string; currency: string; billing_interval: string; base_amount_cents: number; meter_keys: string[] }[]
     dunning_policies?: { name: string; max_retries: number; intervals_hours: number[] }[]
-    webhook_endpoints?: { url: string; events: string[]; _placeholder?: boolean }[]
+    webhook_endpoints?: { url_placeholder: string; events: string[] }[]
   }
   warnings: string[]
 }

@@ -26,12 +26,12 @@ type PricingWriter interface {
 	CreatePlanTx(ctx context.Context, tx *sql.Tx, tenantID string, p domain.Plan) (domain.Plan, error)
 	UpsertMeterPricingRuleTx(ctx context.Context, tx *sql.Tx, tenantID string, rule domain.MeterPricingRule) (domain.MeterPricingRule, error)
 
-	// Adoption reads (ADR-070): Uninstall keeps the created objects —
-	// the operator owns them — so reinstall must RECONNECT to the
-	// existing graph by natural key instead of duplicating or 409ing.
-	// Reads run on their own conn (the objects pre-date this install's
-	// tx). Adoption never clobbers: an operator's post-uninstall edits
-	// to a rule/meter/plan survive a reinstall untouched.
+	// Adoption reads (ADR-070/ADR-085): the catalog (meter + rating rules)
+	// is shared reference data the operator owns, so apply RECONNECTS to an
+	// existing graph by natural key instead of duplicating it. Reads run on
+	// their own conn (the objects may pre-date this apply's tx). Adoption
+	// never clobbers: an operator's edits to a rule/meter survive a re-apply
+	// untouched — and the plan is always generated fresh, never adopted.
 	GetRuleByKeyAsOf(ctx context.Context, tenantID, ruleKey string, asOf time.Time) (domain.RatingRuleVersion, error)
 	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
 	ListPlans(ctx context.Context, tenantID string) ([]domain.Plan, error)
@@ -50,11 +50,11 @@ type WebhookWriter interface {
 }
 
 // Service is the orchestrator for the recipes feature: it answers
-// "list recipes", "preview", "instantiate", and "uninstall". The
+// "list recipes", "preview", and "instantiate" (idempotent apply). The
 // canonical entities a recipe creates (meters, rating rules, plans,
 // dunning policy, webhook endpoint) live in their own per-domain stores;
 // this service threads a single transaction across the cross-domain
-// writes so a recipe is either fully installed or not installed at all.
+// writes so a recipe is either fully applied or not applied at all.
 type Service struct {
 	db       *postgres.DB
 	store    Store
@@ -88,8 +88,9 @@ func NewService(
 // canonical recipe metadata plus per-tenant installation state and a
 // creates summary so the picker UI can render "1 meter · 9 pricing
 // rules · monthly billing" without an extra preview round-trip. The
-// dashboard uses Instantiated to flip the CTA from "Install" to
-// "Manage / Uninstall".
+// dashboard uses Instantiated to render an "Installed" badge instead of
+// the "Install" CTA — re-apply is an idempotent no-op and there is no
+// uninstall (ADR-085).
 type RecipeListItem struct {
 	domain.Recipe
 	Creates      RecipeCreates          `json:"creates"`
@@ -256,35 +257,25 @@ func previewResultFrom(r domain.Recipe) PreviewResult {
 	return out
 }
 
-// InstantiateOptions controls one-off knobs for Instantiate. Force is
-// reserved for v2 — passing Force=true currently returns InvalidState
-// rather than silently dropping the flag, so the API contract stays
-// honest about what's supported. CreatedBy is the actor (operator email
-// or API key ID) recorded on recipe_instances.created_by for audit.
+// InstantiateOptions controls one-off knobs for Instantiate. CreatedBy is
+// the actor (operator email or API key ID) recorded on
+// recipe_instances.created_by for audit.
 type InstantiateOptions struct {
-	Force     bool
 	CreatedBy string
 }
 
-// Instantiate builds a recipe's full object graph for tenantID under one
-// transaction. Order: rating rules → meters → pricing rules → plan →
-// (optional) dunning policy → (optional) webhook endpoint → instance row.
-// Any failure rolls back the whole graph; partial state never reaches
-// the tenant. Idempotent on (tenant_id, recipe_key): a second call on an
-// already-installed recipe returns errs.ErrAlreadyExists with the
-// existing instance ID surfaced via the WithCode error.
+// Instantiate applies a recipe for tenantID under one transaction. Order:
+// rating rules → meters → pricing rules → plan → (optional) dunning policy →
+// (optional) webhook endpoint → instance row. Any failure rolls back the whole
+// graph; partial state never reaches the tenant. Apply is an idempotent EVENT
+// (ADR-085): a second call on an already-installed recipe is a no-op that
+// returns the existing instance — never a 409, never a duplicate plan.
 func (s *Service) Instantiate(
 	ctx context.Context,
 	tenantID, recipeKey string,
 	overrides map[string]any,
 	opts InstantiateOptions,
 ) (domain.RecipeInstance, error) {
-	if opts.Force {
-		return domain.RecipeInstance{}, errs.InvalidState(
-			"force re-instantiation is not supported in v1; uninstall the existing instance first",
-		)
-	}
-
 	r, ok := s.registry.Get(recipeKey)
 	if !ok {
 		return domain.RecipeInstance{}, errs.ErrNotFound
@@ -301,29 +292,39 @@ func (s *Service) Instantiate(
 	}
 	defer postgres.Rollback(tx)
 
-	// Idempotency check — if the recipe is already installed for this
-	// tenant, fail fast rather than racing a second graph build.
+	// Idempotency — a recipe is an instantiation EVENT, applied once. If the
+	// badge already exists, apply is a no-op: return the existing instance
+	// unchanged. Everything the badge recorded is still present (plans are
+	// ON DELETE RESTRICT with no hard-delete; the catalog is shared reference
+	// data), so there is nothing to re-create and never a second plan to mint
+	// on a double-submit — the badge IS the idempotency gate. Additive re-apply
+	// against a NEWER template version is deferred (ADR-085); v1 ships a single
+	// version per recipe, so a re-apply at the same version is a pure no-op.
 	if existing, err := s.store.GetByKeyTx(ctx, tx, tenantID, recipeKey); err == nil {
-		return domain.RecipeInstance{}, errs.AlreadyExists(
-			"recipe_key",
-			fmt.Sprintf("recipe %q is already instantiated as %s", recipeKey, existing.ID),
-		)
+		return existing, nil
 	} else if !errors.Is(err, errs.ErrNotFound) {
 		return domain.RecipeInstance{}, err
 	}
 
 	objs := domain.CreatedObjects{}
 
-	// Rating rules first — meters and pricing rules reference them by ID.
-	// Reinstall-after-uninstall ADOPTS an existing key's latest version
-	// (never republishes — a reinstall isn't a price change, and bumping
-	// would silently reprice the operator's live subs at their next
-	// period open).
+	// Rating rules first — meters and pricing rules reference them by ID. An
+	// existing key is ADOPTED at its current version, NEVER republished: usage
+	// bills the latest active version of a key as-of period start (engine
+	// resolveRatedRule → GetRuleByKeyAsOf), so publishing a new version would
+	// reprice every live sub on that key. Adopt-not-republish is the
+	// load-bearing no-reprice invariant (ADR-085/ADR-070). The plan below
+	// inherits its currency from these rules so it can't be minted in a
+	// currency that mismatches the rates it bills against.
 	ratingRuleIDByKey := make(map[string]string, len(rendered.RatingRules))
+	ruleCurrency := ""
 	for _, rr := range rendered.RatingRules {
 		if existing, err := s.pricing.GetRuleByKeyAsOf(ctx, tenantID, rr.Key, clock.Now(ctx)); err == nil {
 			ratingRuleIDByKey[rr.Key] = existing.ID
 			objs.RatingRuleIDs = append(objs.RatingRuleIDs, existing.ID)
+			if ruleCurrency == "" {
+				ruleCurrency = existing.Currency
+			}
 			continue
 		} else if !errors.Is(err, errs.ErrNotFound) {
 			return domain.RecipeInstance{}, fmt.Errorf("rating_rule %q: adoption check: %w", rr.Key, err)
@@ -334,19 +335,21 @@ func (s *Service) Instantiate(
 		}
 		ratingRuleIDByKey[rr.Key] = created.ID
 		objs.RatingRuleIDs = append(objs.RatingRuleIDs, created.ID)
+		if ruleCurrency == "" {
+			ruleCurrency = created.Currency
+		}
 	}
 
-	// Meters — multi-dim meters use pricing rules for rate selection, so
-	// rating_rule_version_id stays empty. Pricing rules below carry the
-	// per-dimension rate bindings. Existing meter keys are adopted (same
-	// reinstall rationale as rating rules).
+	// Meters — adopt an existing key only if its AGGREGATION matches (the sole
+	// billing-consulted field; sum vs max/count/last silently mis-rolls-up
+	// usage), else refuse LOUD. No live-sub clause: adoption only READS the
+	// meter to wire a fresh plan and append disjoint pricing bindings — it
+	// never mutates the meter — so aggregation-match is the complete safety
+	// condition, and it lets a second AI recipe adopt the shared ADR-044
+	// `tokens` meter after go-live (ADR-085).
 	meterIDByKey := make(map[string]string, len(rendered.Meters))
 	for _, m := range rendered.Meters {
 		if existing, err := s.pricing.GetMeterByKey(ctx, tenantID, m.Key); err == nil {
-			// Adoption conformance gate (ADR-083): adopt a same-key meter only
-			// if its billing-consulted config matches the recipe. A divergent
-			// aggregation (sum vs max/count/last) silently mis-rolls-up usage,
-			// so refuse rather than wire the recipe's pricing rules onto it.
 			if diffs := meterConformanceDiff(existing, m); len(diffs) > 0 {
 				return domain.RecipeInstance{}, errs.AlreadyExists("meter",
 					fmt.Sprintf("meter %q already exists with settings that don't match recipe %q (%s) — reconcile the existing meter before instantiating", m.Key, recipeKey, formatDiffs(diffs)))
@@ -389,48 +392,49 @@ func (s *Service) Instantiate(
 		objs.PricingRuleIDs = append(objs.PricingRuleIDs, created.ID)
 	}
 
-	// Plan — references the meters created above by ID, not key.
-	// Existing plan codes are ADOPTED only when the existing plan matches the
-	// recipe's declared spec (conformance gate, ADR-083); a divergent plan is
-	// refused, never silently wired up. The operator's plan (possibly carrying
-	// live subs) is never mutated either way.
+	// Plan — GENERATE a fresh plan; NEVER adopt an existing plan by code. A
+	// freshly built plan is always wired to the recipe's meter, so silent-$0
+	// from under-wiring is impossible, and there is no "does this existing plan
+	// match?" question — dissolving the whole collision / conformance /
+	// provenance family (ADR-085 supersedes ADR-083/084). The operator owns the
+	// plan once created; the recipe never mutates or reuses one. On a code
+	// collision (a prior recipe's plan, or a foreign plan) the NEW plan is
+	// uniquified (`_2`, `_3`, …) — the incumbent is never renamed (k8s
+	// generateName pattern); the immutable id is the identity, the code a
+	// display slug with no functional readers (subscriptions bind by plan id).
+	// Currency is inherited from the adopted rules so the plan can't be minted
+	// in a currency that mismatches the rates it bills.
 	existingPlans, err := s.pricing.ListPlans(ctx, tenantID)
 	if err != nil {
-		return domain.RecipeInstance{}, fmt.Errorf("list plans for adoption check: %w", err)
+		return domain.RecipeInstance{}, fmt.Errorf("list plans: %w", err)
 	}
-	planByCode := make(map[string]domain.Plan, len(existingPlans))
+	takenCodes := make(map[string]bool, len(existingPlans))
 	for _, ep := range existingPlans {
-		planByCode[ep.Code] = ep
+		takenCodes[ep.Code] = true
 	}
 	for _, p := range rendered.Plans {
 		meterIDs := make([]string, 0, len(p.MeterKeys))
 		for _, mk := range p.MeterKeys {
 			meterIDs = append(meterIDs, meterIDByKey[mk])
 		}
-		if existing, ok := planByCode[p.Code]; ok {
-			// Adopt only if money-affecting config matches; else refuse. A
-			// divergent plan (e.g. in_advance $99 vs the recipe's in_arrears
-			// $0) would silently bill customers under a plan the operator never
-			// declared. The tx rolls back everything created so far; the
-			// existing plan is never touched.
-			if diffs := planConformanceDiff(existing, p, meterIDs); len(diffs) > 0 {
-				return domain.RecipeInstance{}, errs.AlreadyExists("plan_code",
-					fmt.Sprintf("plan %q already exists with billing settings that don't match recipe %q (%s) — reconcile the plan or instantiate with a different plan_code", p.Code, recipeKey, formatDiffs(diffs)))
-			}
-			objs.PlanIDs = append(objs.PlanIDs, existing.ID)
-			continue
+		currency := p.Currency
+		if ruleCurrency != "" {
+			currency = ruleCurrency
 		}
+		code := freePlanCode(p.Code, takenCodes)
+		takenCodes[code] = true
 		created, err := s.pricing.CreatePlanTx(ctx, tx, tenantID, domain.Plan{
-			Code:            p.Code,
+			Code:            code,
 			Name:            p.Name,
-			Currency:        p.Currency,
+			Currency:        currency,
 			BillingInterval: p.BillingInterval,
 			Status:          domain.PlanActive,
 			BaseAmountCents: p.BaseAmountCents,
+			BaseBillTiming:  p.BaseBillTiming,
 			MeterIDs:        meterIDs,
 		})
 		if err != nil {
-			return domain.RecipeInstance{}, fmt.Errorf("plan %q: %w", p.Code, err)
+			return domain.RecipeInstance{}, fmt.Errorf("plan %q: %w", code, err)
 		}
 		objs.PlanIDs = append(objs.PlanIDs, created.ID)
 	}
@@ -485,32 +489,13 @@ func (s *Service) Instantiate(
 	return inst, nil
 }
 
-// Uninstall removes the recipe_instance row only. The objects the recipe
-// created (plans, meters, dunning policy, webhook endpoint) stay — the
-// operator owns them once they exist, exactly like resources created
-// directly via the API. Cascade-delete is intentionally deferred to v2;
-// real plans may have live subscriptions and silent cascade would lose
-// billing data.
-func (s *Service) Uninstall(ctx context.Context, tenantID, instanceID string) error {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return err
-	}
-	defer postgres.Rollback(tx)
-	if err := s.store.DeleteByIDTx(ctx, tx, tenantID, instanceID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // ratingRuleFromRecipe maps the recipe's rating-rule shape to the
-// canonical domain.RatingRuleVersion. The version number is allocated
-// by the store in SQL (MAX+1 per key) — on a fresh tenant the recipe's
-// rules land as version 1; on reinstall-after-uninstall (the instance
-// row is deleted but the operator keeps the created objects) they land
-// as the key's NEXT version instead of 409ing on a hardcoded 1
-// (ADR-070). Existing customer overrides keep applying — they follow
-// the rule_key.
+// canonical domain.RatingRuleVersion. The version number is allocated by
+// the store in SQL (MAX+1 per key) — a recipe only CREATES a rule when the
+// key doesn't already exist (an existing key is adopted, never republished;
+// ADR-085/ADR-070), so the recipe's rules land as version 1 on a fresh
+// tenant. Existing customer overrides keep applying — they follow the
+// rule_key.
 func ratingRuleFromRecipe(r domain.RecipeRatingRule) domain.RatingRuleVersion {
 	name := r.Name
 	if name == "" {
@@ -576,4 +561,25 @@ func copyOverrides(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	maps.Copy(out, in)
 	return out
+}
+
+// freePlanCode returns `desired` if no plan holds it, else the first free
+// `<desired>_N` (N≥2). A recipe never adopts an existing plan by code, so a
+// collision (a prior recipe's plan, or a foreign plan) is side-stepped by
+// uniquifying the NEW plan — never by renaming the incumbent (k8s generateName
+// pattern). The plan's immutable id is its identity; the code is a display slug
+// with no functional readers (subscriptions bind by plan id). A concurrent
+// writer that steals the chosen code between the ListPlans read and the INSERT
+// trips the UNIQUE(tenant_id, code) constraint and rolls the whole tx back — a
+// loud retry, never a silent duplicate.
+func freePlanCode(desired string, taken map[string]bool) string {
+	if !taken[desired] {
+		return desired
+	}
+	for n := 2; ; n++ {
+		c := fmt.Sprintf("%s_%d", desired, n)
+		if !taken[c] {
+			return c
+		}
+	}
 }

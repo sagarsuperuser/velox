@@ -25,14 +25,12 @@ type RecipeInstance struct {
 	CreatedBy      string         `json:"created_by,omitempty"`
 }
 
-// CreatedObjects is the per-role map of entity IDs a recipe instantiation
-// produced. Persisted as JSONB on recipe_instances.created_object_ids and
-// returned in the instantiate response so the dashboard can deep-link
-// directly to the new plan / meter / webhook detail pages.
-//
-// Forced re-instantiation reads this map to delete the prior graph before
-// running the recipe fresh. A recipe is free to leave any of these slices
-// empty if its YAML doesn't declare that role.
+// CreatedObjects is the per-role map of entity IDs a recipe apply produced.
+// Persisted as JSONB on recipe_instances.created_object_ids and returned in
+// the apply response so the dashboard can deep-link directly to the new plan /
+// meter / webhook detail pages. It is the ledger of what a recipe made (a
+// recipe never creates customers or subscriptions). A recipe is free to leave
+// any of these slices empty if its YAML doesn't declare that role.
 type CreatedObjects struct {
 	MeterIDs          []string `json:"meter_ids,omitempty"`
 	RatingRuleIDs     []string `json:"rating_rule_ids,omitempty"`
@@ -40,8 +38,6 @@ type CreatedObjects struct {
 	PlanIDs           []string `json:"plan_ids,omitempty"`
 	DunningPolicyID   string   `json:"dunning_policy_id,omitempty"`
 	WebhookEndpointID string   `json:"webhook_endpoint_id,omitempty"`
-	CustomerIDs       []string `json:"customer_ids,omitempty"`
-	SubscriptionIDs   []string `json:"subscription_ids,omitempty"`
 }
 
 // Recipe is the parsed, validated form of a recipe YAML file. Loaded once
@@ -50,9 +46,7 @@ type CreatedObjects struct {
 // RenderedRecipe ready for instantiation.
 //
 // JSON tags use snake_case to match the rest of /v1/* and the wire
-// contract in docs/design-recipes.md. SampleData is omitted from JSON
-// because it's an internal-only seed hint, not part of the public
-// API surface.
+// contract in docs/design-recipes.md.
 type Recipe struct {
 	Key         string           `json:"key"`
 	Version     string           `json:"version"`
@@ -67,7 +61,6 @@ type Recipe struct {
 	Plans         []RecipePlan         `json:"plans"`
 	DunningPolicy *RecipeDunningPolicy `json:"dunning_policy,omitempty"`
 	Webhook       *RecipeWebhook       `json:"webhook,omitempty"`
-	SampleData    *RecipeSampleData    `json:"-"`
 }
 
 // RecipeOverride is one override key declared in a recipe's `overridable`
@@ -115,7 +108,11 @@ type RecipePlan struct {
 	Currency        string          `json:"currency"`
 	BillingInterval BillingInterval `json:"billing_interval"`
 	BaseAmountCents int64           `json:"base_amount_cents"`
-	MeterKeys       []string        `json:"meter_keys"`
+	// BaseBillTiming is the operator's packaging choice (in_advance /
+	// in_arrears). Empty → CreatePlanTx defaults to in_arrears. Honored
+	// verbatim on the generated plan; the recipe never second-guesses it.
+	BaseBillTiming BillTiming `json:"base_bill_timing,omitempty"`
+	MeterKeys      []string   `json:"meter_keys"`
 }
 
 type RecipeDunningPolicy struct {
@@ -128,20 +125,4 @@ type RecipeDunningPolicy struct {
 type RecipeWebhook struct {
 	Events         []string `json:"events"`
 	URLPlaceholder string   `json:"url_placeholder"`
-}
-
-type RecipeSampleData struct {
-	Customer     RecipeSampleCustomer     `json:"customer"`
-	Subscription RecipeSampleSubscription `json:"subscription"`
-}
-
-type RecipeSampleCustomer struct {
-	ExternalID  string `json:"external_id"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-}
-
-type RecipeSampleSubscription struct {
-	PlanCode  string `json:"plan_code"`
-	TrialDays int    `json:"trial_days,omitempty"`
 }

@@ -84,48 +84,6 @@ func TestPostgresStore_GetByKeyNotFound(t *testing.T) {
 	}
 }
 
-// TestPostgresStore_DeleteByKeyTx exercises the force-re-instantiate path:
-// a no-op delete on an unknown key returns nil (the caller doesn't need to
-// know whether the row existed); a real delete removes the row so a follow-
-// up GetByKey misses.
-func TestPostgresStore_DeleteByKeyTx(t *testing.T) {
-	db := testutil.SetupTestDB(t)
-	tenantID := testutil.CreateTestTenant(t, db, "recipe delete")
-	store := NewPostgresStore(db)
-	ctx := postgres.WithLivemode(context.Background(), false)
-
-	// Unknown key — should not error.
-	tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	if err := store.DeleteByKeyTx(ctx, tx, tenantID, "missing"); err != nil {
-		t.Errorf("DeleteByKeyTx on unknown should be nil, got %v", err)
-	}
-	_ = tx.Rollback()
-
-	// Real delete.
-	tx, err = db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		t.Fatalf("begin 2: %v", err)
-	}
-	if _, err := store.CreateTx(ctx, tx, domain.RecipeInstance{
-		TenantID: tenantID, RecipeKey: "openai_style", RecipeVersion: "1.0.0",
-	}); err != nil {
-		t.Fatalf("CreateTx: %v", err)
-	}
-	if err := store.DeleteByKeyTx(ctx, tx, tenantID, "openai_style"); err != nil {
-		t.Fatalf("DeleteByKeyTx: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	if _, err := store.GetByKey(ctx, tenantID, "openai_style"); !errors.Is(err, errs.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound after delete, got %v", err)
-	}
-}
-
 // TestPostgresStore_UniqueByTenantKey enforces the idempotency guarantee
 // at the schema layer: two CreateTx calls with the same (tenant, key)
 // must fail at INSERT (UNIQUE constraint), independent of any Service-

@@ -14,8 +14,8 @@ import (
 
 // memStore is a non-tx in-memory fake of recipe.Store used by unit tests
 // that exercise the registry-only methods (Preview, GetRecipe,
-// ListRecipes). Tx-bearing paths (Instantiate, Uninstall) are covered by
-// service_integration_test.go because they need a real *sql.Tx.
+// ListRecipes). The tx-bearing path (Instantiate) is covered by
+// service_integration_test.go because it needs a real *sql.Tx.
 type memStore struct {
 	byKey map[string]domain.RecipeInstance
 }
@@ -40,15 +40,6 @@ func (m *memStore) List(_ context.Context, _ string) ([]domain.RecipeInstance, e
 	return out, nil
 }
 
-func (m *memStore) GetByID(_ context.Context, _, id string) (domain.RecipeInstance, error) {
-	for _, v := range m.byKey {
-		if v.ID == id {
-			return v, nil
-		}
-	}
-	return domain.RecipeInstance{}, errs.ErrNotFound
-}
-
 func (m *memStore) GetByKeyTx(_ context.Context, _ *sql.Tx, _ string, recipeKey string) (domain.RecipeInstance, error) {
 	inst, ok := m.byKey[recipeKey]
 	if !ok {
@@ -61,21 +52,6 @@ func (m *memStore) CreateTx(_ context.Context, _ *sql.Tx, inst domain.RecipeInst
 	inst.ID = "vlx_rci_test_" + inst.RecipeKey
 	m.byKey[inst.RecipeKey] = inst
 	return inst, nil
-}
-
-func (m *memStore) DeleteByKeyTx(_ context.Context, _ *sql.Tx, _, recipeKey string) error {
-	delete(m.byKey, recipeKey)
-	return nil
-}
-
-func (m *memStore) DeleteByIDTx(_ context.Context, _ *sql.Tx, _, id string) error {
-	for k, v := range m.byKey {
-		if v.ID == id {
-			delete(m.byKey, k)
-			return nil
-		}
-	}
-	return errs.ErrNotFound
 }
 
 // loadRegistry loads the embedded recipes for tests that need a real
@@ -192,18 +168,6 @@ func TestService_ListRecipes_TagsInstalled(t *testing.T) {
 	}
 	if !found {
 		t.Error("anthropic_style not in list")
-	}
-}
-
-func TestService_Instantiate_ForceRejected(t *testing.T) {
-	svc := NewService(nil, newMemStore(), loadRegistry(t), nil, nil, nil)
-
-	_, err := svc.Instantiate(context.Background(), "t1", "anthropic_style", nil, InstantiateOptions{Force: true})
-	if err == nil {
-		t.Fatal("expected error when Force=true is requested in v1")
-	}
-	if !errors.Is(err, errs.ErrInvalidState) {
-		t.Errorf("expected InvalidState, got %T (%v)", err, err)
 	}
 }
 

@@ -1,26 +1,23 @@
 key: replicate_style
 version: 2.0.0
-name: Replicate-style GPU-time billing
+name: GPU compute pricing (per-second)
 summary: |
-  Per-second GPU billing across {h100, a100, a40, t4, cpu}. One meter,
-  five pricing rules, monthly invoicing. Designed for inference
-  platforms that bill by hardware time rather than tokens.
+  Ready-made pricing for reselling GPU compute. Bills each customer per
+  second of GPU time, at a separate rate for each GPU type (H100, A100,
+  A40, T4, CPU), on a monthly plan.
 description: |
-  Models the public Replicate billing model: per-second cost varies by
-  GPU class. Events emit `gpu_seconds` tagged with `gpu_type` and are
-  SUMMED — each event must carry the seconds consumed since the job's
-  previous report (a per-interval delta), not a cumulative running
-  total. (v1 used `last_during_period` on cumulative totals, which
-  bills only the LAST event per {gpu_type} bucket — correct for one
-  job, silently wrong the moment two jobs on the same GPU class
-  overlap in a period.)
+  Sets up everything you need to bill customers for GPU compute time:
 
-  Rates are in cents per second and track Replicate's published
-  per-second retail prices: H100 $0.001525/s, A100-80GB $0.001400/s,
-  A40 $0.000575/s, T4 $0.000225/s, CPU $0.000100/s. (v1 shipped the
-  A100 at 14¢/s — $504/hour, 100x retail — under a comment claiming
-  1.4¢/s.) Operators override `currency`, the customer-facing
-  `plan_name`, and the slug `plan_code`.
+    • A usage meter that counts GPU-seconds
+    • A per-second price for each GPU type — H100, A100 (80GB), A40, T4,
+      and CPU
+    • A monthly plan your customers subscribe to
+    • Automatic payment retries and a notifications endpoint you can point
+      at your own systems
+
+  Prices start at Replicate's public per-second rates — a starting point
+  you'll edit to your own margins after setup. Before installing, you can
+  set the currency and the plan's name.
 
 overridable:
   - key: currency
@@ -123,12 +120,3 @@ webhook:
     - subscription.item.updated
     - subscription.canceled
   url_placeholder: 'https://example.com/webhooks/velox'
-
-sample_data:
-  customer:
-    external_id: demo-customer
-    display_name: Demo Customer
-    email: demo@example.com
-  subscription:
-    plan: '{{ .plan_code }}'
-    trial_days: 14

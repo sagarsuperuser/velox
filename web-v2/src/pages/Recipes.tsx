@@ -22,20 +22,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { EmptyState } from '@/components/EmptyState'
 import { TableSkeleton } from '@/components/ui/TableSkeleton'
 
-import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react'
+import { Box, Loader2, Eye, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react'
 
 export default function RecipesPage() {
   usePageTitle('Recipes')
@@ -61,7 +51,7 @@ export default function RecipesPage() {
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Pricing recipes</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Start from a built-in pricing template that mirrors a known billing shape — Anthropic-style multi-dim tokens, OpenAI per-token, Replicate per-second compute, B2B SaaS with seats + overage, marketplace GMV. Each recipe creates products, meters, pricing rules, plans, dunning, and a webhook placeholder atomically.
+            Set up billing for a common AI usage model in one click. Each recipe creates the usage meter, prices, and a plan you need — pre-filled with a provider's public rates so you go from zero to a working setup in seconds, then tune the numbers to your own pricing.
           </p>
         </div>
       </div>
@@ -85,7 +75,7 @@ export default function RecipesPage() {
             <EmptyState
               icon={Box}
               title="No recipes available yet"
-              description="Recipes are pre-built pricing templates for common AI billing models — per-token rates by model, GPU-hours, API calls. None are installed on this server yet."
+              description="Recipes are ready-made billing setups for common AI usage models — per-token pricing by model, GPU-time, API calls. None are available on this server yet."
             />
           </CardContent>
         </Card>
@@ -133,13 +123,11 @@ function RecipeCard({ recipe, onConfigure }: { recipe: Recipe; onConfigure: () =
         <p className="text-sm text-muted-foreground mt-3 leading-relaxed">{recipe.summary}</p>
 
         <div className="flex flex-wrap gap-1.5 mt-4">
-          {c.meters > 0 && <Chip n={c.meters} label="meter" />}
-          {c.pricing_rules > 0 && <Chip n={c.pricing_rules} label="pricing rule" />}
+          {c.meters > 0 && <Chip n={c.meters} label="usage meter" />}
+          {c.rating_rules > 0 && <Chip n={c.rating_rules} label="price" />}
           {c.plans > 0 && <Chip n={c.plans} label="plan" />}
-          {c.products > 0 && <Chip n={c.products} label="product" />}
-          {c.rating_rules > 0 && <Chip n={c.rating_rules} label="rating rule" />}
-          {c.dunning_policies > 0 && <Chip n={c.dunning_policies} label="dunning policy" />}
-          {c.webhook_endpoints > 0 && <Chip n={c.webhook_endpoints} label="webhook" />}
+          {c.dunning_policies > 0 && <Chip n={c.dunning_policies} label="retry policy" />}
+          {c.webhook_endpoints > 0 && <Chip n={c.webhook_endpoints} label="notification endpoint" />}
         </div>
 
         {recipe.instantiated && (
@@ -150,7 +138,7 @@ function RecipeCard({ recipe, onConfigure }: { recipe: Recipe; onConfigure: () =
 
         <div className="mt-5 flex items-center justify-between">
           <span className="text-xs text-muted-foreground">
-            {recipe.overridable.length} override{recipe.overridable.length !== 1 ? 's' : ''} available
+            {recipe.overridable.length} setting{recipe.overridable.length !== 1 ? 's' : ''} you can adjust
           </span>
           <Button size="sm" variant={installed ? 'outline' : 'default'} onClick={onConfigure}>
             {installed ? 'View' : 'Configure'}
@@ -173,9 +161,7 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [overrides, setOverrides] = useState<Record<string, string | number | boolean>>({})
-  const [seedSample, setSeedSample] = useState(false)
   const [preview, setPreview] = useState<RecipePreview | null>(null)
-  const [uninstallOpen, setUninstallOpen] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['recipe', recipe.key],
@@ -200,8 +186,6 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
       api.instantiateRecipe({
         key: recipe.key,
         overrides,
-        seed_sample_data: seedSample,
-        force: false,
       }),
     onSuccess: (res) => {
       toast.success(`Installed ${recipe.name}`)
@@ -216,22 +200,6 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
       }
     },
     onError: (err) => showApiError(err, 'Install failed'),
-  })
-
-  // Uninstall is no-cascade by design (see internal/recipe/service.go::Uninstall):
-  // the recipe_instance row is dropped, but the plans / meters / dunning policy
-  // / webhook endpoint stay because real plans may have live subscriptions and
-  // a silent cascade would lose billing data. The confirm dialog spells this
-  // out so the operator doesn't expect different behaviour.
-  const uninstallMutation = useMutation({
-    mutationFn: () => api.deleteRecipeInstance(recipe.instantiated!.id),
-    onSuccess: () => {
-      toast.success(`Uninstalled ${recipe.name}`)
-      queryClient.invalidateQueries({ queryKey: ['recipes'] })
-      setUninstallOpen(false)
-      onClose()
-    },
-    onError: (err) => showApiError(err, 'Uninstall failed'),
   })
 
   const setOverride = (k: string, v: string | number | boolean) => {
@@ -257,7 +225,7 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
 
         {/* Overrides */}
         <div>
-          <Label className="text-xs uppercase tracking-wide text-muted-foreground">Overrides</Label>
+          <Label className="text-xs uppercase tracking-wide text-muted-foreground">Customize before installing</Label>
           {recipe.overridable.length > 0 ? (
             <div className="space-y-3 mt-2">
               {recipe.overridable.map(schema => (
@@ -270,19 +238,8 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground mt-2">No overrides for this recipe.</p>
+            <p className="text-sm text-muted-foreground mt-2">Nothing to customize — this recipe installs as-is.</p>
           )}
-        </div>
-
-        {/* Sample data toggle */}
-        <div className="flex items-start justify-between gap-3 rounded-lg border border-input p-3">
-          <div>
-            <p className="text-sm font-medium text-foreground">Seed sample data</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Creates one demo customer + one trialing subscription so usage flows immediately. Off by default to keep the workspace clean.
-            </p>
-          </div>
-          <Switch checked={seedSample} onCheckedChange={setSeedSample} />
         </div>
 
         {/* Preview */}
@@ -310,17 +267,7 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
         )}
 
         <DialogFooter className="gap-2 sm:justify-between">
-          {recipe.instantiated ? (
-            <Button
-              variant="outline"
-              size="default"
-              onClick={() => setUninstallOpen(true)}
-              className="text-destructive hover:text-destructive"
-            >
-              <Trash2 size={14} className="mr-1.5" />
-              Uninstall
-            </Button>
-          ) : <span />}
+          <span />
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={onClose}>Cancel</Button>
             <Button
@@ -341,55 +288,20 @@ function RecipeDialog({ recipe, onClose }: { recipe: Recipe; onClose: () => void
           </div>
         </DialogFooter>
       </DialogContent>
-
-      {/* Uninstall confirm — spells out the no-cascade behaviour explicitly
-          because operators reasonably expect "Uninstall" to remove what
-          "Install" added. The plans / meters / dunning policy / webhook
-          endpoint stay so existing subscriptions don't lose billing data. */}
-      <AlertDialog open={uninstallOpen} onOpenChange={setUninstallOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Uninstall {recipe.name}?</AlertDialogTitle>
-            <AlertDialogDescription render={<div className="space-y-2 text-sm text-muted-foreground" />}>
-                <p>
-                  This removes the recipe link only. The plans, meters, rating
-                  rules, dunning policy, and webhook endpoint that this recipe
-                  created stay in place — you own those resources once they
-                  exist, exactly like anything created directly via the API.
-                </p>
-                <p>
-                  If you want them gone, archive or delete each one
-                  individually after uninstalling. Cascade-delete is
-                  deliberately not supported because plans may have live
-                  subscriptions, and silent cascade would lose billing data.
-                </p>
-                <p>
-                  After uninstall, the recipe card flips back to
-                  &quot;not installed&quot; and you can re-install with
-                  different overrides — but the original objects will not be
-                  re-used; you&apos;ll get a name collision unless you
-                  archived or renamed them first.
-                </p>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => { e.preventDefault(); uninstallMutation.mutate() }}
-              disabled={uninstallMutation.isPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {uninstallMutation.isPending ? (
-                <><Loader2 size={14} className="mr-1.5 animate-spin" /> Uninstalling…</>
-              ) : (
-                'Uninstall recipe'
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Dialog>
   )
+}
+
+// Friendly labels + hints for the known recipe settings (stable across all
+// recipes). Falls back to a humanized key for anything unmapped.
+const OVERRIDE_LABELS: Record<string, { label: string; hint?: string }> = {
+  currency: { label: 'Currency' },
+  plan_name: { label: 'Plan name', hint: 'Shown to your customers' },
+  plan_code: { label: 'Plan ID', hint: 'Used in links & the API — lowercase letters, numbers, underscores' },
+}
+
+function overrideLabel(key: string): string {
+  return OVERRIDE_LABELS[key]?.label ?? (key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '))
 }
 
 function OverrideField({
@@ -402,19 +314,21 @@ function OverrideField({
   onChange: (v: string | number | boolean) => void
 }) {
   const id = `override-${schema.key}`
+  const label = overrideLabel(schema.key)
+  const hint = OVERRIDE_LABELS[schema.key]?.hint ?? schema.description
   if (schema.type === 'boolean') {
     return (
       <div className="flex items-center justify-between">
-        <Label htmlFor={id} className="font-mono text-sm">{schema.key}</Label>
+        <Label htmlFor={id} className="text-sm">{label}</Label>
         <Switch id={id} checked={!!value} onCheckedChange={onChange} />
       </div>
     )
   }
   return (
     <div>
-      <div className="flex items-center justify-between">
-        <Label htmlFor={id} className="font-mono text-sm">{schema.key}</Label>
-        {schema.description && <span className="text-xs text-muted-foreground">{schema.description}</span>}
+      <div className="flex items-center justify-between gap-3">
+        <Label htmlFor={id} className="text-sm">{label}</Label>
+        {hint && <span className="text-xs text-muted-foreground text-right">{hint}</span>}
       </div>
       <Input
         id={id}
@@ -424,7 +338,7 @@ function OverrideField({
           const raw = e.target.value
           onChange(schema.type === 'number' ? Number(raw) : raw)
         }}
-        className="mt-1.5 font-mono"
+        className="mt-1.5"
         maxLength={schema.max_length}
         pattern={schema.pattern}
       />
@@ -435,18 +349,11 @@ function OverrideField({
 function ObjectsList({ preview }: { preview: RecipePreview }) {
   const sections: { label: string; items: string[] }[] = []
   if (preview.objects.products?.length) sections.push({ label: 'Products', items: preview.objects.products.map(p => p.name) })
-  if (preview.objects.meters?.length) sections.push({ label: 'Meters', items: preview.objects.meters.map(m => `${m.name} (${m.aggregation})`) })
-  if (preview.objects.rating_rules?.length) sections.push({ label: 'Rating rules', items: preview.objects.rating_rules.map(r => `${r.rule_key} · ${r.mode}`) })
-  if (preview.objects.pricing_rules?.length) sections.push({
-    label: 'Pricing rules',
-    items: preview.objects.pricing_rules.map(r => {
-      const dims = Object.entries(r.dimension_match).map(([k, v]) => `${k}=${v}`).join(', ')
-      return `${r.meter_key} → ${r.rating_rule_key} (${dims || 'all events'}, ${r.aggregation_mode}, p${r.priority})`
-    }),
-  })
-  if (preview.objects.plans?.length) sections.push({ label: 'Plans', items: preview.objects.plans.map(p => `${p.name} (${p.billing_interval}, ${p.currency})`) })
-  if (preview.objects.dunning_policies?.length) sections.push({ label: 'Dunning policies', items: preview.objects.dunning_policies.map(d => `${d.name} (${d.max_retries} retries)`) })
-  if (preview.objects.webhook_endpoints?.length) sections.push({ label: 'Webhook endpoints', items: preview.objects.webhook_endpoints.map(w => `${w.url}${w._placeholder ? ' (placeholder)' : ''}`) })
+  if (preview.objects.meters?.length) sections.push({ label: 'What gets counted', items: preview.objects.meters.map(m => m.name) })
+  if (preview.objects.rating_rules?.length) sections.push({ label: 'Prices', items: preview.objects.rating_rules.map(r => r.name || r.key) })
+  if (preview.objects.plans?.length) sections.push({ label: 'Plan', items: preview.objects.plans.map(p => `${p.name} — ${p.billing_interval}, ${p.currency}`) })
+  if (preview.objects.dunning_policies?.length) sections.push({ label: 'Payment retries', items: preview.objects.dunning_policies.map(d => `${d.name} — up to ${d.max_retries} retries`) })
+  if (preview.objects.webhook_endpoints?.length) sections.push({ label: 'Notifications', items: preview.objects.webhook_endpoints.map(w => `${w.url_placeholder} — set your real URL after install`) })
 
   if (sections.length === 0) {
     return <p className="text-xs text-muted-foreground">No objects to preview.</p>

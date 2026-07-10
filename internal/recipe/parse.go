@@ -29,7 +29,6 @@ type rawRecipe struct {
 	Plans        []rawPlan          `yaml:"plans"`
 	Dunning      *rawDunningSection `yaml:"dunning"`
 	Webhook      *rawWebhook        `yaml:"webhook"`
-	SampleData   *rawSampleData     `yaml:"sample_data"`
 }
 
 type rawOverride struct {
@@ -83,6 +82,7 @@ type rawPlan struct {
 	Currency        string   `yaml:"currency"`
 	BillingInterval string   `yaml:"billing_interval"`
 	BaseAmountCents int64    `yaml:"base_amount_cents"`
+	BaseBillTiming  string   `yaml:"base_bill_timing"`
 	Meters          []string `yaml:"meters"`
 }
 
@@ -100,22 +100,6 @@ type rawDunningPolicy struct {
 type rawWebhook struct {
 	Events         []string `yaml:"events"`
 	URLPlaceholder string   `yaml:"url_placeholder"`
-}
-
-type rawSampleData struct {
-	Customer     rawSampleCustomer     `yaml:"customer"`
-	Subscription rawSampleSubscription `yaml:"subscription"`
-}
-
-type rawSampleCustomer struct {
-	ExternalID  string `yaml:"external_id"`
-	DisplayName string `yaml:"display_name"`
-	Email       string `yaml:"email"`
-}
-
-type rawSampleSubscription struct {
-	Plan      string `yaml:"plan"`
-	TrialDays int    `yaml:"trial_days"`
 }
 
 // recipeKeyPattern bounds keys to lowercase identifiers so they can ride
@@ -280,9 +264,15 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 				return domain.Recipe{}, fmt.Errorf("recipe %q: plan %q references unknown meter %q", raw.Key, p.Code, mk)
 			}
 		}
+		timing := domain.BillTiming(p.BaseBillTiming)
+		switch timing {
+		case "", domain.BillInArrears, domain.BillInAdvance:
+		default:
+			return domain.Recipe{}, fmt.Errorf("recipe %q: plan %q invalid base_bill_timing %q (want in_advance or in_arrears)", raw.Key, p.Code, p.BaseBillTiming)
+		}
 		out.Plans = append(out.Plans, domain.RecipePlan{
 			Code: p.Code, Name: p.Name, Currency: p.Currency, BillingInterval: interval,
-			BaseAmountCents: p.BaseAmountCents, MeterKeys: p.Meters,
+			BaseAmountCents: p.BaseAmountCents, BaseBillTiming: timing, MeterKeys: p.Meters,
 		})
 	}
 
@@ -304,14 +294,6 @@ func parseRecipe(data []byte) (domain.Recipe, error) {
 	if raw.Webhook != nil {
 		out.Webhook = &domain.RecipeWebhook{
 			Events: raw.Webhook.Events, URLPlaceholder: raw.Webhook.URLPlaceholder,
-		}
-	}
-
-	if raw.SampleData != nil {
-		planCode := raw.SampleData.Subscription.Plan
-		out.SampleData = &domain.RecipeSampleData{
-			Customer:     domain.RecipeSampleCustomer(raw.SampleData.Customer),
-			Subscription: domain.RecipeSampleSubscription{PlanCode: planCode, TrialDays: raw.SampleData.Subscription.TrialDays},
 		}
 	}
 

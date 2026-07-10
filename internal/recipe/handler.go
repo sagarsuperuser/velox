@@ -33,14 +33,18 @@ func NewHandler(svc *Service) *Handler {
 //	GET    /                           — list recipes + per-tenant install state
 //	GET    /{key}                      — get one recipe (registry only)
 //	POST   /{key}/preview              — render with overrides, no DB
-//	POST   /{key}/instantiate          — full graph build under one tx
-//	GET    /instances                  — list instantiated recipes for tenant
-//	DELETE /instances/{id}             — remove the instance row (no cascade)
+//	POST   /{key}/instantiate          — idempotent apply under one tx
+//	GET    /instances                  — list installed recipes for tenant
+//
+// There is no uninstall: a recipe is an instantiation event, and the objects
+// it creates are owned by the operator (plans carry live subs; the catalog is
+// shared reference data) — there is nothing an uninstall could safely retract
+// (ADR-085). To retire the generated plan, archive it; the badge stays as a
+// truthful record of what was applied and at which version.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
 	r.Get("/instances", h.listInstances)
-	r.Delete("/instances/{id}", h.uninstall)
 	r.Get("/{key}", h.get)
 	r.Post("/{key}/preview", h.preview)
 	r.Post("/{key}/instantiate", h.instantiate)
@@ -102,12 +106,11 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, rec)
 }
 
-// instantiateRequest is the POST /instantiate body. Force is reserved
-// for v2 (Service rejects it with InvalidState in v1) — accepting the
-// field now keeps the contract stable when force support lands.
+// instantiateRequest is the POST /instantiate body. Apply is idempotent
+// (ADR-085): re-posting an already-installed recipe returns the existing
+// instance, so there is no force/overwrite knob.
 type instantiateRequest struct {
 	Overrides map[string]any `json:"overrides"`
-	Force     bool           `json:"force,omitempty"`
 }
 
 func (h *Handler) instantiate(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +124,6 @@ func (h *Handler) instantiate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	inst, err := h.svc.Instantiate(r.Context(), tenantID, key, req.Overrides, InstantiateOptions{
-		Force:     req.Force,
 		CreatedBy: auth.KeyID(r.Context()),
 	})
 	if err != nil {
@@ -143,14 +145,4 @@ func (h *Handler) listInstances(w http.ResponseWriter, r *http.Request) {
 		instances = []domain.RecipeInstance{}
 	}
 	respond.JSON(w, r, http.StatusOK, map[string]any{"data": instances})
-}
-
-func (h *Handler) uninstall(w http.ResponseWriter, r *http.Request) {
-	tenantID := auth.TenantID(r.Context())
-	id := chi.URLParam(r, "id")
-	if err := h.svc.Uninstall(r.Context(), tenantID, id); err != nil {
-		respond.FromError(w, r, err, "recipe instance")
-		return
-	}
-	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "uninstalled"})
 }
