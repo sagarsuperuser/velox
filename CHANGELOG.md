@@ -15,10 +15,13 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 - **Go toolchain bumped 1.25.11 → 1.25.12 (2026-07-09).** Picks up the `crypto/tls` fix for GO-2026-5856 (a Go standard-library vulnerability that `govulncheck` began flagging in CI); no application code change — go.mod + the CI `go-version` pins only.
 
+### Added
+
+- **Late usage events are now observable: `velox_usage_late_event_total` + a WARN per >24h-late live event (2026-07-10).** A live event stamped in the past is accepted (late events are industry-standard; rejecting breaks retries and stream pipelines), but one landing inside an already-finalized period is stored and never billed — previously with zero operator signal. Late live events now increment a counter and log the customer/meter/timestamp; backfill-origin events are excluded (the documented-safe intentional path). Whether to true-up closed periods or reject past a window remains a deferred billing-policy decision — this ships the visibility, not the policy.
+
 ### Changed
 
 - **Recipes reworked to an idempotent, additive “apply” (2026-07-08, ADR-085, supersedes ADR-083/084).** Installing a recipe adopt-or-creates the shared catalog (meter + prices + bindings) by key and **generates one fresh plan** wired to the meter — it never adopts a plan by code, never republishes a price, and never mutates anything a live subscription bills under, so re-applying is a safe no-op that returns the existing instance instead of a 409, and a freshly-built plan can’t inherit a missing meter (silent-$0 is structurally impossible). This **dissolves** the whole plan-collision / conformance / provenance / under-billing class rather than fencing it with a gate. **No uninstall** — a recipe hands off operator-owned objects (plans carry live subs; the catalog is shared), so nothing is safe to retract; retire a plan by archiving it. Also removed the dead `force` flag and unused sample-data scaffolding, and de-jargoned the dashboard recipe UI for operators. Deferred behind named triggers: additive updates from a newer template version, a “newer version available” nudge, and an explicit opt-in reprice-migration for existing subs. See ADR-085 for the full rationale, rejected alternatives (ADR-083’s gate; the never-merged ADR-084 reuse-and-warn), and industry grounding.
-
 ### Fixed
 
 - **Omitted `reset_billing_cycle` now defaults to `false` — keep the billing anchor on a threshold fire (2026-07-10). Behavior change.** The PATCH default was `true` behind a comment claiming Stripe parity; verified wrong — Stripe's `reset_billing_cycle_anchor` defaults to *false* (anchor unchanged), and keep-anchor is Lago/Orb/Metronome's only mode. The flip also keeps silent-default operators clear of the ADR-066 §5 `{in_advance × reset=true}` interaction. Explicitly-supplied values are unaffected (pointer field); the dashboard dialog's checkbox default flipped to match. Free at zero customers, breaking later — which is why it ships now.
