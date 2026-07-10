@@ -3142,7 +3142,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 			slog.Warn("failed to apply credits — flagging for retry; auto-charge skipped to avoid overcharge",
 				"invoice_id", inv.ID, "error", err)
 			creditApplyOK = false
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 		} else if credited > 0 {
 			slog.Info("credits applied to invoice",
 				"invoice_id", inv.ID,
@@ -3223,7 +3227,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 						"error", err,
 					)
 					// Mark for scheduler-based retry instead of losing the failure
-					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+						// A failed set(true) is a liveness sink: the invoice stays
+						// invisible to RetryPendingCharges forever (playbook class G).
+						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+					}
 				} else {
 					slog.Info("auto-charge succeeded", "invoice_id", inv.ID)
 				}
@@ -3242,7 +3250,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 				"invoice_id", inv.ID,
 				"customer_id", sub.CustomerID,
 			)
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 			if e.noPMNotifier != nil {
 				// Reload the invoice so the notifier sees the just-
 				// finalized state (invoice number, totals).
@@ -3606,11 +3618,19 @@ func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscri
 						"invoice_id", inv.ID,
 						"error", err,
 					)
-					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+						// A failed set(true) is a liveness sink: the invoice stays
+						// invisible to RetryPendingCharges forever (playbook class G).
+						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+					}
 				}
 			}
 		} else {
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
 					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
@@ -4324,11 +4344,19 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 				if _, err := e.charger.ChargeInvoice(chargeCtx, sub.TenantID, chargeInv, stripeCusID, stripePMID); err != nil {
 					slog.Warn("final-on-cancel auto-charge failed, marking for retry",
 						"invoice_id", inv.ID, "error", err)
-					_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+					if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+						// A failed set(true) is a liveness sink: the invoice stays
+						// invisible to RetryPendingCharges forever (playbook class G).
+						slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+					}
 				}
 			}
 		} else {
-			_ = e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true)
+			if err := e.invoices.SetAutoChargePending(ctx, sub.TenantID, inv.ID, true); err != nil {
+				// A failed set(true) is a liveness sink: the invoice stays
+				// invisible to RetryPendingCharges forever (playbook class G).
+				slog.Warn("failed to queue invoice for charge retry", "invoice_id", inv.ID, "error", err)
+			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
 					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
@@ -5411,7 +5439,11 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 					errs = append(errs, fmt.Errorf("mark credit-covered invoice %s paid: %w", inv.ID, err))
 					continue
 				}
-				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+				if err := e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false); err != nil {
+					// Benign relative to set(true): the next sweep re-lists the row
+					// and its predicate re-check skips ineligible invoices.
+					slog.Warn("failed to clear auto_charge_pending", "invoice_id", inv.ID, "error", err)
+				}
 				// This is the path that strands dunning (the confirmed bug): the
 				// sweep settles via credits without the handler's resolve. Close
 				// the run here (best-effort; processRun pre-check backstops).
@@ -5446,7 +5478,11 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 			// subsequent attempts.
 			var pe *payment.PaymentError
 			if errors.As(err, &pe) && pe.DeclineCode != "" {
-				_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+				if err := e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false); err != nil {
+					// Benign relative to set(true): the next sweep re-lists the row
+					// and its predicate re-check skips ineligible invoices.
+					slog.Warn("failed to clear auto_charge_pending", "invoice_id", inv.ID, "error", err)
+				}
 				slog.Info("auto-charge declined; dunning will retry on schedule",
 					"invoice_id", inv.ID, "decline_code", pe.DeclineCode)
 				continue
@@ -5467,7 +5503,11 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		}
 		cancel()
 
-		_ = e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false)
+		if err := e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false); err != nil {
+			// Benign relative to set(true): the next sweep re-lists the row
+			// and its predicate re-check skips ineligible invoices.
+			slog.Warn("failed to clear auto_charge_pending", "invoice_id", inv.ID, "error", err)
+		}
 		charged++
 		slog.Info("auto-charge retry succeeded", "invoice_id", inv.ID)
 	}
