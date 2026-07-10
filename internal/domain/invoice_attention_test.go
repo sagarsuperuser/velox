@@ -455,8 +455,14 @@ func TestClassifyInvoiceAttention_NoPaymentMethod(t *testing.T) {
 	if !codes[AttentionActionSendReminder] {
 		t.Errorf("has-email no_payment_method must offer a resend, got %+v", att.Actions)
 	}
-	if !strings.Contains(att.Message, "has been emailed a setup link") {
-		t.Errorf("has-email variant must state the link was emailed, got %q", att.Message)
+	// Disposition form (2026-07-10): the banner states what the ENGINE DOES
+	// and where delivery is verifiable — never "has been emailed", which is
+	// unverifiable from the classifier's inputs (false under suppression/DLQ).
+	if strings.Contains(att.Message, "has been emailed") {
+		t.Errorf("banner must not assert a completed send it cannot observe, got %q", att.Message)
+	}
+	if !strings.Contains(att.Message, "emails the customer a setup link") {
+		t.Errorf("has-email variant must state the engine's send behavior, got %q", att.Message)
 	}
 	if att.NextAttemptAt != nil {
 		t.Errorf("no_payment_method must not set NextAttemptAt — engine won't auto-charge without PM, got %v", att.NextAttemptAt)

@@ -36,9 +36,9 @@ type fakeNoPMNotifier struct {
 	called bool
 }
 
-func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) error {
+func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
 	f.called = true
-	return nil
+	return domain.NotifySent, nil
 }
 
 // When a manual invoice is finalized for a customer WITHOUT a saved card,

@@ -55,7 +55,7 @@ type PaymentSetupGetter interface {
 // invoice package doesn't import the billing engine (zero cross-domain
 // imports). Optional; nil means no-PM finalize just queues for retry.
 type NoPaymentMethodNotifier interface {
-	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error)
 }
 
 // PaymentCanceler cancels a Stripe PaymentIntent when an invoice is voided.
@@ -503,9 +503,14 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 			"invoice_id", inv.ID, "error", err)
 	}
 	if h.noPMNotifier != nil {
-		if err := h.noPMNotifier.NotifyNoPaymentMethod(ctx, tenantID, inv); err != nil {
+		outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(ctx, tenantID, inv)
+		switch {
+		case err != nil:
 			slog.WarnContext(ctx, "no-payment-method notification failed",
 				"invoice_id", inv.ID, "error", err)
+		case outcome == domain.NotifySkippedNoEmail:
+			slog.InfoContext(ctx, "setup-link email skipped: customer has no email on file",
+				"invoice_id", inv.ID)
 		}
 	}
 	return inv
@@ -592,8 +597,18 @@ func (h *Handler) resendSetupLink(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	if err := h.noPMNotifier.NotifyNoPaymentMethod(r.Context(), tenantID, inv); err != nil {
+	outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(r.Context(), tenantID, inv)
+	if err != nil {
 		respond.FromError(w, r, err, "invoice")
+		return
+	}
+	if outcome == domain.NotifySkippedNoEmail {
+		// Pre-fix this fell through to 200 {"status":"sent"} — a success
+		// toast for a send that never happened (the notifier's no-email
+		// skip was a silent nil). The typed outcome makes the endpoint
+		// honest: nothing was sent, tell the operator what works instead.
+		respond.Error(w, r, http.StatusConflict, "invalid_state", "no_email_on_file",
+			"customer has no email on file — add one on the customer record, or copy the setup link from the customer page and share it directly")
 		return
 	}
 

@@ -679,33 +679,35 @@ type noPaymentMethodNotifierAdapter struct {
 	auditLogger      *audit.Logger // optional — engine fires this background task; audit row records the send for operator forensics.
 }
 
-func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) error {
+func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error) {
 	if a.paymentUpdateURL == "" {
-		return errors.New("PAYMENT_UPDATE_URL not configured")
+		return "", errors.New("PAYMENT_UPDATE_URL not configured")
 	}
 	if a.tokenSvc == nil {
 		// The SPA enforces ?token= and rejects URLs without it
 		// ("Link expired or invalid · No payment update token
 		// provided"). Refusing to send is strictly better than
 		// emailing the customer a permanently-broken link.
-		return errors.New("payment update TokenService not wired")
+		return "", errors.New("payment update TokenService not wired")
 	}
 	// CC list deliberately discarded: payment_setup_request carries a
 	// single-use tokenized payment-credential URL — never-CC by
 	// construction (ADR-082 coverage matrix).
 	to, name, _, err := a.customerEmail.GetCustomerEmail(ctx, tenantID, inv.CustomerID)
 	if err != nil || to == "" {
-		// Missing email is a delivery gap, not a billing failure.
-		// Engine logs the warning and continues.
-		return nil
+		// Missing email is a delivery gap, not a billing failure — but it
+		// is REPORTED, not swallowed: the typed skip lets the engine log
+		// the real disposition and lets the resend endpoint answer with a
+		// typed 409 instead of a false "sent" (2026-07-10 design review).
+		return domain.NotifySkippedNoEmail, nil
 	}
 	rawToken, err := a.tokenSvc.Create(ctx, tenantID, inv.CustomerID, inv.ID)
 	if err != nil {
-		return fmt.Errorf("create payment update token: %w", err)
+		return "", fmt.Errorf("create payment update token: %w", err)
 	}
 	updateURL := fmt.Sprintf("%s?token=%s", a.paymentUpdateURL, rawToken)
 	if err := a.email.SendPaymentSetupRequest(ctx, tenantID, to, name, inv.InvoiceNumber, inv.AmountDueCents, inv.Currency, updateURL); err != nil {
-		return err
+		return "", err
 	}
 	// Audit the engine-fired send so the operator can answer
 	// "did we email the customer at finalize?" from the AuditLog page
@@ -721,7 +723,7 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 			"trigger":        "finalize_no_pm",
 		})
 	}
-	return nil
+	return domain.NotifySent, nil
 }
 
 // prorationCreditGranterAdapter bridges credit.Service → subscription.ProrationCreditGranter.

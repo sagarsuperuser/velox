@@ -927,11 +927,17 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			}
 			if e.noPMNotifier != nil {
 				if notifyInv, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID); err == nil {
-					if err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv); err != nil {
+					outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
+					switch {
+					case err != nil:
 						slog.Warn("threshold fire: no-payment-method notification failed",
 							"invoice_id", inv.ID,
 							"error", err,
 						)
+					case outcome == domain.NotifySkippedNoEmail:
+						slog.Info("setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
+					default:
+						slog.Info("setup-link email queued", "invoice_id", inv.ID)
 					}
 				}
 			}

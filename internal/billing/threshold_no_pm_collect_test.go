@@ -17,9 +17,9 @@ type fakeNoPMNotifier struct {
 	got []domain.Invoice
 }
 
-func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice) error {
+func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice) (domain.NotifyOutcome, error) {
 	f.got = append(f.got, inv)
-	return nil
+	return domain.NotifySent, nil
 }
 
 // thresholdNoPMFixture clones TestThresholdScan_CreditsApplied_ChargesRemainder's

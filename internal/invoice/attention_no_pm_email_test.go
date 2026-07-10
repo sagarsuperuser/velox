@@ -63,8 +63,11 @@ func TestAttachAttention_NoPaymentMethod_EmailVariant(t *testing.T) {
 		if inv.Attention == nil || inv.Attention.Reason != domain.AttentionReasonNoPaymentMethod {
 			t.Fatalf("expected no_payment_method attention, got %+v", inv.Attention)
 		}
-		if !strings.Contains(inv.Attention.Message, "has been emailed a setup link") {
-			t.Errorf("has-email variant must claim the link was emailed, got %q", inv.Attention.Message)
+		if !strings.Contains(inv.Attention.Message, "emails the customer a setup link") {
+			t.Errorf("has-email variant must state the engine's send behavior, got %q", inv.Attention.Message)
+		}
+		if strings.Contains(inv.Attention.Message, "has been emailed") {
+			t.Errorf("banner must not assert a completed send it cannot observe, got %q", inv.Attention.Message)
 		}
 		var hasResend bool
 		for _, a := range inv.Attention.Actions {
