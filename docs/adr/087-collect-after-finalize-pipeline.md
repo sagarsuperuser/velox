@@ -58,7 +58,10 @@ Do **not** fold in the three non-engine paths:
    single owner. Manual finalize never flags. Unifying either direction
    creates double-charge windows (two retry owners, distinct idempotency
    keys) or silent dead-ends. A shared decline arm needs error-type
-   classification no finalize site currently has — out of scope.
+   classification, which no finalize site had at decision time; #449 has
+   since given the MANUAL site exactly that classification (declines →
+   dunning, everything else → flag) — the engine sites keep flag-always,
+   whose decline flag the sweep clears on its next tick.
 
 ## Error-path fixes unified into the pipeline (behavior changes, tested)
 
