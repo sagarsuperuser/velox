@@ -232,3 +232,107 @@ func TestCollectAtFinalize_DeclineOwnership(t *testing.T) {
 		}
 	})
 }
+
+// ctxProbeCharger records the liveness and deadline of the ctx it is charged
+// with — the real Stripe SDK aborts on a dead ctx, so these two facts are
+// what decide whether a charge survives a client disconnect.
+type ctxProbeCharger struct {
+	called       bool
+	ctxErrAtCall error
+	hadDeadline  bool
+}
+
+func (c *ctxProbeCharger) ChargeInvoice(ctx context.Context, _ string, inv domain.Invoice, _, _ string) (domain.Invoice, error) {
+	c.called = true
+	c.ctxErrAtCall = ctx.Err()
+	_, c.hadDeadline = ctx.Deadline()
+	return inv, nil
+}
+
+// ctxProbeNotifier records ctx liveness at notify time (the setup-link email
+// send would be aborted by a dead ctx in the real SMTP path).
+type ctxProbeNotifier struct {
+	called       bool
+	ctxErrAtCall error
+}
+
+func (n *ctxProbeNotifier) NotifyNoPaymentMethod(ctx context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+	n.called = true
+	n.ctxErrAtCall = ctx.Err()
+	return domain.NotifySent, nil
+}
+
+// TestCollectAtFinalize_SurvivesClientDisconnect pins the ctx-detach contract
+// (ADR-087 follow-up): once the invoice is finalized, collection is not
+// abortable by the operator's browser. Pre-fix the whole step ran on
+// r.Context() — a client disconnect mid-charge cancelled the Stripe call at
+// its most ambiguous moment AND killed the charger's 'unknown'
+// outcome-persist, the retry-flag write, and the notifier in the same stroke:
+// customer possibly charged, zero local record. The charge must also carry
+// its own 30s deadline (engine parity) instead of riding the SDK default.
+func TestCollectAtFinalize_SurvivesClientDisconnect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("PM ready + cancelled request ctx → charge runs on a live, deadline-bounded ctx", func(t *testing.T) {
+		t.Parallel()
+		store := newMemStore()
+		inv, err := store.Create(context.Background(), "t1", domain.Invoice{AmountDueCents: 5000, CustomerID: "cus_1"})
+		if err != nil {
+			t.Fatalf("seed invoice: %v", err)
+		}
+		charger := &ctxProbeCharger{}
+		h := &Handler{
+			svc:           NewService(store, nil, nil),
+			charger:       charger,
+			paymentSetups: readySetup(),
+			noPMNotifier:  &fakeNoPMNotifier{},
+		}
+
+		reqCtx, cancel := context.WithCancel(context.Background())
+		cancel() // the operator's tab is already gone
+
+		h.collectAtFinalize(reqCtx, "t1", inv)
+
+		if !charger.called {
+			t.Fatal("charge must still be attempted after a client disconnect")
+		}
+		if charger.ctxErrAtCall != nil {
+			t.Errorf("charge ctx must be detached from the request's cancellation, got err=%v", charger.ctxErrAtCall)
+		}
+		if !charger.hadDeadline {
+			t.Error("charge ctx must carry its own deadline (engine-parity 30s), not ride the SDK default")
+		}
+	})
+
+	t.Run("no PM + cancelled request ctx → flag and notify still delivered on a live ctx", func(t *testing.T) {
+		t.Parallel()
+		store := newMemStore()
+		inv, err := store.Create(context.Background(), "t1", domain.Invoice{AmountDueCents: 5000, CustomerID: "cus_1"})
+		if err != nil {
+			t.Fatalf("seed invoice: %v", err)
+		}
+		notifier := &ctxProbeNotifier{}
+		h := &Handler{
+			svc:           NewService(store, nil, nil),
+			charger:       &fakeCharger{},
+			paymentSetups: &fakePaymentSetups{setup: domain.CustomerPaymentSetup{SetupStatus: domain.PaymentSetupMissing}},
+			noPMNotifier:  notifier,
+		}
+
+		reqCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		h.collectAtFinalize(reqCtx, "t1", inv)
+
+		if !notifier.called {
+			t.Fatal("setup-link notify must still run after a client disconnect")
+		}
+		if notifier.ctxErrAtCall != nil {
+			t.Errorf("notify ctx must be detached from the request's cancellation, got err=%v", notifier.ctxErrAtCall)
+		}
+		got, _ := store.Get(context.Background(), "t1", inv.ID)
+		if !got.AutoChargePending {
+			t.Error("retry flag must still land after a client disconnect")
+		}
+	})
+}

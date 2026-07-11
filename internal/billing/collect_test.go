@@ -171,3 +171,44 @@ func TestCollectAfterFinalize(t *testing.T) {
 		}
 	})
 }
+
+// ctxProbeCharger records ctx liveness + deadline at charge time.
+type ctxProbeCharger struct {
+	ctxErrAtCall error
+	hadDeadline  bool
+}
+
+func (c *ctxProbeCharger) ChargeInvoice(ctx context.Context, _ string, inv domain.Invoice, _, _ string) (domain.Invoice, error) {
+	c.ctxErrAtCall = ctx.Err()
+	_, c.hadDeadline = ctx.Deadline()
+	return inv, nil
+}
+
+// TestCollectAfterFinalize_SurvivesCallerCancellation pins the pipeline's
+// ctx-detach: two of its callers (subscription_create day-1, final-on-cancel)
+// arrive on HTTP request ctxs, where a client disconnect mid-charge would
+// otherwise abort the Stripe call at its most ambiguous moment and kill the
+// charger's 'unknown' outcome-persist plus the retry-flag write in the same
+// stroke. Once finalize has happened, collection runs to completion (bounded
+// by the 30s charge deadline), regardless of the caller's fate.
+func TestCollectAfterFinalize_SurvivesCallerCancellation(t *testing.T) {
+	e, invoices, _, sub, inv := collectFixture()
+	e.paymentSetups = &fakePaymentSetups{ready: true, stripeCustomerID: "cus_stripe"}
+	charger := &ctxProbeCharger{}
+	e.charger = charger
+
+	callerCtx, cancel := context.WithCancel(context.Background())
+	cancel() // the HTTP client is already gone
+
+	e.collectAfterFinalize(callerCtx, sub, inv, "test")
+
+	if charger.ctxErrAtCall != nil {
+		t.Errorf("charge ctx must be detached from the caller's cancellation, got err=%v", charger.ctxErrAtCall)
+	}
+	if !charger.hadDeadline {
+		t.Error("charge ctx must still carry the 30s deadline after the detach")
+	}
+	if autoChargePending(t, invoices, inv.ID) {
+		t.Error("successful charge must not queue a retry")
+	}
+}

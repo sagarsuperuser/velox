@@ -479,6 +479,18 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	if h.charger == nil || h.paymentSetups == nil || inv.AmountDueCents <= 0 {
 		return inv
 	}
+	// Once the invoice is finalized, collection must not be abortable by the
+	// operator's browser: this ctx is the HTTP request's, and a client
+	// disconnect mid-charge would cancel the Stripe call at its most
+	// ambiguous moment AND kill every write that remembers the failure — the
+	// charger's own 'unknown' outcome-persist runs on this same ctx, as do
+	// the retry-flag set and the notifier below. One external event would
+	// erase the failure and its bookkeeping in the same stroke. WithoutCancel
+	// keeps the request's values (tenant, livemode, clock binding) and drops
+	// only the cancellation; the charge itself is re-bounded by the 30s
+	// deadline below (the engine pipeline's shape: durable parent for
+	// bookkeeping, disposable child for the risky call).
+	ctx = context.WithoutCancel(ctx)
 	ps, psErr := h.paymentSetups.GetPaymentSetup(ctx, tenantID, inv.CustomerID)
 	// pmReady requires the PM ID itself, not just the "ready" status: the
 	// charge below passes ps.StripePaymentMethodID verbatim, and the charger
@@ -493,7 +505,13 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady &&
 		ps.StripeCustomerID != "" && ps.StripePaymentMethodID != ""
 	if pmReady {
-		charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
+		// Synchronous charge with the same 30s bound as the engine's collect
+		// pipeline — without it the request rode the Stripe SDK's default
+		// (~80s). The deadline applies to the charge only; the flag/notifier
+		// bookkeeping below stays on the durable detached ctx.
+		chargeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		charged, err := h.charger.ChargeInvoice(chargeCtx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
 		if err == nil {
 			inv = charged
 			slog.InfoContext(ctx, "auto-charge initiated", "invoice_id", inv.ID)
