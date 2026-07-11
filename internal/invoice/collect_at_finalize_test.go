@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment"
 )
 
@@ -415,4 +417,131 @@ func TestSettleZeroDue_DraftIsNotSettled(t *testing.T) {
 	if got.Status != domain.InvoiceDraft || got.PaymentStatus != domain.PaymentPending {
 		t.Errorf("stored draft mutated to %s/%s — must be untouched", got.Status, got.PaymentStatus)
 	}
+}
+
+// fakeInvCreditApplier drains up to applyCents from the memStore invoice.
+type fakeInvCreditApplier struct {
+	store      *memStore
+	applyCents int64
+	err        error
+	calls      int
+}
+
+func (f *fakeInvCreditApplier) ApplyToInvoiceAt(_ context.Context, tenantID, _, invoiceID string, amountCents int64, _ time.Time, _ ...string) (int64, error) {
+	f.calls++
+	if f.err != nil {
+		return 0, f.err
+	}
+	inv, ok := f.store.invoices[invoiceID]
+	if !ok {
+		return 0, errs.ErrNotFound
+	}
+	deduct := f.applyCents
+	if amountCents < deduct {
+		deduct = amountCents
+	}
+	inv.AmountDueCents -= deduct
+	inv.CreditsAppliedCents += deduct
+	f.store.invoices[invoiceID] = inv
+	return deduct, nil
+}
+
+// TestCollectAtFinalize_CreditBalance pins ADR-088 at the manual site: the
+// customer's balance drains before any card decision — partial coverage
+// charges exactly the remainder, full coverage settles paid through the
+// zero-due arm, and an apply FAILURE queues for the sweep without charging
+// (trap R1: never a pre-credit card charge).
+func TestCollectAtFinalize_CreditBalance(t *testing.T) {
+	t.Parallel()
+
+	seed := func(t *testing.T, applier *fakeInvCreditApplier) (*Handler, *memStore, *fakeCharger, domain.Invoice) {
+		t.Helper()
+		store := newMemStore()
+		applier.store = store
+		inv, err := store.Create(context.Background(), "t1", domain.Invoice{
+			CustomerID: "cus_1", Status: domain.InvoiceFinalized,
+			PaymentStatus: domain.PaymentPending, AmountDueCents: 5000,
+		})
+		if err != nil {
+			t.Fatalf("seed invoice: %v", err)
+		}
+		charger := &fakeCharger{}
+		svc := NewService(store, nil, nil)
+		svc.SetCreditApplier(applier)
+		h := &Handler{
+			svc:           svc,
+			charger:       charger,
+			paymentSetups: readySetup(),
+			noPMNotifier:  &fakeNoPMNotifier{},
+		}
+		return h, store, charger, inv
+	}
+
+	t.Run("partial balance → card charged exactly the remainder", func(t *testing.T) {
+		t.Parallel()
+		applier := &fakeInvCreditApplier{applyCents: 2000}
+		h, store, charger, inv := seed(t, applier)
+
+		h.collectAtFinalize(context.Background(), "t1", inv)
+		if !charger.called {
+			t.Fatal("remainder must be charged")
+		}
+		got, _ := store.Get(context.Background(), "t1", inv.ID)
+		if got.AmountDueCents != 3000 || got.CreditsAppliedCents != 2000 {
+			t.Errorf("due=%d creditsApplied=%d, want 3000/2000", got.AmountDueCents, got.CreditsAppliedCents)
+		}
+	})
+
+	t.Run("full balance → settled paid via the zero-due arm, no charge", func(t *testing.T) {
+		t.Parallel()
+		applier := &fakeInvCreditApplier{applyCents: 5000}
+		h, store, charger, inv := seed(t, applier)
+
+		out := h.collectAtFinalize(context.Background(), "t1", inv)
+		if charger.called {
+			t.Error("fully covered → no card charge")
+		}
+		if out.Status != domain.InvoicePaid {
+			t.Errorf("returned status = %s, want paid", out.Status)
+		}
+		got, _ := store.Get(context.Background(), "t1", inv.ID)
+		if got.Status != domain.InvoicePaid || got.PaymentStatus != domain.PaymentSucceeded {
+			t.Errorf("stored = %s/%s, want paid/succeeded", got.Status, got.PaymentStatus)
+		}
+	})
+
+	t.Run("apply FAILS → queued for sweep, card NEVER charged pre-credit (R1)", func(t *testing.T) {
+		t.Parallel()
+		applier := &fakeInvCreditApplier{err: errors.New("ledger blip")}
+		h, store, charger, inv := seed(t, applier)
+
+		h.collectAtFinalize(context.Background(), "t1", inv)
+		if charger.called {
+			t.Fatal("apply failure must NEVER charge the pre-credit amount")
+		}
+		got, _ := store.Get(context.Background(), "t1", inv.ID)
+		if !got.AutoChargePending {
+			t.Error("apply failure must queue for the sweep (which re-applies atomically)")
+		}
+	})
+
+	t.Run("no applier wired → unchanged full-amount path", func(t *testing.T) {
+		t.Parallel()
+		store := newMemStore()
+		inv, _ := store.Create(context.Background(), "t1", domain.Invoice{
+			CustomerID: "cus_1", Status: domain.InvoiceFinalized,
+			PaymentStatus: domain.PaymentPending, AmountDueCents: 5000,
+		})
+		charger := &fakeCharger{}
+		h := &Handler{
+			svc:           NewService(store, nil, nil),
+			charger:       charger,
+			paymentSetups: readySetup(),
+			noPMNotifier:  &fakeNoPMNotifier{},
+		}
+		h.collectAtFinalize(context.Background(), "t1", inv)
+		if !charger.called {
+			t.Error("no applier → the full amount charges as before")
+		}
+	})
 }

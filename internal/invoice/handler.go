@@ -489,6 +489,27 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	// bookkeeping, disposable child for the risky call).
 	ctx = context.WithoutCancel(ctx)
 
+	// Drain the customer's credit balance first (ADR-088: the balance applies
+	// to one-off invoices too — Stripe parity; Lago-style exclusion rejected).
+	// The card below is only ever charged the post-credit remainder, and a
+	// fully covered invoice falls into the zero-due settle arm. An apply
+	// FAILURE queues for the retry sweep and returns WITHOUT charging (trap
+	// R1: never a pre-credit card charge — the sweep re-applies atomically
+	// before its own charge, so recovery pre-exists).
+	if inv.AmountDueCents > 0 {
+		refreshed, err := h.svc.ApplyCreditBalance(ctx, tenantID, inv.ID)
+		if err != nil {
+			slog.WarnContext(ctx, "credit apply failed at manual finalize — queuing for scheduler retry; never charging pre-credit",
+				"invoice_id", inv.ID, "error", err)
+			if serr := h.svc.SetAutoChargePending(ctx, tenantID, inv.ID, true); serr != nil {
+				slog.WarnContext(ctx, "failed to mark invoice for auto-charge retry",
+					"invoice_id", inv.ID, "error", serr)
+			}
+			return inv
+		}
+		inv = refreshed
+	}
+
 	if inv.AmountDueCents <= 0 {
 		// Finalized with nothing left to pay (the ADR-066 class): there is no
 		// payment to wait for, so the terminal state is PAID — Stripe parity:
