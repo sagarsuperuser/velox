@@ -89,10 +89,12 @@ func TestCollectAtFinalize_PaymentMethodReady_ChargesWithoutNotifying(t *testing
 	charger := &fakeCharger{}
 	notifier := &fakeNoPMNotifier{}
 	h := &Handler{
-		svc:           NewService(store, nil, nil),
-		charger:       charger,
-		paymentSetups: &fakePaymentSetups{setup: domain.CustomerPaymentSetup{SetupStatus: domain.PaymentSetupReady, StripeCustomerID: "cus_stripe_1"}},
-		noPMNotifier:  notifier,
+		svc:     NewService(store, nil, nil),
+		charger: charger,
+		paymentSetups: &fakePaymentSetups{setup: domain.CustomerPaymentSetup{
+			SetupStatus: domain.PaymentSetupReady, StripeCustomerID: "cus_stripe_1", StripePaymentMethodID: "pm_1",
+		}},
+		noPMNotifier: notifier,
 	}
 
 	h.collectAtFinalize(context.Background(), "t1", inv)
@@ -106,5 +108,49 @@ func TestCollectAtFinalize_PaymentMethodReady_ChargesWithoutNotifying(t *testing
 	got, _ := store.Get(context.Background(), "t1", inv.ID)
 	if got.AutoChargePending {
 		t.Error("auto_charge_pending must stay false on the happy auto-charge path")
+	}
+}
+
+// A payment setup that reports "ready" but carries NO payment-method ID must
+// take the not-ready arm (queue + notify), never the charge arm. The charge
+// passes the PM ID verbatim and the charger hard-rejects an empty one — an
+// error that lands in the decline arm, which sets no retry flag (dunning owns
+// real declines), so charging here would dead-end the invoice with no retry
+// path and no customer email. "Ready implies a PM ID" is an invariant of the
+// current composite payment-setup reader, not of the interface: the previous
+// reader (the dropped customer_payment_setups table) stored the two facts in
+// independently-written columns, and this predicate is what keeps a future
+// reader change from silently re-opening the dead-end.
+func TestCollectAtFinalize_ReadyStatusWithoutPMID_QueuesInsteadOfCharging(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	inv, err := store.Create(context.Background(), "t1", domain.Invoice{AmountDueCents: 5000, CustomerID: "cus_1"})
+	if err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	charger := &fakeCharger{}
+	notifier := &fakeNoPMNotifier{}
+	h := &Handler{
+		svc:     NewService(store, nil, nil),
+		charger: charger,
+		paymentSetups: &fakePaymentSetups{setup: domain.CustomerPaymentSetup{
+			SetupStatus:      domain.PaymentSetupReady,
+			StripeCustomerID: "cus_stripe_1",
+			// StripePaymentMethodID deliberately empty.
+		}},
+		noPMNotifier: notifier,
+	}
+
+	h.collectAtFinalize(context.Background(), "t1", inv)
+
+	if charger.called {
+		t.Error("charger must NOT be called with an empty payment-method ID")
+	}
+	if !notifier.called {
+		t.Error("expected the setup-link notifier — the customer has no chargeable card")
+	}
+	got, _ := store.Get(context.Background(), "t1", inv.ID)
+	if !got.AutoChargePending {
+		t.Error("expected auto_charge_pending=true so the sweep charges once a real PM exists")
 	}
 }

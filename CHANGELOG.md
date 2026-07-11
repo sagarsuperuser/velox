@@ -13,6 +13,8 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **Manual-invoice finalize: a "ready" payment setup without a payment-method ID now queues for retry + emails the setup link instead of dead-ending (2026-07-11, ADR-087 follow-up).** The readiness check tested setup status but not the card token it was about to charge; an empty token drew a guaranteed charger rejection into the no-retry decline arm — no flag, no dunning, no email. The predicate now requires the PM ID, routing that state to the self-healing arm, matching the engine's collect sites.
+
 - **A transient payment-setup read error no longer emails "payment method needed" to customers who have a card on file (2026-07-11, ADR-087).** All four post-finalize collect paths conflated "couldn't determine payment state" with "no payment method"; the shared collection pipeline now queues the invoice for the retry sweep (which re-resolves) and stays quiet. Same fix class: an invoice whose pre-charge reload failed used to silently drop out of every retry path — it now lands on the retry sweep too. The four hand-copied collect blocks (cycle close, day-1, final-on-cancel, threshold fire) are now one pipeline, so this class can't re-drift per-site.
 
 ### Security

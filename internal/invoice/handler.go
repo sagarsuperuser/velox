@@ -479,7 +479,18 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 		return inv
 	}
 	ps, psErr := h.paymentSetups.GetPaymentSetup(ctx, tenantID, inv.CustomerID)
-	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady && ps.StripeCustomerID != ""
+	// pmReady requires the PM ID itself, not just the "ready" status: the
+	// charge below passes ps.StripePaymentMethodID verbatim, and the charger
+	// hard-rejects an empty one — an error that lands in the decline arm,
+	// which deliberately sets no retry flag (dunning owns real declines), so
+	// a ready-status-without-PM-ID row would dead-end with no retry path and
+	// no customer email. Routing it to the not-ready arm instead self-heals:
+	// flag for the sweep + setup-link email. The engine's ResolveForCharge
+	// sites check the PM ID for the same reason; status alone is an
+	// implementation invariant of the current payment-setup reader, not a
+	// guarantee this call site owns.
+	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady &&
+		ps.StripeCustomerID != "" && ps.StripePaymentMethodID != ""
 	if pmReady {
 		if charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID); err != nil {
 			// A failed charge attempt starts dunning (the single retry
