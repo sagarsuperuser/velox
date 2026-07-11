@@ -19,9 +19,16 @@ Do **not** fold in the three non-engine paths:
 
 - **Manual finalize** (`invoice.Handler.collectAtFinalize`) — deliberately
   different retry-owner semantics (no flag on decline; the charged invoice is
-  returned in the HTTP response). Its verified drift (readiness predicate
-  skips the PM-ID check, raw request ctx with no timeout, transient/unknown
-  outcomes leave no retry path) is a recorded follow-up, not silently absorbed.
+  returned in the HTTP response). Its verified drift was a recorded follow-up,
+  not silently absorbed — **executed 2026-07-11 as #448–#451**: PM-ID added to
+  the readiness predicate (#448); charge failures classified — definite
+  declines stay dunning-owned/no-flag, transient/unknown/unclassified queue
+  for the sweep, safe by the sweep's payment_status='pending' predicate
+  (#449); collection detached from the caller's cancellation in BOTH collect
+  steps + engine-parity 30s charge deadline (#450 — the engine pipeline's
+  day-1/final-on-cancel callers arrive on request ctxs too); zero-due settles
+  PAID via Service.SettleZeroDue, the manual writer's ADR-066 T12 twin
+  (#451).
 - **Proration invoices** — sweep-mediated by design: inline charging would
   wall-clock-charge simulated invoices and duplicate the charge path
   (subscription handler comment). The missing no-PM setup email for proration
