@@ -266,6 +266,16 @@ func (m *memStore) MarkPaymentFailedReportingTransition(_ context.Context, tenan
 	return inv, first, nil
 }
 
+func (m *memStore) SetNoPMNotifiedAt(_ context.Context, tenantID, id string, at time.Time) error {
+	inv, ok := m.invoices[id]
+	if !ok || inv.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	inv.NoPMNotifiedAt = &at
+	m.invoices[id] = inv
+	return nil
+}
+
 func (m *memStore) MarkPaid(_ context.Context, tenantID, id, stripeID string, paidAt time.Time) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {

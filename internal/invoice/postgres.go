@@ -199,7 +199,7 @@ const invCols = `id, tenant_id, customer_id, COALESCE(subscription_id,''), invoi
 	COALESCE(public_token_encrypted,''), COALESCE(billing_reason,''), COALESCE(stripe_invoice_id,''),
 	is_simulated, tax_reversed_at,
 	COALESCE(payment_anomaly_kind,''), COALESCE(payment_anomaly_payment_intent_id,''), COALESCE(payment_anomaly_captured_cents,0),
-	COALESCE(billing_timezone,'')`
+	COALESCE(billing_timezone,''), no_pm_notified_at`
 
 // qualifiedInvCols returns invCols with every column reference prefixed
 // by the given table alias. Used by ADR-029's per-clock queries that
@@ -2552,8 +2552,31 @@ func (s *PostgresStore) scanInvDest(inv *domain.Invoice) []any {
 		decryptScanner{enc: s.enc, dst: &inv.PublicToken}, (*string)(&inv.BillingReason), &inv.StripeInvoiceID,
 		&inv.IsSimulated, &inv.TaxReversedAt,
 		&inv.PaymentAnomalyKind, &inv.PaymentAnomalyPaymentIntentID, &inv.PaymentAnomalyCapturedCents,
-		&inv.BillingTimezone,
+		&inv.BillingTimezone, &inv.NoPMNotifiedAt,
 	}
+}
+
+// SetNoPMNotifiedAt stamps the send-once marker for the "payment method
+// needed" setup-link email (ADR-087 follow-up). Written by whichever sender
+// delivered the email — a finalize-time collect step or the auto-charge retry
+// sweep — and checked by the sweep so a no-PM invoice is emailed exactly once,
+// not once per tick and not twice across finalize + sweep.
+func (s *PostgresStore) SetNoPMNotifiedAt(ctx context.Context, tenantID, invoiceID string, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+	res, err := tx.ExecContext(ctx, `
+		UPDATE invoices SET no_pm_notified_at = $1 WHERE id = $2
+	`, at, invoiceID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errs.ErrNotFound
+	}
+	return tx.Commit()
 }
 
 // SetPublicToken writes (or overwrites) the hosted-invoice-URL token for a

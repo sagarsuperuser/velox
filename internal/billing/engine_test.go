@@ -861,6 +861,16 @@ func (m *mockInvoices) ReleaseAutoChargeClaim(_ context.Context, _, id string) e
 	return nil
 }
 
+func (m *mockInvoices) SetNoPMNotifiedAt(_ context.Context, _, id string, at time.Time) error {
+	for i, inv := range m.invoices {
+		if inv.ID == id {
+			m.invoices[i].NoPMNotifiedAt = &at
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 func (m *mockInvoices) SetAutoChargePending(_ context.Context, _, id string, pending bool) error {
 	for i, inv := range m.invoices {
 		if inv.ID == id {

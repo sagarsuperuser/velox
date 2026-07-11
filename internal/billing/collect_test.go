@@ -212,3 +212,110 @@ func TestCollectAfterFinalize_SurvivesCallerCancellation(t *testing.T) {
 		t.Error("successful charge must not queue a retry")
 	}
 }
+
+// TestSweepNoPM_SetupEmailSentExactlyOnce pins the sweep-side no-PM email
+// (ADR-087 follow-up): a card-less invoice that reaches the auto-charge sweep
+// WITHOUT a finalize-time email — a sweep-mediated proration invoice, or a
+// finalize whose PM resolve errored (#449 queues without emailing) — gets the
+// setup-link email exactly ONCE across ticks, gated by the durable
+// no_pm_notified_at stamp. A resolve ERROR sends nothing (unknown ≠ missing),
+// and a skipped-no-email outcome stays unstamped so it self-heals when the
+// customer gains an address.
+func TestSweepNoPM_SetupEmailSentExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no PM, never emailed → one email, stamped; second tick silent", func(t *testing.T) {
+		e, invoices, notifier, _, inv := collectFixture()
+		// The sweep only visits flagged invoices; the claim CAS re-asserts it.
+		invoices.invoices[0].AutoChargePending = true
+		inv.AutoChargePending = true
+		// collectFixture's paymentSetups default to no-PM; drive the sweep body.
+		if n, errs := e.processAutoCharge(ctx, []domain.Invoice{inv}); n != 0 || len(errs) != 0 {
+			t.Fatalf("tick 1: charged=%d errs=%v", n, errs)
+		}
+		if len(notifier.got) != 1 {
+			t.Fatalf("tick 1 notifies = %d, want 1", len(notifier.got))
+		}
+		stamped, _ := invoices.GetInvoice(ctx, "t1", inv.ID)
+		if stamped.NoPMNotifiedAt == nil {
+			t.Fatal("send-once marker must be stamped after the email")
+		}
+		// Tick 2 re-lists the same still-unpaid invoice (fresh read, as the
+		// real sweep would).
+		if _, errs := e.processAutoCharge(ctx, []domain.Invoice{stamped}); len(errs) != 0 {
+			t.Fatalf("tick 2 errs: %v", errs)
+		}
+		if len(notifier.got) != 1 {
+			t.Errorf("tick 2 must NOT re-email, total notifies = %d", len(notifier.got))
+		}
+	})
+
+	t.Run("finalize-time email already sent → sweep stays silent", func(t *testing.T) {
+		e, invoices, notifier, sub, inv := collectFixture()
+		// Finalize-time pipeline sends + stamps...
+		e.collectAfterFinalize(ctx, sub, inv, "test")
+		if len(notifier.got) != 1 {
+			t.Fatalf("pipeline notifies = %d, want 1", len(notifier.got))
+		}
+		stamped, _ := invoices.GetInvoice(ctx, "t1", inv.ID)
+		if stamped.NoPMNotifiedAt == nil {
+			t.Fatal("pipeline must stamp the send-once marker")
+		}
+		// ...so the sweep's next tick must not double-send.
+		if _, errs := e.processAutoCharge(ctx, []domain.Invoice{stamped}); len(errs) != 0 {
+			t.Fatalf("sweep errs: %v", errs)
+		}
+		if len(notifier.got) != 1 {
+			t.Errorf("sweep after finalize-time email must NOT re-email, total = %d", len(notifier.got))
+		}
+	})
+
+	t.Run("PM resolve ERROR → no email (unknown ≠ missing), no stamp", func(t *testing.T) {
+		e, invoices, notifier, _, inv := collectFixture()
+		invoices.invoices[0].AutoChargePending = true
+		inv.AutoChargePending = true
+		e.paymentSetups = &erroringPaymentSetups{err: errors.New("db blip")}
+		if _, errs := e.processAutoCharge(ctx, []domain.Invoice{inv}); len(errs) != 0 {
+			t.Fatalf("errs: %v", errs)
+		}
+		if len(notifier.got) != 0 {
+			t.Errorf("resolve error must not email, got %d", len(notifier.got))
+		}
+		got, _ := invoices.GetInvoice(ctx, "t1", inv.ID)
+		if got.NoPMNotifiedAt != nil {
+			t.Error("resolve error must not stamp the marker")
+		}
+	})
+
+	t.Run("customer has no email → unstamped, retried next tick (self-heal)", func(t *testing.T) {
+		e, invoices, _, _, inv := collectFixture()
+		invoices.invoices[0].AutoChargePending = true
+		inv.AutoChargePending = true
+		skipper := &skippingNoPMNotifier{}
+		e.noPMNotifier = skipper
+		if _, errs := e.processAutoCharge(ctx, []domain.Invoice{inv}); len(errs) != 0 {
+			t.Fatalf("errs: %v", errs)
+		}
+		if skipper.calls != 1 {
+			t.Fatalf("notifier attempts = %d, want 1", skipper.calls)
+		}
+		got, _ := invoices.GetInvoice(ctx, "t1", inv.ID)
+		if got.NoPMNotifiedAt != nil {
+			t.Fatal("skipped-no-email must NOT stamp — it must retry when an address appears")
+		}
+		if _, errs := e.processAutoCharge(ctx, []domain.Invoice{got}); len(errs) != 0 {
+			t.Fatalf("tick 2 errs: %v", errs)
+		}
+		if skipper.calls != 2 {
+			t.Errorf("tick 2 must re-attempt (self-heal), attempts = %d", skipper.calls)
+		}
+	})
+}
+
+// skippingNoPMNotifier always reports the customer has no email on file.
+type skippingNoPMNotifier struct{ calls int }
+
+func (n *skippingNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+	n.calls++
+	return domain.NotifySkippedNoEmail, nil
+}

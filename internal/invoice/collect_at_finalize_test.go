@@ -76,6 +76,9 @@ func TestCollectAtFinalize_NoPaymentMethod_QueuesRetryAndNotifies(t *testing.T) 
 	if !got.AutoChargePending {
 		t.Error("expected auto_charge_pending=true so the scheduler self-heals when a card is attached")
 	}
+	if got.NoPMNotifiedAt == nil {
+		t.Error("send-once marker must be stamped after the finalize-time email, or the sweep double-sends")
+	}
 }
 
 // When a manual invoice is finalized for a customer WITH a saved card,

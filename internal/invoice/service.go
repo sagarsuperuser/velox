@@ -497,6 +497,11 @@ func (s *Service) SettleZeroDue(ctx context.Context, tenantID, id string) (domai
 	return s.store.MarkPaid(ctx, tenantID, id, "", s.clock.Now(ctx))
 }
 
+// SetNoPMNotifiedAt stamps the send-once no-PM email marker (see Store).
+func (s *Service) SetNoPMNotifiedAt(ctx context.Context, tenantID, id string, at time.Time) error {
+	return s.store.SetNoPMNotifiedAt(ctx, tenantID, id, at)
+}
+
 func (s *Service) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	return s.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
