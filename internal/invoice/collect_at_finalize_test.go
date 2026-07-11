@@ -336,3 +336,80 @@ func TestCollectAtFinalize_SurvivesClientDisconnect(t *testing.T) {
 		}
 	})
 }
+
+// TestCollectAtFinalize_ZeroDue_AutoPaid is the manual writer's T12 twin
+// (siblings: TestBillOnePeriod_ZeroTotal_AutoPaid, TestFireThreshold_ZeroTotal_
+// AutoPaid). A finalized invoice with nothing left to pay has no payment to
+// wait for — the terminal state is PAID (ADR-066; Stripe parity: zero-amount
+// invoices auto-mark paid with no payment attempt). Pre-fix the collect
+// step's amount_due<=0 early return stranded it finalized/payment_pending
+// FOREVER: every charge path and the retry sweep gate on amount_due>0, and
+// dunning never starts — a permanently-overdue attention item nothing could
+// act on.
+func TestCollectAtFinalize_ZeroDue_AutoPaid(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	inv, err := store.Create(context.Background(), "t1", domain.Invoice{
+		CustomerID: "cus_1", Status: domain.InvoiceFinalized,
+		PaymentStatus: domain.PaymentPending, AmountDueCents: 0,
+	})
+	if err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	charger := &fakeCharger{}
+	notifier := &fakeNoPMNotifier{}
+	h := &Handler{
+		svc:           NewService(store, nil, nil),
+		charger:       charger,
+		paymentSetups: readySetup(),
+		noPMNotifier:  notifier,
+	}
+
+	out := h.collectAtFinalize(context.Background(), "t1", inv)
+
+	if out.Status != domain.InvoicePaid || out.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("returned invoice = %s/%s, want paid/succeeded", out.Status, out.PaymentStatus)
+	}
+	got, _ := store.Get(context.Background(), "t1", inv.ID)
+	if got.Status != domain.InvoicePaid || got.PaymentStatus != domain.PaymentSucceeded {
+		t.Errorf("stored invoice = %s/%s, want paid/succeeded (zero-due must settle, never strand)", got.Status, got.PaymentStatus)
+	}
+	if charger.called {
+		t.Error("nothing due → no charge attempt")
+	}
+	if notifier.called {
+		t.Error("nothing due → no payment-method email")
+	}
+	if got.AutoChargePending {
+		t.Error("nothing due → no retry flag")
+	}
+}
+
+// A DRAFT zero-due invoice must never settle through SettleZeroDue — the
+// DEMO-000906 class: a tax-pending draft jumping to paid blocks tax retry
+// forever. Both the service re-read (status must be finalized) and the
+// store's MarkPaid guard enforce it; this pins the service half.
+func TestSettleZeroDue_DraftIsNotSettled(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	inv, err := store.Create(context.Background(), "t1", domain.Invoice{
+		CustomerID: "cus_1", Status: domain.InvoiceDraft,
+		PaymentStatus: domain.PaymentPending, AmountDueCents: 0,
+	})
+	if err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	svc := NewService(store, nil, nil)
+
+	out, err := svc.SettleZeroDue(context.Background(), "t1", inv.ID)
+	if err != nil {
+		t.Fatalf("SettleZeroDue on a draft must no-op, not error: %v", err)
+	}
+	if out.Status != domain.InvoiceDraft {
+		t.Errorf("draft must stay draft, got %s", out.Status)
+	}
+	got, _ := store.Get(context.Background(), "t1", inv.ID)
+	if got.Status != domain.InvoiceDraft || got.PaymentStatus != domain.PaymentPending {
+		t.Errorf("stored draft mutated to %s/%s — must be untouched", got.Status, got.PaymentStatus)
+	}
+}

@@ -475,6 +475,28 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice,
 // auto-charge retry loop. Used by the finalize handler's no-payment-method
 // branch so a manual invoice self-heals when the customer attaches a card —
 // the same flag the billing engine sets for cycle invoices.
+// SettleZeroDue marks a finalized invoice with nothing left to pay as PAID —
+// the ADR-066 terminal for zero-due invoices (Stripe parity: zero-amount
+// invoices auto-mark paid with no payment attempt). Called by the manual
+// finalize's collect step; the engine's cycle/threshold/tax-retry writers
+// carry their own equivalent arms. Defensive re-read: only a FINALIZED,
+// still-pending, zero-due invoice settles — the store's MarkPaid guard
+// additionally rejects drafts and non-ok tax (the DEMO-000906 class), so a
+// racing tax-pending draft can never jump to paid through here. paid_at is
+// clock-bound (bindForInvoice) so clock-pinned customers settle in simulated
+// time.
+func (s *Service) SettleZeroDue(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
+	inv, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if inv.Status != domain.InvoiceFinalized || inv.AmountDueCents > 0 || inv.PaymentStatus != domain.PaymentPending {
+		return inv, nil // nothing to settle — not an error, the caller keeps the invoice as-is
+	}
+	return s.store.MarkPaid(ctx, tenantID, id, "", s.clock.Now(ctx))
+}
+
 func (s *Service) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	return s.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
