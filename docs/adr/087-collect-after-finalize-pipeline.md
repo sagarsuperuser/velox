@@ -86,6 +86,34 @@ Do **not** fold in the three non-engine paths:
    inline" comments (engine sweep + stripe.go) that obscured this analysis
    are fixed alongside this note.
 
+   **Long-term designs, recorded with triggers (2026-07-11).** The root
+   structural fact behind the tail: the Stripe call and the local outcome
+   write cannot be atomic, and the outcome is recorded only AFTER the call —
+   a lost write makes the ownership partition lie. Two successors, in
+   ascending order of cost:
+
+   - **Tier 1 — derived ownership (adopt on next touch of the sweep or
+     dunning-enrollment queries).** Add "AND no ACTIVE dunning run" (EXISTS)
+     to the sweep's list + claim predicates. Single-owner becomes mechanical
+     even in the torn state, while the rescue property survives (no run ⇒
+     the sweep still owns the orphan). Derivability precedent: ADR-064;
+     query precedent: ListFailedWithoutDunningRun. ~Half a day with
+     collision tests; strictly dominates the current design and retires this
+     section's analysis burden.
+   - **Tier 2 — charge-attempt ledger (trigger: production cutover / first
+     design partner with real money, or the FIRST payment_anomaly firing in
+     anger).** Persist an attempt row (invoice, idempotency key,
+     state=started) BEFORE calling Stripe; persist the outcome into it
+     after; a reconciler re-derives stuck 'started' attempts from Stripe by
+     the STORED key/PI. Kills the torn-write class entirely (a lost outcome
+     write becomes discoverable instead of invisible), replaces the fragile
+     UpdatedAt-derived idempotency key with a stored one (stable against
+     interleaved row writes), and closes the residual DB-outage-during-
+     persist window that the #450 ctx-detach could not. Deliberately NOT
+     built pre-launch: real machinery (migration + hot-path writes + a
+     reconciler across every charge site) with zero observed anomalies —
+     the pre-launch scoping bar says a named pressure first.
+
 ## Error-path fixes unified into the pipeline (behavior changes, tested)
 
 - Resolver error ≠ no-PM: queue for the sweep, do **not** email — before this,
