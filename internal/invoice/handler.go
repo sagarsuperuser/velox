@@ -592,8 +592,16 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 			slog.WarnContext(ctx, "no-payment-method notification failed",
 				"invoice_id", inv.ID, "error", err)
 		case outcome == domain.NotifySkippedNoEmail:
+			// No stamp: self-heals via the sweep if the customer gains an email.
 			slog.InfoContext(ctx, "setup-link email skipped: customer has no email on file",
 				"invoice_id", inv.ID)
+		default:
+			// Send-once marker: the auto-charge sweep revisits this invoice
+			// every tick and must not duplicate the email (ADR-087 follow-up).
+			if serr := h.svc.SetNoPMNotifiedAt(ctx, tenantID, inv.ID, time.Now().UTC()); serr != nil {
+				slog.WarnContext(ctx, "failed to stamp no-PM notified marker",
+					"invoice_id", inv.ID, "error", serr)
+			}
 		}
 	}
 	return inv

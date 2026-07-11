@@ -229,7 +229,12 @@ type Invoice struct {
 	LastPaymentError      string     `json:"last_payment_error,omitempty"`
 	PaymentOverdue        bool       `json:"payment_overdue"`
 	AutoChargePending     bool       `json:"auto_charge_pending,omitempty"`
-	PDFObjectKey          string     `json:"-"`
+	// NoPMNotifiedAt is the send-once marker for the "payment method needed"
+	// setup-link email: stamped by whichever sender delivered it (finalize-time
+	// collect or the auto-charge retry sweep), checked by the sweep so a no-PM
+	// invoice is emailed exactly once, not per tick (ADR-087 follow-up).
+	NoPMNotifiedAt *time.Time `json:"no_pm_notified_at,omitempty"`
+	PDFObjectKey   string     `json:"-"`
 	// PublicToken is the hosted-invoice-URL credential (Stripe-parity
 	// hosted_invoice_url). Generated at finalize; drafts have an empty
 	// token. Rotatable via the rotate-public-token endpoint if the URL

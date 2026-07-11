@@ -125,9 +125,17 @@ func (e *Engine) collectAfterFinalize(ctx context.Context, sub domain.Subscripti
 			"error", err,
 		)
 	case outcome == domain.NotifySkippedNoEmail:
+		// No stamp: if the customer adds an email later, the sweep's
+		// send-once check should still let the notification go out.
 		slog.InfoContext(ctx, logTag+": setup-link email skipped: customer has no email on file",
 			"invoice_id", inv.ID)
 	default:
+		// Stamp the send-once marker so the auto-charge sweep (which visits
+		// this still-unpaid invoice every tick) doesn't send a duplicate.
+		// Best-effort: a failed stamp risks one extra email, never a lost one.
+		if serr := e.invoices.SetNoPMNotifiedAt(ctx, sub.TenantID, inv.ID, e.clock.Now(ctx)); serr != nil {
+			slog.WarnContext(ctx, logTag+": failed to stamp no-PM notified marker", "invoice_id", inv.ID, "error", serr)
+		}
 		slog.InfoContext(ctx, logTag+": setup-link email queued", "invoice_id", inv.ID)
 	}
 }

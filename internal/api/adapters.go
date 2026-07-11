@@ -190,6 +190,10 @@ func (a *invoiceWriterAdapter) SetAutoChargePending(ctx context.Context, tenantI
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }
 
+func (a *invoiceWriterAdapter) SetNoPMNotifiedAt(ctx context.Context, tenantID, invoiceID string, at time.Time) error {
+	return a.store.SetNoPMNotifiedAt(ctx, tenantID, invoiceID, at)
+}
+
 func (a *invoiceWriterAdapter) ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error) {
 	return a.store.ClaimAutoCharge(ctx, tenantID, id)
 }

@@ -156,6 +156,10 @@ func (a *invoiceStoreAdapter) CreateInvoiceWithLineItemsTx(ctx context.Context, 
 	return a.store.CreateWithLineItemsTx(ctx, tx, tenantID, inv, items)
 }
 
+func (a *invoiceStoreAdapter) SetNoPMNotifiedAt(ctx context.Context, tenantID, id string, at time.Time) error {
+	return a.store.SetNoPMNotifiedAt(ctx, tenantID, id, at)
+}
+
 func (a *invoiceStoreAdapter) SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error {
 	return a.store.SetAutoChargePending(ctx, tenantID, id, pending)
 }

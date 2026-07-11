@@ -50,6 +50,10 @@ type Store interface {
 	UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error)
 
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	// SetNoPMNotifiedAt stamps the send-once marker for the no-PM setup-link
+	// email (checked by the auto-charge sweep; stamped by whichever sender
+	// delivered the email).
+	SetNoPMNotifiedAt(ctx context.Context, tenantID, invoiceID string, at time.Time) error
 	// ClaimAutoCharge / ReleaseAutoChargeClaim: the per-invoice charge
 	// lease (HA hazard #1) — exactly one sweep leader enters the charge
 	// leg per invoice per 5m window.

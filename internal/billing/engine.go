@@ -534,6 +534,11 @@ type InvoiceWriter interface {
 	ListLineItems(ctx context.Context, tenantID, invoiceID string) ([]domain.InvoiceLineItem, error)
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
+	// SetNoPMNotifiedAt stamps the send-once marker for the no-PM setup-link
+	// email (ADR-087 follow-up): whoever delivers the email stamps it; the
+	// auto-charge sweep checks it so a card-less invoice is emailed exactly
+	// once, not once per tick.
+	SetNoPMNotifiedAt(ctx context.Context, tenantID, invoiceID string, at time.Time) error
 	// ClaimAutoCharge takes the per-invoice charge lease (HA hazard #1):
 	// CAS re-asserting the full eligibility predicate; false = another
 	// leader owns the invoice or its state moved on — skip, never charge.
@@ -5275,6 +5280,31 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 
 		stripeCusID, stripePMID, err := e.paymentSetups.ResolveForCharge(ctx, inv.TenantID, inv.CustomerID)
 		if err != nil || stripePMID == "" || stripeCusID == "" {
+			// Genuinely no PM (not a resolve error) and never emailed: send
+			// the setup-link email ONCE (ADR-087 follow-up). This closes the
+			// sweep-mediated silence: a proration invoice is enrolled here
+			// without any finalize-time email, and a finalize-time resolver
+			// error deliberately queues without emailing — pre-fix both aged
+			// into overdue with zero customer contact. The no_pm_notified_at
+			// stamp is the send-once marker (finalize-time senders stamp it
+			// too), so the per-tick revisit never duplicates; a
+			// skipped-no-email outcome is left unstamped so it self-heals if
+			// the customer gains an address. Runs inside the charge lease, so
+			// rival HA sweep leaders can't double-send within a tick.
+			if err == nil && inv.NoPMNotifiedAt == nil {
+				outcome, nerr := e.noPMNotifier.NotifyNoPaymentMethod(ctx, inv.TenantID, inv)
+				switch {
+				case nerr != nil:
+					slog.Warn("auto-charge retry: no-PM notification failed", "invoice_id", inv.ID, "error", nerr)
+				case outcome == domain.NotifySkippedNoEmail:
+					slog.Info("auto-charge retry: setup-link email skipped: customer has no email on file", "invoice_id", inv.ID)
+				default:
+					if serr := e.invoices.SetNoPMNotifiedAt(ctx, inv.TenantID, inv.ID, e.clock.Now(ctx)); serr != nil {
+						slog.Warn("auto-charge retry: failed to stamp no-PM notified marker", "invoice_id", inv.ID, "error", serr)
+					}
+					slog.Info("auto-charge retry: setup-link email queued", "invoice_id", inv.ID)
+				}
+			}
 			// Provably pre-Stripe (no chargeable PM resolved): release so
 			// dunning enrollment / a card attach retries without lease lag.
 			_ = e.invoices.ReleaseAutoChargeClaim(ctx, inv.TenantID, inv.ID)
