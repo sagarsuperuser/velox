@@ -31,9 +31,13 @@ Do **not** fold in the three non-engine paths:
   (#451).
 - **Proration invoices** — sweep-mediated by design: inline charging would
   wall-clock-charge simulated invoices and duplicate the charge path
-  (subscription handler comment). The missing no-PM setup email for proration
-  invoices remains an open gap whose fix belongs in the sweep, gated on a
-  dedup mechanism (the sweep re-ticks; an email per tick is spam).
+  (subscription handler comment). The missing no-PM setup email was **closed
+  2026-07-11 (#453)** in the sweep, generalized to every sweep-mediated
+  card-less invoice: send-once via the durable `invoices.no_pm_notified_at`
+  marker (migration 0145), stamped by every sender (finalize-time collect
+  steps + the sweep) so no path duplicates another; resolve errors still send
+  nothing (unknown ≠ missing); skipped-no-email stays unstamped so it
+  self-heals when the customer gains an address.
 - **Tax-retry auto-finalize** — collectless by design; the threshold path
   pre-plants the inert flag on tax-deferred drafts and the sweep collects the
   moment tax retry finalizes.
@@ -60,8 +64,27 @@ Do **not** fold in the three non-engine paths:
    keys) or silent dead-ends. A shared decline arm needs error-type
    classification, which no finalize site had at decision time; #449 has
    since given the MANUAL site exactly that classification (declines →
-   dunning, everything else → flag) — the engine sites keep flag-always,
-   whose decline flag the sweep clears on its next tick.
+   dunning, everything else → flag) — the engine sites keep flag-always.
+
+   **Engine flag-on-decline: analyzed and deliberately KEPT (2026-07-11).**
+   Ownership is partitioned by `payment_status`: a persisted decline is
+   `failed`, which the sweep's pending-only predicate never lists — the flag
+   is inert and dunning is the single owner. The only entrance to a
+   two-owner state (`pending` + flag + active run) is a decline whose
+   outcome-persist fails all 3 retries (verified: `startDunningWithRetry`
+   fires after the persist attempt regardless, and nothing ever resets
+   `payment_status` to `pending`). In that state the interleavings converge:
+   first success marks paid and the other owner's pre-check skips; a sweep
+   decline clears the flag (ownership handoff). Actual double capture needs
+   same-instant ticks from two independent schedulers on top of the triple
+   failure, and lands in the payment-anomaly machinery (#318–#320), not
+   silently. Removing flag-on-decline to "fix" that tail would orphan the
+   sibling case — persist failed AND inline dunning start failed AND webhook
+   lost leaves `pending` with NO owner but the flag. The flag is the safety
+   net for exactly the failure that creates the window; classification at
+   engine sites would be net-harm. The two stale "dunning is NOT started
+   inline" comments (engine sweep + stripe.go) that obscured this analysis
+   are fixed alongside this note.
 
 ## Error-path fixes unified into the pipeline (behavior changes, tested)
 
