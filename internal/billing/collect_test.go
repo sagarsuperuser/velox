@@ -23,6 +23,7 @@ func collectFixture() (*Engine, *mockInvoices, *fakeNoPMNotifier, domain.Subscri
 	inv := domain.Invoice{
 		ID: "inv_c1", TenantID: "t1", CustomerID: "cus_1",
 		Status: domain.InvoiceFinalized, PaymentStatus: domain.PaymentPending,
+		TaxFacts:      domain.TaxFacts{TaxStatus: domain.InvoiceTaxOK},
 		SubtotalCents: 5000, TotalAmountCents: 5000, AmountDueCents: 5000,
 	}
 	invoices := &mockInvoices{invoices: []domain.Invoice{inv}}
@@ -318,4 +319,84 @@ type skippingNoPMNotifier struct{ calls int }
 func (n *skippingNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
 	n.calls++
 	return domain.NotifySkippedNoEmail, nil
+}
+
+// TestApplyCreditsAndCollect pins ADR-088: day-1 and final-on-cancel invoices
+// consume the customer's credit balance before any card charge — the card is
+// charged only the remainder, a fully covered invoice settles paid with no
+// payment attempt, and an apply FAILURE queues for the sweep WITHOUT charging
+// (trap R1: the 2026-05-30 overcharge class — the sweep re-applies credits
+// atomically before its own charge, so recovery pre-exists).
+func TestApplyCreditsAndCollect(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("partial credit → card charged exactly the remainder", func(t *testing.T) {
+		e, invoices, _, sub, inv := collectFixture()
+		e.paymentSetups = &fakePaymentSetups{ready: true, stripeCustomerID: "cus_stripe"}
+		charger := &recordingCharger{}
+		e.charger = charger
+		e.credits = &fakeCreditApplier{inv: invoices, applyCents: 2000}
+
+		e.applyCreditsAndCollect(ctx, sub, inv, "test")
+		if len(charger.got) != 1 {
+			t.Fatalf("charges = %d, want 1", len(charger.got))
+		}
+		if charger.got[0].AmountDueCents != 3000 {
+			t.Errorf("charged = %d, want post-credit remainder 3000 (5000 - 2000)", charger.got[0].AmountDueCents)
+		}
+	})
+
+	t.Run("full credit → settled paid, no charge, dunning resolved", func(t *testing.T) {
+		e, invoices, notifier, sub, inv := collectFixture()
+		e.paymentSetups = &fakePaymentSetups{ready: true, stripeCustomerID: "cus_stripe"}
+		charger := &recordingCharger{}
+		e.charger = charger
+		e.credits = &fakeCreditApplier{inv: invoices, applyCents: 5000}
+		resolver := &recordingDunningResolver{}
+		e.SetDunningResolver(resolver)
+
+		e.applyCreditsAndCollect(ctx, sub, inv, "test")
+		if len(charger.got) != 0 {
+			t.Errorf("fully covered → no charge, got %d", len(charger.got))
+		}
+		got, _ := invoices.GetInvoice(ctx, "t1", inv.ID)
+		if got.Status != domain.InvoicePaid || got.PaymentStatus != domain.PaymentSucceeded {
+			t.Errorf("invoice = %s/%s, want paid/succeeded (Stripe parity: no payment attempted)", got.Status, got.PaymentStatus)
+		}
+		if len(resolver.resolved) != 1 {
+			t.Errorf("credit settle must resolve dunning, got %d", len(resolver.resolved))
+		}
+		if len(notifier.got) != 0 {
+			t.Errorf("no email on a settled invoice, got %d", len(notifier.got))
+		}
+	})
+
+	t.Run("apply FAILS → queued for sweep, card NEVER charged pre-credit (R1)", func(t *testing.T) {
+		e, invoices, _, sub, inv := collectFixture()
+		e.paymentSetups = &fakePaymentSetups{ready: true, stripeCustomerID: "cus_stripe"}
+		charger := &recordingCharger{}
+		e.charger = charger
+		e.credits = &fakeCreditApplier{inv: invoices, err: errors.New("ledger blip")}
+
+		e.applyCreditsAndCollect(ctx, sub, inv, "test")
+		if len(charger.got) != 0 {
+			t.Fatalf("apply failure must NEVER charge the pre-credit amount, got %d charges", len(charger.got))
+		}
+		if !autoChargePending(t, invoices, inv.ID) {
+			t.Error("apply failure must queue for the sweep (which re-applies atomically)")
+		}
+	})
+
+	t.Run("draft invoice → credits not applied (waits for tax-retry + sweep)", func(t *testing.T) {
+		e, invoices, _, sub, inv := collectFixture()
+		invoices.invoices[0].Status = domain.InvoiceDraft
+		inv.Status = domain.InvoiceDraft
+		applier := &fakeCreditApplier{inv: invoices, applyCents: 5000}
+		e.credits = applier
+
+		e.applyCreditsAndCollect(ctx, sub, inv, "test")
+		if applier.calls != 0 {
+			t.Errorf("credits must not apply to a draft, got %d applies", applier.calls)
+		}
+	})
 }

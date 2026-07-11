@@ -29,6 +29,15 @@ func (testChargerSentinel) ChargeInvoice(_ context.Context, _ string, inv domain
 	return inv, errors.New("testChargerSentinel: flow reached ChargeInvoice without a real charger fake")
 }
 
+// testDunningResolver satisfies the required DunningResolver for engines
+// whose flows can settle an invoice (credit-cover settles resolve dunning).
+type testDunningResolver struct{ resolved []string }
+
+func (d *testDunningResolver) ResolveByInvoice(_ context.Context, _, invoiceID string, _ domain.DunningResolution) error {
+	d.resolved = append(d.resolved, invoiceID)
+	return nil
+}
+
 // testNoPMNotifier records sends (queue+notify arm).
 type testNoPMNotifier struct{ got []domain.Invoice }
 
