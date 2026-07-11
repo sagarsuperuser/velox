@@ -13,6 +13,7 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Added
 
+- **Customer credit balance now applies to manual (one-off) invoices at finalize (2026-07-11, ADR-088).** The industry splits here (Stripe and Chargebee apply, Lago excludes); Velox follows its Stripe anchor: the balance drains clock-bound at finalize, the card is charged only the remainder, a fully covered invoice settles paid, and a failed application queues for the retry sweep without ever charging the pre-credit amount.
 - **Customer credit balance now applies to day-1 and cancellation invoices (2026-07-11, ADR-088).** A credit-holding customer's card was charged full price on the subscription's first invoice and the final-on-cancel invoice — out of parity with every surveyed platform (Stripe, Chargebee, Lago, Orb, Metronome: none exclude first/final invoices from automatic application). The balance now applies at finalize; the card is charged only the remainder; a fully covered invoice settles paid with no payment attempt. A failed credit application queues for the retry sweep and never charges the pre-credit amount.
 
 ### Fixed

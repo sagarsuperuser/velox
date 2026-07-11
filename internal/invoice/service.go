@@ -148,6 +148,7 @@ type Service struct {
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
 	customerReader CustomerReader
+	creditApplier  CreditApplier
 	settings       TenantSettingsReader
 	audit          AuditLogger
 	events         domain.EventDispatcher
@@ -475,6 +476,43 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice,
 // auto-charge retry loop. Used by the finalize handler's no-payment-method
 // branch so a manual invoice self-heals when the customer attaches a card —
 // the same flag the billing engine sets for cycle invoices.
+// CreditApplier drains a customer's credit balance against an invoice —
+// atomic ledger debit + amount_due reduction. Satisfied by credit.Service;
+// kept as a local interface so this package doesn't import internal/credit
+// (same pattern as PaymentMethodReader).
+type CreditApplier interface {
+	ApplyToInvoiceAt(ctx context.Context, tenantID, customerID, invoiceID string, amountCents int64, at time.Time, invoiceNumber ...string) (int64, error)
+}
+
+// SetCreditApplier wires the credit-balance drain used at manual finalize
+// (ADR-088: the balance applies to one-off invoices too — Stripe parity).
+func (s *Service) SetCreditApplier(c CreditApplier) {
+	s.creditApplier = c
+}
+
+// ApplyCreditBalance drains the customer's credit balance against a
+// FINALIZED invoice and returns the refreshed row (ADR-088). Clock-bound:
+// the ledger entry's timestamp rides the invoice's test clock for pinned
+// customers (bindForInvoice), mirroring the engine's EffectiveNowForInvoice.
+// No-op (invoice returned unchanged) when no applier is wired, nothing is
+// due, or the invoice isn't finalized — a draft's credits wait for
+// finalize. An apply error is returned for the caller to route to the
+// retry sweep, which re-applies atomically before its own charge.
+func (s *Service) ApplyCreditBalance(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
+	ctx = s.bindForInvoice(ctx, tenantID, id)
+	inv, err := s.store.Get(ctx, tenantID, id)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if s.creditApplier == nil || inv.AmountDueCents <= 0 || inv.Status != domain.InvoiceFinalized {
+		return inv, nil
+	}
+	if _, err := s.creditApplier.ApplyToInvoiceAt(ctx, tenantID, inv.CustomerID, inv.ID, inv.AmountDueCents, s.clock.Now(ctx), inv.InvoiceNumber); err != nil {
+		return inv, err
+	}
+	return s.store.Get(ctx, tenantID, id)
+}
+
 // SettleZeroDue marks a finalized invoice with nothing left to pay as PAID —
 // the ADR-066 terminal for zero-due invoices (Stripe parity: zero-amount
 // invoices auto-mark paid with no payment attempt). Called by the manual
