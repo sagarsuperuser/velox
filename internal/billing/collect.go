@@ -140,6 +140,65 @@ func (e *Engine) collectAfterFinalize(ctx context.Context, sub domain.Subscripti
 	}
 }
 
+// applyCreditsAndCollect is the finalize-tail for sites whose invoice should
+// consume the customer's credit balance before any card charge (ADR-088:
+// day-1 subscription_create and the final-on-cancel invoice — industry
+// parity is unanimous that first/final invoices are not excluded from
+// automatic application; cycle close and threshold keep their own in-place
+// blocks, whose $0 arm is entangled with cycle control flow, ADR-087 trap
+// R2). Sequence mirrors the retry sweep's proven shape: apply → reload →
+// settle-if-zero → collect.
+//
+// Trap R1 (the 2026-05-30 overcharge class) is honored by construction: an
+// apply FAILURE queues for the sweep and returns — never a pre-credit card
+// charge — and the sweep re-applies credits atomically before charging, so
+// recovery pre-exists. Credits apply only to a FINALIZED invoice: a
+// tax-pending day-1 draft waits for the tax-retry chain, whose sweep
+// collection re-applies credits itself. The e.credits nil-guard matches the
+// sweep's existing guard (narrow unit fixtures); production boot requires
+// the collaborator (#442).
+func (e *Engine) applyCreditsAndCollect(ctx context.Context, sub domain.Subscription, inv domain.Invoice, logTag string) {
+	ctx = context.WithoutCancel(ctx) // same contract as collectAfterFinalize; also shields the apply/settle writes
+	if e.credits != nil && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
+		at, nowErr := e.EffectiveNowForInvoice(ctx, sub.TenantID, inv.ID)
+		if nowErr != nil {
+			at = e.clock.Now(ctx) // ADR-030: injected clock, never bare wall-clock
+		}
+		if _, err := e.credits.ApplyToInvoiceAt(ctx, sub.TenantID, sub.CustomerID, inv.ID, inv.AmountDueCents, at, inv.InvoiceNumber); err != nil {
+			slog.WarnContext(ctx, logTag+": credit apply failed — queuing for scheduler retry; never charging pre-credit",
+				"invoice_id", inv.ID, "error", err)
+			e.queueForChargeRetry(ctx, sub.TenantID, inv.ID)
+			return
+		}
+		refreshed, err := e.invoices.GetInvoice(ctx, sub.TenantID, inv.ID)
+		if err != nil {
+			slog.WarnContext(ctx, logTag+": post-credit invoice reload failed; queuing for scheduler retry",
+				"invoice_id", inv.ID, "error", err)
+			e.queueForChargeRetry(ctx, sub.TenantID, inv.ID)
+			return
+		}
+		inv = refreshed
+		if inv.AmountDueCents <= 0 {
+			// Fully covered by balance: settle without a card charge (Stripe
+			// parity: no payment is attempted). Finalized-only by the gate
+			// above, so the DEMO-000906 draft guard holds by construction.
+			if _, err := e.invoices.MarkPaid(ctx, sub.TenantID, inv.ID, "", at); err != nil {
+				// Mirrors the cycle site's failure surface: loud warn; the
+				// credits are durably applied, an operator retry settles it.
+				slog.WarnContext(ctx, logTag+": fully-credited invoice could not be marked paid",
+					"invoice_id", inv.ID, "error", err)
+				return
+			}
+			e.resolveDunningRecovered(ctx, sub.TenantID, inv.ID)
+			slog.InfoContext(ctx, logTag+": invoice fully covered by credits, marked as paid", "invoice_id", inv.ID)
+			return
+		}
+	}
+	if inv.AmountDueCents > 0 {
+		e.collectAfterFinalize(ctx, sub, inv, logTag)
+	}
+}
+
 // queueForChargeRetry sets auto_charge_pending=true so RetryPendingCharges
 // picks the invoice up on its next tick. Best-effort: a failed set(true) is a
 // liveness sink — the invoice stays invisible to the sweep forever (playbook

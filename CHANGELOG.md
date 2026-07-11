@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Customer credit balance now applies to day-1 and cancellation invoices (2026-07-11, ADR-088).** A credit-holding customer's card was charged full price on the subscription's first invoice and the final-on-cancel invoice — out of parity with every surveyed platform (Stripe, Chargebee, Lago, Orb, Metronome: none exclude first/final invoices from automatic application). The balance now applies at finalize; the card is charged only the remainder; a fully covered invoice settles paid with no payment attempt. A failed credit application queues for the retry sweep and never charges the pre-credit amount.
+
 ### Fixed
 
 - **Card-less customers now get the setup-link email for sweep-mediated invoices — exactly once (2026-07-11, ADR-087 follow-up).** A proration invoice (mid-period upgrade) is collected only by the auto-charge retry sweep, which silently skipped no-PM invoices every tick — the customer was never told and the invoice aged into overdue with zero contact; the same silence covered any invoice whose finalize-time PM lookup errored. The sweep now sends the setup-link email once, gated by a durable `no_pm_notified_at` marker that finalize-time senders also stamp (no duplicates across paths, no email-per-tick, and a customer without an address self-heals when one is added). Migration 0145.

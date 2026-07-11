@@ -3569,14 +3569,13 @@ func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscri
 		}
 	}
 
-	// Auto-charge (or queue + notify) via the shared pipeline. NOTE: no
-	// credit-apply and no pause gate here — a day-1 invoice is created at
-	// subscribe time, before any pause can exist; credits-at-create is a
-	// deliberate open question recorded in the design review (D2), not a
-	// pipeline concern.
-	if inv.AmountDueCents > 0 {
-		e.collectAfterFinalize(ctx, sub, inv, "subscription_create")
-	}
+	// Apply the customer's credit balance, then auto-charge the remainder
+	// (or queue + notify) via the shared pipeline (ADR-088 — industry parity
+	// is unanimous that day-1 invoices consume the balance; pre-ADR-088 a
+	// credit-holding customer's card was charged full price here). No pause
+	// gate: a day-1 invoice is created at subscribe time, before any pause
+	// can exist.
+	e.applyCreditsAndCollect(ctx, sub, inv, "subscription_create")
 }
 
 // BillFinalOnImmediateCancel emits the final partial-period invoice
@@ -4278,11 +4277,10 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 		}
 	}
 
-	// Auto-charge (or queue + notify) via the shared pipeline; dunning takes
+	// Apply the customer's credit balance, then auto-charge the remainder
+	// (or queue + notify) via the shared pipeline (ADR-088); dunning takes
 	// over on a real decline (inline in the charger).
-	if inv.AmountDueCents > 0 {
-		e.collectAfterFinalize(ctx, sub, inv, "final on cancel")
-	}
+	e.applyCreditsAndCollect(ctx, sub, inv, "final on cancel")
 
 	slog.Info("subscription_cancel final invoice generated",
 		"invoice_id", inv.ID,
