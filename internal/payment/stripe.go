@@ -512,10 +512,14 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 		// but-actually-succeeded charge would double-bill the customer; the
 		// reconciler resolves unknowns by querying Stripe later.
 		//
-		// Dunning is NOT started here. With Confirm:true + OffSession:true,
-		// Stripe creates the PI even on decline and sends
-		// payment_intent.payment_failed, which triggers dunning via
-		// handlePaymentFailed(). Starting dunning here would duplicate.
+		// Dunning for DEFINITE failures is started inline further down this
+		// block (!pe.Unknown → startDunningWithRetry — added for test-clock
+		// catchup, see that comment). The payment_intent.payment_failed
+		// webhook (handlePaymentFailed) is the redundant-but-idempotent
+		// second path: with Confirm:true + OffSession:true Stripe creates
+		// the PI even on decline and sends the event; StartDunning's
+		// per-invoice UNIQUE makes the pair safe. Unknown outcomes start
+		// nothing — the reconciler resolves them first.
 		var pe *PaymentError
 		if !errors.As(err, &pe) {
 			pe = &PaymentError{Message: errs.Scrub(err.Error()), Unknown: true}

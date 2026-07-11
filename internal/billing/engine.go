@@ -5315,16 +5315,18 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		if _, err := e.charger.ChargeInvoice(chargeCtx, inv.TenantID, inv, stripeCusID, stripePMID); err != nil {
 			cancel()
 			// Card decline: expected outcome. ChargeInvoice stamped
-			// invoice.payment_status='failed'; dunning is started by the
-			// payment_intent.payment_failed WEBHOOK (handlePaymentFailed) —
-			// with Confirm+OffSession, Stripe creates the PI even on decline
-			// and sends that event — NOT inline in ChargeInvoice (see
-			// stripe.go: "Dunning is NOT started here"). A lost/late webhook
-			// is backstopped by the EnrollFailedWithoutDunning reconciler.
-			// Don't push the catchup to internal_failure for a normal payment
-			// failure. SetAutoChargePending(false) so the next catchup run
-			// doesn't re-pick the invoice — dunning's retry schedule drives
-			// subsequent attempts.
+			// invoice.payment_status='failed' AND started dunning inline for
+			// definite failures (stripe.go startDunningWithRetry; the
+			// payment_intent.payment_failed webhook is the idempotent second
+			// path, and a lost/late webhook is backstopped by the
+			// EnrollFailedWithoutDunning reconciler). Don't push the catchup
+			// to internal_failure for a normal payment failure.
+			// SetAutoChargePending(false) is the OWNERSHIP HANDOFF: dunning's
+			// retry schedule drives subsequent attempts, and clearing the
+			// flag keeps the sweep from ever being a second retry owner
+			// (ADR-087 §3 records why the finalize sites' flag-on-decline is
+			// still safe: a persisted decline is status='failed', which this
+			// sweep's pending-only predicate never lists).
 			var pe *payment.PaymentError
 			if errors.As(err, &pe) && pe.DeclineCode != "" {
 				if err := e.invoices.SetAutoChargePending(ctx, inv.TenantID, inv.ID, false); err != nil {
