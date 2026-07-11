@@ -1,4 +1,4 @@
-package payment
+package payment_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
+	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
@@ -46,7 +47,7 @@ func TestPaymentUpdateToken_BurnAndRestoreSemantics(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	svc := NewTokenService(db)
+	svc := payment.NewTokenService(db)
 	raw, err := svc.Create(ctx, tenantID, cust.ID, inv.ID)
 	if err != nil {
 		t.Fatalf("create token: %v", err)

@@ -20,6 +20,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/payment"
 )
 
 // CustomerGetter resolves customer IDs to names and billing profiles for PDF rendering.
@@ -492,16 +493,40 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	pmReady := psErr == nil && ps.SetupStatus == domain.PaymentSetupReady &&
 		ps.StripeCustomerID != "" && ps.StripePaymentMethodID != ""
 	if pmReady {
-		if charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID); err != nil {
-			// A failed charge attempt starts dunning (the single retry
-			// owner), so we deliberately do NOT also set auto_charge_pending
-			// here — the scheduler clears that flag for declines anyway and
-			// defers to dunning; setting it would be redundant.
-			slog.WarnContext(ctx, "auto-charge failed, invoice stays finalized; dunning drives collection",
-				"invoice_id", inv.ID, "error", err)
-		} else {
+		charged, err := h.charger.ChargeInvoice(ctx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
+		if err == nil {
 			inv = charged
 			slog.InfoContext(ctx, "auto-charge initiated", "invoice_id", inv.ID)
+			return inv
+		}
+		var pe *payment.PaymentError
+		if errors.As(err, &pe) && !pe.Unknown {
+			// Definite decline: the charger persisted payment_status=failed
+			// and started dunning inline — dunning is the single retry owner.
+			// Deliberately NO auto_charge_pending: a second retry owner
+			// minting its own idempotency keys is a double-charge window, and
+			// the sweep only lists payment_status='pending' rows anyway.
+			slog.WarnContext(ctx, "auto-charge declined, invoice stays finalized; dunning drives collection",
+				"invoice_id", inv.ID, "error", err)
+			return inv
+		}
+		// Transient (breaker open — the charger deliberately left the invoice
+		// untouched, no PI exists), ambiguous outcome (persisted 'unknown';
+		// the reconciler resolves the true state against Stripe), or an
+		// unclassified error. NO dunning exists for any of these — nothing
+		// definitely failed — so pre-fix nothing ever retried: no flag, no
+		// dunning, no email, the invoice silently aged into overdue. Queue
+		// for the sweep. Safe by the sweep's own predicate: it lists only
+		// payment_status='pending' rows, so the flag re-drives the breaker
+		// case on the next tick and stays inert on 'unknown'/'failed' until
+		// the reconciler or dunning owns the outcome.
+		slog.WarnContext(ctx, "auto-charge did not complete; queuing for scheduler retry",
+			"invoice_id", inv.ID, "error", err)
+		if err := h.svc.SetAutoChargePending(ctx, tenantID, inv.ID, true); err != nil {
+			// A failed set(true) is a liveness sink: the invoice stays
+			// invisible to RetryPendingCharges forever (playbook class G).
+			slog.WarnContext(ctx, "failed to mark invoice for auto-charge retry",
+				"invoice_id", inv.ID, "error", err)
 		}
 		return inv
 	}

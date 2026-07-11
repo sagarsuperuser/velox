@@ -45,7 +45,7 @@ var allowedCrossDomainImports = map[string][]string{
 	"dashmembers":    {"audit", "auth", "session"},
 	"dunning":        {"auth"},
 	"hostedinvoice":  {"invoice"},
-	"invoice":        {"auth", "tax"},
+	"invoice":        {"auth", "payment", "tax"}, // payment = error-taxonomy value types only (PaymentError, ErrPaymentTransient — classified by the finalize decline arm); never the Service
 	"payment":        {"auth", "tax", "tenantstripe"},
 	"paymentmethods": {"auth", "payment"},
 	"pricing":        {"auth"},

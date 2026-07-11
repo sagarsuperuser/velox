@@ -2,9 +2,11 @@ package invoice
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/payment"
 )
 
 // fakeCharger records whether the auto-charge was attempted.
@@ -153,4 +155,80 @@ func TestCollectAtFinalize_ReadyStatusWithoutPMID_QueuesInsteadOfCharging(t *tes
 	if !got.AutoChargePending {
 		t.Error("expected auto_charge_pending=true so the sweep charges once a real PM exists")
 	}
+}
+
+// readySetup is the canonical chargeable payment setup for decline-arm tests.
+func readySetup() *fakePaymentSetups {
+	return &fakePaymentSetups{setup: domain.CustomerPaymentSetup{
+		SetupStatus: domain.PaymentSetupReady, StripeCustomerID: "cus_stripe_1", StripePaymentMethodID: "pm_1",
+	}}
+}
+
+// declineArmFixture seeds one $50 invoice and a handler whose charger fails
+// with chargeErr, runs collectAtFinalize, and reports whether the retry flag
+// was set. The notifier must never fire on the PM-ready path.
+func declineArmFixture(t *testing.T, chargeErr error) (flagSet bool) {
+	t.Helper()
+	store := newMemStore()
+	inv, err := store.Create(context.Background(), "t1", domain.Invoice{AmountDueCents: 5000, CustomerID: "cus_1"})
+	if err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	notifier := &fakeNoPMNotifier{}
+	h := &Handler{
+		svc:           NewService(store, nil, nil),
+		charger:       &fakeCharger{err: chargeErr},
+		paymentSetups: readySetup(),
+		noPMNotifier:  notifier,
+	}
+	h.collectAtFinalize(context.Background(), "t1", inv)
+	if notifier.called {
+		t.Error("notifier must not fire on the PM-ready path (the customer has a card)")
+	}
+	got, _ := store.Get(context.Background(), "t1", inv.ID)
+	return got.AutoChargePending
+}
+
+// TestCollectAtFinalize_DeclineOwnership pins WHO retries each charge-failure
+// class after a manual finalize (ADR-087 follow-up). A definite decline is
+// dunning's job — the charger starts a run inline — so the retry flag stays
+// off (two owners minting distinct idempotency keys is a double-charge
+// window). Every non-definite failure (breaker-open transient, ambiguous
+// outcome, unclassified error) starts NO dunning, so the flag is the only
+// retry path: pre-fix these dead-ended silently — no flag, no dunning, no
+// email — and the invoice aged into overdue with nothing ever picking it up.
+func TestCollectAtFinalize_DeclineOwnership(t *testing.T) {
+	t.Parallel()
+
+	t.Run("definite decline → no flag (dunning owns the retry)", func(t *testing.T) {
+		t.Parallel()
+		flagSet := declineArmFixture(t, &payment.PaymentError{Message: "card declined", DeclineCode: "card_declined"})
+		if flagSet {
+			t.Error("definite decline must NOT set auto_charge_pending — dunning is the single retry owner")
+		}
+	})
+
+	t.Run("breaker-open transient → flag set (sweep re-drives next tick)", func(t *testing.T) {
+		t.Parallel()
+		flagSet := declineArmFixture(t, payment.ErrPaymentTransient)
+		if !flagSet {
+			t.Error("transient failure left no retry owner: flag must be set (invoice untouched, payment_status stays pending, sweep re-charges)")
+		}
+	})
+
+	t.Run("ambiguous outcome → flag set (inert until the reconciler resolves)", func(t *testing.T) {
+		t.Parallel()
+		flagSet := declineArmFixture(t, &payment.PaymentError{Message: "stripe 5xx", Unknown: true})
+		if !flagSet {
+			t.Error("unknown outcome must set the flag: the sweep's payment_status='pending' predicate keeps it inert until the reconciler settles the true state")
+		}
+	})
+
+	t.Run("unclassified error → flag set (conservative arm)", func(t *testing.T) {
+		t.Parallel()
+		flagSet := declineArmFixture(t, errors.New("wiring bug"))
+		if !flagSet {
+			t.Error("an unclassified charge error must queue for retry, never dead-end")
+		}
+	})
 }
