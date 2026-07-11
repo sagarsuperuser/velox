@@ -476,9 +476,6 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 //     invoice silently went overdue — customer never told, scheduler never
 //     retried.
 func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv domain.Invoice) domain.Invoice {
-	if h.charger == nil || h.paymentSetups == nil || inv.AmountDueCents <= 0 {
-		return inv
-	}
 	// Once the invoice is finalized, collection must not be abortable by the
 	// operator's browser: this ctx is the HTTP request's, and a client
 	// disconnect mid-charge would cancel the Stripe call at its most
@@ -491,6 +488,38 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 	// deadline below (the engine pipeline's shape: durable parent for
 	// bookkeeping, disposable child for the risky call).
 	ctx = context.WithoutCancel(ctx)
+
+	if inv.AmountDueCents <= 0 {
+		// Finalized with nothing left to pay (the ADR-066 class): there is no
+		// payment to wait for, so the terminal state is PAID — Stripe parity:
+		// zero-amount invoices auto-mark paid with no payment attempt.
+		// Pre-fix this was a bare early return, which stranded the invoice
+		// finalized/payment_pending FOREVER: every charge path gates on
+		// amount_due > 0 (correctly), the retry sweep's predicate too, and
+		// dunning never starts — it aged into a permanently-overdue attention
+		// item nothing could act on. The engine's cycle, threshold, and
+		// tax-retry writers all carry this settle arm; the manual writer was
+		// the one that imitated the collect block without it. Draft/tax-
+		// pending invoices can't slip through: our caller just finalized this
+		// invoice, SettleZeroDue re-reads and requires status=finalized, and
+		// the store's MarkPaid guard rejects drafts and non-ok tax
+		// (DEMO-000906) as the last line.
+		settled, err := h.svc.SettleZeroDue(ctx, tenantID, inv.ID)
+		if err != nil {
+			// Best-effort like the rest of collection: the finalize itself is
+			// already authoritative; a transient settle failure leaves the
+			// invoice pending for an operator retry rather than failing the
+			// request.
+			slog.WarnContext(ctx, "zero-due invoice could not be auto-settled at finalize",
+				"invoice_id", inv.ID, "error", err)
+			return inv
+		}
+		slog.InfoContext(ctx, "zero-due invoice auto-settled paid at finalize", "invoice_id", inv.ID)
+		return settled
+	}
+	if h.charger == nil || h.paymentSetups == nil {
+		return inv
+	}
 	ps, psErr := h.paymentSetups.GetPaymentSetup(ctx, tenantID, inv.CustomerID)
 	// pmReady requires the PM ID itself, not just the "ready" status: the
 	// charge below passes ps.StripePaymentMethodID verbatim, and the charger
