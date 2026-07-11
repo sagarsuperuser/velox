@@ -46,6 +46,16 @@ import (
 // the charger, so the decline arm here only queues the retry flag. logTag
 // prefixes every log line with the calling site's identity.
 func (e *Engine) collectAfterFinalize(ctx context.Context, sub domain.Subscription, inv domain.Invoice, logTag string) {
+	// Collection is not abortable by the caller's cancellation. Two of this
+	// pipeline's callers (subscription_create day-1, final-on-cancel) arrive
+	// on HTTP request ctxs — a client disconnect mid-charge would otherwise
+	// abort the Stripe call at its most ambiguous moment and kill the
+	// charger's 'unknown' outcome-persist plus the retry-flag write in the
+	// same stroke, leaving no record that a charge was ever attempted. For
+	// background callers (cycle close, threshold) this is a no-op, except
+	// during shutdown — where finishing an in-flight collect (bounded by the
+	// 30s charge deadline below) beats aborting a money operation midway.
+	ctx = context.WithoutCancel(ctx)
 	stripeCusID, stripePMID, psErr := e.paymentSetups.ResolveForCharge(ctx, sub.TenantID, sub.CustomerID)
 	if psErr != nil {
 		slog.WarnContext(ctx, logTag+": payment-setup resolve failed; queuing for scheduler retry",
