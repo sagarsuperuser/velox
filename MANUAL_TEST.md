@@ -213,8 +213,8 @@ Walks the wedge demo path: instantiate an AI-native recipe → set up a customer
 Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.1 Recipe + plan
-- [ ] `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201. Creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
-- [ ] Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save. Plan now in_advance with metered usage.
+- [ ] **Recipe instantiates into a meter + plan + rules:** `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201 creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
+- [ ] **Make the plan in_advance:** Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save → plan is in_advance with metered usage.
 
 ### S2.2 Customer (pinned to a test clock) + day-1 invoice
 - [ ] **Mint the test clock FIRST** — S2.4 advances it to force cycle-close, so the customer must be pinned to it *at creation* (a wall-clock customer can't be re-pinned later; pin is create-time only, ADR-027):
@@ -222,11 +222,11 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
   CLK=$(curl -sS -X POST "$API/v1/test-clocks" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
     -d "{\"name\":\"s2\",\"frozen_time\":\"$(date -u +%FT%TZ)\"}" | jq -r .id)
   ```
-- [ ] Create customer `external_id=cus_demo_ai` **pinned to `$CLK`** (pass `test_clock_id` in the create body, or Customers → New → tick **Pin to test clock**). Then add PM `4242 4242 4242 4242` via Add payment method → Stripe Checkout (needs the Stripe webhook forwarder running so `setup_intent.succeeded` attaches the PM). Note the internal `id` (`cus_…`) from the response — used as `customer_id` below.
-- [ ] Create active subscription on `ai_api_pro` → it **auto-inherits the customer's clock** → day-1 invoice generated: `billing_reason=subscription_create`, in_advance base (prorated to the partial first period for a mid-period start — full $99 only when started at a period boundary), auto-charged.
+- [ ] **Create the customer pinned to the clock:** `external_id=cus_demo_ai` **pinned to `$CLK`** (pass `test_clock_id` in the create body, or Customers → New → tick **Pin to test clock**); then add PM `4242 4242 4242 4242` via Add payment method → Stripe Checkout (needs the Stripe webhook forwarder running so `setup_intent.succeeded` attaches the PM). Note the internal `id` (`cus_…`) — used as `customer_id` below.
+- [ ] **Day-1 invoice on activation:** create an active subscription on `ai_api_pro` → it **auto-inherits the customer's clock** → day-1 invoice `billing_reason=subscription_create`, in_advance base (prorated to the partial first period for a mid-period start — full $99 only when started at a period boundary), auto-charged.
 
 ### S2.3 LiteLLM ingest
-- [ ] POST a LiteLLM payload directly (simulates the proxy callback):
+- [ ] **Ingest accepts one event per token role:** POST a LiteLLM payload directly (simulates the proxy callback):
   ```bash
   curl -sS -X POST "$API/v1/integrations/litellm/spend" \
     -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
@@ -239,22 +239,24 @@ Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
     }' | jq .
   ```
   → `{"accepted":2,"skipped":0}` (one event per token role).
-- [ ] Repeat the curl 4 more times with `smoke_call_2` … `smoke_call_5` → 10 events total (5 input + 5 output).
-- [ ] `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-sonnet-4.5` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-sonnet-4-5-20250929` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (The list filter is the internal `customer_id`, not `external_customer_id`.)
+- [ ] **Repeat to 10 events:** run the curl 4 more times (`smoke_call_2` … `smoke_call_5`) → 10 events total (5 input + 5 output).
+- [ ] **Events carry the recipe dimensions:** `GET /v1/usage-events?customer_id=<internal cus_ id>&limit=20` → 10 events on meter `tokens`, each with `dimensions.model=claude-sonnet-4.5` (canonical recipe family, ADR-044), `dimensions.model_raw=claude-sonnet-4-5-20250929` (verbatim), `dimensions.provider=anthropic`, and `dimensions.token_type` ∈ {`input`,`output`} (5 each). (Filter by the internal `customer_id`, not `external_customer_id`.)
 
 ### S2.4 Hybrid invoice at cycle close
-- [ ] Advance the clock `$CLK` (minted in S2.2) ~1 month past sub start (see FLOW S1.4 / TC2 for the curl shape) → the test-clock **catchup worker** closes the cycle and generates the cycle invoice on its own.
-- [ ] (Backstop) `POST /v1/billing/run` → returns `invoices_generated:0` here, because catchup already closed the clock-pinned cycle; it only generates for non-clock subs the wall-clock scheduler is due to bill.
-- [ ] Invoice has a **Tokens** usage line for `input` and for `output` both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
-- [ ] Each Tokens line's **Unit Price** shows the clean configured rate (a terminating decimal matching the recipe's per-token rate, e.g. `$0.000003`), NOT a repeating/inflated `$0.00000333333333` (ADR-054 amendment: flat usage lines display the stamped nominal rate, not effective amount÷qty).
-- [ ] Invoice has the $99 base line covering the UPCOMING period; the base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
-- [ ] Usage line totals equal what `create_preview` showed (cycle == preview) — holds here because this sub has no `usage_cap_units` and no mid-period plan/item change; preview does not replicate cap-scaling or segment proration (ADR-045). This clean sub's preview `warnings` array is **empty**.
-- [ ] **Preview is honest about its own scope**: `create_preview` for a sub WITH a blocking `usage_cap_units` returns a `warnings[]` entry naming the excluded cap ("…excludes the subscription's usage cap…"); a sub that had a mid-period plan/quantity/item change this period returns a "…excludes mid-period proration…" warning. A brand-new sub in its first period does NOT (the initial item-creation row isn't a mid-period change).
+- [ ] **Advance the clock to force cycle-close:** advance `$CLK` (minted in S2.2) ~1 month past sub start (curl shape: FLOW S1.4 / TC2) → the test-clock **catchup worker** closes the cycle and generates the cycle invoice on its own.
+- [ ] **Backstop billing run is a no-op here:** `POST /v1/billing/run` → returns `invoices_generated:0`, because catchup already closed the clock-pinned cycle; it only generates for non-clock subs the wall-clock scheduler is due to bill.
+- [ ] **Usage lines priced non-zero:** the invoice has a **Tokens** usage line for `input` and for `output`, both with **non-zero** amounts, each priced at the recipe's claude-sonnet-4.5 decimal rates.
+- [ ] **Unit price is the nominal rate, not effective:** each Tokens line's **Unit Price** shows the clean configured rate (a terminating decimal, e.g. `$0.000003`), NOT a repeating/inflated `$0.00000333333333` (ADR-054 amendment: flat usage lines display the stamped nominal rate, not effective amount÷qty).
+- [ ] **Base line covers the upcoming period:** the $99 base line shows "Covers &lt;upcoming range&gt;" (date range only — no "(in advance)" parenthetical).
+- [ ] **Cycle equals preview for this clean sub:** usage line totals equal what `create_preview` showed — holds because this sub has no `usage_cap_units` and no mid-period plan/item change, so preview's un-replicated overlays (cap-scaling, segment proration; ADR-045) don't apply; the preview `warnings` array is **empty**.
+- [ ] **Preview warns when it excludes a usage cap:** `create_preview` for a sub WITH a blocking `usage_cap_units` returns a `warnings[]` entry naming the excluded cap ("…excludes the subscription's usage cap…").
+- [ ] **Preview warns on mid-period proration — but not on a first-period sub:** a sub that had a mid-period plan/quantity/item change this period returns a "…excludes mid-period proration…" warning; a brand-new sub in its first period does NOT (the initial item-creation row isn't a mid-period change).
 
 ### S2.5 Public cost dashboard
-- [ ] Customer detail → **Public cost-dashboard URL** → Generate URL. Copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
-- [ ] `curl <that URL>` (no auth header) → JSON with `customer_id`, `tenant_id`, `billing_period`, `subscriptions[]`, `usage[]` (per-meter + rules), `totals`, `projected_total_cents`. **No PII** (email/display_name/billing_profile absent).
-- [ ] Click Rotate in the dashboard → old URL goes 401 immediately; the new URL works.
+- [ ] **Generate the public URL:** Customer detail → **Public cost-dashboard URL** → Generate URL → copy the `https://…/v1/public/cost-dashboard/vlx_pcd_…`.
+- [ ] **Public JSON carries the full projection:** `curl <that URL>` (no auth header) → JSON with `customer_id`, `tenant_id`, `billing_period`, `subscriptions[]`, `usage[]` (per-meter + rules), `totals`, `projected_total_cents`.
+- [ ] **Public JSON leaks no PII:** the same response omits `email`, `display_name`, and `billing_profile` (sanitization contract).
+- [ ] **Rotate invalidates the old URL:** click Rotate in the dashboard → old URL goes 401 immediately; the new URL works.
 
 **S2 passing = wedge demo path is healthy. The AI-native pitch (LiteLLM → one `tokens` meter priced by `{model, token_type}` → hybrid invoice → embeddable cost view) works end-to-end.**
 
@@ -454,8 +456,8 @@ The headline test-clock use case — verifies the full Stripe-parity dunning sta
 - [ ] **The dunning sweep never duns or cancels an already-paid invoice:** if a run's invoice was settled out-of-band before its next dunning action came due, the sweep **resolves** the run as `payment_recovered` instead of retrying — no dunning email, `attempt_count` does not tick, and at **max retries** it does **not** fire the terminal action (no pause-collection / **subscription cancel**) on a fully-paid invoice.
 - [x] **A failed invoice left without a dunning run gets one via the backfill sweep:** if a payment fails but `StartDunning` never lands (a crash between the fail commit and the post-commit start, or an exhausted retry), the `dunning_backfill` reconciler finds the finalized, still-owed, run-less `failed` invoice on a later tick and starts a run — exactly once (an invoice that already has a run in *any* state, including `resolved`, is left alone). *(automated: `TestListFailedWithoutDunningRun_CandidateSet`, `TestEnrollFailedWithoutDunning_*`)*
 - [ ] **Dunning resolve on a clock-pinned invoice stamps simulated `paid_at`** — from an active dunning run on a clock-pinned invoice, click Resolve → Payment recovered. Reload invoice detail. `invoice.paid_at` lands in simulated time (the test clock's current frozen_time), NOT wall-clock.
-- [ ] **No configured dunning policy never breaks the money path (ADR-036 amendment, Finding 2):** a tenant with **no default** dunning policy (or none at all — a plain bootstrap) that bills an **unpaid** cycle invoice → the test-clock advance still lands `ready` with **`had_errors:false`** (NOT `internal_failure`); the no-payment enrollment is a logged **deliberate skip**, not a per-invoice error. A genuine infra error still surfaces as `had_errors:true`. *(automated: `TestStartDunning_NoPolicyConfigured`, adapter swallow + retry short-circuit tests)*
-- [ ] **The first dunning policy a tenant creates is auto-default** — instantiate a recipe (or create the first policy manually) on a fresh tenant → that policy is `is_default=true` with no separate "Set default" step, so an unpaid invoice enrolls in dunning out of the box. A *second* policy is `is_default=false` (operator promotes via the Default toggle). *(automated real-PG: `TestUpsertPolicy_AutoDefaultFirst`)*
+- [x] **No configured dunning policy never breaks the money path (ADR-036 amendment, Finding 2):** a tenant with **no default** dunning policy (or none at all — a plain bootstrap) that bills an **unpaid** cycle invoice → the test-clock advance still lands `ready` with **`had_errors:false`** (NOT `internal_failure`); the no-payment enrollment is a logged **deliberate skip**, not a per-invoice error. A genuine infra error still surfaces as `had_errors:true`. *(automated: `TestStartDunning_NoPolicyConfigured`, adapter swallow + retry short-circuit tests)*
+- [x] **The first dunning policy a tenant creates is auto-default** — instantiate a recipe (or create the first policy manually) on a fresh tenant → that policy is `is_default=true` with no separate "Set default" step, so an unpaid invoice enrolls in dunning out of the box. A *second* policy is `is_default=false` (operator promotes via the Default toggle). *(automated real-PG: `TestUpsertPolicy_AutoDefaultFirst`)*
 
 ## FLOW TC6: Trial expiration via catchup (ADR-037)
 
