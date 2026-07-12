@@ -166,3 +166,34 @@ Corrected the comment to describe the actual mechanism. The exactly-once and
 terminal-sink properties of the retry path were verified sound in the same dig
 (Unknown → `payment_status='unknown'` excludes re-listing; the paid-invoice predicate
 backstops a stale `auto_charge_pending`).
+
+## Finding 6 — FLOW TZ1 coverage audit: 8 boxes CI-locked, 4 observable-only, 2 uncovered gaps — OPEN (2 gaps)
+
+**Surfaced:** coverage audit of FLOW TZ1 (tenant-timezone semantics), 2026-07-12, per
+the "check existing CI coverage first" process — each box mapped to its durable test by
+reading the asserting lines, not name-matching.
+
+**Outcome:** 8 boxes are locked by durable Go tests → marked `[x]` with `auto:` tags
+(settings validation P8, tenant-TZ billing anchor ADR-058, host-TZ independence,
+org-level-no-per-sub-column ADR-077, issued-invoice zone immutability, anniversary
+month-end clamp ADR-055, calendar-31 rollover, canonical-UTC wire ADR-075). 4 are
+observable-only → pending `[~]` live verification (dashboard zone-abbrev display;
+invoice-period inclusive-day across PDF/hosted/portal; customer-facing PDF dates in
+billing TZ; public hosted-page dates). **2 have NO automated coverage:**
+
+- **TZ1.3 (API-key expiry / list from-to filters interpret civil dates in tenant TZ) —
+  FILLABLE GAP.** The load-bearing logic is the pure `startOfDayInTZ` / `endOfDayInTZ`
+  in `web-v2/src/lib/dates.ts`, which have zero tests despite being trivially
+  unit-testable (the repo now runs `node --test tests/*.test.ts`, added with
+  `lib/effectiveNow`). The only related test, `internal/api/timefilter/timefilter_test.go`,
+  asserts the backend *UTC* date-only fallback — the opposite path. Disposition: add
+  `web-v2/tests/dates.test.ts` asserting start/end-of-day in a non-UTC zone.
+- **TZ1.14 (cancel / plan-swap credit-note period reads billing-TZ calendar days) —
+  UNCOVERED.** The cancel-credit tests (`internal/billing/cancel_multidim_test.go` etc.)
+  assert the description *suffix* ("canceled mid-period") but none uses a positive-offset
+  zone (Asia/Tokyo) or asserts the period *date* is the billing-TZ day, not the UTC-prior
+  day. Disposition: add a cancel/plan-swap credit-note test in a positive-offset org zone
+  asserting the line-description date.
+
+Both are test-coverage gaps, not known product bugs — the behavior is presumed correct
+via the shared TZ formatters, just not asserted on these two surfaces.
