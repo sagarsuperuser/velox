@@ -16,10 +16,13 @@ the canonical source, not a progress tracker.
 ## Flow index
 
 <details>
-<summary><b>118 flows, grouped by section — click to expand</b></summary>
+<summary><b>All flows, grouped by section — click to expand</b></summary>
 
 **Tier 1 — Smoke**  
 `S1` End-to-end smoke · `S2` AI-native end-to-end smoke
+
+**Tenant timezone**  
+`TZ1` Tenant timezone semantics
 
 **Authentication & API keys**  
 `A1` Sign-in · `A2` /v1/whoami · `A3` Test/Live mode toggle · `K1` API key permissions · `K2` Expiration · `K3` API Keys page UX · `K4` Rotate
@@ -31,31 +34,31 @@ the canonical source, not a progress tracker.
 `B1` Arrears + proration (default `in_arrears` plans) · `B2` Tax precision (NUMERIC(7,4), ADR-042/043) · `B2b` Per-unit rate precision (decimal, ADR-045) · `B3` Idempotency · `B4` Auto-charge retry · `B5` Idempotency-Key header · `B6` Subscription lifecycle · `B7` Plan change + proration · `B8` Usage caps · `B9` Customer price overrides · `B10` Manual tax + customer tax status · `B11` Tax-ID validation · `B12` Subscription activity timeline · `B13` Multi-dimensional meters · `B14` Billing thresholds · `B15` `in_advance` plan happy path · `B16` Hybrid `in_advance` base + `in_arrears` usage on one invoice · `B16b` token usage billed on immediate cancel · `B17` `in_advance` cancel proration credit · `B17b` upgrade then cancel — credit fans across both funding invoices · `B17c` downgrade after upgrade — clawback reverses the upgrade invoice (LIFO) · `B18` Meter Detail page · `B19` Cancel-flow billing artifacts · `B20` Segment-aware billing at cycle close (Lago / Orb shape) · `B21` Immediate same-cadence cross-interval plan-swap (yearly ↔ monthly)
 
 **Pricing Recipes**  
-`R1` List + preview · `R2` Instantiate · `R3` Per-tenant idempotency · `R4` Atomic rollback · `R5` Dashboard UI
+`R1` List + preview · `R2` Instantiate · `R3` Idempotent re-apply, no uninstall · `R4` Atomic rollback · `R5` Dashboard UI
 
 **Invoices**  
-`I1` Multiple meters · `I2` Negative usage · `I3` Manual line items · `I4` Void · `I4b` Uncollectible invoice lifecycle · `I5` Collect + payment timeline · `I5b` Invoice attention banner · `I6` Email + PDF preview · `I7` Zero-amount invoice · `I8` Currency consistency · `SUB7` Mid-period change outcome on the timeline + invoice · `I9` Credit note on void · `I9b` Credit note PDF totals reconcile · `I10` Hosted invoice page · `I11` `create_preview` · `I12` One-off invoice composer · `I13` Timeline completeness
+`I1` Multiple meters · `I2` Negative usage · `I3` Manual line items · `I4` Void · `I4b` Uncollectible invoice lifecycle · `I5` Collect + payment timeline · `I5b` Invoice attention banner · `I6` Email + PDF preview · `I7` Zero-amount invoice · `I8` Currency consistency · `SUB7` Mid-period change outcome on the timeline + invoice · `I9` Credit note on void · `I9b` Credit note PDF totals reconcile · `I10` Hosted invoice page · `I11` `create_preview` · `I12` One-off invoice composer · `I13` Timeline completeness · `TR-CXL` Trial cancellation · `C-ARCH` Archive semantics
 
 **Dunning**  
 `D1` Retry cycle + escalation · `D2` Resolution · `D4` Self-service payment update · `D5` Dunning policy admin (CRUD + assignment + terminal actions)
 
 **Credits & Credit Notes**  
-`C1` Credits lifecycle · `C2` Credit notes · `C2b` Credits ledger readability · `C3` Credit-note refund handling
+`C1` Credits lifecycle · `C2` Credit notes · `C4` Prepaid commits · `C2b` Credits ledger readability · `C3` Credit-note refund handling
 
 **Webhooks**  
-`W1` Stripe signature verification · `W2` Outbound secret rotation (72h grace) · `W3` Delivery stats · `W4` Live event stream + replay
+`W0` Outbound endpoint config · `W1` Stripe signature verification · `W2` Outbound secret rotation (72h grace) · `W3` Delivery stats · `W4` Live event stream + replay
 
 **Customers**  
 `CU1` Settings + billing profile · `CU2` Operator customer-portal API · `CU4` Archive cascade · `CU6` Brand color + logo URL · `CU9` Sent emails on customer page · `CU8` Cost-dashboard public projection
 
 **Platform**  
-`P1` Feature flags · `P2` Audit log · `P2A` Audit log — customer-initiated + Tier 2 coverage · `P2B` Operator-side payment-method management · `P3` Usage summary · `P4` Empty billing cycle · `P5` Health checks · `P6` Tax deferral metrics · `REC1` Self-healing background reconcilers
+`P2` Audit log · `P2A` Audit log — customer-initiated + Tier 2 coverage · `P2B` Operator-side payment-method management · `P3` Usage summary · `P4` Empty billing cycle · `P5` Health checks · `P6` Tax deferral metrics · `REC1` Self-healing background reconcilers
 
 **UI / UX**  
 `U1` Dashboard · `U3` Usage Events page · `U11` Operator search + list filters · `U12` Dashboard consistency sweep · `U7` Edge cases · `U8` Request-ID in error toasts · `U10` Public pages
 
 **Tier 3 — Deep / Rare**  
-`X1` RLS multi-tenant isolation · `X2` Bootstrap lockdown · `X3` Rate limiting · `X4` Security headers + metrics auth · `X5` PII encryption at rest · `X7` Stripe Tax · `X8` Migration rollback · `X9` Config validation · `X10` OpenTelemetry tracing · `X11` Large batch usage ingestion · `X14` Self-host (Compose) · `X15` LiteLLM integration
+`X1` RLS multi-tenant isolation · `X2` Bootstrap lockdown · `X2b` Self-host bootstrap → login → live key · `T1` Team invites · `E1` Additional billing emails + credit-note send · `X3` Rate limiting · `X4` Security headers + metrics auth · `X5` PII encryption at rest · `X7` Stripe Tax · `X8` Migration rollback · `X9` Config validation · `X10` OpenTelemetry tracing · `X11` Large batch usage ingestion · `X14` Self-host (Compose) · `CR1` Paid-commit relief · `CG1` Commit / credit-grant burndown · `M1` Provider cost tables + margin · `X15` LiteLLM integration
 
 </details>
 
@@ -69,6 +72,9 @@ Keep this runbook runnable and rot-free:
 - **Provenance is a terse trailing tag, not the step.** `(ADR-057)` is fine; dates, migration numbers, PR links, and "pre-fix this was…" history belong in CHANGELOG / ADRs / git, not in the test instruction.
 - **Assert what's observable** (UI, API response, email). Reach for `psql` only when the DB row *is* the pass/fail.
 - **Update the Flow index above** when you add or rename a flow.
+- **A flow that lies is worse than no flow.** When shipped behavior changes, rewrite or delete the affected flow **in the shipping PR** — never leave-and-annotate. (This is the rot trigger this doc already paid for once.)
+- **Editing a flow resets its manual attestation.** A `[~]` tag attests the OLD behavior — when you change a flow's assertions, downgrade it to `[ ]` (automated `[x]` stays only if the cited test still covers the new assertion).
+- **New flows land in Tier 2 under their owning section** by default; Tier 3 is for rare/destructive/infra scenarios (RLS, rollback, self-host), Tier 1 only for the two smoke paths.
 - **`[x]` means "locked by a durable automated test"** — annotate which (e.g. `auto: \`TestXxx\``). It is NOT a record of a one-time manual run (those are transient and go stale next release — keep those in a scratch doc). Leave `[ ]` for manual-only or not-yet-automated items. (Full marker set + routing in **Testing strategy** below.)
 
 ## Testing strategy
@@ -81,7 +87,7 @@ How a flow gets verified, and how its status is recorded. Pre-launch posture: **
 - `[~]` — **manually verified once** on a real build (real API + DB). Tag `manual: YYYY-MM-DD`. NOT regression-guarded — re-run before any release that touches the flow.
 - `[ ]` — pending.
 
-Each flow header carries a running tally (e.g. "Automated coverage: 6 / 11").
+A flow MAY carry an "Automated coverage: N / M" tally where it aids triage (keep it correct or drop it).
 
 **Routing — how to verify a flow, in order:**
 
@@ -213,7 +219,7 @@ Walks the wedge demo path: instantiate an AI-native recipe → set up a customer
 Prereqs: S1 passing (stack healthy, operator key in `$KEY`).
 
 ### S2.1 Recipe + plan
-- [ ] **Recipe instantiates into a meter + plan + rules:** `POST /v1/recipes/anthropic_style/instantiate {"livemode":false}` → 201 creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
+- [ ] **Recipe instantiates into a meter + plan + rules:** `POST /v1/recipes/anthropic_style/instantiate` → 201 (mode derives from the API key; the body takes only `overrides`). Creates ONE `tokens` meter + the `ai_api_pro` plan with per-`{model, token_type}` pricing rules (ADR-044: input / output / cache_read / cache_write_5m / cache_write_1h per model).
 - [ ] **Make the plan in_advance:** Pricing → edit the `ai_api_pro` plan → set **Base fee billed = At start of period**, base price $99/mo, save → plan is in_advance with metered usage.
 
 ### S2.2 Customer (pinned to a test clock) + day-1 invoice
@@ -273,7 +279,7 @@ One flow per shipping feature. Run only what your change touched.
 
 The matrix isn't enforced — operators decide based on the change. Default to "run everything your change touched + run S1/S2 always."
 
-## Tenant timezone
+## FLOW TZ1: Tenant timezone semantics
 
 Single tenant-wide timezone used for date input and timestamp display
 (UTC for storage and billing math). Set in Settings → Account → Timezone.
@@ -322,7 +328,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] No credentials → 401.
 - [ ] Cookie + Bearer with disagreeing identities → cookie wins.
 - [ ] Revoked API key on Bearer → 401 immediately. Cookie sessions unaffected.
-- [ ] Publishable key on Bearer → `key_type:"publishable"`. Most write endpoints → 403.
+- [ ] Publishable key on Bearer → `key_type:"publishable"`. Every tenant-scoped endpoint — reads included — → 403 (empty scope set); only `/whoami` answers.
 
 ## FLOW A3: Test/Live mode toggle
 
@@ -340,7 +346,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Logout while in either mode → both per-mode caches gc'd; signing back in starts fresh.
 - [ ] **Cross-tab sync**: open the dashboard in two browser tabs. Toggle test→live in Tab A; switch to Tab B without clicking anything. Tab B's pill flips amber→emerald automatically (BroadcastChannel push from Tab A). Tab B's queries refetch live data on next focus — no stale TEST label over live data.
 - [ ] **URL params dropped on toggle**: navigate to `/customers?status=active&cursor=cus_test_xxx`, toggle modes. URL becomes `/customers` (search string stripped). The opposite-mode page does not show an empty list because the dead cursor was carried over.
-- [ ] **Per-mode invoice numbering**: in test mode, create an invoice → `INV-000001`. Toggle to live mode, create a real invoice → also starts at `INV-000001` (or wherever the live counter sits — independent from test). Test exploration no longer burns live invoice numbers.
+- [ ] **Per-mode invoice numbering**: in test mode, create an invoice → `VLX-000001` (default prefix). Toggle to live mode, create a real invoice → also starts at `VLX-000001` (or wherever the live counter sits — independent from test). Test exploration no longer burns live invoice numbers.
 - [ ] **Per-mode rate-limit buckets**: hammer the dashboard in test mode until you see `429 Too Many Requests`. Toggle to live mode — live requests should still be allowed (separate bucket). Inspect Redis: `KEYS rl:*` shows the rate-limit buckets, keyed `rl:<namespace>:<scope>:<id>` (e.g. `rl:general:ip:1.2.3.4`); test- and live-mode buckets are distinct keys.
 
 ---
@@ -348,7 +354,7 @@ Single tenant-wide timezone used for date input and timestamp display
 ## FLOW K1: API key permissions
 
 - [ ] Secret key: full read/write everywhere.
-- [ ] Publishable key: read-only — POST → 403.
+- [ ] Publishable key: deny-all (empty scope) — `GET /v1/customers` → 403, POST → 403; only `/v1/whoami` succeeds.
 - [ ] Revoked key: any request → 401 `invalid or expired API key`.
 - [ ] Create dialog: raw key shown once, copy button, "you won't see this again" warning.
 
@@ -374,7 +380,7 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Rotate with `expires_in_seconds=300` → new raw_key returned; old key works ~5 min.
 - [ ] Rotate with `expires_in_seconds=0` → old key 401 `invalid or expired API key` immediately.
-- [ ] Rotate revoked key → 422 `cannot rotate a revoked key`.
+- [ ] Rotate revoked key → 409 `cannot rotate a revoked key`.
 - [ ] `expires_in_seconds > 604800` → 422.
 
 ---
@@ -385,7 +391,7 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Sidebar "Test mode" group + "Test Clocks" entry only when livemode=false. Live mode → entry hidden, `/test-clocks` redirects to `/`.
 - [ ] Empty state with "New test clock" button.
-- [ ] New dialog: optional name + datetime-local picker (defaults to now). Submit → detail page.
+- [ ] New dialog: optional name + date/time inputs (default now). Submit → detail page.
 
 ## FLOW TC2: Detail + Advance
 
@@ -433,7 +439,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] **Operator dashboard surfaces follow the clock (2026-07-08):** on a clock-pinned customer whose sub has been advanced a full cycle (frozen_time ≈ 1 month past period start), open Customer detail. **"Usage This Period" cycle bar** reads the simulated progress (e.g. "Day 31 of 31 · 100%" at cycle close), NOT "Day 0 of 31 · 0%" against wall-clock. The **"Last invoice · X ago"** line reads relative to frozen_time (a just-billed cycle invoice is "just now" in sim time, not weeks-old wall-clock). The **Activity** 7/30/90-day presets and the **Margin** card's default "Last 30 days" frame the simulated usage window (non-zero totals), not a wall-clock window that predates the simulated events (which read $0). The Activity **"Cycle"** preset is unchanged (already backend-defaulted). A wall-clock (non-pinned) customer's surfaces are unchanged.
 - [ ] **Dashboard "recent invoices · X ago" follows the clock (2026-07-08):** with that clock-pinned customer's cycle invoice(s) generated by the advance, open the main **Dashboard**. In the **Recent invoices** card the simulated invoice's "X ago" reads relative to the clock's frozen_time (a just-billed cycle invoice is "just now" in sim time), NOT a wall-clock "Nd ago". Rows for wall-clock (non-pinned) customers still read against real time; the "Updated X ago" card header and webhook/API-key relative times are unchanged (genuine wall-clock).
 - [ ] **Second advance while advancing → 409.** Force `advancing` via `psql -c "UPDATE test_clocks SET status='advancing' WHERE id='<clock>'"`, then `POST /v1/test-clocks/<clock>/advance` with any future time → `409 Conflict` + `{"error":{"type":"invalid_request_error","code":"invalid_state","message":"clock is advancing, must be ready to advance"}}`. Restore via `UPDATE … SET status='ready'`. After restore, `frozen_time` and `last_failure_reason` must match pre-test state — rejected advance leaves no side effects.
-- [ ] Delete clock → pinned subs cancelled; non-pinned subs unaffected.
+- [ ] Delete clock → COMPLETE teardown (ADR-086): pinned customers and every simulated row (subs, invoices, credits) are DELETED; non-pinned data unaffected.
 
 ## FLOW TC5: Dunning via catchup (clock-pinned failure recovery)
 
@@ -692,6 +698,8 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B4: Auto-charge retry
 
+- [ ] **A card-less proration invoice gets ONE setup-link email from the sweep (ADR-087)** — customer with no payment method, active sub; increase item quantity mid-period (proration invoice created, `auto_charge_pending=true`, no email yet). Across two sweep ticks: Mailpit shows exactly ONE "payment method needed" email, and `invoices.no_pm_notified_at` is stamped. Attach a card → next tick charges it. A finalize-time-emailed invoice gets NO second email from the sweep.
+
 - [ ] Decline-on-charge card → invoice has `auto_charge_pending=true`, `payment_status=pending`.
 - [ ] Update card → next scheduler tick → `payment_status=succeeded`, `auto_charge_pending=false`.
 
@@ -798,8 +806,8 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 ## FLOW B14: Billing thresholds
 
-- [ ] PATCH sub `billing_thresholds:[{subscription_item_id, usage_gte:10000}]` (per-item, keyed on `subscription_item_id` — not `meter_id`). Ingest 9999 → no early finalize. Ingest 1 more → invoice auto-finalized within 1 tick, `billing_reason="threshold"`. New events start a new period.
-- [ ] PATCH `{amount_gte:50000}` → cross $500 → same shape.
+- [ ] `PUT /v1/subscriptions/{id}/billing-thresholds` `{item_thresholds:[{subscription_item_id, usage_gte:10000}]}` (per-item, keyed on `subscription_item_id` — not `meter_id`). Ingest 9999 → no early finalize. Ingest 1 more → invoice auto-finalized within 1 tick, `billing_reason="threshold"`. Default `reset_billing_cycle=false` (Stripe keep-anchor): the fire does NOT re-anchor the cycle — no re-fire this period, post-fire usage bills at cycle close.
+- [ ] PUT `{amount_gte:50000}` → cross $500 → same shape.
 - [ ] Cross threshold + immediately `POST /v1/billing/run` → idempotent skip.
 - [ ] Subscription detail "Spend Thresholds" card: empty state with Set button. Edit dialog has subtotal cap, reset_billing_cycle checkbox, per-item rows. Save shows `$1,000.00` (from cents) and `≥10000.5 units`. Clear thresholds → flips to empty.
 - [ ] **Threshold invoice on a test clock carries the Simulated badge:** pin a sub with an amount threshold to a test clock, advance until the cap crosses → the threshold invoice shows the **Simulated** badge (is_simulated=true), same as sibling cycle invoices on the clock.
@@ -815,6 +823,9 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Canceled/archived subs → Set/Edit hidden.
 
 ## FLOW B15: `in_advance` plan happy path (ADR-031)
+
+- [ ] **A tax-deferred day-1 DRAFT defers credit application too (ADR-088)** — with Stripe Tax erroring, a credit-holding customer's day-1 invoice parks as a tax-pending draft with credits UNAPPLIED; when tax retry finalizes it, the sweep applies credits before charging.
+- [ ] **Credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee, subscribe to an in_advance plan. Day-1 invoice lands **Paid** with a Credits Applied line covering the total; balance drained; no Stripe charge. With a partial balance: Credits Applied for the balance, card charged exactly the remainder (card-less: remainder queues + setup email).
 
 Verifies the day-1 invoice + the cycle-close invoice that bills the upcoming period's base.
 
@@ -868,7 +879,7 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 - [ ] Mixed sub (one in_advance item + one in_arrears item) → credit covers only the in_advance item's unused portion.
 - [ ] Future invoices on this customer auto-apply the credit (C1 behavior).
 - [ ] **Cash back to card instead of balance credit (B2B default is balance credit):** cancel grants a *balance* credit, not a card refund. To return cash, issue a credit note on the paid source invoice with **Refund to card** (the CN refund channel) → Stripe refund processed, customer balance NOT credited. This is the deliberate two-step: cancel credits the balance; refunding cash is a separate operator action.
-- [ ] **Source invoice unpaid → invoice settled, not credited (ADR-031 amendment):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled`, **NO credit ledger entry** (no cash was funded), and the unpaid invoice is settled down to the consumed portion: partially-consumed → an **adjustment credit note reduces `amount_due`** (log `cancel: reduced unpaid prebill to consumed portion`); cancel before any consumption → invoice **voided** (log `cancel: voided fully-unused unpaid prebill`). It does NOT ride dunning for the full amount. Full coverage in FLOW TC8b.
+- [ ] **Source invoice unpaid → invoice settled, not credited (ADR-031 amendment):** repeat the setup but DON'T pay the day-1 invoice (`payment_status='pending'`). Cancel mid-period → status `canceled`, **NO credit ledger entry** (no cash was funded), and the unpaid invoice is settled down to the consumed portion: partially-consumed → an **adjustment credit note reduces `amount_due`** (log `unpaid prebill relief: reduced amount_due to consumed portion`); cancel before any consumption → invoice **voided** (log `unpaid prebill relief: voided fully-unused invoice`). It does NOT ride dunning for the full amount. Full coverage in FLOW TC8b.
 - [ ] **Plans > ~$36 base** (regression check): cancel a $59 in_advance sub mid-period (e.g., day 7 of 30-day cycle). Credit grant MUST be non-zero — `5900 × 23 / 30 = 4523 cents = $45.23`.
 - [ ] **Atomic + crash-recoverable (ADR-057 ext):** on the paid-prebill cancel above, the credit is issued via a credit-note **draft created in the cancel transaction** then issued post-commit. Failure-inject the in-tx draft: `REVOKE INSERT ON credit_notes FROM velox_app`, cancel mid-period → the cancel **fails** (500) and the subscription is **still active** (`status != canceled`, not canceled-with-no-credit); `GRANT INSERT ON credit_notes TO velox_app` and retry → cancel succeeds and the $24.50 lands. Crash-recovery: if the process dies *after* the cancel commits but *before* the post-commit issue, the draft sits `status='draft' issue_pending=true` and `RetryPendingClawbackIssue` (scheduler tick) issues it → the balance credit appears within a tick, never lost. (Unpaid-source cancels are unchanged — they stay on the post-commit path, FLOW B17 line above.)
 
@@ -937,7 +948,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 ## FLOW R1: List + preview
 
 - [ ] `GET /v1/recipes` → 3 entries (anthropic_style, openai_style, replicate_style) — all AI-native after the Phase 2 wedge-alignment trim.
-- [ ] `POST /v1/recipes/{key}/preview` → projected products/prices/meters/dunning/webhooks (no DB writes). No `audit_log` row is written (read-only preview, not a "Created recipe").
+- [ ] `POST /v1/recipes/{key}/preview` → projected meters/rating rules/pricing rules/plans/dunning/webhooks (no DB writes). No `audit_log` row is written (read-only preview, not a "Created recipe").
 - [ ] Unknown key → 404.
 
 ## FLOW R2: Instantiate
@@ -960,7 +971,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 
 ## FLOW R5: Dashboard UI
 
-- [ ] `/recipes` → 3 cards (anthropic_style, openai_style, replicate_style). Preview opens side panel; Instantiate dialog names side-effects and redirects to `/products` on confirm.
+- [ ] `/recipes` → 3 cards (anthropic_style, openai_style, replicate_style). Preview opens side panel; Instantiate dialog names side-effects and opens the created plan (`/plans/{id}`; `/pricing` fallback) on confirm.
 - [ ] Once installed, the card shows "Installed \<date\> · \<instance id\>" and the dialog's CTA reads "Already installed" (disabled) — no Uninstall action anywhere in the UI.
 
 ---
@@ -1011,25 +1022,25 @@ Mark-uncollectible (terminal bad-debt) + its page UX + offline recovery back to 
 Server-derived from invoice fields. Suppressed for healthy / paid / voided / draft invoices.
 
 ### Critical
+- [ ] **payment_anomaly pierces terminal states** — an `amount_mismatch` or payment-received-on-VOIDED invoice shows the red anomaly banner even though the invoice is paid/voided (terminal states suppress every other banner, never this one).
 - [ ] **tax_location_required**: US customer missing postal_code, finalize → red banner "Customer address required", primary action **Edit billing profile**, secondary **Retry tax**.
 - [ ] **tax_calculation_failed (provider auth)**: revoke Stripe key → red banner code `tax.provider_auth`, action **Rotate API key**.
-- [ ] **payment_failed**: card `4000 0000 0000 9995` → red banner code `payment.declined`, message = truncated `last_payment_error`, actions `[Update payment method, Retry payment]` (ADR-023). Only ONE banner — no hardcoded duplicate below the unified one. Update payment method opens Stripe Checkout in a new tab; Retry payment calls Collect.
+- [ ] **payment_failed**: card `4000 0000 0000 9995` → red banner code `payment.declined`, message = truncated `last_payment_error`, actions `[Update payment method, Retry payment]` (ADR-023). Only ONE banner — no hardcoded duplicate below the unified one. Update payment method opens the **Send setup link** dialog (emails the customer a setup link); Retry payment calls Collect.
 
 ### Warning
 - [ ] **tax pending**: amber banner with same code/actions, severity warning.
-- [ ] **overdue**: past `due_at` → amber banner code `lifecycle.overdue`, actions **Charge now** + **Send reminder**.
 - [ ] **payment_processing stale (ADR-049 Phase 4)**: a REAL (non-simulated) invoice left `payment_status=processing` for more than ~6h → the in-flight banner escalates Info → **amber Warning**, message points the operator at Stripe (does NOT promise auto-resolution). A clock-pinned (simulated) invoice stays **Info** no matter how "old" its sim-time is (the age is wall-clock, guarded on `!is_simulated`).
 
 ### Info
 - [ ] **payment_processing (fresh)**: muted banner, **no actions**, copy says Velox confirms it automatically (true via the synchronous inline settle / reconciler backstop — ADR-049 Phases 2–3).
 - [ ] **payment_unconfirmed**: muted banner, **no actions** — copy says Velox resolves it on the next reconcile. The previously-greyed-out "Check provider" button is gone (it had no endpoint; on-demand re-check deferred per ADR-049).
 - [ ] **payment_scheduled**: `auto_charge_pending=true` → muted banner, action **Charge now**.
-- [ ] **awaiting_payment**: muted banner, actions **Charge now** + **Send reminder**.
+- [ ] **awaiting_payment**: muted banner, actions **Charge now** + **Email payment link**.
 
 ### Banner shape
 - [ ] Severity styling: critical=red+AlertCircle, warning=amber+AlertTriangle, info=muted+Info.
 - [ ] Reason badge + dotted code in mono. `since` = relative time. `doc_url` → "Learn more ↗".
-- [ ] `detail` (raw provider payload) → `<details>` "Provider response" disclosure.
+- [ ] `provider_response` (raw upstream payload) → `<details>` "Provider response" disclosure; `detail` (Velox framing) renders as its own "Detail" disclosure.
 - [ ] Healthy/paid/voided/draft → no banner.
 
 ### Retry tax
@@ -1051,7 +1062,7 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 - [ ] `/invoices` rows: severity-tinted dot next to invoice number; tooltip surfaces typed reason. Healthy/draft = no dot.
 - [ ] Draft rows show "draft" pill (Dashboard) or em dash (Invoices, Subscription detail) instead of `payment_status='pending'`.
 - [ ] Invoice detail draft row: muted "Draft invoice — finalize to issue and begin collection." hint.
-- [ ] **No-payment-method nudge (customer WITH email) resends the SETUP link, not the invoice email** — on that finalized-unpaid no-card invoice for a customer that **has an email on file**, the attention card says *"…has been emailed a setup link…"* and its button reads **"Resend setup link"**. Click it → a "Setup link resent" toast (no recipient dialog) and Mailpit shows another **"set up payment method"** email (`POST /v1/invoices/{id}/resend-setup-link`) — the same Checkout-setup link, NOT the hosted-invoice "pay this invoice" email. For an invoice in a different attention state (e.g. `payment_failed`), the `send_reminder` button still opens the email dialog and sends the hosted-invoice pay link.
+- [ ] **No-payment-method nudge (customer WITH email) resends the SETUP link, not the invoice email** — on that finalized-unpaid no-card invoice for a customer that **has an email on file**, the attention card states the engine behavior in present tense (*"The engine emails the customer a setup link when an invoice finalizes…"* — never a past-tense send it can't prove) and its button reads **"Resend setup link"**. Click it → a "Setup link resent" toast (no recipient dialog) and Mailpit shows another **"set up payment method"** email (`POST /v1/invoices/{id}/resend-setup-link`) — the same Checkout-setup link, NOT the hosted-invoice "pay this invoice" email. For an invoice in a different attention state (e.g. `payment_failed`), the `send_reminder` button still opens the email dialog and sends the hosted-invoice pay link.
 - [ ] **No-payment-method nudge (customer with NO email) shows the honest variant** — repeat on a finalized-unpaid no-card invoice for a customer with **no email address on file** (create one without an email, or clear it). The card now reads *"…The engine emails a setup link only when the customer has an email address on file — open the customer page to copy a secure setup link…"* and offers **only "Open customer page"** — the **"Resend setup link" button is gone** (a resend can't send with no recipient). Open the customer page → **Add payment method → Copy link** mints a setup URL to hand to the customer directly.
 
 ## FLOW I6: Email + PDF preview
@@ -1076,6 +1087,8 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Operator emails (password-reset, member-invite) intentionally plain text — no HTML chrome.
 
 ## FLOW I7: Zero-amount invoice
+
+- [ ] **Finalizing a zero-due manual invoice lands it PAID, not "awaiting payment" (ADR-066/087)** — create a manual invoice, add no line items, Finalize. Status is **Paid** immediately (`payment_status=succeeded`, `paid_at` stamped) — no charge attempt, no payment-method email, no retry flag; it must never sit finalized/awaiting-payment.
 
 - [ ] Plan `base_amount_cents=0`, no meters → either no invoice or $0 auto-paid (no Stripe charge).
 
@@ -1172,9 +1185,6 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Tenant Tax = manual 7.25%, Finalize → `tax_amount_cents=725`, `SUM(line tax)=725` (residual on last line), `total_amount_cents=10725`, `due_at = issued_at + 30d`.
 - [ ] **Manual invoice on a clock-pinned customer carries the "simulated" badge (ADR-030 addendum)** — pin a customer to a test clock (no subscription needed), Advance the clock, then create a one-off invoice from Customer Detail → New invoice. The invoice header (next to the status pill) and the Invoices-list row both show an amber **Simulated** badge, the issued/paid dates are simulated frozen-time, and `invoices.is_simulated = true` in DB.
 - [ ] **A customer's credit balance pays a manual invoice at finalize (ADR-088)** — grant a customer credit, compose a one-off invoice above the balance, Finalize. The invoice shows Credits Applied for the full balance and the card is charged exactly the remainder; with balance ≥ total the invoice lands **Paid** with no charge. The credit ledger shows the applied entry; balance is drained.
-- [ ] **A customer's credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee, then subscribe them to an in_advance plan. The day-1 invoice shows **Paid** immediately with a Credits Applied line covering the total; the credit balance is drained; no card charge appears in Stripe. With a partial balance (e.g. half the fee): the invoice shows Credits Applied for the balance and the card is charged exactly the remainder (or, card-less, the remainder queues + setup email).
-- [ ] **A card-less customer's proration invoice triggers ONE setup-link email from the sweep (2026-07-11, ADR-087 follow-up)** — customer with no payment method, active sub; increase item quantity mid-period (proration invoice created, `auto_charge_pending=true`, no email yet). Wait/force two auto-charge sweep ticks: Mailpit shows exactly ONE "payment method needed" email (not one per tick), and `invoices.no_pm_notified_at` is stamped. Attach a card → next tick charges the invoice. A finalize-time-emailed invoice (e.g. cycle close, no PM) gets NO second email from the sweep.
-- [ ] **Finalizing a zero-due manual invoice lands it PAID, not "awaiting payment" (2026-07-11, ADR-087 follow-up)** — create a manual invoice, add no line items, Finalize. The invoice shows status **Paid** immediately (`payment_status=succeeded`, `paid_at` stamped) — no charge attempted, no "payment method needed" email, no retry flag. It must NOT sit finalized/awaiting-payment (pre-fix it stranded there forever and aged into a permanently-overdue attention item).
 - [ ] **One-off invoice due countdown reads simulated time on the Invoices list (2026-07-08)** — finalize that one-off invoice with a short term (e.g. Net 7), then advance the clock past its due date. On the **Invoices list**, the row's **due badge** reads **"Past due"** (red), matching the simulation — NOT a green "Due in Nd" counted against wall-clock. (Before the fix, a one-off invoice — no subscription — fell through the sub-only clock lookup to wall-clock.) A one-off invoice on a **wall-clock** (non-pinned) customer still counts against real time.
 - [ ] **The composer's Terms are honored exactly** — on that one-off invoice the header **Terms** matches the term picked (e.g. Net 7 → "Net 7") and equals `Due − Issued`, **not** the tenant default; picking **Due on receipt** is honored as 0 days → `Due == Issued` and Terms reads "Due on receipt" (NOT silently coerced to Net 30).
 - [ ] **The Period field is absent unless a Service period is set** — a one-off invoice has no billing cycle by default (see the service-period item below).
@@ -1190,8 +1200,6 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 - [ ] Record an offline payment → Activity row reads "Payment recorded (offline)", not a card payment.
 - [ ] Plan-change with immediate proration → the subscription Activity row reads "Plan changed · <old> → <new> · Immediate · Proration invoice $X". A scheduled change shows a second row "Scheduled plan change applied" at the boundary; a threshold crossing shows "Spending threshold crossed · Invoice <num> issued early — $X".
 - [ ] Scheduled-cancel sub: period bar reads Period Start → Period End → **Cancels** (no "Next Billing"); paused-collection sub shows **Collection resumes <date>**.
-
----
 - [ ] **Activity vs real-time lanes don't interleave clocks** — on a clock-pinned invoice that has been finalized + emailed, the invoice detail shows two cards: **Activity** (billing lifecycle + dunning, simulated dates) and a wall-clock lane holding the customer emails. The email "sent" rows are NOT mixed into the Activity list (which would sort a real-time row before the simulated event that triggered it). If a clock-pinned invoice has a standalone Stripe payment outcome (failed/canceled with no dunning twin to fold it), it joins the wall-clock lane too and the card title reads **"Real-time activity"** instead of "Notifications"; on a non-simulated invoice, Stripe payment rows stay in **Activity** where operators expect them.
 - [ ] **Void of a clock-pinned invoice with a pending PI shows no duplicate "Payment canceled" row** — finalize a clock-pinned invoice (pending PI), then Void it. The timeline shows the void but NOT a separate "Payment canceled" Stripe row (the PI-cancel webhook is folded into the void).
 - [ ] **Credit-note timeline lane follows its own time domain ** — on a clock-pinned in_advance sub, advance the clock and **downgrade** the plan so the engine issues a clawback credit note against the simulated prebill: its "Credit note issued" row lands in the **Activity** lane (simulated dates), NOT "Real-time activity," and `SELECT is_simulated FROM credit_notes` is **true** for that row. Then on the **same** invoice issue a credit note via the operator action (Issue Credit): that row lands in the **Real-time activity** lane with a wall-clock timestamp, and its `is_simulated` is **false**. (On a non-simulated invoice there is one lane and both credit notes show wall-clock dates — unaffected.)
@@ -1264,14 +1272,14 @@ Policy configuration surface — distinct from the dunning state machine under c
 
 - [ ] Compose a manual invoice with a commit line via API (`line_items: [{description, line_type:"add_on", quantity:1, unit_amount_cents:9000, commit_granted_cents:10000}]`) → draft created; customer balance unchanged (grant-on-issue, not on create). *(automated: `TestCommitFinalize_FundsGrantOnce`)*
 - [ ] Finalize it → customer balance **+$100** (the GRANTED amount, not the $90 price); Credits ledger shows "Prepaid commit — invoice <number>"; finalize again → 409, balance unchanged.
-- [ ] Second commit line on the same invoice → 400 "one commit per invoice"; commit line on a subscription-cycle invoice → 400 "only supported on manual invoices".
+- [ ] Second commit line on the same invoice → 422 "one commit per invoice"; commit line on a subscription-cycle invoice → 422 "only supported on manual invoices".
 - [ ] **Commit invoices are cash-only**: grant the customer separate credits, leave the commit invoice unpaid with no card on file → scheduler tick does NOT apply balance to it (amount_due unchanged); a normal invoice still gets credits applied. *(automated: `TestApplyToInvoice_CommitInvoiceIsCashInstrument`)*
-- [ ] Credit note against the commit invoice (paid or unpaid) → 409 "this invoice funds a prepaid commit … void the unpaid invoice to cancel the commit instead". *(automated: `TestCreditNote_BlockedOnCommitInvoice`)*
-- [ ] Draw part of the commit (run billing on a usage invoice), then **void** the funding invoice → balance drops to $0 (remaining retired; consumed stays consumed); ledger shows a negative adjustment "Commit retired — funding invoice voided". *(automated: `TestCommitVoid_RetiresRemaining`)*
+- [ ] Credit note against an UNPAID commit invoice → 409 "…void the unpaid invoice to cancel the commit instead"; against a PAID one → a different 409 pointing at commit relief ("use commit relief (POST /v1/credit-notes with a commit_relief block)…"). *(automated: `TestCreditNote_BlockedOnCommitInvoice`)*
+- [ ] Draw part of the commit (run billing on a usage invoice), then **void** the funding invoice → balance drops to $0 (remaining retired; consumed stays consumed); ledger shows a negative adjustment "Commit retired — funding invoice voided", and a `credit.commit_retired` event lands on the Webhooks page. *(automated: `TestCommitVoid_RetiresRemaining`)*
 - [ ] Mark the funding invoice **uncollectible** instead → balance UNCHANGED (block stays live — collections stance); voiding it afterwards retires once. *(automated: `TestCommitUncollectible_NoRetire_ThenVoidRetiresOnce`)*
 - [ ] **Balance alerts**: set the credit low-balance threshold to $50 (settings API); grant $100 (webhook `credit.balance_recovered`), drain to $30 (`credit.balance_low` with `balance_cents`/`threshold_cents`), drain to $0 (`credit.balance_depleted`) — events visible on the Webhooks page. *(automated: `TestBalanceCrossingEvents`)*
 - [ ] Grant with `grant_kind:"promotional"` + a plain grant → billing drains the promotional block first. *(automated: `TestDrainOrder_PromotionalFirst_NullSafe`)*
-- [ ] Grant with `grant_kind:"commit"` via POST /v1/credits/grant → 400 (reserved for the funding path).
+- [ ] Grant with `grant_kind:"commit"` via POST /v1/credits/grant → 422 (reserved for the funding path).
 
 ## FLOW C2b: Credits ledger readability
 
@@ -1316,6 +1324,8 @@ The credit-note refund leg: operator retry, async webhook reconciliation, proact
 - [ ] Replay failed event → success rate updates.
 
 ## FLOW W4: Live event stream + replay
+
+- [ ] **Payment anomalies emit PER-CAUSE events (ADR-068)** — a duplicate capture, an amount mismatch, and a payment on a voided invoice each emit their own event type (`payment.duplicate_charge` / `payment.amount_mismatch` / `payment.received_on_voided_invoice`) on the stream — never one aggregate "attention changed" event.
 
 - [ ] Webhooks → Events → recent deliveries with state dot.
 - [ ] Trigger event → row streams in <1s without refresh (SSE).
@@ -1423,7 +1433,7 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Operator rotates the hosted-invoice link → "Rotated hosted-invoice link for INV-NNN". None of these render as a green "Created" row.
 - [ ] Operator edits customer (display_name / email / dunning policy) → "Updated <name>".
 - [ ] Operator upserts billing profile (tax status / address / tax ID) → "Updated billing profile for <name>".
-- [ ] Customer adds card via Stripe Checkout → "Added Visa ····4242" (resource_type payment_method, action create, actor "<Customer Name>").
+- [ ] Customer adds card via Stripe Checkout → "Added Visa ····4242" (resource_type payment_method, action create, actor **System** — the attach lands via the setup_intent webhook, which carries no customer actor).
 - [ ] Operator promotes a non-default card to default → "Set Visa ····4242 as default".
 - [ ] Operator detaches a card → "Removed Visa ····4242".
 - [ ] Operator creates / revokes / rotates an API key → corresponding rows. Raw key value never appears in metadata.
@@ -1472,6 +1482,8 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 
 ## FLOW P6: Tax deferral metrics
 
+- [ ] **Late live usage events are observable** — POST a live-origin usage event timestamped >24h in the past (inside an open period): `GET /metrics` shows `velox_usage_late_event_total` incremented and a WARN log names the customer/meter/timestamp; a backfill-origin event does NOT increment it.
+
 - [ ] `curl -H "Authorization: Bearer $METRICS_TOKEN" /metrics | grep velox_tax_outcome_total` → counter registered (the legacy `velox_tax_fallback_total` was renamed when the zero-tax fallback was cut — ADR-041; outcome is now `deferred`). <!-- currency-ok: documents the metric rename -->
 - [ ] Reasons increment correctly: `velox_tax_outcome_total{outcome="deferred",reason=...}` for `no_country` (customer missing country), `no_client_for_mode` (Stripe not connected for the active livemode), `api_error` (invalid Stripe key).
 - [ ] Happy path → counter unchanged.
@@ -1487,7 +1499,7 @@ Failed external effects (tax reversal, ambiguous charge) self-heal via scheduler
 - [ ] **A fully-credit-noted void (nothing left to reverse) is stamped too** — so the sweep never loops on it. Clock-pinned/test invoices are excluded — the sweep is wall-clock/livemode only.
 - [ ] **A failed credit-note tax reversal still issues the CN and marks it for retry (ADR-061)** — on a **finalized/paid** `stripe_tax` invoice with a committed `tax_transaction_id`, make `ReverseTax` fail (break Stripe creds), then **issue a credit note**. The CN **issues** (internal money effect committed atomically), an **ERROR** logs (`tax reversal failed; marked pending for sweep recovery`), and `SELECT tax_reversal_pending FROM credit_notes WHERE id='<cn>'` is **true**.
 - [ ] **Its own sweep heals it exactly once** — restore Stripe → on the next tick `RetryPendingCreditNoteTaxReversal` files the reversal **once** (idempotent via the per-CN `velox_tax_rev_<cn_id>` key), stamps `credit_notes.tax_transaction_id`, clears the marker, and the row falls out. This is a **separate** sweep from the void-path one above — that one scans only voided/uncollectible invoices, so it never sees a reversal stamped on this finalized/paid invoice.
-- [ ] **Recovery sweeps are observable per-reconciler:** while the stuck reversal above is pending, `GET /metrics` shows `velox_reconciler_sweeps_total{reconciler="tax_reversal",outcome="run"}` (or `="cn_tax_reversal"`) **incrementing every scheduler tick** (liveness) and `outcome="error"` climbing while it fails; once Stripe is restored, `outcome="advanced"` ticks up and `error` goes flat. All six sweeps emit it (`payment_unknown`, `tax_retry`, `tax_commit`, `tax_reversal`, `clawback_issue`, `cn_tax_reversal`); pre-2026-06-25 only `velox_auto_charge_retries_total` existed, so a stuck backlog was invisible.
+- [ ] **Recovery sweeps are observable per-reconciler:** while the stuck reversal above is pending, `GET /metrics` shows `velox_reconciler_sweeps_total{reconciler="tax_reversal",outcome="run"}` (or `="cn_tax_reversal"`) **incrementing every scheduler tick** (liveness) and `outcome="error"` climbing while it fails; once Stripe is restored, `outcome="advanced"` ticks up and `error` goes flat. All seven sweeps emit it (`payment_unknown`, `tax_retry`, `tax_commit`, `tax_reversal`, `clawback_issue`, `cn_tax_reversal`, `dunning_backfill`).
 - [ ] **Payment reconciler stamps simulated `paid_at` for clock-pinned PaymentUnknown invoices** — simulate an ambiguous charge outcome on a clock-pinned invoice (Stripe API timeout / 5xx → invoice lands `payment_status=unknown` with a populated `stripe_payment_intent_id`). Wait ~70s wall-clock for the reconciler to fire. After resolution, `invoice.paid_at` lands in simulated time (test clock's frozen_time at the moment of the original charge attempt), NOT today's wall-clock.
 - [ ] **Dropped failure-webhook is fully recovered by the reconciler — dunning + email, not just a status flip (ADR-049 Phase 2)** — charge a card that declines, but DROP the `payment_intent.payment_failed` webhook (e.g. stop `stripe listen` / point the endpoint away) so the invoice sits `payment_status=unknown` (ambiguous) or `processing`. Wait for the reconciler tick. The invoice flips to `failed` AND a dunning run exists for it AND a `payment_failed` email is enqueued (`email_outbox`) AND `payment.failed` fired (`webhook_outbox`) — identical to the webhook path.
 - [ ] **Stale `processing` is swept once the PI settles (ADR-049 Phase 2)** — leave an invoice at `payment_status=processing` past the 30-min processing cool-off (drop the success webhook). Once Stripe's PI is `succeeded`, the reconciler marks the invoice `paid` and enqueues the receipt; while the PI is still `processing`/`requires_action` at Stripe, the reconciler leaves it alone (no premature settle). A `succeeded` webhook that lands DURING the reconciler's Stripe round-trip wins — the reconciler's fresh re-read sees the invoice already paid and skips (no duplicate receipt).
@@ -1499,7 +1511,7 @@ Failed external effects (tax reversal, ambiguous charge) self-heal via scheduler
 - [ ] 4 KPI cards: MRR (sparkline+trend), Active Customers, Failed Payments (red if >0), Revenue 30d.
 - [ ] MRR/movement honest under change: remove a subscription item → MRR drops AND Contraction gains it; items in a non-default currency never appear in MRR/ARR/movement; MRR-now − MRR-prev equals movement Net.
 - [ ] Revenue bar chart, Recent Activity (last 5 invoices clickable).
-- [ ] Get Started checklist: 6 steps, auto-tracks against server state, self-hides at 100%. Dismiss persists per-tenant.
+- [ ] Get Started checklist: 5 steps (Stripe, plan, customer, subscription, webhook), auto-tracks against server state, self-hides at 100%. Dismiss persists per-tenant.
 - [ ] No "Trigger Billing" button (use `POST /v1/billing/run`).
 
 ## FLOW U3: Usage Events page
@@ -1529,6 +1541,8 @@ Setup: ≥26 customers so at least one lands on page 2 (FLOW S1 tenant + a quick
 - [ ] Customer detail → External ID row has a copy icon; Subscription detail → Customer row has a copy icon (copies the raw customer id).
 
 ## FLOW U12: Dashboard consistency sweep
+
+- [ ] **Relative-time surfaces follow the test clock (ADR-086 §4)** — advance a clock-pinned customer +1 month: their cycle progress ("Day N of M"), "X ago" stamps, and rolling 7/30/90d windows all read the frozen simulated now — never wall clock; non-pinned rows on the same page keep wall-clock relative times.
 
 - [ ] Browser tab reads "Invoices · Velox" on the list, "INV-…-NNNN · Velox" on an invoice; two different tabs are distinguishable.
 - [ ] An invoice ≥ $1,000 renders with thousands separators everywhere ($10,000.00, not $10000.00).
@@ -1617,6 +1631,8 @@ Setup: Mailpit up, a customer with a paid invoice.
 
 ## FLOW X3: Rate limiting
 
+- [ ] **`/v1/auth` never fails closed** — with Redis down (even in prod mode), login still succeeds; ingest likewise stays open; only the general limiter fails closed in prod.
+
 - [ ] 100+ concurrent CRUD requests (e.g. `GET /v1/customers`) → first 100 ok, rest 429 with `Retry-After` + `X-RateLimit-*` headers.
 - [ ] Wait 10s, 20 more → ~16 allowed (general limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
 - [ ] **Ingest rides its own bucket (2026-07-05):** `POST /v1/usage-events` / `/batch` / `/integrations/litellm/spend` respond with `X-RateLimit-Limit: 1000` (per second — LiteLLM POSTs one callback per LLM call; the 100/min CRUD bucket silently dropped its events, since LiteLLM retries only on 5xx). Exhausting the general bucket does NOT 429 ingest. Overrides: `VELOX_RATE_LIMIT_GENERAL_PER_MIN`, `VELOX_RATE_LIMIT_INGEST_PER_SEC`.
@@ -1648,7 +1664,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 ## FLOW X8: Migration rollback
 
 - [ ] `make migrate-status` → version N. `migrate rollback` → N-1. `make migrate` → N.
-- [ ] `docker compose down -v && make up && make dev` → fresh DB applies all migrations; status matches `ls migrations/*.up.sql | wc -l`.
+- [ ] `docker compose down -v && make up && make dev` (DESTROYS local data — run only when a fresh DB is the point) → fresh DB applies all migrations; `migrate status` reports the HIGHEST embedded version in `internal/platform/migrate/sql/` (currently 0145 — note 0143 is a deliberate numbering gap, so version ≠ file count).
 
 ## FLOW X9: Config validation
 
