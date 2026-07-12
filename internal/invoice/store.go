@@ -235,7 +235,6 @@ type ListFilter struct {
 	// due_at < now(), payment_status not in (succeeded, processing).
 	// Backs the dashboard's "Past due" tab (Stripe-parity segment).
 	// NOTE: deliberately computed from due_at at query time — the
-	// invoices.payment_overdue column has no writer and is always
 	// false (schema 0001 default); do not filter on it.
 	Overdue bool
 	// IDs scopes the result to a specific set of invoice IDs. Used by

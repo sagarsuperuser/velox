@@ -3126,7 +3126,7 @@ export interface components {
          *     sub-code.
          * @enum {string}
          */
-        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "overdue" | "payment_processing" | "payment_scheduled" | "awaiting_payment" | "no_payment_method";
+        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "payment_processing" | "payment_scheduled" | "awaiting_payment" | "no_payment_method";
         /**
          * @description Operator's recommended next step. Closed enum because every
          *     code maps to a concrete server endpoint or frontend route,
@@ -3146,7 +3146,7 @@ export interface components {
          * @description Unified "this invoice needs operator attention" surface.
          *     Computed server-side from durable invoice fields
          *     (`tax_status`, `tax_error_code`, `payment_status`,
-         *     `last_payment_error`, `payment_overdue`). Never persisted —
+         *     `last_payment_error`). Never persisted —
          *     always derived. Omitted entirely when the invoice is healthy
          *     (matches Stripe's `last_finalization_error: null` ergonomic).
          *     See ADR-009.
@@ -3163,8 +3163,8 @@ export interface components {
             actions?: components["schemas"]["AttentionActionItem"][];
             /**
              * @description Open, dotted, provider-specific code (e.g.
-             *     `tax.customer_data_invalid`, `payment.declined`,
-             *     `lifecycle.overdue`). New codes ship without a contract
+             *     `tax.customer_data_invalid`, `payment.declined`).
+             *     New codes ship without a contract
              *     bump. Stripe parity.
              */
             code?: string;
@@ -3308,7 +3308,6 @@ export interface components {
             voided_at?: string | null;
             stripe_payment_intent_id?: string;
             last_payment_error?: string;
-            payment_overdue: boolean;
             auto_charge_pending?: boolean;
             /**
              * @description Hosted-invoice-URL credential (Stripe-parity

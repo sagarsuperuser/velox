@@ -11,6 +11,11 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Removed
+
+- **Dead `payment_overdue` field removed from the invoice API + schema (2026-07-12).** The column was created with a `DEFAULT false` in the initial schema and never written by any code path; its only reader was the invoice-attention classifier's "overdue" arm, which therefore could never fire. Both are deleted (migration 0146). The live "Past due" signal is unaffected — it's computed from `due_at` at query time (the invoice list `?overdue=` filter), not from this column, so nothing observable changes. Integrators reading `invoice.payment_overdue` (always `false`) should drop it.
+
+
 ### Added
 
 - **Customer credit balance now applies to manual (one-off) invoices at finalize (2026-07-11, ADR-088).** The industry splits here (Stripe and Chargebee apply, Lago excludes); Velox follows its Stripe anchor: the balance drains clock-bound at finalize, the card is charged only the remainder, a fully covered invoice settles paid, and a failed application queues for the retry sweep without ever charging the pre-credit amount.

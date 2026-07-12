@@ -735,7 +735,6 @@ export type AttentionReason =
   | 'tax_location_required'
   | 'payment_failed'
   | 'payment_unconfirmed'
-  | 'overdue'
   | 'payment_processing'
   | 'payment_scheduled'
   | 'awaiting_payment'
@@ -832,7 +831,7 @@ export interface Invoice {
   tax_error_code?: string
   // attention is the unified "needs operator attention" surface,
   // computed server-side from tax_status / tax_error_code /
-  // payment_status / payment_overdue / due_at. Omitted entirely when
+  // payment_status / due_at. Omitted entirely when
   // the invoice is healthy. See ADR-009.
   attention?: InvoiceAttention
   total_amount_cents: number

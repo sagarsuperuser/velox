@@ -88,12 +88,6 @@ const (
 	// both PaymentIntents and the captured amount.
 	AttentionReasonPaymentAnomaly AttentionReason = "payment_anomaly"
 
-	// AttentionReasonOverdue: invoice is past its due_at and remains
-	// unpaid. Mirrors Lago's `payment_overdue` boolean and Stripe's
-	// `invoice.overdue` event. Distinct from payment_failed — overdue
-	// can occur without a charge attempt (e.g. send_invoice collection).
-	AttentionReasonOverdue AttentionReason = "overdue"
-
 	// AttentionReasonPaymentProcessing: charge attempt is in flight at
 	// the provider — Stripe has accepted the PaymentIntent but hasn't
 	// returned a final outcome. Self-resolves; no operator action.
@@ -184,7 +178,7 @@ type AttentionActionItem struct {
 // Attention is the unified "this invoice needs operator attention"
 // surface. Computed on read by ClassifyInvoiceAttention; never
 // persisted. Durable fields (tax_status, tax_error_code,
-// payment_status, last_payment_error, payment_overdue) are the source
+// payment_status, last_payment_error) are the source
 // of truth.
 //
 // Wire shape mirrors Stripe's last_finalization_error /
@@ -208,8 +202,8 @@ type Attention struct {
 
 	// Code is the open, dotted, provider-specific code for programmatic
 	// clients. New codes ship without a major-version bump. Examples:
-	// tax.customer_data_invalid, tax.provider_outage, payment.declined,
-	// lifecycle.overdue. Stripe parity (their `code` field is also open).
+	// tax.customer_data_invalid, tax.provider_outage, payment.declined.
+	// Stripe parity (their `code` field is also open).
 	Code string `json:"code,omitempty"`
 
 	// DocURL deep-links to the operator-facing documentation page for
@@ -355,8 +349,7 @@ const docBaseURL = "https://docs.velox.dev/errors/"
 // Pure function — no I/O, deterministic on the input Invoice +
 // AttentionContext. Tested in invoice_attention_test.go across the
 // cartesian product of (status, tax_status, tax_error_code,
-// payment_status, payment_overdue, auto_charge_pending,
-// has_payment_method).
+// payment_status, auto_charge_pending, has_payment_method).
 //
 // The atc.HasPaymentMethod signal distinguishes two awaiting sub-
 // states: a no-PM invoice (operator-actionable, the engine has nothing
@@ -390,8 +383,6 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 		return classifyPaymentFailure(inv)
 	case inv.TaxStatus == InvoiceTaxPending:
 		return classifyTaxAttention(inv, atc, AttentionSeverityWarning)
-	case inv.PaymentOverdue:
-		return classifyOverdue(inv)
 	case inv.PaymentStatus == PaymentUnknown:
 		return classifyPaymentUnconfirmed(inv)
 	case inv.PaymentStatus == PaymentProcessing:
@@ -576,21 +567,6 @@ func classifyPaymentUnconfirmed(inv Invoice) *Attention {
 		Message: "Payment outcome unconfirmed by the provider — Velox re-checks automatically and resolves once Stripe reports a final outcome. If it sits here for hours the charge may be waiting on customer action (e.g. 3-D Secure): check the payment in Stripe, then cancel or retry it.",
 		DocURL:  docBaseURL + "payment-unconfirmed",
 		Since:   &since,
-	}
-}
-
-func classifyOverdue(inv Invoice) *Attention {
-	return &Attention{
-		Severity: AttentionSeverityWarning,
-		Reason:   AttentionReasonOverdue,
-		Code:     "lifecycle.overdue",
-		Message:  "Invoice is past its due date and remains unpaid.",
-		DocURL:   docBaseURL + "overdue",
-		Actions: []AttentionActionItem{
-			{Code: AttentionActionChargeNow, Label: "Charge now"},
-			{Code: AttentionActionSendReminder, Label: "Send reminder"},
-		},
-		Since: inv.DueAt,
 	}
 }
 

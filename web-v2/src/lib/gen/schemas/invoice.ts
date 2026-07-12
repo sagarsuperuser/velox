@@ -96,7 +96,6 @@ export interface Invoice {
   voided_at?: string | null;
   stripe_payment_intent_id?: string;
   last_payment_error?: string;
-  payment_overdue: boolean;
   auto_charge_pending?: boolean;
   /** Hosted-invoice-URL credential (Stripe-parity
   `hosted_invoice_url`). Generated at finalize; drafts have an

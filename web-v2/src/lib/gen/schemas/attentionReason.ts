@@ -24,7 +24,6 @@ export const AttentionReason = {
   tax_location_required: 'tax_location_required',
   payment_failed: 'payment_failed',
   payment_unconfirmed: 'payment_unconfirmed',
-  overdue: 'overdue',
   payment_processing: 'payment_processing',
   payment_scheduled: 'payment_scheduled',
   awaiting_payment: 'awaiting_payment',
