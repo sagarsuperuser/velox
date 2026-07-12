@@ -167,7 +167,7 @@ terminal-sink properties of the retry path were verified sound in the same dig
 (Unknown → `payment_status='unknown'` excludes re-listing; the paid-invoice predicate
 backstops a stale `auto_charge_pending`).
 
-## Finding 6 — FLOW TZ1 coverage audit: 8 boxes CI-locked, 4 observable-only, 2 uncovered gaps — OPEN (2 gaps)
+## Finding 6 — FLOW TZ1 coverage audit: 8 boxes CI-locked, 4 observable-only, 2 gaps — both gaps FIXED (2026-07-13)
 
 **Surfaced:** coverage audit of FLOW TZ1 (tenant-timezone semantics), 2026-07-12, per
 the "check existing CI coverage first" process — each box mapped to its durable test by
@@ -186,14 +186,20 @@ billing TZ; public hosted-page dates). **2 have NO automated coverage:**
   in `web-v2/src/lib/dates.ts`, which have zero tests despite being trivially
   unit-testable (the repo now runs `node --test tests/*.test.ts`, added with
   `lib/effectiveNow`). The only related test, `internal/api/timefilter/timefilter_test.go`,
-  asserts the backend *UTC* date-only fallback — the opposite path. Disposition: add
-  `web-v2/tests/dates.test.ts` asserting start/end-of-day in a non-UTC zone.
+  asserts the backend *UTC* date-only fallback — the opposite path. **FIXED:** added
+  `web-v2/tests/dates.test.ts` asserting start/end-of-day in Asia/Kolkata +
+  America/Los_Angeles (and the from/to bracket excludes a UTC-May-5/IST-May-6 row).
+  Needed a small `@/`-alias resolve hook for `node --test` (`web-v2/tests/support/`), since
+  `dates.ts` imports the api client for its TZ fallback — reusable for future FE unit tests.
 - **TZ1.14 (cancel / plan-swap credit-note period reads billing-TZ calendar days) —
   UNCOVERED.** The cancel-credit tests (`internal/billing/cancel_multidim_test.go` etc.)
   assert the description *suffix* ("canceled mid-period") but none uses a positive-offset
   zone (Asia/Tokyo) or asserts the period *date* is the billing-TZ day, not the UTC-prior
-  day. Disposition: add a cancel/plan-swap credit-note test in a positive-offset org zone
-  asserting the line-description date.
+  day. **FIXED:** extracted the triplicated Sprintf into `prorationRefundDesc` (one helper
+  for the cancel + both plan-swap sites, byte-identical output) and added
+  `TestProrationRefundDesc_RendersBillingTZCivilDays` (Asia/Tokyo, with a UTC control that
+  proves the prior-day divergence). The behavior was already correct (all three sites did
+  `.In(loc)`); the test is a regression guard.
 
-Both are test-coverage gaps, not known product bugs — the behavior is presumed correct
-via the shared TZ formatters, just not asserted on these two surfaces.
+Both were test-coverage gaps, not product bugs — the behavior was correct via the shared
+TZ formatters, just unasserted on these two surfaces. Now locked.
