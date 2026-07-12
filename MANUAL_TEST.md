@@ -939,7 +939,7 @@ Velox accepts `immediate=true` plan-swaps that change the billing interval as lo
 - [ ] **Unpaid in_advance source (NEW in_advance OR cross-cadence with OLD in_advance):** swap on an in_advance sub whose source invoice is `payment_status='pending'`. **No credit grant** (no cash was funded) — instead the unpaid prebill is **relieved** to its consumed portion via `relieveUnpaidPrebill` (partially-consumed → adjustment credit note reduces `amount_due`; fully-unused → invoice **voided**), then the plan swap + period jump/truncate proceed. Same unpaid-source settlement as FLOW B17 #22 / TC8b — it does **not** ride dunning for the full amount.
 - [ ] **Same-interval same-cadence swap (no regression):** swap monthly $29 → monthly $49 immediately (both in_arrears). Existing segment-aware behavior — no credit grant, no period jump, no immediate invoice. Cycle close emits per-segment lines (FLOW B20).
 - [ ] **Atomic — no silent revenue drop on a failed new-period bill (ADR-056):** in_advance cross-interval swap (e.g. yearly → monthly) while forcing the new-period invoice insert to fail (temporarily revoke INSERT on `invoices` for the velox role, run the immediate swap, restore the grant). Expected: the API call **fails loudly** (500), and the swap **fully rolls back** — `SELECT plan_id, current_billing_period_start, current_billing_period_end, next_billing_at FROM subscriptions/items` show the **pre-swap** plan + period (the watermark did NOT advance, and no orphaned new-period invoice exists). Pre-ADR-056 the watermark advanced first and the failure was swallowed with a false "scheduler catchup will retry" log, permanently dropping the new period's base. The OLD-period refund + the new invoice's tax-commit/auto-charge run only after the tx commits.
-- [ ] **Refund survives a crash after the swap commit (Bug B, closed 2026-07-05):** on an in_advance cross-interval swap whose OLD-period funding invoices are all **paid**, the refund credit notes are created as `issue_pending` **drafts inside the swap tx** (`SELECT status, issue_pending, reason FROM credit_notes` → `draft, true, subscription_plan_change` immediately after the swap response). The post-commit Issue relays the balance grant + tax reversal; kill the server between the swap commit and the Issue → the drafts remain and the **clawback reconciler issues them** on its next tick (no manual credit, no lost refund). With an **unpaid** funding source the in-tx half declines and the legacy post-commit relief path runs (unchanged). Dashboard item dialogs (add / plan change / quantity) now send an `Idempotency-Key` per dialog open, so a network-level retry replays the original response instead of 400ing on the same-plan guard. *(automated: `TestCrossIntervalSwap_DraftPath_IssuesDraftsAndSkipsImmediate` + declined-fallback + draft-error-rollback siblings)*
+- [x] **Refund survives a crash after the swap commit (Bug B, closed 2026-07-05):** on an in_advance cross-interval swap whose OLD-period funding invoices are all **paid**, the refund credit notes are created as `issue_pending` **drafts inside the swap tx** (`SELECT status, issue_pending, reason FROM credit_notes` → `draft, true, subscription_plan_change` immediately after the swap response). The post-commit Issue relays the balance grant + tax reversal; kill the server between the swap commit and the Issue → the drafts remain and the **clawback reconciler issues them** on its next tick (no manual credit, no lost refund). With an **unpaid** funding source the in-tx half declines and the legacy post-commit relief path runs (unchanged). Dashboard item dialogs (add / plan change / quantity) now send an `Idempotency-Key` per dialog open, so a network-level retry replays the original response instead of 400ing on the same-plan guard. *(automated: `TestCrossIntervalSwap_DraftPath_IssuesDraftsAndSkipsImmediate` + declined-fallback + draft-error-rollback siblings)*
 
 ---
 
@@ -1116,7 +1116,7 @@ Multipart text+HTML with tenant chrome. Configure tenant `company_name`, `logo_u
 
 - [ ] Trialing sub → Cancel dialog first option reads **"At trial end"** with "won't be charged" copy; confirm → banner shows "at trial end (<trial_end date>)", GET returns `cancel_effective_at == trial_end_at`.
 - [ ] Advance the test clock past trial end → sub is **canceled**, `canceled_at == trial_end_at`, invoice list shows **NO invoice**, timeline shows one cancellation entry, webhook log shows one `subscription.canceled` (reason `trial_end_cancel`) and **zero** `subscription.trial_ended`.
-- [ ] **Lifecycle events ride the transition tx (2026-07-05):** `SELECT event_type, payload FROM webhook_outbox` right after any create/activate/cancel/end-trial → `subscription.created` / `.activated` / `.canceled` / `.trial_ended` rows exist **before** any dispatcher tick (enqueued IN the transition tx, exactly once per transition; a rolled-back cancel leaves no row). Payload keeps the provenance fields (`canceled_by`, `reason`, `triggered_by`). *(automated: `TestLifecycleEvents_EnqueuedInTransitionTx`)*
+- [x] **Lifecycle events ride the transition tx (2026-07-05):** `SELECT event_type, payload FROM webhook_outbox` right after any create/activate/cancel/end-trial → `subscription.created` / `.activated` / `.canceled` / `.trial_ended` rows exist **before** any dispatcher tick (enqueued IN the transition tx, exactly once per transition; a rolled-back cancel leaves no row). Payload keeps the provenance fields (`canceled_by`, `reason`, `triggered_by`). *(automated: `TestLifecycleEvents_EnqueuedInTransitionTx`)*
 - [ ] Schedule the cancel, then **Undo** before trial end, advance the clock → sub ACTIVATES normally and bills period 1 (the rescind won).
 - [ ] Schedule, then **Extend trial** with an explicit cancel date pending → 409 "clear the scheduled cancel first"; with the flag-only schedule → extension succeeds and the banner's date moves to the new trial end.
 - [ ] "End trial now" is disabled (with reason) while a cancel is scheduled; via API → 409.
@@ -1270,15 +1270,15 @@ Policy configuration surface — distinct from the dunning state machine under c
 
 ## FLOW C4: Prepaid commits (ADR-078)
 
-- [ ] Compose a manual invoice with a commit line via API (`line_items: [{description, line_type:"add_on", quantity:1, unit_amount_cents:9000, commit_granted_cents:10000}]`) → draft created; customer balance unchanged (grant-on-issue, not on create). *(automated: `TestCommitFinalize_FundsGrantOnce`)*
+- [x] Compose a manual invoice with a commit line via API (`line_items: [{description, line_type:"add_on", quantity:1, unit_amount_cents:9000, commit_granted_cents:10000}]`) → draft created; customer balance unchanged (grant-on-issue, not on create). *(automated: `TestCommitFinalize_FundsGrantOnce`)*
 - [ ] Finalize it → customer balance **+$100** (the GRANTED amount, not the $90 price); Credits ledger shows "Prepaid commit — invoice <number>"; finalize again → 409, balance unchanged.
 - [ ] Second commit line on the same invoice → 422 "one commit per invoice"; commit line on a subscription-cycle invoice → 422 "only supported on manual invoices".
-- [ ] **Commit invoices are cash-only**: grant the customer separate credits, leave the commit invoice unpaid with no card on file → scheduler tick does NOT apply balance to it (amount_due unchanged); a normal invoice still gets credits applied. *(automated: `TestApplyToInvoice_CommitInvoiceIsCashInstrument`)*
-- [ ] Credit note against an UNPAID commit invoice → 409 "…void the unpaid invoice to cancel the commit instead"; against a PAID one → a different 409 pointing at commit relief ("use commit relief (POST /v1/credit-notes with a commit_relief block)…"). *(automated: `TestCreditNote_BlockedOnCommitInvoice`)*
-- [ ] Draw part of the commit (run billing on a usage invoice), then **void** the funding invoice → balance drops to $0 (remaining retired; consumed stays consumed); ledger shows a negative adjustment "Commit retired — funding invoice voided", and a `credit.commit_retired` event lands on the Webhooks page. *(automated: `TestCommitVoid_RetiresRemaining`)*
-- [ ] Mark the funding invoice **uncollectible** instead → balance UNCHANGED (block stays live — collections stance); voiding it afterwards retires once. *(automated: `TestCommitUncollectible_NoRetire_ThenVoidRetiresOnce`)*
-- [ ] **Balance alerts**: set the credit low-balance threshold to $50 (settings API); grant $100 (webhook `credit.balance_recovered`), drain to $30 (`credit.balance_low` with `balance_cents`/`threshold_cents`), drain to $0 (`credit.balance_depleted`) — events visible on the Webhooks page. *(automated: `TestBalanceCrossingEvents`)*
-- [ ] Grant with `grant_kind:"promotional"` + a plain grant → billing drains the promotional block first. *(automated: `TestDrainOrder_PromotionalFirst_NullSafe`)*
+- [x] **Commit invoices are cash-only**: grant the customer separate credits, leave the commit invoice unpaid with no card on file → scheduler tick does NOT apply balance to it (amount_due unchanged); a normal invoice still gets credits applied. *(automated: `TestApplyToInvoice_CommitInvoiceIsCashInstrument`)*
+- [x] Credit note against an UNPAID commit invoice → 409 "…void the unpaid invoice to cancel the commit instead"; against a PAID one → a different 409 pointing at commit relief ("use commit relief (POST /v1/credit-notes with a commit_relief block)…"). *(automated: `TestCreditNote_BlockedOnCommitInvoice`)*
+- [x] Draw part of the commit (run billing on a usage invoice), then **void** the funding invoice → balance drops to $0 (remaining retired; consumed stays consumed); ledger shows a negative adjustment "Commit retired — funding invoice voided", and a `credit.commit_retired` event lands on the Webhooks page. *(automated: `TestCommitVoid_RetiresRemaining`)*
+- [x] Mark the funding invoice **uncollectible** instead → balance UNCHANGED (block stays live — collections stance); voiding it afterwards retires once. *(automated: `TestCommitUncollectible_NoRetire_ThenVoidRetiresOnce`)*
+- [x] **Balance alerts**: set the credit low-balance threshold to $50 (settings API); grant $100 (webhook `credit.balance_recovered`), drain to $30 (`credit.balance_low` with `balance_cents`/`threshold_cents`), drain to $0 (`credit.balance_depleted`) — events visible on the Webhooks page. *(automated: `TestBalanceCrossingEvents`)*
+- [x] Grant with `grant_kind:"promotional"` + a plain grant → billing drains the promotional block first. *(automated: `TestDrainOrder_PromotionalFirst_NullSafe`)*
 - [ ] Grant with `grant_kind:"commit"` via POST /v1/credits/grant → 422 (reserved for the funding path).
 
 ## FLOW C2b: Credits ledger readability
@@ -1618,7 +1618,7 @@ Setup: `DASHBOARD_BASE_URL` set (invites refuse to mint without it), Mailpit up.
 - [ ] Re-invite the SAME email while pending → 409 "pending invitation … already exists"; revoke it → its accept link now shows "no longer valid"; re-invite succeeds.
 - [ ] `POST /v1/members/invite` with a Bearer secret key → 403 (dashboard-session only).
 - [ ] Remove the invitee (confirm dialog warns they're signed out everywhere) → their session is dead on next request; re-inviting them works and accept says "You already have a Velox account" (no password form; attach only, then sign in at /login).
-- [ ] Remove yourself → blocked; remove the last member → blocked. *(automated: `internal/dashmembers` integration tests — golden path, existing-user attach, gates, revoked/expired tokens, session revocation, concurrent accept)*
+- [x] Remove yourself → blocked; remove the last member → blocked. *(automated: `internal/dashmembers` integration tests — golden path, existing-user attach, gates, revoked/expired tokens, session revocation, concurrent accept)*
 
 ## FLOW E1: Additional billing emails + credit-note send (ADR-082, 2026-07-06)
 
@@ -1628,7 +1628,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 - [ ] Invoice → Send Email: CC field prefilled with both addresses → send → Mailpit shows ONE message with To=primary, Cc listing both; all three mailboxes received it.
 - [ ] Send again with the CC field CLEARED → only the primary mailbox receives (explicit `[]` = primary only).
 - [ ] Issue a credit note on the invoice → Credit Notes → Send on the issued row → branded credit-note email with PDF attached arrives at the same recipient set; the send appears on the invoice timeline and the customer's Sent emails as "Credit note". Draft/voided CN → Send returns 422.
-- [ ] Legacy API body `POST /v1/invoices/{id}/send {"email": ...}` (no additional_emails key) → CCs the stored list (the Orb-parity default). *(automated: `TestCC_*` transport pins — RCPT set, misattribution, transport-abort, suppression; outbox cc round-trips; customer store encryption round-trip; tri-state handler tests; CN send guards)*
+- [x] Legacy API body `POST /v1/invoices/{id}/send {"email": ...}` (no additional_emails key) → CCs the stored list (the Orb-parity default). *(automated: `TestCC_*` transport pins — RCPT set, misattribution, transport-abort, suppression; outbox cc round-trips; customer store encryption round-trip; tri-state handler tests; CN send guards)*
 
 ## FLOW X3: Rate limiting
 
@@ -1665,7 +1665,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 ## FLOW X8: Migration rollback
 
 - [ ] `make migrate-status` → version N. `migrate rollback` → N-1. `make migrate` → N.
-- [ ] `docker compose down -v && make up && make dev` (DESTROYS local data — run only when a fresh DB is the point) → fresh DB applies all migrations; `migrate status` reports the HIGHEST embedded version in `internal/platform/migrate/sql/` (currently 0145 — note 0143 is a deliberate numbering gap, so version ≠ file count).
+- [ ] `docker compose down -v && make up && make dev` (DESTROYS local data — run only when a fresh DB is the point) → fresh DB applies all migrations; `migrate status` reports the HIGHEST embedded version in `internal/platform/migrate/sql/` (note: 0143 is a deliberate numbering gap, so version ≠ file count — compare against the top filename, never a count or a number written here).
 
 ## FLOW X9: Config validation
 
@@ -1706,25 +1706,25 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run ./cmd/velox
 - [ ] Hand-build a DISCOUNTED commit invoice (price $90.00, granted $100.00), finalize, `RecordOfflinePayment`. Draw $40.00 of credits via usage/apply. `POST /v1/credit-notes {invoice_id, commit_relief: {retire_all: true}}` → 201, CN **issued** immediately, `total_cents = 5400` (price-ratio: the $40 drawn were bought at 0.9 — NOT $60.00 face, NOT $50.00), `commit_retired_cents = 6000`, `credit_amount_cents = 0`, allocation defaulted to `out_of_band` (offline-paid). Grant fully consumed; balance 0; ONE `credit.commit_retired` outbox row.
 - [ ] Partial then rest: fresh commit, relieve `retire_cents: 2000` → $18.00; draw $30.00; `retire_all` → $45.00. Cash telescopes exactly (Σ = f(total retired)); no rounding drift across any partial split.
 - [ ] Repeat relief on the exhausted commit → 409 "fully consumed"; relief on an UNPAID commit → 409 naming void; ordinary line CN on a PAID commit → 409 naming commit relief; `retire_cents` above remaining → 422 carrying the LIVE remaining + max refundable; expired-then-swept commit → 409 (breakage is earned).
-- [ ] Card-paid commit: relief allocation defaults to the Stripe refund channel, keyed `velox_cn_<id>`; a failed refund leg leaves the CN issued + credits retired with `refund_status=failed` → Retry refund converges (safe direction: never over-relieved). *(automated: `TestCommitRelief_*` — worked example, telescoping, race, gates, expiry)*
+- [x] Card-paid commit: relief allocation defaults to the Stripe refund channel, keyed `velox_cn_<id>`; a failed refund leg leaves the CN issued + credits retired with `refund_status=failed` → Retry refund converges (safe direction: never over-relieved). *(automated: `TestCommitRelief_*` — worked example, telescoping, race, gates, expiry)*
 
 ## FLOW CG1: Commit / credit-grant burndown (2026-07-06)
 
 - [ ] Grant a promo credit + finalize a commit invoice → `GET /v1/credits/grants/{customer_id}` lists both blocks with `amount/consumed/remaining`, `grant_kind`, `expires_at`; `commit_remaining_cents` / `promotional_remaining_cents` split the headline balance.
 - [ ] Customer page: Credit Balance stat shows the "Commit $X · Promo $Y" subline when either class has remaining; the **Credit grants** card lists per-grant Granted/Drawn/Remaining/Expires with kind badges.
-- [ ] Drain past the promo total → promo row leaves the live list (`include_exhausted=true` still shows it); commit remaining unchanged until promo exhausts (ADR-078 drain order). *(automated: `TestListGrants_BurndownAndKindSubtotals`)*
+- [x] Drain past the promo total → promo row leaves the live list (`include_exhausted=true` still shows it); commit remaining unchanged until promo exhausts (ADR-078 drain order). *(automated: `TestListGrants_BurndownAndKindSubtotals`)*
 
 ## FLOW M1: Provider cost tables + margin (ADR-079)
 
 - [ ] Settings → Provider costs (or `PUT /v1/provider-costs`): add a rate `{provider: "anthropic", model: "claude-sonnet-4.5", token_type: "input", cost_per_token: "0.000003"}` → row appears in the table. *(order matters: rates BEFORE usage — events ingested earlier stay honestly uncosted)*
-- [ ] Ingest 1,000 input tokens with dims `{provider, model, token_type}` → `GET /v1/usage-events` shows `provider_cost_micros: 3000`, `provider_cost_source: "table"`. *(automated: `TestProviderCostStamp`)*
+- [x] Ingest 1,000 input tokens with dims `{provider, model, token_type}` → `GET /v1/usage-events` shows `provider_cost_micros: 3000`, `provider_cost_source: "table"`. *(automated: `TestProviderCostStamp`)*
 - [ ] Edit the rate to 0.000009 → old events keep 3000 micros; a NEW event stamps 9000 (snapshot semantics).
 - [ ] Ingest a token event for a model with NO rate → `provider_cost_micros` null (uncosted, actionable); a non-token event (no provider/model dims) → `provider_cost_source: "not_applicable"`.
 - [ ] **Margin window picker (2026-07-06):** the customer Margin card offers Last 7/30/90 days + Custom (two date inputs); switching windows refetches (`from`/`to` on `GET /v1/customers/{id}/margin`); Custom waits for both dates before querying.
-- [ ] `GET /v1/customers/{id}/margin` → headline revenue vs cost + margin %; per-model rows show margin ONLY for model-pinned pricing rules; flat-rule revenue shows under "not model-attributed"; `unresolved_events` counts only the missing-rate token events. *(automated: `TestMargin_AttributionHonesty`)*
+- [x] `GET /v1/customers/{id}/margin` → headline revenue vs cost + margin %; per-model rows show margin ONLY for model-pinned pricing rules; flat-rule revenue shows under "not model-attributed"; `unresolved_events` counts only the missing-rate token events. *(automated: `TestMargin_AttributionHonesty`)*
 - [ ] Customer page (operator) shows the margin card; the CUSTOMER-facing hosted cost dashboard shows NO cost/margin data.
 - [ ] Usage CSV export includes `provider_cost_micros` and `provider_cost_source` columns.
-- [ ] Test-mode rate rows don't cost live-mode events (and vice versa). *(automated: `TestProviderCostStamp_LivemodeIsolation`)*
+- [x] Test-mode rate rows don't cost live-mode events (and vice versa). *(automated: `TestProviderCostStamp_LivemodeIsolation`)*
 
 ## FLOW X15: LiteLLM integration (ADR-033)
 
@@ -1753,7 +1753,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 - [ ] Batch shape: POST `{"events":[<payload1>,<payload2>,...]}` → each payload mapped independently. Per-row failures don't fail the batch.
 - [ ] Bare array shape: POST `[<payload1>,<payload2>]` → same handling as `events:[...]`.
 - [ ] Embedding call: `"call_type":"embedding","usage":{"prompt_tokens":500,"completion_tokens":0}` → ONE event (meter `tokens`, `token_type=input`), `accepted=1`.
-- [ ] Dimension promotion: `"metadata":{"team_id":"team_eng","request_tags":["prod","batch"],"x_other":"ignored"}` → emitted events have `dimensions.team_id="team_eng"` and `dimensions.request_tags="batch,prod"` (LiteLLM's LIST is joined to a sorted comma-separated scalar — pre-2026-07-05 the raw array failed scalar dimension validation and silently rejected EVERY event on tagged calls); `x_other` is not promoted to dimensions. *(automated: `TestMapPayload_RequestTagsListBecomesScalar`)*
+- [x] Dimension promotion: `"metadata":{"team_id":"team_eng","request_tags":["prod","batch"],"x_other":"ignored"}` → emitted events have `dimensions.team_id="team_eng"` and `dimensions.request_tags="batch,prod"` (LiteLLM's LIST is joined to a sorted comma-separated scalar — pre-2026-07-05 the raw array failed scalar dimension validation and silently rejected EVERY event on tagged calls); `x_other` is not promoted to dimensions. *(automated: `TestMapPayload_RequestTagsListBecomesScalar`)*
 - [ ] Cost surfacing: `cost_breakdown:{input_cost:0.012,output_cost:0.045,total_cost:0.057}` → input event's `metadata.velox.litellm_cost_usd=0.012`, output event's `metadata.velox.litellm_cost_usd=0.045`. Velox billing math is unaffected — pricing rules drive the invoice amount; LiteLLM's cost is audit-only.
 - [ ] Auth: POST without `Authorization` header → 401. Publishable key (no `usage:write`) → 403.
 - [ ] Audit-trail sanity: each ingested event shows `origin=api` in `usage_events.origin` (no separate "litellm" origin in v1; revisit when an operator asks).
