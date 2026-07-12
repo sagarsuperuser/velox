@@ -389,7 +389,6 @@ function humanReason(reason: string): string {
     tax_location_required: 'Customer address required',
     payment_failed: 'Payment failed',
     payment_unconfirmed: 'Payment unconfirmed',
-    overdue: 'Past due',
     payment_processing: 'Payment processing',
     payment_scheduled: 'Auto-charge scheduled',
     awaiting_payment: 'Awaiting first charge',

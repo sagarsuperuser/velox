@@ -71,7 +71,6 @@ func (e AttentionAction) Valid() bool {
 const (
 	AwaitingPayment      AttentionReason = "awaiting_payment"
 	NoPaymentMethod      AttentionReason = "no_payment_method"
-	Overdue              AttentionReason = "overdue"
 	PaymentFailed        AttentionReason = "payment_failed"
 	PaymentProcessing    AttentionReason = "payment_processing"
 	PaymentScheduled     AttentionReason = "payment_scheduled"
@@ -86,8 +85,6 @@ func (e AttentionReason) Valid() bool {
 	case AwaitingPayment:
 		return true
 	case NoPaymentMethod:
-		return true
-	case Overdue:
 		return true
 	case PaymentFailed:
 		return true
@@ -691,7 +688,7 @@ func (e PostV1SubscriptionsJSONBodyBillingTime) Valid() bool {
 // Attention Unified "this invoice needs operator attention" surface.
 // Computed server-side from durable invoice fields
 // (`tax_status`, `tax_error_code`, `payment_status`,
-// `last_payment_error`, `payment_overdue`). Never persisted —
+// `last_payment_error`). Never persisted —
 // always derived. Omitted entirely when the invoice is healthy
 // (matches Stripe's `last_finalization_error: null` ergonomic).
 // See ADR-009.
@@ -701,8 +698,8 @@ type Attention struct {
 	Actions []AttentionActionItem `json:"actions,omitempty"`
 
 	// Code Open, dotted, provider-specific code (e.g.
-	// `tax.customer_data_invalid`, `payment.declined`,
-	// `lifecycle.overdue`). New codes ship without a contract
+	// `tax.customer_data_invalid`, `payment.declined`).
+	// New codes ship without a contract
 	// bump. Stripe parity.
 	Code string `json:"code,omitempty"`
 
@@ -827,7 +824,7 @@ type Invoice struct {
 	// Attention Unified "this invoice needs operator attention" surface.
 	// Computed server-side from durable invoice fields
 	// (`tax_status`, `tax_error_code`, `payment_status`,
-	// `last_payment_error`, `payment_overdue`). Never persisted —
+	// `last_payment_error`). Never persisted —
 	// always derived. Omitted entirely when the invoice is healthy
 	// (matches Stripe's `last_finalization_error: null` ergonomic).
 	// See ADR-009.
@@ -872,7 +869,6 @@ type Invoice struct {
 	Metadata           map[string]interface{} `json:"metadata,omitempty"`
 	NetPaymentTermDays int                    `json:"net_payment_term_days"`
 	PaidAt             time.Time              `json:"paid_at,omitempty"`
-	PaymentOverdue     bool                   `json:"payment_overdue"`
 
 	// PaymentStatus Payment-attempt status. `unknown` marks a Stripe charge attempt that
 	// returned an ambiguous error (5xx, timeout, connection reset) where

@@ -33,7 +33,6 @@ func TestClassifyInvoiceAttention_TerminalStatesReturnNil(t *testing.T) {
 			inv.TaxStatus = InvoiceTaxFailed
 			inv.TaxErrorCode = "customer_data_invalid"
 			inv.PaymentStatus = PaymentFailed
-			inv.PaymentOverdue = true
 			if got := ClassifyInvoiceAttention(inv, AttentionContext{}); got != nil {
 				t.Fatalf("terminal status %s should suppress attention, got %+v", status, got)
 			}
@@ -243,31 +242,12 @@ func TestClassifyInvoiceAttention_PaymentUnknownIsInfo(t *testing.T) {
 	}
 }
 
-func TestClassifyInvoiceAttention_OverdueIsWarning(t *testing.T) {
-	inv := draft()
-	inv.PaymentOverdue = true
-	due := time.Now().Add(-48 * time.Hour)
-	inv.DueAt = &due
-
-	att := ClassifyInvoiceAttention(inv, AttentionContext{})
-	if att == nil || att.Severity != AttentionSeverityWarning {
-		t.Fatalf("overdue should be warning, got %+v", att)
-	}
-	if att.Reason != AttentionReasonOverdue {
-		t.Errorf("reason = %s, want %s", att.Reason, AttentionReasonOverdue)
-	}
-	if att.Since == nil || !att.Since.Equal(due) {
-		t.Errorf("Since should equal DueAt, got %v vs %v", att.Since, due)
-	}
-}
-
 func TestClassifyInvoiceAttention_PriorityOrder(t *testing.T) {
-	// Tax_failed must beat payment_failed must beat tax_pending must beat overdue must beat payment_unknown.
+	// Tax_failed must beat payment_failed must beat payment_unknown.
 	inv := draft()
 	inv.TaxStatus = InvoiceTaxFailed
 	inv.TaxErrorCode = "customer_data_invalid"
 	inv.PaymentStatus = PaymentFailed // also bad
-	inv.PaymentOverdue = true         // also bad
 
 	att := ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil {
@@ -277,23 +257,16 @@ func TestClassifyInvoiceAttention_PriorityOrder(t *testing.T) {
 		t.Errorf("priority broken: tax_failed should win, got %s", att.Reason)
 	}
 
-	// Drop tax — payment_failed should now win over overdue + unknown.
+	// Drop tax — payment_failed should now win over payment_unknown.
 	inv.TaxStatus = InvoiceTaxOK
 	inv.TaxErrorCode = ""
 	att = ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Reason != AttentionReasonPaymentFailed {
-		t.Errorf("priority broken: payment_failed should beat overdue, got %+v", att)
+		t.Errorf("priority broken: payment_failed should beat payment_unknown, got %+v", att)
 	}
 
-	// Drop payment_failed — overdue should win over payment_unknown.
+	// Drop payment_failed — payment_unknown remains.
 	inv.PaymentStatus = PaymentUnknown
-	att = ClassifyInvoiceAttention(inv, AttentionContext{})
-	if att == nil || att.Reason != AttentionReasonOverdue {
-		t.Errorf("priority broken: overdue should beat payment_unknown, got %+v", att)
-	}
-
-	// Drop overdue — payment_unknown remains.
-	inv.PaymentOverdue = false
 	att = ClassifyInvoiceAttention(inv, AttentionContext{})
 	if att == nil || att.Reason != AttentionReasonPaymentUnconfirmed {
 		t.Errorf("priority broken: payment_unknown should remain, got %+v", att)

@@ -15,7 +15,7 @@ import type { AttentionSeverity } from './attentionSeverity';
  * Unified "this invoice needs operator attention" surface.
 Computed server-side from durable invoice fields
 (`tax_status`, `tax_error_code`, `payment_status`,
-`last_payment_error`, `payment_overdue`). Never persisted —
+`last_payment_error`). Never persisted —
 always derived. Omitted entirely when the invoice is healthy
 (matches Stripe's `last_finalization_error: null` ergonomic).
 See ADR-009.
@@ -31,8 +31,8 @@ export interface Attention {
    */
   actions?: AttentionActionItem[];
   /** Open, dotted, provider-specific code (e.g.
-  `tax.customer_data_invalid`, `payment.declined`,
-  `lifecycle.overdue`). New codes ship without a contract
+  `tax.customer_data_invalid`, `payment.declined`).
+  New codes ship without a contract
   bump. Stripe parity.
    */
   code?: string;

@@ -192,8 +192,8 @@ type Invoice struct {
 	// Attention is the unified "needs operator attention" surface,
 	// computed on read by ClassifyInvoiceAttention. Never persisted —
 	// always derived from the durable fields above (tax_status,
-	// tax_error_code, payment_status, last_payment_error,
-	// payment_overdue) plus due_at. Nil when the invoice is healthy
+	// tax_error_code, payment_status, last_payment_error) plus
+	// due_at. Nil when the invoice is healthy
 	// (terminal-state or no failure mode active). See
 	// docs/adr/009-invoice-attention.md for the wire-shape contract.
 	Attention           *Attention `json:"attention,omitempty"`
@@ -227,7 +227,6 @@ type Invoice struct {
 	UncollectibleAt       *time.Time `json:"uncollectible_at,omitempty"`
 	StripePaymentIntentID string     `json:"stripe_payment_intent_id,omitempty"`
 	LastPaymentError      string     `json:"last_payment_error,omitempty"`
-	PaymentOverdue        bool       `json:"payment_overdue"`
 	AutoChargePending     bool       `json:"auto_charge_pending,omitempty"`
 	// NoPMNotifiedAt is the send-once marker for the "payment method needed"
 	// setup-link email: stamped by whichever sender delivered it (finalize-time
