@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -810,11 +811,17 @@ type recordingAttacher struct {
 	tenantID, customerID, pmID string
 	called                     int
 	err                        error
+	// actorType/actorID capture what audit.ResolveActor would attribute the
+	// attach to, from the ctx the handler hands us — so a test can assert
+	// customer-driven attaches carry the customer actor and operator ones
+	// stay system.
+	actorType, actorID string
 }
 
-func (r *recordingAttacher) AttachForWebhook(_ context.Context, tenantID, customerID, pmID string) error {
+func (r *recordingAttacher) AttachForWebhook(ctx context.Context, tenantID, customerID, pmID string) error {
 	r.called++
 	r.tenantID, r.customerID, r.pmID = tenantID, customerID, pmID
+	r.actorType, r.actorID = audit.ResolveActor(ctx)
 	return r.err
 }
 
@@ -854,6 +861,82 @@ func TestHandleWebhook_SetupIntentSucceeded(t *testing.T) {
 	if attacher.tenantID != "tnt_x" || attacher.customerID != "cus_local_7" || attacher.pmID != "pm_stripe_42" {
 		t.Fatalf("attacher got wrong args: tenant=%q customer=%q pm=%q",
 			attacher.tenantID, attacher.customerID, attacher.pmID)
+	}
+	// No velox_purpose in this payload → operator/system attach, not customer.
+	if attacher.actorType != "system" {
+		t.Errorf("purpose-less attach must resolve to system actor, got %q/%q", attacher.actorType, attacher.actorID)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_CustomerActor — an attach whose SetupIntent
+// carries velox_purpose=payment_update_token (the customer-driven public
+// token link) must be attributed to the CUSTOMER in the audit log, so a
+// self-served card is distinguishable from an operator-added one.
+func TestHandleWebhook_SetupIntent_CustomerActor(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+
+	rawPayload := `{
+		"id": "evt_seti_cust",
+		"type": "setup_intent.succeeded",
+		"data": { "object": {
+			"id": "seti_2",
+			"payment_method": "pm_stripe_cust",
+			"customer": "cus_stripe_99",
+			"metadata": {
+				"velox_tenant_id": "tnt_x",
+				"velox_customer_id": "cus_local_7",
+				"velox_purpose": "payment_update_token"
+			}
+		}}
+	}`
+
+	if err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_cust",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": rawPayload},
+	}); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if attacher.actorType != "customer" || attacher.actorID != "cus_local_7" {
+		t.Errorf("customer-driven attach must resolve to customer actor cus_local_7, got %q/%q",
+			attacher.actorType, attacher.actorID)
+	}
+}
+
+// TestHandleWebhook_SetupIntent_OperatorPurposeStaysSystem — the operator
+// "Add payment method" flow (velox_purpose=portal_add_payment_method) must
+// NOT be attributed to the customer.
+func TestHandleWebhook_SetupIntent_OperatorPurposeStaysSystem(t *testing.T) {
+	stripe := NewStripe(&mockStripeClient{}, newMockInvoiceUpdater(), newMockWebhookStore(), nil)
+	attacher := &recordingAttacher{}
+	stripe.SetPaymentMethodAttacher(attacher)
+
+	rawPayload := `{
+		"id": "evt_seti_op",
+		"type": "setup_intent.succeeded",
+		"data": { "object": {
+			"id": "seti_3",
+			"payment_method": "pm_stripe_op",
+			"customer": "cus_stripe_99",
+			"metadata": {
+				"velox_tenant_id": "tnt_x",
+				"velox_customer_id": "cus_local_7",
+				"velox_purpose": "portal_add_payment_method"
+			}
+		}}
+	}`
+
+	if err := stripe.HandleWebhook(context.Background(), "tnt_x", domain.StripeWebhookEvent{
+		StripeEventID: "evt_seti_op",
+		EventType:     "setup_intent.succeeded",
+		Payload:       map[string]any{"raw": rawPayload},
+	}); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if attacher.actorType != "system" {
+		t.Errorf("operator-purpose attach must stay system, got %q/%q", attacher.actorType, attacher.actorID)
 	}
 }
 

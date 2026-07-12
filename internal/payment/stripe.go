@@ -645,6 +645,13 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 // engine-email).
 const piPurposeDunningRetry = "dunning_retry"
 
+// purposePaymentUpdateToken tags a SetupIntent created by the customer-driven
+// payment-update token link (public_handler.createCheckoutSession). It is the
+// signal that the resulting setup_intent.succeeded attach was CUSTOMER-driven
+// — so the audit row is attributed to the customer, not "System". Operator
+// attach flows leave the purpose empty or "portal_add_payment_method".
+const purposePaymentUpdateToken = "payment_update_token"
+
 // simulatedFailureAt derives the cycle-close instant for a failed
 // charge on the given invoice. Used by both the inline charge-failure
 // path and the async webhook handler so dunning anchors next_action_at
@@ -921,6 +928,19 @@ func (s *Stripe) handleSetupIntentSucceeded(ctx context.Context, tenantID string
 		// to ~3 days, so a genuinely-foreign event can't redeliver unbounded.
 		return fmt.Errorf("setup_intent.succeeded: customer not yet resolvable for stripe customer %q (pm %s) — retry",
 			parsed.Data.Object.Customer, pmID)
+	}
+
+	// Attribute the attach to the CUSTOMER when this SetupIntent came from the
+	// customer-driven payment-update token link (velox_purpose set on the
+	// public flow's setup_intent_data.metadata). Operator-driven attaches
+	// (portal "Add payment method" → "portal_add_payment_method", or the
+	// inline-Elements flow → empty purpose) are left as-is so ResolveActor
+	// keeps them as system/operator. Without the gate every webhook-attach
+	// row — operator and customer alike — resolved to "System", so a
+	// customer self-serving a card was indistinguishable from an operator
+	// adding one in the audit log.
+	if parsed.Data.Object.Metadata["velox_purpose"] == purposePaymentUpdateToken {
+		ctx = veloxauth.WithCustomerActor(ctx, customerID)
 	}
 
 	if err := s.pmAttacher.AttachForWebhook(ctx, tenantID, customerID, pmID); err != nil {

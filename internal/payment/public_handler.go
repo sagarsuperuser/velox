@@ -291,7 +291,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 				"velox_customer_id": token.CustomerID,
 				"velox_tenant_id":   token.TenantID,
 				"velox_invoice_id":  token.InvoiceID,
-				"velox_purpose":     "payment_update_token",
+				"velox_purpose":     purposePaymentUpdateToken,
 			},
 		},
 		Params: stripe.Params{
@@ -299,7 +299,7 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 				"velox_customer_id": token.CustomerID,
 				"velox_tenant_id":   token.TenantID,
 				"velox_invoice_id":  token.InvoiceID,
-				"velox_purpose":     "payment_update_token",
+				"velox_purpose":     purposePaymentUpdateToken,
 			},
 		},
 	})

@@ -1433,7 +1433,8 @@ Verifies the 2026-05-26 audit sweep wired every state-changing flow into `audit_
 - [ ] Operator rotates the hosted-invoice link → "Rotated hosted-invoice link for INV-NNN". None of these render as a green "Created" row.
 - [ ] Operator edits customer (display_name / email / dunning policy) → "Updated <name>".
 - [ ] Operator upserts billing profile (tax status / address / tax ID) → "Updated billing profile for <name>".
-- [ ] Customer adds card via Stripe Checkout → "Added Visa ····4242" (resource_type payment_method, action create, actor **System** — the attach lands via the setup_intent webhook, which carries no customer actor).
+- [ ] Customer self-serves a card via the emailed **payment-update link** → "Added Visa ····4242" (resource_type payment_method, action create) with actor = **the customer** (the setup_intent carries `velox_purpose=payment_update_token`, so the attach is attributed to them).
+- [ ] Operator adds a card via **Add payment method** → same "Added …" row, but actor = **System** (operator-initiated attach carries no customer purpose; not misattributed to the customer).
 - [ ] Operator promotes a non-default card to default → "Set Visa ····4242 as default".
 - [ ] Operator detaches a card → "Removed Visa ····4242".
 - [ ] Operator creates / revokes / rotates an API key → corresponding rows. Raw key value never appears in metadata.
