@@ -117,6 +117,29 @@ func TestCreditAudit_SharedFate(t *testing.T) {
 		}
 	})
 
+	t.Run("audit failure rolls the adjust back", func(t *testing.T) {
+		svc := credit.NewService(store)
+		svc.SetAuditLogger(failingEmitter{})
+
+		before, err := store.GetBalance(ctx, tenantID, customerID)
+		if err != nil {
+			t.Fatalf("balance before: %v", err)
+		}
+		_, err = svc.Adjust(ctx, tenantID, credit.AdjustInput{
+			CustomerID: customerID, AmountCents: -500, Description: "must-roll-back deduction",
+		})
+		if err == nil {
+			t.Fatal("adjust must fail when its audit emission fails (shared fate)")
+		}
+		after, err := store.GetBalance(ctx, tenantID, customerID)
+		if err != nil {
+			t.Fatalf("balance after: %v", err)
+		}
+		if after.BalanceCents != before.BalanceCents {
+			t.Errorf("ledger balance moved %d→%d despite failed audit emission", before.BalanceCents, after.BalanceCents)
+		}
+	})
+
 	t.Run("successful adjust audits with the sign-split action", func(t *testing.T) {
 		svc := credit.NewService(store)
 		svc.SetAuditLogger(logger)

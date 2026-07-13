@@ -35,8 +35,16 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		domain.AuditActionRevoke, domain.AuditActionGrant, domain.AuditActionRefund,
 		domain.AuditActionCollect, domain.AuditActionSend, domain.AuditActionRetryTax,
 		domain.AuditActionRotate,
-		// Dotted service vocabulary in live use (frozen wire strings).
+		// Dotted + auth service vocabulary in live use (frozen wire strings —
+		// swept from every .Log call site; the totality gate must cover the
+		// FULL vocabulary or a schema rejection ships to a money tx).
 		"credit.adjustment", "credit.deduction",
+		"credit_note.issued", "member.joined",
+		"subscription.item_updated", "subscription.pending_change_applied",
+		"subscription.proration_failed", "subscription.threshold_crossed",
+		"subscription.threshold_deferred",
+		"login", "logout", "mode_changed",
+		"password_reset_requested", "password_reset_completed",
 	}
 	t.Run("vocabulary round-trip", func(t *testing.T) {
 		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
@@ -132,6 +140,51 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		}
 		if !strings.Contains(metaJSON, "sim_effective_at") || !strings.Contains(metaJSON, "vlx_clk_1") {
 			t.Errorf("legacy metadata mirror missing (dashboard renders these keys today): %s", metaJSON)
+		}
+		_ = tx.Commit()
+	})
+
+	t.Run("GUC-less tx fails loudly on NOT NULL, not the incidental FK", func(t *testing.T) {
+		// TxBypass sets no app.tenant_id. On a pooled connection the
+		// reverted GUC placeholder is an EMPTY STRING (not NULL), which
+		// would pass NOT NULL and land an RLS-invisible orphan row if the
+		// INSERT didn't fold '' to NULL. Pin the loud failure and its class.
+		tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		err = logger.LogInTx(ctx, tx, audit.Entry{
+			Action: "update", ResourceType: "gucless_probe", ResourceID: "vlx_probe_6",
+		})
+		if err == nil {
+			t.Fatal("LogInTx on a GUC-less tx must fail loudly")
+		}
+		if !strings.Contains(err.Error(), "null value") {
+			t.Errorf("failure class must be the NOT NULL constraint (documented guard), got: %v", err)
+		}
+	})
+
+	t.Run("partial or zero SimContext is treated as absent", func(t *testing.T) {
+		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		if err := logger.LogInTx(ctx, tx, audit.Entry{
+			Action: "update", ResourceType: "empty_sim_probe", ResourceID: "vlx_probe_7",
+			Sim: &audit.SimContext{}, // zero-valued: must not pollute the partial clock index
+		}); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		var simAt, clockID any
+		if err := tx.QueryRowContext(ctx,
+			`SELECT sim_effective_at, test_clock_id FROM audit_log WHERE resource_type = 'empty_sim_probe'`,
+		).Scan(&simAt, &clockID); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if simAt != nil || clockID != nil {
+			t.Errorf("zero SimContext must land as NULLs (outside the partial index); got (%v, %v)", simAt, clockID)
 		}
 		_ = tx.Commit()
 	})

@@ -56,8 +56,13 @@ money mutations, and gated by the totality tests.
 An input a caller can construct must never abort a money tx on telemetry
 grounds:
 
-- `tenant_id` comes from the transaction's own `app.tenant_id` GUC — it
-  cannot disagree with RLS, and a missing GUC violates NOT NULL loudly.
+- `tenant_id` comes from the transaction's own `app.tenant_id` GUC via
+  `NULLIF(current_setting(…), '')` — it cannot disagree with RLS, and a
+  GUC-less transaction violates NOT NULL loudly. The NULLIF matters: on a
+  pooled connection a reverted `is_local` GUC reads back as EMPTY STRING,
+  not NULL (the dominant case in a warm pool), and without the fold the
+  loud failure would silently depend on the incidental tenants FK — which
+  retention-driven partitioning could remove later.
 - `livemode` is trigger-stamped from the same tx session (0021) — the row
   lands in the plane of the transaction it rides in, by construction.
 - Unmarshalable metadata degrades to `{"marshal_error": …}` instead of a
@@ -81,14 +86,28 @@ calls are gone; emissions ride the ledger tx (`AppendEntryAudited`,
 `AdjustAtomicAudited`). Each subsequent domain migrates in its own PR under
 the money-path playbook gates.
 
+Declared scope note: because the emission attaches inside `Service.Grant`
+(own-tx path), every caller of that path is audited — the operator/API
+routes AND the proration-fallback + credit-note-bridge flows that reach
+`Grant` from other requests. That widening is deliberate: a grant is a
+grant, and the actor attribution (the enclosing request's identity) is
+exactly ADR-090's D16 rule for operator-triggered synchronous effects. The
+caller-tx twins (`GrantTx`, `GrantCommitForInvoiceTx`,
+`GrantForCreditNoteTx`) stay unaudited until their owning flows migrate
+(engine/background PR) — interim coverage only ever increases, never
+double-writes.
+
 ### 4. The migration bridge
 
-`LogInTx` marks the request handled exactly like `Logger.Log`, so the
-middleware catch-all (still installed) stays duplicate-free while coverage
-migrates. The catch-all's writer, the heuristic classifiers, and
-`MarkSkip`/`MarkHandled` are deleted only at the END of the arc (registry +
-pure-observer detector PR), after a route-walk arch test proves declared
-coverage parity — uninstall is one complete change, never split.
+`LogInTx` does NOT mark the request handled: an in-tx emission can be
+rolled back after the call returns, and a secondary mutation deep inside
+another route's flow must not suppress that route's own catch-all row.
+Suppression is a REQUEST-scoped decision: the route's owning handler calls
+`audit.MarkHandled` after its operation commits. The catch-all (still
+installed), the heuristic classifiers, and `MarkSkip`/`MarkHandled` are
+deleted only at the END of the arc (registry + pure-observer detector PR),
+after a route-walk arch test proves declared coverage parity — uninstall is
+one complete change, never split.
 
 ### 5. Sim-time axis (ADR-086 amendment)
 

@@ -164,19 +164,34 @@ type SimContext struct {
 // error (which aborts their tx), never discard it.
 //
 // LogInTx is TOTAL by construction (design-panel amendment A2): tenant_id is
-// taken from the transaction's own app.tenant_id GUC (it cannot disagree
-// with RLS, and a missing GUC fails the NOT NULL constraint loudly); a
-// metadata bag that cannot marshal degrades to a {"marshal_error": …}
-// payload instead of aborting a money transaction on a telemetry bug;
+// taken from the transaction's own app.tenant_id GUC — it cannot disagree
+// with RLS, and a missing GUC fails loudly: NULLIF(…, '') maps BOTH the
+// virgin-connection NULL and the pooled-connection empty string (a reverted
+// is_local set_config placeholder — the dominant case in a warm pool) onto
+// the NOT NULL constraint, so the guard does not silently depend on the
+// tenants FK. A metadata bag that cannot marshal degrades to a
+// {"marshal_error": …} payload instead of aborting a money transaction on a
+// telemetry bug; a zero-valued/partial SimContext is treated as absent
+// rather than polluting the partial clock index with empty strings;
 // livemode is stamped by the table trigger from the same tx session. The
 // vocabulary round-trip integration test INSERTs every declared action
 // constant so a value the schema rejects cannot ship.
 //
-// On success it marks the request handled (suppressing the middleware
-// catch-all) exactly like Logger.Log — the migration bridge that lets
-// explicit in-tx emissions and the still-installed catch-all coexist
-// duplicate-free until the final uninstall.
+// LogInTx does NOT mark the request handled: whether the middleware
+// catch-all should be suppressed is a REQUEST-scoped decision that belongs
+// to the route's owning handler after its operation commits — an in-tx
+// emission may be rolled back after this call returns, and a mutation deep
+// inside another route's flow (a proration-fallback grant inside a
+// change-plan request) must not suppress that route's own catch-all row.
+// Handlers whose primary action is the audited mutation call
+// audit.MarkHandled themselves on success (the migration bridge).
 func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
+	// Treat a partial/zero SimContext as absent — a half-set sim axis
+	// ('' clock id, zero time) is worse than none: it lands inside the
+	// partial index and defeats IS NOT NULL scoping.
+	if e.Sim != nil && (e.Sim.TestClockID == "" || e.Sim.EffectiveAt.IsZero()) {
+		e.Sim = nil
+	}
 	metadata := e.Metadata
 	if e.Sim != nil {
 		// Mirror into the legacy metadata keys the dashboard renders today;
@@ -211,11 +226,14 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 
 	// created_at stays wall-clock (ADR-030); tenant_id comes from the tx
 	// GUC so the row is authoritative for the transaction it rides in.
+	// NULLIF folds the pooled-connection empty-string placeholder into
+	// NULL so the NOT NULL constraint — not the incidental tenants FK —
+	// is what rejects a GUC-less transaction.
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, ip_address,
 			request_id, sim_effective_at, test_clock_id, created_at)
-		VALUES ($1, current_setting('app.tenant_id', true), $2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1, NULLIF(current_setting('app.tenant_id', true), ''), $2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 	`, postgres.NewID("vlx_aud"), actorType, actorID, e.Action, e.ResourceType,
 		e.ResourceID, e.ResourceLabel, metaJSON,
 		nullIfEmpty(ClientIP(ctx)), nullIfEmpty(chimw.GetReqID(ctx)),
@@ -223,8 +241,6 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 	if err != nil {
 		return fmt.Errorf("audit log (in-tx): insert: %w", err)
 	}
-
-	MarkHandled(ctx)
 	return nil
 }
 

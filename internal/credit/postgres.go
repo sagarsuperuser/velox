@@ -438,8 +438,12 @@ func (s *PostgresStore) AdjustAtomicAudited(
 	}
 
 	if amountCents < 0 && currentBalance+amountCents < 0 {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
-			float64(currentBalance)/100, float64(-amountCents)/100)
+		// errs.Invalid so the API surfaces a 400 — this is operator input
+		// exceeding the available balance, not a server fault (was a plain
+		// fmt.Errorf that respond.FromError mapped to 500 internal_error).
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents",
+			fmt.Sprintf("insufficient balance: available %.2f, deduction %.2f",
+				float64(currentBalance)/100, float64(-amountCents)/100))
 	}
 
 	now := clock.Now(ctx)
@@ -460,9 +464,11 @@ func (s *PostgresStore) AdjustAtomicAudited(
 			return domain.CreditLedgerEntry{}, fmt.Errorf("attribute clawback: %w", err)
 		}
 		if drained != -amountCents {
-			return domain.CreditLedgerEntry{}, fmt.Errorf(
+			// errs.Invalid → 400 for the same reason as the balance check
+			// above: operator asked for more than the drainable balance.
+			return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", fmt.Sprintf(
 				"insufficient drainable balance: active credit blocks cover %.2f of the %.2f deduction — the rest of the balance is expired credit pending the expiry sweep",
-				float64(drained)/100, float64(-amountCents)/100)
+				float64(drained)/100, float64(-amountCents)/100))
 		}
 		drainedFrom = blocks
 	}

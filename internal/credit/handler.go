@@ -10,6 +10,7 @@ import (
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -49,8 +50,11 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audit emission moved into the service's ledger transaction (ADR-090):
-	// the grant and its audit row now commit or roll back together.
+	// Audit emission rode the service's ledger transaction (ADR-090): the
+	// grant and its audit row committed together, so suppress the
+	// middleware catch-all HERE — request-scoped, post-commit — rather
+	// than inside LogInTx (which can't know whether its tx survives).
+	audit.MarkHandled(r.Context())
 	mw.RecordCreditOperation("grant")
 
 	respond.JSON(w, r, http.StatusCreated, entry)
@@ -71,7 +75,9 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audit emission moved into the service's ledger transaction (ADR-090).
+	// Audit emission rode the ledger transaction (ADR-090); mark handled
+	// post-commit at the request scope.
+	audit.MarkHandled(r.Context())
 	mw.RecordCreditOperation("adjustment")
 
 	respond.JSON(w, r, http.StatusCreated, entry)
