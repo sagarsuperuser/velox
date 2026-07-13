@@ -926,10 +926,6 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 			"amount_cents":   inv.TotalAmountCents,
 			"currency":       inv.Currency,
 		}
-		if sub.TestClockID != "" {
-			meta["test_clock_id"] = sub.TestClockID
-			meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
-		}
 		_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.threshold_crossed", "subscription", sub.ID, sub.Code, meta)
 	}
 

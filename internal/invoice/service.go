@@ -273,6 +273,31 @@ func (s *Service) bindForInvoice(ctx context.Context, tenantID, invoiceID string
 	return bound
 }
 
+// AuditCtx binds the invoice's simulated-time context (its test clock + that
+// clock's frozen instant) for a HANDLER-level audit emission — collect, refund,
+// send, rotate-token, retry-tax — so those rows land on the sim axis
+// (audit_log.sim_effective_at / test_clock_id).
+//
+// Without it the money-movement rows would be the ONE class of clock-driven
+// evidence missing from the clock filter: the service binds a ctx the handler
+// never sees, so "operator collected payment on INV-1042 during the simulation"
+// would be invisible to a clock-scoped forensic view — and after ADR-086
+// teardown deletes the invoice, invisible everywhere.
+//
+// The gate is the invoice's OWN is_simulated flag: exact, and free on the
+// wall-clock path (no resolver round-trip for the 99% case). domain.Invoice
+// carries no test_clock_id — the pin lives on the customer/sub (ADR-027) — so
+// the clock id itself still comes from one pin resolution, never guessed.
+func (s *Service) AuditCtx(ctx context.Context, inv domain.Invoice) context.Context {
+	if !inv.IsSimulated || s.resolver == nil {
+		return ctx
+	}
+	if _, ok := clock.SimOf(ctx); ok {
+		return ctx
+	}
+	return s.bindForInvoice(ctx, inv.TenantID, inv.ID)
+}
+
 // SetTaxRetrier wires the orchestrator behind the retry-tax endpoint.
 // Production passes billing.Engine; tests can pass any implementation.
 func (s *Service) SetTaxRetrier(r TaxRetrier) {
@@ -529,7 +554,7 @@ func (s *Service) SetCreditApplier(c CreditApplier) {
 // ApplyCreditBalance drains the customer's credit balance against a
 // FINALIZED invoice and returns the refreshed row (ADR-088). Clock-bound:
 // the ledger entry's timestamp rides the invoice's test clock for pinned
-// customers (bindForInvoice), mirroring the engine's EffectiveNowForInvoice.
+// customers (bindForInvoice), mirroring the engine's SimForInvoice.
 // No-op (invoice returned unchanged) when no applier is wired, nothing is
 // due, or the invoice isn't finalized — a draft's credits wait for
 // finalize. An apply error is returned for the caller to route to the

@@ -84,9 +84,24 @@ of simulated events into one wall-clock instant for every date filter and
 group header.
 
 Migration 0148 promotes both to nullable `audit_log` columns with a partial
-index on the clock slice; `audit.LogInTx` takes a typed `SimContext` and
-stamps columns + the legacy metadata keys the dashboard already renders.
-Query params and UI filters ship only once stamping reaches parity across
-writers (ADR-090 arc, sim-axis surfacing PR) so a `test_clock_id` filter can
-never silently under-select. Wall-clock `created_at` primacy (ADR-030) is
-unchanged.
+index on the clock slice.
+
+**SHIPPED (ADR-090 §5) — this amendment's plan changed in two ways as it was
+built, and the doc is corrected rather than left describing a design that does
+not exist:**
+
+1. There is no `SimContext` emission field. A per-emission field means ~90
+   emitters each remembering to populate it, and an emitter that forgets is
+   invisible — its rows silently drop out of `?test_clock_id=`. The axis is
+   instead DERIVED from the ctx clock binding (`clock.Sim`, one value from one
+   read), so no emitter can forget and none may hand-stamp it.
+2. There is no ordering by simulated time. `sim_effective_at` is the instant the
+   clock STOOD AT when a mutation was performed, and an advance performs
+   everything it settles at one instant — so it separates advances, not the
+   periods inside one. Ordering by it would change nothing within a clock and
+   would interleave unrelated simulations across clocks.
+
+Surfaced as `?test_clock_id=` / `?sim_from=` / `?sim_to=`, a clock filter on
+`/audit-log` sourced from the AUDIT ROWS (not `test_clocks` — that table is
+empty exactly when the forensic view is wanted), and sim columns in the CSV
+export. Wall-clock `created_at` primacy (ADR-030) is unchanged.

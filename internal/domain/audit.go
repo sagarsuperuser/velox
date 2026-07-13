@@ -16,6 +16,18 @@ type AuditEntry struct {
 	IPAddress     string         `json:"ip_address,omitempty"`
 	RequestID     string         `json:"request_id,omitempty"` // chi request UUID — joins back to server logs
 	CreatedAt     time.Time      `json:"created_at"`
+	// SimEffectiveAt / TestClockID are the SIM AXIS (migration 0148, ADR-090
+	// §5): the simulated instant this action landed at, and the test clock
+	// whose world it landed in. NULL/empty on every wall-clock row, which is
+	// almost all of them — hence the partial index.
+	//
+	// They exist because ADR-086 teardown hard-deletes a clock's entire
+	// simulated graph: once the clock is gone, the audit log is the ONLY
+	// surviving record of the simulation, and created_at (wall-clock, ADR-030)
+	// collapses months of simulated events into the one instant the operator
+	// clicked Advance. Only this axis can order or window them.
+	SimEffectiveAt *time.Time `json:"sim_effective_at,omitempty"`
+	TestClockID    string     `json:"test_clock_id,omitempty"`
 }
 
 // Well-known audit actions.

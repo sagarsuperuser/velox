@@ -14,6 +14,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -41,12 +42,20 @@ type StripeSyncer interface {
 // customer.Service.Get and read cust.StripeCustomerID directly.
 type PaymentSetupReader interface{}
 
-// TestClockChecker validates a test_clock_id at customer-create time
-// (Stripe parity, ADR-027). Narrow shape — Service doesn't need
-// the full TestClock; just "does it exist for this tenant?".
+// TestClockChecker validates a test_clock_id at customer-create time (Stripe
+// parity, ADR-027) and hands back that clock's simulated instant with it.
 // Implemented by *testclock.PostgresStore.
+//
+// ONE method, ONE read: existence and the instant come back together, so the
+// Sim the caller binds can never pair a real clock id with an instant fetched
+// separately — the half-truth clock.Sim exists to make unrepresentable
+// (ADR-090 §5). An "exists?" bool would force Create to go back for the
+// instant, which is precisely how the two halves drift apart.
+//
+// ok=false means "no such clock for this tenant" (a validation failure, not an
+// error).
 type TestClockChecker interface {
-	Exists(ctx context.Context, tenantID, clockID string) (bool, error)
+	ResolveSim(ctx context.Context, tenantID, clockID string) (sim clock.Sim, ok bool, err error)
 }
 
 // TaxFlusher fans out a tax-retry across every draft invoice for one
@@ -126,9 +135,10 @@ func (s *Service) SetAuditLogger(a AuditEmitter) { s.auditLogger = a }
 // timestamp writes (updated_at on customer row, billing_profile
 // updates, etc.) land in simulated time on clock-pinned customers.
 //
-// Customer.Create can't bind from the customer pin (the customer
-// doesn't exist yet), but if the input carries a TestClockID at
-// creation we bind from the clock directly. Otherwise wall-clock.
+// Customer.Create can't bind from the customer pin (the customer doesn't
+// exist yet), so it binds from the CLOCK directly — see the TestClockID
+// branch in Create, which resolves and binds in one read via
+// TestClockChecker. The resolver is not involved there and cannot be.
 func (s *Service) SetResolver(r clock.Resolver) {
 	s.resolver = r
 }
@@ -139,6 +149,29 @@ func (s *Service) SetResolver(r clock.Resolver) {
 func (s *Service) bindForCustomer(ctx context.Context, tenantID, customerID string) context.Context {
 	bound, _ := clock.BindEffectiveNow(ctx, s.resolver, clock.Pin{TenantID: tenantID, CustomerID: customerID})
 	return bound
+}
+
+// AuditCtx binds the customer's simulated-time context (its test clock + that
+// clock's frozen instant) for a HANDLER-level audit emission, so the row lands
+// on the sim axis (audit_log.sim_effective_at / test_clock_id) and survives
+// ADR-086 teardown, which hard-deletes the customer itself.
+//
+// The handler needs its own bind because the service's internal bindForCustomer
+// binds a ctx the handler never sees. Exported here rather than wiring a second
+// clock.Resolver into the handler: one resolver per domain, one pin resolution,
+// no chance of the two disagreeing.
+//
+// No-op in live mode (a live customer can never be clock-pinned — DB CHECK on
+// test_clocks.livemode), so production pays nothing; no-op when ctx is already
+// bound. created_at stays wall-clock (ADR-030); this is the second axis.
+func (s *Service) AuditCtx(ctx context.Context, tenantID, customerID string) context.Context {
+	if s.resolver == nil || customerID == "" || postgres.Livemode(ctx) {
+		return ctx
+	}
+	if _, ok := clock.SimOf(ctx); ok {
+		return ctx
+	}
+	return s.bindForCustomer(ctx, tenantID, customerID)
 }
 
 // SetStripeSyncer configures Stripe sync (optional, breaks circular dep).
@@ -243,21 +276,32 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 			return domain.Customer{}, err
 		}
 	}
-	// Test-clock attach: validate clock exists (mode gating happens at
-	// the route layer — test_clock_id only reaches us when the caller
-	// is on a test-mode key). If the checker isn't wired (defensive
-	// default) any test_clock_id is rejected.
+	// Test-clock attach: validate the clock exists (mode gating happens at
+	// the route layer — test_clock_id only reaches us when the caller is on a
+	// test-mode key). If the checker isn't wired (defensive default) any
+	// test_clock_id is rejected.
+	//
+	// The same read gives us the clock's instant, and we BIND it: this create
+	// is the moment the customer joins the simulation, so its audit row belongs
+	// on the sim axis. Nothing else can put it there. Create cannot bind from
+	// the customer pin the way every later mutation does (bindForCustomer) —
+	// the customer does not exist yet — so without this the origin row of every
+	// simulation is the one row missing from ?test_clock_id=. It matters more
+	// than the rest: ADR-086 teardown HARD-DELETES the customer, leaving this
+	// row as the only surviving evidence the customer was ever in the clock's
+	// world.
 	if input.TestClockID != "" {
 		if s.clocks == nil {
 			return domain.Customer{}, errs.Invalid("test_clock_id", "test clocks are not available in this environment")
 		}
-		exists, err := s.clocks.Exists(ctx, tenantID, input.TestClockID)
+		sim, ok, err := s.clocks.ResolveSim(ctx, tenantID, input.TestClockID)
 		if err != nil {
 			return domain.Customer{}, err
 		}
-		if !exists {
+		if !ok {
 			return domain.Customer{}, errs.Invalid("test_clock_id", "test clock not found")
 		}
+		ctx = clock.WithSim(ctx, sim)
 	}
 
 	cc, err := normalizeAdditionalEmails(input.AdditionalEmails, input.Email)

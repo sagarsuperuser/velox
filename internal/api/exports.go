@@ -659,6 +659,17 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 		respond.FromError(w, r, err, "export")
 		return
 	}
+	// The sim axis (ADR-090 §5) is part of the on-screen slice: an operator
+	// looking at one simulation and clicking Export must get THAT simulation,
+	// not the whole log. An export that silently dropped the clock filter would
+	// hand an auditor a file that looks like one clock's history and is actually
+	// every tenant action — the worst kind of wrong, because nothing in the file
+	// says so.
+	simFrom, simTo, err := timefilter.ParseRange(r, "sim_from", "sim_to")
+	if err != nil {
+		respond.FromError(w, r, err, "export")
+		return
+	}
 	q := r.URL.Query()
 	filter := audit.QueryFilter{
 		ResourceType: q.Get("resource_type"),
@@ -667,6 +678,9 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 		ActorID:      q.Get("actor_id"),
 		DateFrom:     dateFrom,
 		DateTo:       dateTo,
+		TestClockID:  q.Get("test_clock_id"),
+		SimFrom:      simFrom,
+		SimTo:        simTo,
 	}
 
 	scope := exportScope(dateFrom, dateTo)
@@ -675,10 +689,19 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 		"resource_id":   filter.ResourceID,
 		"action":        filter.Action,
 		"actor_id":      filter.ActorID,
+		// Recorded on the export's OWN audit row: "which slice left the
+		// building" is the question this row exists to answer.
+		"test_clock_id": filter.TestClockID,
 	} {
 		if v != "" {
 			scope[k] = v
 		}
+	}
+	if !simFrom.IsZero() {
+		scope["sim_from"] = simFrom.UTC().Format(time.RFC3339)
+	}
+	if !simTo.IsZero() {
+		scope["sim_to"] = simTo.UTC().Format(time.RFC3339)
 	}
 
 	filename := exportFilename("audit-log")
@@ -690,16 +713,27 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 	cw := writeCSVHeaders(w, filename)
 	defer cw.Flush()
 
+	// sim_effective_at / test_clock_id: a simulation's rows all share one
+	// wall-clock created_at (an advance settles everything at one moment), so in
+	// the CSV of a simulated tenant created_at cannot tell the reader WHEN, in
+	// the simulation, anything happened. These two columns are the only ones
+	// that can, and after ADR-086 teardown they are the only surviving record
+	// that the clock existed at all. Empty on wall-clock rows.
 	if err := cw.Write([]string{
 		"id", "created_at", "actor_type", "actor_id", "actor_name",
 		"action", "resource_type", "resource_id", "resource_label",
-		"ip_address", "request_id", "metadata_json",
+		"ip_address", "request_id", "sim_effective_at", "test_clock_id",
+		"metadata_json",
 	}); err != nil {
 		return
 	}
 
 	n := 0
 	streamErr := h.auditLog.Stream(r.Context(), tenantID, filter, func(e domain.AuditEntry) error {
+		simAt := ""
+		if e.SimEffectiveAt != nil {
+			simAt = e.SimEffectiveAt.UTC().Format(time.RFC3339)
+		}
 		metaJSON := ""
 		if len(e.Metadata) > 0 {
 			if b, err := json.Marshal(e.Metadata); err == nil {
@@ -724,7 +758,9 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 			e.CreatedAt.UTC().Format(time.RFC3339),
 			e.ActorType, e.ActorID, csvSafe(e.ActorName),
 			e.Action, e.ResourceType, e.ResourceID, csvSafe(e.ResourceLabel),
-			e.IPAddress, csvSafe(e.RequestID), csvSafe(metaJSON),
+			e.IPAddress, csvSafe(e.RequestID),
+			simAt, e.TestClockID,
+			csvSafe(metaJSON),
 		}); err != nil {
 			return err
 		}

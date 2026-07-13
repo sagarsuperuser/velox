@@ -150,9 +150,9 @@ func TestBindEffectiveNow(t *testing.T) {
 
 	t.Run("invoice id wins over sub and customer", func(t *testing.T) {
 		stub := &stubResolver{
-			invoiceFunc: func() (time.Time, error) { return frozen, nil },
-			subFunc:     func() (time.Time, error) { return time.Time{}, errors.New("should not be called") },
-			custFunc:    func() (time.Time, error) { return time.Time{}, errors.New("should not be called") },
+			invoiceFunc: func() (Sim, error) { return Sim{At: frozen, TestClockID: "tc_1"}, nil },
+			subFunc:     func() (Sim, error) { return Sim{}, errors.New("should not be called") },
+			custFunc:    func() (Sim, error) { return Sim{}, errors.New("should not be called") },
 		}
 		ctx, ok := BindEffectiveNow(context.Background(), stub, Pin{
 			TenantID: "t1", InvoiceID: "inv_1", SubscriptionID: "sub_1", CustomerID: "cus_1",
@@ -164,12 +164,18 @@ func TestBindEffectiveNow(t *testing.T) {
 		if !got.Equal(frozen) {
 			t.Errorf("got %v, want %v", got, frozen)
 		}
+		// The pin resolution carries the CLOCK, not just the instant — this is
+		// what makes audit sim-axis stamping total (ADR-090 §5).
+		sim, ok := SimOf(ctx)
+		if !ok || sim.TestClockID != "tc_1" || !sim.At.Equal(frozen) {
+			t.Errorf("SimOf = %+v (ok=%v), want {At: %v, TestClockID: tc_1}", sim, ok, frozen)
+		}
 	})
 
 	t.Run("sub id wins over customer when no invoice", func(t *testing.T) {
 		stub := &stubResolver{
-			subFunc:  func() (time.Time, error) { return frozen, nil },
-			custFunc: func() (time.Time, error) { return time.Time{}, errors.New("should not be called") },
+			subFunc:  func() (Sim, error) { return Sim{At: frozen, TestClockID: "tc_1"}, nil },
+			custFunc: func() (Sim, error) { return Sim{}, errors.New("should not be called") },
 		}
 		ctx, ok := BindEffectiveNow(context.Background(), stub, Pin{
 			TenantID: "t1", SubscriptionID: "sub_1", CustomerID: "cus_1",
@@ -181,11 +187,17 @@ func TestBindEffectiveNow(t *testing.T) {
 		if !got.Equal(frozen) {
 			t.Errorf("got %v, want %v", got, frozen)
 		}
+		// The pin resolution carries the CLOCK, not just the instant — this is
+		// what makes audit sim-axis stamping total (ADR-090 §5).
+		sim, ok := SimOf(ctx)
+		if !ok || sim.TestClockID != "tc_1" || !sim.At.Equal(frozen) {
+			t.Errorf("SimOf = %+v (ok=%v), want {At: %v, TestClockID: tc_1}", sim, ok, frozen)
+		}
 	})
 
 	t.Run("customer id is the final fallback", func(t *testing.T) {
 		stub := &stubResolver{
-			custFunc: func() (time.Time, error) { return frozen, nil },
+			custFunc: func() (Sim, error) { return Sim{At: frozen, TestClockID: "tc_1"}, nil },
 		}
 		ctx, ok := BindEffectiveNow(context.Background(), stub, Pin{
 			TenantID: "t1", CustomerID: "cus_1",
@@ -197,11 +209,17 @@ func TestBindEffectiveNow(t *testing.T) {
 		if !got.Equal(frozen) {
 			t.Errorf("got %v, want %v", got, frozen)
 		}
+		// The pin resolution carries the CLOCK, not just the instant — this is
+		// what makes audit sim-axis stamping total (ADR-090 §5).
+		sim, ok := SimOf(ctx)
+		if !ok || sim.TestClockID != "tc_1" || !sim.At.Equal(frozen) {
+			t.Errorf("SimOf = %+v (ok=%v), want {At: %v, TestClockID: tc_1}", sim, ok, frozen)
+		}
 	})
 
 	t.Run("resolver error returns ctx unchanged", func(t *testing.T) {
 		stub := &stubResolver{
-			custFunc: func() (time.Time, error) { return time.Time{}, errors.New("dangling pin") },
+			custFunc: func() (Sim, error) { return Sim{}, errors.New("dangling pin") },
 		}
 		ctx, ok := BindEffectiveNow(context.Background(), stub, Pin{
 			TenantID: "t1", CustomerID: "cus_missing",
@@ -226,29 +244,154 @@ func TestBindEffectiveNow(t *testing.T) {
 	})
 }
 
-type stubResolver struct {
-	invoiceFunc func() (time.Time, error)
-	subFunc     func() (time.Time, error)
-	custFunc    func() (time.Time, error)
+// TestBindEffectiveNow_NeverDowngradesAnInheritedBinding pins the guard that
+// keeps sim-axis stamping TOTAL under a catchup.
+//
+// Every resolver falls back to Sim{At: clock.Now(ctx)} with an EMPTY clock id
+// and a NIL error when it cannot resolve its pin. Under a catchup ctx that
+// value is poison: Now(ctx) reads the binding, so the fallback is {simulated
+// instant, no clock} — and binding it would keep the simulated instant while
+// erasing the clock. Every audit row emitted below that call would silently
+// drop off the sim axis, which is the failure the operator can never see: rows
+// missing from ?test_clock_id= look exactly like rows that were never written.
+//
+// Services re-bind under catchup all the time (dunning, payment reconciler,
+// invoice, subscription), so this is the common path, not an edge case.
+func TestBindEffectiveNow_NeverDowngradesAnInheritedBinding(t *testing.T) {
+	frozen := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	catchup := WithSim(context.Background(), Sim{At: frozen, TestClockID: "vlx_tclk_1"})
+
+	// The resolver's unresolvable-pin fallback, reproduced exactly: the instant
+	// it reads back from ctx IS the simulated one, and the clock id is empty.
+	lost := &stubResolver{subFunc: func() (Sim, error) {
+		return Sim{At: Now(catchup)}, nil // nil error — this is the trap
+	}}
+
+	got, ok := BindEffectiveNow(catchup, lost, Pin{TenantID: "t1", SubscriptionID: "sub_dangling"})
+	if !ok {
+		t.Fatal("bind reported no effective-now, but the ctx carries the catchup's")
+	}
+	sim, bound := SimOf(got)
+	if !bound {
+		t.Fatal("the catchup's clock binding was ERASED by a failed nested resolution — every audit row below this call just fell off the sim axis")
+	}
+	if sim.TestClockID != "vlx_tclk_1" {
+		t.Errorf("clock id = %q, want the inherited vlx_tclk_1", sim.TestClockID)
+	}
+	if !sim.At.Equal(frozen) {
+		t.Errorf("instant = %s, want the inherited %s", sim.At, frozen)
+	}
+
+	// The guard must not become a ratchet: a resolution that DOES carry a clock
+	// still wins, so a nested bind can still refine the domain.
+	other := &stubResolver{subFunc: func() (Sim, error) {
+		return Sim{At: frozen.AddDate(0, 1, 0), TestClockID: "vlx_tclk_2"}, nil
+	}}
+	got2, _ := BindEffectiveNow(catchup, other, Pin{TenantID: "t1", SubscriptionID: "sub_other"})
+	if sim2, _ := SimOf(got2); sim2.TestClockID != "vlx_tclk_2" {
+		t.Errorf("a resolution carrying a real clock must win: got %q, want vlx_tclk_2", sim2.TestClockID)
+	}
+
+	// And on a plain wall-clock request there is nothing to inherit, so an
+	// unpinned resolution still binds its instant as it always did.
+	wall := &stubResolver{custFunc: func() (Sim, error) {
+		return Sim{At: frozen}, nil
+	}}
+	got3, ok3 := BindEffectiveNow(context.Background(), wall, Pin{TenantID: "t1", CustomerID: "cus_1"})
+	if !ok3 {
+		t.Fatal("an unpinned resolution on an unbound ctx must still bind effective-now")
+	}
+	if !Now(got3).Equal(frozen) {
+		t.Errorf("effective-now = %s, want %s", Now(got3), frozen)
+	}
+	if _, isSim := SimOf(got3); isSim {
+		t.Error("an unpinned resolution must not report a simulation")
+	}
 }
 
-func (s *stubResolver) EffectiveNowForInvoice(_ context.Context, _, _ string) (time.Time, error) {
+type stubResolver struct {
+	invoiceFunc func() (Sim, error)
+	subFunc     func() (Sim, error)
+	custFunc    func() (Sim, error)
+}
+
+func (s *stubResolver) SimForInvoice(_ context.Context, _, _ string) (Sim, error) {
 	if s.invoiceFunc == nil {
-		return time.Time{}, errors.New("invoiceFunc not stubbed")
+		return Sim{}, errors.New("invoiceFunc not stubbed")
 	}
 	return s.invoiceFunc()
 }
 
-func (s *stubResolver) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
+func (s *stubResolver) SimForSubscription(_ context.Context, _, _ string) (Sim, error) {
 	if s.subFunc == nil {
-		return time.Time{}, errors.New("subFunc not stubbed")
+		return Sim{}, errors.New("subFunc not stubbed")
 	}
 	return s.subFunc()
 }
 
-func (s *stubResolver) EffectiveNowForCustomer(_ context.Context, _, _ string) (time.Time, error) {
+func (s *stubResolver) SimForCustomer(_ context.Context, _, _ string) (Sim, error) {
 	if s.custFunc == nil {
-		return time.Time{}, errors.New("custFunc not stubbed")
+		return Sim{}, errors.New("custFunc not stubbed")
 	}
 	return s.custFunc()
+}
+
+// TestSimOf_RequiresBothHalves pins the rule that makes the sim axis
+// trustworthy: a half-set binding is NOT a simulation. A clock id with a zero
+// instant (or an instant with no clock) would otherwise stamp an audit row that
+// sits inside the partial clock index and answers sim-time queries with a
+// wall-clock timestamp — a lie in an append-only log.
+func TestSimOf_RequiresBothHalves(t *testing.T) {
+	frozen := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("both halves = simulated", func(t *testing.T) {
+		ctx := WithSim(context.Background(), Sim{At: frozen, TestClockID: "tc_1"})
+		sim, ok := SimOf(ctx)
+		if !ok || sim.TestClockID != "tc_1" || !sim.At.Equal(frozen) {
+			t.Fatalf("SimOf = %+v, ok=%v", sim, ok)
+		}
+	})
+
+	t.Run("clock id without an instant is not simulated", func(t *testing.T) {
+		ctx := WithSim(context.Background(), Sim{TestClockID: "tc_1"})
+		if sim, ok := SimOf(ctx); ok {
+			t.Errorf("expected not simulated, got %+v", sim)
+		}
+	})
+
+	t.Run("instant without a clock id is not simulated", func(t *testing.T) {
+		ctx := WithEffectiveNow(context.Background(), frozen)
+		if sim, ok := SimOf(ctx); ok {
+			t.Errorf("expected not simulated, got %+v", sim)
+		}
+		// ...but it IS still an effective-now binding: Clock.Now must honor it.
+		if got, ok := EffectiveNow(ctx); !ok || !got.Equal(frozen) {
+			t.Errorf("EffectiveNow = %v (ok=%v), want %v", got, ok, frozen)
+		}
+	})
+
+	t.Run("unbound ctx", func(t *testing.T) {
+		if _, ok := SimOf(context.Background()); ok {
+			t.Error("expected not simulated")
+		}
+	})
+}
+
+// TestWithEffectiveNow_ClearsStaleClock: rebinding a BARE instant must drop any
+// clock already on ctx. Carrying it forward would stamp rows with a clock the
+// new instant does not belong to — e.g. a catchup-bound ctx (clock C, sim time)
+// re-bound to wall-clock for an unpinned entity would keep claiming clock C.
+func TestWithEffectiveNow_ClearsStaleClock(t *testing.T) {
+	frozen := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	wall := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+	ctx := WithSim(context.Background(), Sim{At: frozen, TestClockID: "tc_1"})
+	ctx = WithEffectiveNow(ctx, wall)
+
+	if sim, ok := SimOf(ctx); ok {
+		t.Errorf("stale clock survived a bare rebind: %+v", sim)
+	}
+	if got, _ := EffectiveNow(ctx); !got.Equal(wall) {
+		t.Errorf("EffectiveNow = %v, want %v", got, wall)
+	}
 }

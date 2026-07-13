@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 type memoryStore struct {
@@ -288,11 +290,85 @@ func TestCustomerService_Create(t *testing.T) {
 // internal/testclock/postgres.go.
 type stubClockChecker struct {
 	exists bool
+	frozen time.Time
 	err    error
 }
 
-func (s stubClockChecker) Exists(_ context.Context, _, _ string) (bool, error) {
-	return s.exists, s.err
+func (s stubClockChecker) ResolveSim(_ context.Context, _, clockID string) (clock.Sim, bool, error) {
+	if !s.exists || s.err != nil {
+		return clock.Sim{}, false, s.err
+	}
+	return clock.Sim{At: s.frozen, TestClockID: clockID}, true, nil
+}
+
+// simCapturingAudit records the clock binding present on the ctx the emission
+// runs under — which is the ONLY thing that decides whether a row lands on the
+// sim axis (audit.simColumns reads it from ctx and nowhere else).
+type simCapturingAudit struct {
+	sim   clock.Sim
+	bound bool
+}
+
+func (a *simCapturingAudit) LogInTx(ctx context.Context, _ *sql.Tx, _ audit.Entry) error {
+	a.sim, a.bound = clock.SimOf(ctx)
+	return nil
+}
+
+// A customer created INTO a simulation must have its create row on the sim
+// axis. Create is the one customer mutation that cannot bind from the customer
+// pin — the customer does not exist yet — so it binds from the clock it was
+// handed. Without that bind the row lands with NULL sim columns and is invisible
+// to ?test_clock_id=, which matters more here than anywhere else: ADR-086
+// teardown hard-deletes the customer, leaving this row as the only evidence the
+// customer was ever in the clock's world.
+func TestCreate_ClockPinnedCustomerBindsTheSimAxis(t *testing.T) {
+	ctx := context.Background()
+	frozen := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("pinned create binds the clock and its instant", func(t *testing.T) {
+		svc := NewService(newMemoryStore())
+		spy := &simCapturingAudit{}
+		svc.SetAuditLogger(spy)
+		svc.SetTestClockChecker(stubClockChecker{exists: true, frozen: frozen})
+
+		if _, err := svc.Create(ctx, "tenant1", CreateInput{
+			ExternalID:  "cus_pinned",
+			DisplayName: "Pinned",
+			TestClockID: "vlx_tclk_real",
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		if !spy.bound {
+			t.Fatal("emission ran on an UNBOUND ctx — the create row lands with NULL sim columns and the customer's origin is invisible to the clock filter")
+		}
+		if spy.sim.TestClockID != "vlx_tclk_real" {
+			t.Errorf("bound clock = %q, want vlx_tclk_real", spy.sim.TestClockID)
+		}
+		if !spy.sim.At.Equal(frozen) {
+			t.Errorf("bound instant = %s, want the clock's frozen_time %s", spy.sim.At, frozen)
+		}
+	})
+
+	// The mirror: an ordinary live customer must NOT be stamped, or the partial
+	// index (0148) fills with wall-clock rows and the clock filter starts
+	// returning customers that were never in any simulation.
+	t.Run("unpinned create stays off the axis", func(t *testing.T) {
+		svc := NewService(newMemoryStore())
+		spy := &simCapturingAudit{}
+		svc.SetAuditLogger(spy)
+		svc.SetTestClockChecker(stubClockChecker{exists: true, frozen: frozen})
+
+		if _, err := svc.Create(ctx, "tenant1", CreateInput{
+			ExternalID:  "cus_live",
+			DisplayName: "Live",
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if spy.bound {
+			t.Errorf("an unpinned create bound a sim context (%+v) — it must stay wall-clock", spy.sim)
+		}
+	})
 }
 
 func TestCustomerService_Get(t *testing.T) {

@@ -2116,6 +2116,14 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 
 		// Advance simulated clock to 5 days past trial_end (Dec 13).
 		frozen := sub.TrialEndAt.Add(5 * 24 * time.Hour)
+		// The DRIVER CONTRACT: every *ForClock phase is called only from
+		// testclock.RunCatchup, which binds the clock + its frozen instant onto
+		// ctx ONCE for the whole advance (one bind, not nine self-binds). Every
+		// audit row a phase emits inherits the axis from that ctx. Reproduce it
+		// here — calling the phase on a bare ctx tests a shape production never
+		// runs, and would let a real unstamping regression pass.
+		ctx := clock.WithSim(ctx, clock.Sim{At: frozen, TestClockID: "tclk_1"})
+
 		processed, errs := svc.ProcessExpiredTrialsForClock(ctx, "t1", "tclk_1", frozen)
 		if len(errs) != 0 {
 			t.Fatalf("unexpected errors: %v", errs)
@@ -2142,17 +2150,34 @@ func TestProcessExpiredTrialsForClock(t *testing.T) {
 		}
 
 		// Audit row: the auto-flip must leave the same trial_ended trace the
-		// operator EndTrial writes, marked triggered_by=schedule and carrying
-		// the sim context (clock id + trial_end_at as the effective instant).
+		// operator EndTrial writes, marked triggered_by=schedule.
 		if len(aud.entries) != 1 {
 			t.Fatalf("audit entries: got %d, want 1 (trial_ended)", len(aud.entries))
 		}
-		am := aud.entries[0].metadata
+		ae := aud.entries[0]
+		am := ae.metadata
 		if am["action"] != "trial_ended" || am["triggered_by"] != "schedule" {
 			t.Errorf("audit metadata: got %+v, want action=trial_ended triggered_by=schedule", am)
 		}
-		if am["test_clock_id"] != "tclk_1" || am["sim_effective_at"] == nil {
-			t.Errorf("audit sim context: got %+v, want test_clock_id + sim_effective_at", am)
+		// The sim axis rides the ctx binding (the writer reads it there), so the
+		// emission must run BOUND to the clock. It must NOT hand-stamp the axis
+		// into metadata: the writer owns those keys and overwrites them.
+		if !ae.bound {
+			t.Fatal("trial_ended emitted on an UNBOUND ctx — the row lands with NULL sim columns and is invisible to ?test_clock_id=")
+		}
+		if ae.sim.TestClockID != "tclk_1" {
+			t.Errorf("bound clock: got %q, want tclk_1", ae.sim.TestClockID)
+		}
+		for _, k := range []string{"sim_effective_at", "test_clock_id"} {
+			if _, hand := am[k]; hand {
+				t.Errorf("emitter hand-stamped %q — the audit writer owns that key", k)
+			}
+		}
+		// The trial-end instant is a DIFFERENT fact from the row's sim instant
+		// (a catchup performs this flip at the ADVANCE's instant, which can be
+		// weeks of simulated time later), so it travels under its own key.
+		if am["trial_end_at"] == nil {
+			t.Errorf("audit metadata: missing trial_end_at, got %+v", am)
 		}
 	})
 
@@ -3375,27 +3400,38 @@ type stubClockResolver struct {
 	byCustomer map[string]time.Time
 	bySub      map[string]time.Time
 	byInvoice  map[string]time.Time
+	// clockID is the pin the stub resolves to; defaults to "tc_stub". A
+	// resolution always yields BOTH halves (instant + clock) — that pairing is
+	// the invariant clock.Sim exists to hold.
+	clockID string
 }
 
-func (s *stubClockResolver) EffectiveNowForCustomer(_ context.Context, _, customerID string) (time.Time, error) {
+func (s *stubClockResolver) clk() string {
+	if s.clockID != "" {
+		return s.clockID
+	}
+	return "tc_stub"
+}
+
+func (s *stubClockResolver) SimForCustomer(_ context.Context, _, customerID string) (clock.Sim, error) {
 	if t, ok := s.byCustomer[customerID]; ok {
-		return t, nil
+		return clock.Sim{At: t, TestClockID: s.clk()}, nil
 	}
-	return time.Time{}, fmt.Errorf("no stub for customer %s", customerID)
+	return clock.Sim{}, fmt.Errorf("no stub for customer %s", customerID)
 }
 
-func (s *stubClockResolver) EffectiveNowForSubscription(_ context.Context, _, subID string) (time.Time, error) {
+func (s *stubClockResolver) SimForSubscription(_ context.Context, _, subID string) (clock.Sim, error) {
 	if t, ok := s.bySub[subID]; ok {
-		return t, nil
+		return clock.Sim{At: t, TestClockID: s.clk()}, nil
 	}
-	return time.Time{}, fmt.Errorf("no stub for subscription %s", subID)
+	return clock.Sim{}, fmt.Errorf("no stub for subscription %s", subID)
 }
 
-func (s *stubClockResolver) EffectiveNowForInvoice(_ context.Context, _, invoiceID string) (time.Time, error) {
+func (s *stubClockResolver) SimForInvoice(_ context.Context, _, invoiceID string) (clock.Sim, error) {
 	if t, ok := s.byInvoice[invoiceID]; ok {
-		return t, nil
+		return clock.Sim{At: t, TestClockID: s.clk()}, nil
 	}
-	return time.Time{}, fmt.Errorf("no stub for invoice %s", invoiceID)
+	return clock.Sim{}, fmt.Errorf("no stub for invoice %s", invoiceID)
 }
 
 // TestClockResolver_StampsFrozenDomain locks in the ADR-029 follow-up
@@ -3603,11 +3639,19 @@ type capturedAuditEntry struct {
 	resourceID   string
 	metadata     map[string]any
 	resourceType string
+	sim          clock.Sim
+	bound        bool
 }
 
-func (c *captureAudit) Log(_ context.Context, _, action, resourceType, resourceID, _ string, metadata map[string]any) error {
+// Log captures the ctx CLOCK BINDING alongside the content. The sim axis is
+// resolved by the audit writer from ctx (audit.simColumns) and nowhere else, so
+// "is this row on the sim axis?" is a question about the ctx the emission ran
+// under — not about metadata keys the emitter set.
+func (c *captureAudit) Log(ctx context.Context, _, action, resourceType, resourceID, _ string, metadata map[string]any) error {
+	sim, bound := clock.SimOf(ctx)
 	c.entries = append(c.entries, capturedAuditEntry{
 		action: action, resourceType: resourceType, resourceID: resourceID, metadata: metadata,
+		sim: sim, bound: bound,
 	})
 	return nil
 }

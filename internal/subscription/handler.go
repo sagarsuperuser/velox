@@ -250,26 +250,35 @@ func (h *Handler) bindForSub(ctx context.Context, tenantID, subID string) contex
 	return bound
 }
 
-// auditMetaForSub merges sim-time context (sim_effective_at,
-// test_clock_id) into the metadata bag for clock-pinned subs. No-op for
-// wall-clock subs. ADR-030 amendment (2026-05-28): audit row created_at
-// is wall-clock for every entity; the simulated effect time of an
-// operator action on a clock-pinned sub lives in metadata so the audit
-// UI can render both "when Sagar clicked" (primary timestamp) and "what
-// sim moment that landed on" (subline) on the same row.
+// auditCtx binds the sub's simulated-time context — its test clock and that
+// clock's frozen instant — onto ctx for an audit emission, so the row lands
+// on the sim axis (audit_log.sim_effective_at / test_clock_id) and the clock
+// filter can find it after ADR-086 teardown deletes the sub itself.
 //
-// Supersedes the prior auditCtxForSub helper which bound ctx so audit
-// stamped sub.UpdatedAt as created_at — that conflated operator-action
-// time with engine-effect time and broke forensics on the audit page.
-func auditMetaForSub(sub domain.Subscription, extra map[string]any) map[string]any {
-	if extra == nil {
-		extra = map[string]any{}
+// It replaces auditMetaForSub, which merged the same pair into the metadata
+// bag from TWO sources: the clock id off the entity, the instant off
+// sub.UpdatedAt. That pairing is only true when this request is what last
+// wrote the row — on subscription.proration_failed (nothing written) and on
+// the change-plan rows (sub rewritten later) it stamped a STALE sim instant.
+// One resolution of the pin yields both halves, consistent by construction
+// (clock.Sim).
+//
+// Cost is zero on the path that matters: live mode can hold no clock (DB
+// CHECK on test_clocks.livemode), so production never resolves. It is also a
+// no-op when ctx is already bound — the service-layer entry points
+// (bindForSub) bind before we get here on most routes.
+//
+// ADR-030 still holds: created_at stays WALL-clock ("when the operator
+// clicked"). This is the second axis, not a replacement for the first.
+func (h *Handler) auditCtx(ctx context.Context, tenantID, subID string) context.Context {
+	if h.resolver == nil || subID == "" || postgres.Livemode(ctx) {
+		return ctx
 	}
-	if sub.TestClockID != "" {
-		extra["sim_effective_at"] = sub.UpdatedAt.UTC().Format(time.RFC3339Nano)
-		extra["test_clock_id"] = sub.TestClockID
+	if _, ok := clock.SimOf(ctx); ok {
+		return ctx
 	}
-	return extra
+	bound, _ := clock.BindEffectiveNow(ctx, h.resolver, clock.Pin{TenantID: tenantID, SubscriptionID: subID})
+	return bound
 }
 
 // planIDsForAudit projects a sub's items into the audit metadata
@@ -444,14 +453,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	// Explicit audit row — created_at is wall-clock for forensics
 	// (ADR-030 line 131, post-2026-05-28 amendment). For clock-pinned
-	// subs, auditMetaForSub adds sim_effective_at + test_clock_id to
-	// the metadata bag so the UI can render the simulated effect time
-	// as a subline.
+	// subs, h.auditCtx binds the clock so the writer stamps the sim axis
+	// (sim_effective_at + test_clock_id columns, mirrored into metadata for
+	// the UI subline).
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionCreate, "subscription", sub.ID, sub.Code, map[string]any{
 			"customer_id": sub.CustomerID,
 			"plan_ids":    planIDsForAudit(sub),
-		}))
+		})
 	}
 
 	// subscription.created is enqueued IN the create tx (store-level
@@ -523,9 +532,9 @@ func (h *Handler) activate(w http.ResponseWriter, r *http.Request) {
 	// Wall-clock created_at + sim metadata on clock-pinned subs — same
 	// pattern as the create handler above.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionActivate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionActivate, "subscription", sub.ID, sub.Code, map[string]any{
 			"customer_id": sub.CustomerID,
-		}))
+		})
 	}
 
 	// subscription.activated is enqueued IN the activation tx (store-level
@@ -591,7 +600,7 @@ func (h *Handler) scheduleCancel(w http.ResponseWriter, r *http.Request) {
 		if sub.CancelAt != nil {
 			meta["cancel_at"] = sub.CancelAt.UTC()
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
 	}
 
 	extra := map[string]any{"cancel_at_period_end": sub.CancelAtPeriodEnd}
@@ -660,10 +669,10 @@ func (h *Handler) endTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
 			"action":      "trial_ended",
 			"customer_id": sub.CustomerID,
-		}))
+		})
 	}
 
 	// subscription.trial_ended (triggered_by=operator) is enqueued IN the
@@ -700,11 +709,11 @@ func (h *Handler) extendTrial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
 			"action":      "trial_extended",
 			"customer_id": sub.CustomerID,
 			"trial_end":   body.TrialEnd.UTC(),
-		}))
+		})
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionTrialExtended, sub, map[string]any{
@@ -807,7 +816,7 @@ func (h *Handler) setBillingThresholds(w http.ResponseWriter, r *http.Request) {
 			"amount_gte":           input.AmountGTE,
 			"item_threshold_count": len(input.ItemThresholds),
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
 	}
 
 	h.respondSub(w, r, http.StatusOK, sub)
@@ -828,10 +837,10 @@ func (h *Handler) clearBillingThresholds(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
 			"action":      "billing_thresholds_cleared",
 			"customer_id": sub.CustomerID,
-		}))
+		})
 	}
 
 	h.respondSub(w, r, http.StatusOK, sub)
@@ -851,10 +860,10 @@ func (h *Handler) clearScheduledCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, sub.ID), tenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, map[string]any{
 			"action":      "cancel_cleared",
 			"customer_id": sub.CustomerID,
-		}))
+		})
 	}
 
 	h.fireEvent(r.Context(), tenantID, domain.EventSubscriptionCancelCleared, sub, nil)
@@ -932,7 +941,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 			"quantity": item.Quantity,
 		}
 		addProrationMeta(payload, addProration, h.planCurrency(ctx, tenantID, item.PlanID))
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", id, subBefore.Code, payload)
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, id), tenantID, domain.AuditActionUpdate, "subscription", id, subBefore.Code, payload)
 	}
 
 	// Re-fetch the subscription so downstream payload/proration paths see the
@@ -991,7 +1000,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
-				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", id, "", map[string]any{
+				_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, id), tenantID, "subscription.proration_failed", "subscription", id, "", map[string]any{
 					"item_id":                  item.ID,
 					"change_type":              string(domain.ItemChangeTypeAdd),
 					"plan_id":                  item.PlanID,
@@ -1200,7 +1209,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
-				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
+				_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, subID), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
 					"item_id":                  result.Item.ID,
 					"change_type":              string(spec.changeType),
 					"old_plan_id":              oldPlanID,
@@ -1248,7 +1257,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 		if s, err := h.svc.Get(ctx, tenantID, subID); err == nil {
 			auditSub = s
 		}
-		_ = h.auditLogger.Log(ctx, tenantID, "subscription.item_updated", "subscription", subID, auditSub.Code, auditMetaForSub(auditSub, payload))
+		_ = h.auditLogger.Log(h.auditCtx(ctx, tenantID, subID), tenantID, "subscription.item_updated", "subscription", subID, auditSub.Code, payload)
 	}
 
 	// Event dispatch. Quantity changes and immediate plan changes are
@@ -1288,7 +1297,7 @@ func (h *Handler) cancelPendingItemChange(w http.ResponseWriter, r *http.Request
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "subscription", subID, "", map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, subID), tenantID, domain.AuditActionUpdate, "subscription", subID, "", map[string]any{
 			"action":  "cancel_pending_item_plan_change",
 			"item_id": item.ID,
 		})
@@ -1369,7 +1378,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 			"plan_id": removedPlanID,
 		}
 		addProrationMeta(payload, removeProration, h.planCurrency(ctx, tenantID, removedPlanID))
-		_ = h.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "subscription", subID, subBefore.Code, payload)
+		_ = h.auditLogger.Log(h.auditCtx(ctx, tenantID, subID), tenantID, domain.AuditActionUpdate, "subscription", subID, subBefore.Code, payload)
 	}
 
 	// Legacy non-atomic proration emission path — only when atomic wasn't taken.
@@ -1403,7 +1412,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 				"error", prorationErr,
 			)
 			if h.auditLogger != nil {
-				_ = h.auditLogger.Log(r.Context(), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
+				_ = h.auditLogger.Log(h.auditCtx(r.Context(), tenantID, subID), tenantID, "subscription.proration_failed", "subscription", subID, "", map[string]any{
 					"item_id":                  itemID,
 					"change_type":              string(domain.ItemChangeTypeRemove),
 					"plan_id":                  removedPlanID,
@@ -3099,8 +3108,9 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	// clock.Now(boundCtx) (PR-11/12 + b46bdee), so each row's
 	// timestamp IS sim-time. Marking every audit-sourced row
 	// IsSimulated + SimEffectiveAt are computed PER ROW from
-	// metadata.sim_effective_at — the authoritative signal set by
-	// auditMetaForSub at write time. Pre-2026-05-28 this was a sub-
+	// metadata.sim_effective_at — the authoritative signal mirrored by
+	// the audit writer from the ctx clock binding (ADR-090 §5) at write
+	// time. Pre-2026-05-28 this was a sub-
 	// level heuristic (every audit row flagged simulated when the
 	// sub was clock-pinned), which fired the chip on operator
 	// actions whose audit timestamp was actually wall-clock — the
@@ -3168,9 +3178,9 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 			for _, e := range entries {
 				desc, detail, detailTS, status := describeSubscriptionAction(e.Action, e.Metadata, planNames)
 				// Per-row sim context. metadata.sim_effective_at is
-				// populated by auditMetaForSub on writes affecting
-				// clock-pinned subs (2026-05-28 ADR-030 amendment).
-				// Empty for everything else.
+				// mirrored by the audit writer from the ctx clock binding
+				// on writes affecting clock-pinned subs (ADR-090 §5; the
+				// columns are the queryable copy). Empty for everything else.
 				simAt, _ := e.Metadata["sim_effective_at"].(string)
 				clockID, _ := e.Metadata["test_clock_id"].(string)
 				events = append(events, timelineEvent{

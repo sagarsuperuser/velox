@@ -296,10 +296,16 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"PATCH", "/v1/settings/stripe/{mode}/webhook"}: explicit("tenantstripe.Handler.setWebhook → Log(rotate, stripe_credentials: webhook_secret_set) — never records the secret."),
 
 	// --- test clocks -------------------------------------------------------
+	// The clock routes stamp their rows onto their OWN clock's sim axis (ADR-090
+	// §5), so the clock's lifecycle sits INSIDE the timeline it explains: after
+	// ADR-086 teardown a clock-scoped query would otherwise return the effects
+	// (invoices finalized, subs canceled) with no cause — no "created", no
+	// "advanced to 2027-03-01", and no "deleted", which is the row that explains
+	// why every other trace of the simulation is gone.
 	{"POST", "/v1/test-clocks"}:                    explicit("testclock.Handler.create → Log(create, test_clock)."),
 	{"POST", "/v1/test-clocks/{id}/advance"}:       explicit("testclock.Handler.advance → Log(update, test_clock: advance_requested)."),
 	{"POST", "/v1/test-clocks/{id}/retry-advance"}: explicit("testclock.Handler.retryAdvance → Log(update, test_clock: advance_retried)."),
-	{"DELETE", "/v1/test-clocks/{id}"}:             explicit("testclock.Handler.delete → Log(delete, test_clock). ADR-086: the audit row is the simulation's ONLY surviving record after teardown."),
+	{"DELETE", "/v1/test-clocks/{id}"}:             explicit("testclock.Handler.delete → Log(delete, test_clock: teardown), reading the clock BEFORE the teardown so the row carries its name + final frozen instant. ADR-086: the audit row is the simulation's ONLY surviving record after teardown."),
 
 	// --- checkout / public payment surfaces --------------------------------
 	{"POST", "/v1/checkout/setup"}:                          explicit("payment.CheckoutHandler.createSetupSession → LogInTx on the session-claim tx."),

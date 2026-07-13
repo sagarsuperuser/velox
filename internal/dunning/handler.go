@@ -16,6 +16,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
 // InvoiceUpdater updates invoice status when dunning is resolved.
@@ -334,7 +335,17 @@ func (h *Handler) resolveRun(w http.ResponseWriter, r *http.Request) {
 	// write-off). Critical for finance reconciliation — "why was this
 	// invoice marked recovered when no payment came in?".
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "dunning_run", run.ID, "", map[string]any{
+		// Bind the invoice's clock so an operator resolving a dunning run inside
+		// a simulation lands on the sim axis. The dunning_run row itself is
+		// hard-deleted by ADR-086 teardown, so this row is the only surviving
+		// record of WHY collection was closed out ("marked recovered when no
+		// payment came in") — precisely the question the comment above says
+		// finance asks. Nothing to resolve in live mode (no clock possible).
+		auditCtx := r.Context()
+		if h.resolver != nil && run.InvoiceID != "" && !postgres.Livemode(auditCtx) {
+			auditCtx, _ = clock.BindEffectiveNow(auditCtx, h.resolver, clock.Pin{TenantID: tenantID, InvoiceID: run.InvoiceID})
+		}
+		_ = h.auditLogger.Log(auditCtx, tenantID, domain.AuditActionUpdate, "dunning_run", run.ID, "", map[string]any{
 			"action":     "resolved",
 			"resolution": input.Resolution,
 			"invoice_id": run.InvoiceID,

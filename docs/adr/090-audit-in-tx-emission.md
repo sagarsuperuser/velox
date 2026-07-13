@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 Status: Accepted
-Relates: ADR-089 (fail-closed retirement — the interim step this supersedes structurally), ADR-030 (wall-clock audit timestamps — unchanged), ADR-086 (sim-data lifecycle — amended: sim-axis columns ship now)
+Relates: ADR-089 (fail-closed retirement — the interim step this supersedes structurally), ADR-030 (wall-clock audit timestamps — unchanged; the sim axis is a SECOND axis, not a replacement), ADR-029 (ctx effective-now binding — extended to carry the clock id), ADR-086 (sim-data lifecycle — amended: sim-axis columns + surfacing ship now)
 
 ## Context
 
@@ -159,14 +159,130 @@ pins that property.
 
 ### 5. Sim-time axis (ADR-086 amendment)
 
-`sim_effective_at` + `test_clock_id` are promoted to nullable audit_log
-columns (migration 0148, partial index on the clock slice) with a typed
-`SimContext` on the emission input, because after ADR-086 teardown the audit
-log is a simulation's ONLY surviving record — yet it couldn't be queried by
-sim time or clock. LogInTx stamps columns AND mirrors the legacy metadata
-keys the dashboard renders. Query params / UI filters ship only after
-stamping reaches parity across writers (the sim-axis surfacing PR), so the
-filter can never lie by omission.
+`sim_effective_at` + `test_clock_id` are nullable audit_log columns
+(migration 0148, partial index on the clock slice), because after ADR-086
+teardown the audit log is a simulation's ONLY surviving record — yet nothing
+could scope it to a clock, and `created_at` (wall-clock by ADR-030, and
+correctly so) puts a whole simulated year inside one afternoon, so it cannot
+say *when, in the simulation,* anything happened.
+
+**What the axis means, exactly.** `sim_effective_at` is *the simulated instant
+the clock stood at when the mutation was performed* — NOT the period the
+mutation was about. An advance does not replay time: it stands at the new
+frozen_time and settles everything that came due. So a single Jan→Mar advance
+that finalizes three monthly invoices stamps all three rows **March**, and a
+January window correctly returns nothing — the clock never stood in January.
+The axis separates **advances**, not the periods inside one advance.
+
+That is a real limit, so it is written down rather than sold around:
+
+- There is **no `?order=sim_effective_at`**. Within one clock it would produce
+  the same order as `created_at` (advances only move forward; rows inside one
+  advance tie and fall back to the id tiebreak either way), and across clocks it
+  would interleave two unrelated simulations into a timeline that never
+  happened. A sort control that changes nothing, under a label promising it
+  separates the events inside an advance, is a lie with a checkbox.
+- Per-event simulated instants would require the engine to move effective-now
+  per billed period. That is a **money-path change** — effective-now drives due
+  dates, proration and dunning — and is deliberately not made here. Closure
+  trigger: an operator who needs intra-advance ordering.
+
+**The axis is derived from the ctx clock binding, not supplied per
+emission.** The original `SimContext` field on the emission input is
+DELETED. A per-emission field means ~90 emitters each remembering to
+populate it; an emitter that forgets is invisible, and its rows are then
+invisible to `?test_clock_id=` — the filter lies BY OMISSION, which is
+worse than no filter, because an auditor reading a complete-looking
+timeline of a simulation is reading an incomplete one. Instead:
+
+- `clock.Sim{At, TestClockID}` is one value carrying both halves. A clock
+  id resolved separately from its instant is how you get a row claiming
+  "clock C at wall-clock now"; `Sim` makes that unrepresentable, and every
+  consumer treats a half-set binding as absent.
+- `clock.Resolver` returns `Sim` (renamed `SimForCustomer/Subscription/
+  Invoice`), so **one pin resolution yields both halves**. Every existing
+  `BindEffectiveNow` call site therefore carries the clock for free — the
+  services already had to bind, or their business timestamps would be
+  wall-clock (ADR-029).
+- The ForClock/catchup drivers bind `WithSim` (clock id + frozen_time) ONCE
+  for the whole advance. This is the linchpin: every row an advance produces —
+  finalize, cancel, clawback issue, dunning, threshold — inherits it without any
+  emitter knowing test clocks exist. (Credit expiry runs under that binding but
+  emits no audit row: the event-sourced credit ledger IS its record. An earlier
+  draft of this list said otherwise, which credited a row that does not exist.)
+- **BOTH writers stamp**: `LogInTx` and the residual own-tx `Log`. The
+  own-tx callers are not a lesser class of evidence — `invoice.Service.
+  Finalize`, the canonical row for every invoice a clock advance generates,
+  still writes through `Log`.
+- Handler-level emitters (which emit on `r.Context()`, a ctx the service's
+  internal bind never reaches) bind explicitly before emitting:
+  `invoice` (gated on `inv.IsSimulated` — exact and free on the wall-clock
+  path), `subscription`, `customer`, `dunning`, and the `test_clock` routes
+  themselves. The clock's own create/advance/delete rows are what make a
+  post-teardown view self-explaining: without them the log has the effects
+  but not the cause, and no row saying why everything else is gone.
+- `auditMetaForSub` is DELETED. It merged the same pair into metadata from
+  TWO sources — the clock id off the entity, the instant off
+  `sub.UpdatedAt` — which is only true when the current request is what
+  last wrote that row; on `subscription.proration_failed` (writes nothing)
+  it stamped a stale sim instant. The writer still mirrors both keys into
+  metadata, so the dashboard's existing subline and pre-0148 rows keep
+  rendering.
+
+Surfacing ships in the same PR as the parity it depends on: `?test_clock_id=`,
+`?sim_from=/?sim_to=`, a clock picker sourced from the AUDIT ROWS (not
+`test_clocks` — that table is empty exactly when the forensic view is wanted),
+`sim_effective_at` + `test_clock_id` columns in the CSV export, and the clock
+filter carried INTO that export (an export that silently dropped it would hand
+an auditor a file that looks like one simulation and is actually the whole log).
+There is one sort axis — `created_at` — and the cursor seeks on the same tuple
+it sorts on.
+
+**The writer owns the axis; no emitter may hand-stamp it.** `simColumns`
+overwrites `metadata["sim_effective_at"]` and `metadata["test_clock_id"]`
+unconditionally and silently, so an emitter that also writes them cannot tell
+its value was dropped. Seven did. Four were writing the identical instant (pure
+duplication); three — the trial-end cancel/activate rows — were writing the
+TRIAL-END instant, a genuinely different fact, and had it destroyed under
+catchup, where the cancel is performed at the advance's instant, possibly weeks
+of simulated time after the trial ended. All seven hand-stamps are deleted; the
+trial-end instant now travels as `metadata["trial_end_at"]`, which says what it
+is. A new simulated instant on a row gets its OWN key.
+
+**Nested resolution may refine the binding, never erase it.** Every resolver
+falls back to `Sim{At: clock.Now(ctx)}` — empty clock id, nil error — when it
+cannot resolve its pin. Under a catchup ctx that value is poison, because
+`Now(ctx)` reads the binding: the fallback is `{simulated instant, no clock}`,
+the mirror image of the "clock C at wall-clock now" half-truth `Sim` was built
+to prevent. Binding it would keep the simulated instant and drop the clock, and
+every audit row below that call would silently leave the sim axis — invisible in
+exactly the way that looks identical to "nothing happened". Services re-bind
+under catchup routinely (dunning, the payment reconciler, invoice, subscription),
+so `BindEffectiveNow` refuses to bind a clock-less `Sim` over an inherited one.
+
+**Accepted losses, written down rather than glossed** (an unstamped row is
+not a rounding error; it is a row the clock filter cannot see):
+
+- **Operator-driven credit-note routes** (create draft / issue / void /
+  retry-refund / send) emit NO sim axis. Root cause: `creditnote.Service`
+  has no `clock.Resolver` at all — which is the same defect that makes an
+  operator-issued CN against a SIMULATED invoice stamp wall-clock
+  `issued_at` and `is_simulated=false` (reported separately; it leaks
+  simulated credit notes into wall-clock analytics via
+  `analytics.notSimInvoice`'s CN counterpart). Stamping the audit row while
+  the entity itself stays wall-clock would paper over that bug in the audit
+  layer. **Closure trigger: fix the CN clock binding; the sim axis then
+  follows from the ctx with NO further audit change.** Clock-DRIVEN CN
+  paths (the catchup clawback issuer) ARE stamped today.
+- **Payment-method routes** and **public checkout rows** (hosted-invoice Pay
+  click, payment-update link, checkout setup) emit no sim axis. Neither
+  path binds a pin: both stamp wall-clock and drive real Stripe, so their
+  rows are wall-clock facts about an entity that happens to be pinned. This
+  is consistent with the boundary the clock view already has — the
+  SETTLEMENT those clicks lead to arrives as a Stripe webhook, which this
+  same ADR already records as writing no audit row at all. Closure trigger
+  for both: auditing the settle path (the registry's `reasonWebhookOwned`
+  note), at which point the checkout breadcrumbs should join it.
 
 ### 6. Row integrity: the parts of a row a client must not be able to write
 

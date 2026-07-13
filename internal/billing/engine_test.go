@@ -2108,11 +2108,15 @@ func TestRunCycle_SkipsPendingChangeNotYetDue(t *testing.T) {
 	}
 }
 
-// TestEffectiveNow covers the four branches of Engine.effectiveNow:
-// no test clock → wall-clock; test clock wired → frozen_time; clock id set
-// but no reader → wall-clock; reader errors → wall-clock. These branches
-// are what makes a test-mode sub bill at simulated time without affecting
-// live subs on the same engine instance.
+// TestEffectiveNow covers the four branches of Engine.simForSub (which
+// effectiveNow is a thin .At wrapper over): no test clock → wall-clock; test
+// clock wired → frozen_time; clock id set but no reader → wall-clock; reader
+// errors → wall-clock. These branches are what makes a test-mode sub bill at
+// simulated time without affecting live subs on the same engine instance.
+//
+// Each fallback branch must also drop the CLOCK ID, not just revert the
+// instant: a Sim carrying "clock tc_1" with a wall-clock At would stamp audit
+// rows into the simulated slice with a real-world timestamp (ADR-090 §5).
 func TestEffectiveNow(t *testing.T) {
 	wall := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
 	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -2124,9 +2128,12 @@ func TestEffectiveNow(t *testing.T) {
 	t.Run("no test clock id returns wall clock", func(t *testing.T) {
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
 		e.SetTestClockReader(&stubClockReader{clk: domain.TestClock{FrozenTime: frozen}})
-		got := e.effectiveNow(context.Background(), liveSub)
-		if !got.Equal(wall) {
-			t.Errorf("wall-clock sub: got %v, want %v", got, wall)
+		got := e.simForSub(context.Background(), liveSub)
+		if !got.At.Equal(wall) {
+			t.Errorf("wall-clock sub: got %v, want %v", got.At, wall)
+		}
+		if got.Simulated() {
+			t.Errorf("unpinned sub must not be simulated: %+v", got)
 		}
 	})
 
@@ -2134,9 +2141,12 @@ func TestEffectiveNow(t *testing.T) {
 		reader := &stubClockReader{clk: domain.TestClock{FrozenTime: frozen}}
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
 		e.SetTestClockReader(reader)
-		got := e.effectiveNow(context.Background(), testSub)
-		if !got.Equal(frozen) {
-			t.Errorf("test-mode sub: got %v, want %v", got, frozen)
+		got := e.simForSub(context.Background(), testSub)
+		if !got.At.Equal(frozen) {
+			t.Errorf("test-mode sub: got %v, want %v", got.At, frozen)
+		}
+		if got.TestClockID != "tc_1" {
+			t.Errorf("test_clock_id: got %q, want tc_1", got.TestClockID)
 		}
 		if reader.lastID != "tc_1" || reader.lastTenant != "t1" {
 			t.Errorf("reader lookup: got (%q,%q), want (t1,tc_1)",
@@ -2146,18 +2156,24 @@ func TestEffectiveNow(t *testing.T) {
 
 	t.Run("test clock id without reader falls back to wall clock", func(t *testing.T) {
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
-		got := e.effectiveNow(context.Background(), testSub)
-		if !got.Equal(wall) {
-			t.Errorf("nil-reader fallback: got %v, want %v", got, wall)
+		got := e.simForSub(context.Background(), testSub)
+		if !got.At.Equal(wall) {
+			t.Errorf("nil-reader fallback: got %v, want %v", got.At, wall)
+		}
+		if got.Simulated() {
+			t.Errorf("wall-clock fallback must drop the clock id, got %+v", got)
 		}
 	})
 
 	t.Run("reader error falls back to wall clock", func(t *testing.T) {
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
 		e.SetTestClockReader(&stubClockReader{err: errs.ErrNotFound})
-		got := e.effectiveNow(context.Background(), testSub)
-		if !got.Equal(wall) {
-			t.Errorf("error fallback: got %v, want %v", got, wall)
+		got := e.simForSub(context.Background(), testSub)
+		if got.Simulated() {
+			t.Errorf("wall-clock fallback must drop the clock id, got %+v", got)
+		}
+		if !got.At.Equal(wall) {
+			t.Errorf("error fallback: got %v, want %v", got.At, wall)
 		}
 	})
 }
@@ -2182,11 +2198,11 @@ func TestEffectiveNowForInvoice(t *testing.T) {
 		e := NewEngine(subs, nil, nil, invoices, nil, nil, nil, nil, fakeClk)
 		e.SetTestClockReader(&stubClockReader{clk: domain.TestClock{FrozenTime: frozen}})
 
-		got, err := e.EffectiveNowForInvoice(context.Background(), "t1", "inv_1")
+		got, err := e.SimForInvoice(context.Background(), "t1", "inv_1")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(frozen) {
+		if !got.At.Equal(frozen) {
 			t.Errorf("clock-pinned invoice: got %v, want %v (frozen)", got, frozen)
 		}
 	})
@@ -2200,11 +2216,11 @@ func TestEffectiveNowForInvoice(t *testing.T) {
 		}}
 		e := NewEngine(subs, nil, nil, invoices, nil, nil, nil, nil, fakeClk)
 
-		got, err := e.EffectiveNowForInvoice(context.Background(), "t1", "inv_2")
+		got, err := e.SimForInvoice(context.Background(), "t1", "inv_2")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("unpinned sub: got %v, want %v (wall)", got, wall)
 		}
 	})
@@ -2215,11 +2231,11 @@ func TestEffectiveNowForInvoice(t *testing.T) {
 		}}
 		e := NewEngine(nil, nil, nil, invoices, nil, nil, nil, nil, fakeClk)
 
-		got, err := e.EffectiveNowForInvoice(context.Background(), "t1", "inv_3")
+		got, err := e.SimForInvoice(context.Background(), "t1", "inv_3")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("manual draft: got %v, want %v (wall)", got, wall)
 		}
 	})
@@ -2228,11 +2244,11 @@ func TestEffectiveNowForInvoice(t *testing.T) {
 		invoices := &mockInvoices{} // empty
 		e := NewEngine(nil, nil, nil, invoices, nil, nil, nil, nil, fakeClk)
 
-		got, err := e.EffectiveNowForInvoice(context.Background(), "t1", "inv_missing")
+		got, err := e.SimForInvoice(context.Background(), "t1", "inv_missing")
 		if err == nil {
 			t.Error("expected error for missing invoice")
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("missing-invoice fallback: got %v, want %v (wall)", got, wall)
 		}
 	})
@@ -2272,11 +2288,11 @@ func TestEffectiveNowForCustomer(t *testing.T) {
 		}})
 		e.SetTestClockReader(&stubClockReader{clk: domain.TestClock{FrozenTime: frozen}})
 
-		got, err := e.EffectiveNowForCustomer(context.Background(), "t1", "cus_1")
+		got, err := e.SimForCustomer(context.Background(), "t1", "cus_1")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(frozen) {
+		if !got.At.Equal(frozen) {
 			t.Errorf("clock-pinned customer: got %v, want %v (frozen)", got, frozen)
 		}
 	})
@@ -2286,22 +2302,22 @@ func TestEffectiveNowForCustomer(t *testing.T) {
 		e.SetCustomerReader(&stubCustomerReader{customers: map[string]domain.Customer{
 			"cus_2": {ID: "cus_2", TenantID: "t1"}, // no TestClockID
 		}})
-		got, err := e.EffectiveNowForCustomer(context.Background(), "t1", "cus_2")
+		got, err := e.SimForCustomer(context.Background(), "t1", "cus_2")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("unpinned customer: got %v, want %v (wall)", got, wall)
 		}
 	})
 
 	t.Run("no customer reader wired returns wall clock", func(t *testing.T) {
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
-		got, err := e.EffectiveNowForCustomer(context.Background(), "t1", "cus_x")
+		got, err := e.SimForCustomer(context.Background(), "t1", "cus_x")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("no-reader fallback: got %v, want %v (wall)", got, wall)
 		}
 	})
@@ -2310,11 +2326,11 @@ func TestEffectiveNowForCustomer(t *testing.T) {
 		e := NewEngine(nil, nil, nil, nil, nil, nil, nil, nil, fakeClk)
 		e.SetCustomerReader(&stubCustomerReader{customers: map[string]domain.Customer{}})
 
-		got, err := e.EffectiveNowForCustomer(context.Background(), "t1", "cus_missing")
+		got, err := e.SimForCustomer(context.Background(), "t1", "cus_missing")
 		if err == nil {
 			t.Error("expected error for missing customer")
 		}
-		if !got.Equal(wall) {
+		if !got.At.Equal(wall) {
 			t.Errorf("missing-customer fallback: got %v, want %v (wall)", got, wall)
 		}
 	})
@@ -2338,11 +2354,11 @@ func TestEffectiveNowForInvoice_OneOffCustomerPath(t *testing.T) {
 	}})
 	e.SetTestClockReader(&stubClockReader{clk: domain.TestClock{FrozenTime: frozen}})
 
-	got, err := e.EffectiveNowForInvoice(context.Background(), "t1", "inv_oneoff")
+	got, err := e.SimForInvoice(context.Background(), "t1", "inv_oneoff")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !got.Equal(frozen) {
+	if !got.At.Equal(frozen) {
 		t.Errorf("one-off invoice for clock-pinned customer: got %v, want %v (frozen)", got, frozen)
 	}
 }

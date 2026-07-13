@@ -11,10 +11,18 @@ import (
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
-// capturingAudit records audit Log calls so a test can assert the metadata a
-// handler wrote, without a real DB. Satisfies auditRecorder.
+// capturingAudit records audit Log calls so a test can assert what a handler
+// wrote, without a real DB. Satisfies auditRecorder.
+//
+// It captures the emission's CTX SIM BINDING as well as its metadata: since
+// ADR-090 §5 the sim axis is derived by the Logger from the ctx clock binding
+// (and written to the sim_effective_at / test_clock_id COLUMNS, mirrored into
+// metadata), so a fake logger never sees the mirror — what the handler is
+// responsible for, and what these tests must therefore assert, is binding the
+// clock onto the ctx it emits with.
 type capturingAudit struct {
 	entries []capturedAudit
 }
@@ -22,10 +30,12 @@ type capturingAudit struct {
 type capturedAudit struct {
 	action string
 	meta   map[string]any
+	sim    clock.Sim
 }
 
-func (c *capturingAudit) Log(_ context.Context, _, action, _, _, _ string, metadata map[string]any) error {
-	c.entries = append(c.entries, capturedAudit{action: action, meta: metadata})
+func (c *capturingAudit) Log(ctx context.Context, _, action, _, _, _ string, metadata map[string]any) error {
+	sim, _ := clock.SimOf(ctx)
+	c.entries = append(c.entries, capturedAudit{action: action, meta: metadata, sim: sim})
 	return nil
 }
 
@@ -51,11 +61,16 @@ func (c *capturingAudit) actions() []string {
 }
 
 // A plan change on a CLOCK-PINNED subscription must record the test clock +
-// simulated effect-time in the audit metadata (ADR-030), so the audit UI shows
-// the wall-clock click time as the primary timestamp and "Effect on test clock
-// at <sim>" as a subline. Pre-fix the item-update writer passed the raw payload
-// instead of auditMetaForSub(sub, …) — the lone subscription audit path that
-// omitted it — so these rows carried no test-clock context.
+// simulated effect-time on the audit row (ADR-030 / ADR-090 §5), so the audit
+// UI shows the wall-clock click time as the primary timestamp and "Effect on
+// test clock at <sim>" as a subline — and so the row is reachable by
+// ?test_clock_id= after teardown deletes the sub.
+//
+// The handler's contract is to BIND the sub's clock onto the emission ctx; the
+// Logger stamps the columns from that binding. Pre-fix the item-update writer
+// passed the raw payload instead of the sim-carrying metadata — the lone
+// subscription audit path that omitted it — so these rows carried no test-clock
+// context.
 func TestHandler_UpdateItem_PlanChangeAuditCarriesSimContext(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
@@ -78,12 +93,25 @@ func TestHandler_UpdateItem_PlanChangeAuditCarriesSimContext(t *testing.T) {
 	}
 	subID, itemID := sub.ID, sub.Items[0].ID
 
+	// The clock stands still at a simulated instant that is NOT wall-clock now —
+	// the whole point of the second axis. It sits inside the sub's current
+	// billing period, because wiring the resolver also binds the proration math
+	// to simulated time (that is the ADR-029 contract, and this test asserts the
+	// proration outcome below).
+	frozen := ps.Add(5 * 24 * time.Hour)
+
 	svc := NewService(store, nil)
 	plans := &plansMock{plans: map[string]domain.Plan{
 		"plan_old": {ID: "plan_old", Name: "Basic", BaseAmountCents: 1000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 		"plan_new": {ID: "plan_new", Name: "Pro", BaseAmountCents: 3000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
 	}}
 	h := NewHandler(svc)
+	// The clock resolver is what turns the sub's pin into (frozen_time, clock id)
+	// — production wires the billing engine here (router.go).
+	h.SetResolver(&stubClockResolver{
+		bySub:   map[string]time.Time{subID: frozen},
+		clockID: "tclk_1",
+	})
 	// Paid current-period prebill so the immediate upgrade proceeds (an upgrade
 	// against an UNPAID source is blocked per ADR-050 — not what these audit
 	// tests are exercising).
@@ -106,11 +134,11 @@ func TestHandler_UpdateItem_PlanChangeAuditCarriesSimContext(t *testing.T) {
 	if entry.meta["action"] != "item_plan_changed" {
 		t.Errorf("meta.action: got %v, want item_plan_changed", entry.meta["action"])
 	}
-	if entry.meta["test_clock_id"] != "tclk_1" {
-		t.Errorf("meta.test_clock_id: got %v, want tclk_1 — sim context dropped (the bug)", entry.meta["test_clock_id"])
+	if entry.sim.TestClockID != "tclk_1" {
+		t.Errorf("emission ctx test_clock_id: got %q, want tclk_1 — sim context dropped (the bug)", entry.sim.TestClockID)
 	}
-	if s, ok := entry.meta["sim_effective_at"].(string); !ok || s == "" {
-		t.Errorf("meta.sim_effective_at: got %v, want a non-empty RFC3339 string", entry.meta["sim_effective_at"])
+	if !entry.sim.At.Equal(frozen) {
+		t.Errorf("emission ctx sim instant: got %v, want %v (the clock's frozen_time)", entry.sim.At, frozen)
 	}
 	// This upgrade runs the LEGACY (non-atomic) proration path — h.db is
 	// unwired here. The audit row must STILL carry the proration outcome,
@@ -127,7 +155,8 @@ func TestHandler_UpdateItem_PlanChangeAuditCarriesSimContext(t *testing.T) {
 }
 
 // A plan change on a WALL-CLOCK (non-pinned) subscription must NOT inject
-// sim-time context — auditMetaForSub is a no-op there.
+// sim-time context — h.auditCtx is a no-op there, so the row's sim columns stay
+// NULL and it never appears in the simulated slice.
 func TestHandler_UpdateItem_PlanChangeAuditNoSimContextWhenUnpinned(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "t1"
@@ -160,10 +189,7 @@ func TestHandler_UpdateItem_PlanChangeAuditNoSimContextWhenUnpinned(t *testing.T
 	if !ok {
 		t.Fatalf("expected a subscription.item_updated audit row; got actions=%v", rec.actions())
 	}
-	if _, present := entry.meta["test_clock_id"]; present {
-		t.Errorf("meta.test_clock_id present on a wall-clock sub: %v", entry.meta["test_clock_id"])
-	}
-	if _, present := entry.meta["sim_effective_at"]; present {
-		t.Errorf("meta.sim_effective_at present on a wall-clock sub: %v", entry.meta["sim_effective_at"])
+	if entry.sim.Simulated() {
+		t.Errorf("emission ctx carries a clock on a wall-clock sub: %+v", entry.sim)
 	}
 }

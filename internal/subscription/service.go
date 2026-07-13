@@ -1743,17 +1743,18 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 					meta["currency"] = currency
 				}
 			}
-			var sim *audit.SimContext
-			if c.TestClockID != "" {
-				sim = &audit.SimContext{EffectiveAt: clock.Now(ctx), TestClockID: c.TestClockID}
-			}
+			// No sim field: Cancel's entry points bind the sub's pin onto ctx
+			// (bindForSub), and the Logger derives the sim axis from that
+			// binding. The hand-rolled pairing this replaces read the clock id
+			// off the ENTITY and the instant off clock.Now(ctx) — two sources,
+			// so an unbound ctx (dunning's terminal cancel reaches Cancel from
+			// its own path) produced "clock C at wall-clock now".
 			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
 				Action:        domain.AuditActionCancel,
 				ResourceType:  "subscription",
 				ResourceID:    c.ID,
 				ResourceLabel: c.Code,
 				Metadata:      meta,
-				Sim:           sim,
 			}); auditErr != nil {
 				return fmt.Errorf("audit emission: %w", auditErr)
 			}
@@ -2140,7 +2141,7 @@ func trialCancelDue(sub domain.Subscription) bool {
 // extended trial / already canceled) is a silent no-op: the sub is NOT
 // handled this pass and the next scan re-routes whatever state it finds.
 // Returns handled=true only when THIS call performed the cancel.
-func (s *Service) cancelTrialAtEnd(ctx context.Context, tenantID string, sub domain.Subscription, clockID string) (bool, error) {
+func (s *Service) cancelTrialAtEnd(ctx context.Context, tenantID string, sub domain.Subscription) (bool, error) {
 	if sub.TrialEndAt == nil {
 		return false, nil
 	}
@@ -2157,9 +2158,15 @@ func (s *Service) cancelTrialAtEnd(ctx context.Context, tenantID string, sub dom
 		"triggered_by": "schedule",
 		"canceled_at":  canceled.CanceledAt.UTC().Format(time.RFC3339),
 	}
-	if clockID != "" {
-		meta["test_clock_id"] = clockID
-		meta["sim_effective_at"] = sub.TrialEndAt.UTC().Format(time.RFC3339)
+	// The trial-end instant is its OWN fact, under its own key. It is NOT the
+	// row's sim_effective_at: that column means "the simulated instant the
+	// clock stood at when this mutation was performed", and the audit writer
+	// owns it from the ctx binding (simColumns). A catchup performs this cancel
+	// at the advance's instant, which may be weeks of simulated time after the
+	// trial actually ended — two different facts that used to collide on one
+	// key, with the writer silently winning.
+	if sub.TrialEndAt != nil {
+		meta["trial_end_at"] = sub.TrialEndAt.UTC().Format(time.RFC3339)
 	}
 	if s.audit != nil {
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, meta)
@@ -2191,7 +2198,7 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 		// activate-and-bill. The SQL guard on the activation UPDATE is the
 		// atomic backstop for a schedule landing after this snapshot.
 		if trialCancelDue(sub) {
-			handled, cErr := s.cancelTrialAtEnd(bound, tenantID, sub, clockID)
+			handled, cErr := s.cancelTrialAtEnd(bound, tenantID, sub)
 			if cErr != nil {
 				batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
 			} else if handled {
@@ -2222,7 +2229,7 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 				// flip — the SQL guard blocked the activation. Route it.
 				fresh, gErr := s.store.Get(bound, tenantID, sub.ID)
 				if gErr == nil {
-					if handled, cErr := s.cancelTrialAtEnd(bound, tenantID, fresh, clockID); cErr != nil {
+					if handled, cErr := s.cancelTrialAtEnd(bound, tenantID, fresh); cErr != nil {
 						batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
 					} else if handled {
 						processed++
@@ -2245,12 +2252,14 @@ func (s *Service) ProcessExpiredTrialsForClock(ctx context.Context, tenantID, cl
 		// in webhooks and the Activity feed missed it (same asymmetry the
 		// scheduled-cancel + pause-auto-resume audits already fixed).
 		if s.audit != nil {
+			// trial_end_at is its own fact; the row's sim axis (test_clock_id +
+			// sim_effective_at) comes from the ctx binding on `bound`, which the
+			// audit writer owns. See cancelTrialAtEnd.
 			_ = s.audit.Log(bound, tenantID, domain.AuditActionUpdate, "subscription", activated.ID, activated.Code, map[string]any{
-				"action":           "trial_ended",
-				"customer_id":      activated.CustomerID,
-				"triggered_by":     "schedule",
-				"test_clock_id":    clockID,
-				"sim_effective_at": trialEndAt.UTC().Format(time.RFC3339),
+				"action":       "trial_ended",
+				"customer_id":  activated.CustomerID,
+				"triggered_by": "schedule",
+				"trial_end_at": trialEndAt.UTC().Format(time.RFC3339),
 			})
 		}
 
@@ -2305,7 +2314,7 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 		// clock-path twin for the rationale; the activation UPDATE's SQL
 		// guard is the atomic backstop.
 		if trialCancelDue(sub) {
-			handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, sub, "")
+			handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, sub)
 			if cErr != nil {
 				batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
 			} else if handled {
@@ -2337,7 +2346,7 @@ func (s *Service) ProcessExpiredTrials(ctx context.Context, batch int) (int, []e
 				// blocked the activation. Route to the free cancel.
 				fresh, gErr := s.store.Get(ctx, sub.TenantID, sub.ID)
 				if gErr == nil {
-					if handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, fresh, ""); cErr != nil {
+					if handled, cErr := s.cancelTrialAtEnd(ctx, sub.TenantID, fresh); cErr != nil {
 						batchErrs = append(batchErrs, fmt.Errorf("trial-end cancel sub %s: %w", sub.ID, cErr))
 					} else if handled {
 						processed++

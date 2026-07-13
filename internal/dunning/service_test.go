@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 type memStore struct {
@@ -821,22 +822,22 @@ type stubClockResolver struct {
 	err       error
 }
 
-func (s *stubClockResolver) EffectiveNowForInvoice(_ context.Context, _, invoiceID string) (time.Time, error) {
+func (s *stubClockResolver) SimForInvoice(_ context.Context, _, invoiceID string) (clock.Sim, error) {
 	if s.err != nil {
-		return time.Time{}, s.err
+		return clock.Sim{}, s.err
 	}
 	if t, ok := s.byInvoice[invoiceID]; ok {
-		return t, nil
+		return clock.Sim{At: t, TestClockID: "tc_stub"}, nil
 	}
-	return time.Time{}, fmt.Errorf("no stub for invoice %s", invoiceID)
+	return clock.Sim{}, fmt.Errorf("no stub for invoice %s", invoiceID)
 }
 
-func (s *stubClockResolver) EffectiveNowForCustomer(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("not used by dunning tests")
+func (s *stubClockResolver) SimForCustomer(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{}, fmt.Errorf("not used by dunning tests")
 }
 
-func (s *stubClockResolver) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("not used by dunning tests")
+func (s *stubClockResolver) SimForSubscription(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{}, fmt.Errorf("not used by dunning tests")
 }
 
 // TestClockResolver_StampsFrozenDomain locks in the ADR-029 follow-up:

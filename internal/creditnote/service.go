@@ -495,7 +495,11 @@ func (s *Service) RetryPendingClawbackIssueForClock(ctx context.Context, tenantI
 	if err != nil {
 		return 0, []error{fmt.Errorf("list pending clawback drafts for clock %s: %w", clockID, err)}
 	}
-	ctx = clock.WithEffectiveNow(ctx, frozenTime)
+	// WithSim: the clock id rides along with frozen_time, so the credit_note
+	// / grant / tax rows Issue() emits inside its coordinator tx land on the
+	// sim axis (ADR-090 §5) — this is the ONLY issuer for a simulated clawback,
+	// so an unstamped row here would be invisible to the clock filter forever.
+	ctx = clock.WithSim(ctx, clock.Sim{At: frozenTime, TestClockID: clockID})
 	var errsOut []error
 	issued := 0
 	for _, cn := range drafts {

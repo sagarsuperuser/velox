@@ -160,7 +160,8 @@ func (e *Engine) collectAfterFinalize(ctx context.Context, sub domain.Subscripti
 func (e *Engine) applyCreditsAndCollect(ctx context.Context, sub domain.Subscription, inv domain.Invoice, logTag string) {
 	ctx = context.WithoutCancel(ctx) // same contract as collectAfterFinalize; also shields the apply/settle writes
 	if e.credits != nil && inv.AmountDueCents > 0 && inv.Status == domain.InvoiceFinalized {
-		at, nowErr := e.EffectiveNowForInvoice(ctx, sub.TenantID, inv.ID)
+		sim, nowErr := e.SimForInvoice(ctx, sub.TenantID, inv.ID)
+		at := sim.At
 		if nowErr != nil {
 			at = e.clock.Now(ctx) // ADR-030: injected clock, never bare wall-clock
 		}

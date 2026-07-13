@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
 // A malformed ?after cursor must be a 400, never a silent fallback to the
@@ -38,10 +40,15 @@ func TestList_MalformedCursorIs400(t *testing.T) {
 }
 
 // A cursor produced by encodeAuditCursor must round-trip through the decoder
-// unchanged — the seek predicate depends on both fields surviving intact.
+// unchanged — the seek predicate depends on every field surviving intact.
 func TestAuditCursor_RoundTrip(t *testing.T) {
 	at := time.Date(2026, 7, 13, 10, 30, 0, 123456000, time.UTC)
-	token := encodeAuditCursor("vlx_aud_abc", at)
+	simAt := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	// A simulated row's cursor is the SAME cursor: there is one sort axis, so a
+	// clock-pinned row seeks on (created_at, id) exactly like any other.
+	token := encodeAuditCursor(domain.AuditEntry{
+		ID: "vlx_aud_abc", CreatedAt: at, SimEffectiveAt: &simAt,
+	})
 
 	cur, err := decodeAuditCursor(token)
 	if err != nil {
@@ -52,5 +59,18 @@ func TestAuditCursor_RoundTrip(t *testing.T) {
 	}
 	if !cur.CreatedAt.Equal(at) {
 		t.Errorf("created_at: got %v, want %v", cur.CreatedAt, at)
+	}
+}
+
+// An unknown ?order is rejected rather than silently ignored: a client that
+// asked for one ordering and got another, then paged through it, reads rows in
+// an order it is not expecting.
+func TestList_InvalidOrderIs400(t *testing.T) {
+	h := NewHandler(nil)
+	req := httptest.NewRequest(http.MethodGet, "/?order=bogus", nil)
+	rec := httptest.NewRecorder()
+	h.list(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400. body=%s", rec.Code, rec.Body.String())
 	}
 }

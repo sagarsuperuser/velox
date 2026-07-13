@@ -575,7 +575,14 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 			// phases that need it skip via their own guards.
 		} else {
 			frozen = clk.FrozenTime
-			ctx = clock.WithEffectiveNow(ctx, frozen)
+			// WithSim, not WithEffectiveNow: the catchup ctx carries the CLOCK
+			// as well as the instant, so every audit row every phase below emits
+			// (cycle finalize, threshold, tax retry, charge, dunning, credit
+			// expiry, clawback issue, scheduled cancel) lands on the sim axis
+			// without any of them knowing test clocks exist. This is the driver
+			// that makes the clock filter honest: after ADR-086 teardown these
+			// rows are the ONLY surviving record of the advance.
+			ctx = clock.WithSim(ctx, clock.Sim{At: frozen, TestClockID: job.ClockID})
 			sum.AdvancedTo = frozen
 		}
 		trialExpiryFrozen := frozen

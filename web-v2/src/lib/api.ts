@@ -1527,11 +1527,28 @@ export interface AuditEntry {
   ip_address?: string
   request_id?: string
   created_at: string
+  // Sim axis (ADR-090 §5). Present only on rows emitted inside a test clock's
+  // world. created_at stays wall-clock ("when the operator clicked");
+  // sim_effective_at is the SIMULATED instant the action landed at, and is the
+  // only axis that can order or window a clock advance — which replays months
+  // of billing in one wall-clock moment.
+  sim_effective_at?: string
+  test_clock_id?: string
+}
+
+export interface AuditSimClock {
+  id: string
+  name: string
 }
 
 export interface AuditFilterOptions {
   actions: string[]
   resource_types: string[]
+  // Clocks the LOG has seen — including ones already torn down (ADR-086
+  // hard-deletes the clock and its whole graph), which is exactly when the
+  // audit log becomes the simulation's only record. Sourced from audit rows,
+  // not from test_clocks, so the picker does not go empty at that moment.
+  test_clocks?: AuditSimClock[]
 }
 
 export interface WebhookEndpoint {
