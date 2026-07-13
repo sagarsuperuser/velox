@@ -14,8 +14,10 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/api/timefilter"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/customer"
+	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/subscription"
 	"github.com/sagarsuperuser/velox/internal/usage"
@@ -33,6 +35,11 @@ import (
 // Date filters: every endpoint accepts ?from=<RFC3339>&to=<RFC3339>;
 // usage_events REQUIRES both (the table is unbounded — without a
 // range, an export would walk the entire history).
+//
+// AUDIT (ADR-090 §7): every export here emits an action=export audit row
+// BEFORE the first byte streams, and fails closed if it cannot. This is the
+// only READ path in Velox that writes to audit_log — see auditExport for why
+// the ordering is load-bearing.
 
 const (
 	// exportPageSize is the rows-per-store-query the export streams.
@@ -47,6 +54,10 @@ const (
 	// Usage events tolerate higher per-page (their store caps at 1000),
 	// but 100 is fine — they paginate through the same loop, just more
 	// iterations for the same total throughput.
+	//
+	// The audit-log export does not paginate at all (audit.Logger.Stream
+	// walks one snapshot cursor); it reuses this number only as its
+	// flush interval.
 	exportPageSize = 100
 
 	// usageExportMaxSpanDays caps the date range for usage_events
@@ -55,28 +66,58 @@ const (
 	usageExportMaxSpanDays = 366
 )
 
+// exportAuditor writes the export's own audit row. Own-tx by necessity: an
+// export is a READ — there is no business transaction for ADR-090's LogInTx to
+// ride. *audit.Logger satisfies it (its Log detaches from the caller's
+// cancellation, which is exactly the property this path needs).
+type exportAuditor interface {
+	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+}
+
+// auditStreamer reads the audit log itself, unbounded, for the audit-log CSV
+// export. *audit.Logger satisfies it.
+type auditStreamer interface {
+	Stream(ctx context.Context, tenantID string, filter audit.QueryFilter, fn func(domain.AuditEntry) error) error
+}
+
 type exportsHandler struct {
 	customers     *customer.PostgresStore
 	invoices      *invoice.PostgresStore
 	subscriptions *subscription.PostgresStore
 	usage         *usage.PostgresStore
+	audit         exportAuditor
+	auditLog      auditStreamer
 }
 
-func newExportsHandler(c *customer.PostgresStore, i *invoice.PostgresStore, s *subscription.PostgresStore, u *usage.PostgresStore) *exportsHandler {
+func newExportsHandler(
+	c *customer.PostgresStore,
+	i *invoice.PostgresStore,
+	s *subscription.PostgresStore,
+	u *usage.PostgresStore,
+	auditor exportAuditor,
+	auditLog auditStreamer,
+) *exportsHandler {
 	return &exportsHandler{
 		customers:     c,
 		invoices:      i,
 		subscriptions: s,
 		usage:         u,
+		audit:         auditor,
+		auditLog:      auditLog,
 	}
 }
 
-func (h *exportsHandler) Routes(customerRead, invoiceRead, subscriptionRead, usageRead func(http.Handler) http.Handler) chi.Router {
+func (h *exportsHandler) Routes(customerRead, invoiceRead, subscriptionRead, usageRead, auditRead func(http.Handler) http.Handler) chi.Router {
 	r := chi.NewRouter()
 	r.With(customerRead).Get("/customers.csv", h.exportCustomers)
 	r.With(invoiceRead).Get("/invoices.csv", h.exportInvoices)
 	r.With(subscriptionRead).Get("/subscriptions.csv", h.exportSubscriptions)
 	r.With(usageRead).Get("/usage-events.csv", h.exportUsageEvents)
+	// The audit log exports itself. Same permission as the audit-log READ route
+	// (auth.PermAPIKeyRead — see the /v1/audit-log mount in router.go): the file
+	// is the same data, so gating it differently would either lock out operators
+	// who can already read it on screen or hand it to ones who can't.
+	r.With(auditRead).Get("/audit-log.csv", h.exportAuditLog)
 	return r
 }
 
@@ -91,16 +132,78 @@ func parseDateRange(r *http.Request) (from, to time.Time, err error) {
 	return timefilter.ParseRange(r, "from", "to")
 }
 
-// writeCSVHeaders sets the response headers for a CSV download. The
-// timestamp suffix on the filename means re-exports don't clobber.
-func writeCSVHeaders(w http.ResponseWriter, filenameStem string) *csv.Writer {
+// exportFilename is the download name, timestamped so re-exports don't clobber.
+// Built BEFORE the audit row so the row records the exact filename the operator
+// received — that string is how a file found later gets traced back to the
+// export that produced it.
+func exportFilename(stem string) string {
+	// UTC stamp — must be stable/unambiguous, not vary by operator TZ.
+	return fmt.Sprintf("%s-%s.csv", stem, time.Now().UTC().Format("20060102-150405")) //tz:ok
+}
+
+// writeCSVHeaders sets the response headers for a CSV download.
+func writeCSVHeaders(w http.ResponseWriter, filename string) *csv.Writer {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	// UTC filename stamp — must be stable/unambiguous, not vary by operator TZ.
-	stamp := time.Now().UTC().Format("20060102-150405") //tz:ok
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s-%s.csv"`, filenameStem, stamp))
+		fmt.Sprintf(`attachment; filename=%q`, filename))
 	w.Header().Set("Cache-Control", "no-store")
 	return csv.NewWriter(w)
+}
+
+// auditExport records a bulk data egress — and is the gate the export must pass
+// before it may stream a single byte.
+//
+// ORDER IS THE WHOLE POINT (and it is why this is not a defer):
+//
+//   - Emit-then-stream can only ever OVER-record: an export that is audited and
+//     then fails mid-file leaves a row for a file the operator never fully got.
+//     A reader can reconcile that against the EXPORT_INCOMPLETE marker.
+//   - Stream-then-emit UNDER-records, and that is unrecoverable. Killing the
+//     connection mid-stream (or a 5-minute timeout firing, or the process being
+//     restarted) means pages of customer PII have already left the building and
+//     the completion row is never written. audit_log would say nothing happened.
+//     In an append-only compliance log there is no second chance to write it.
+//
+// So the row records the ATTEMPT — an operator asked this system to hand them
+// the tenant's customers/invoices/subscriptions/usage/audit log — which is the
+// fact a chain of custody actually needs. FAIL CLOSED: if the row cannot be
+// written, the handler returns 5xx and streams NOTHING. An export we cannot
+// record is an export we do not perform.
+//
+// Own-tx: an export is a read, so there is no business transaction to join
+// (ADR-090's shared-fate LogInTx needs one). audit.Logger.Log detaches from the
+// caller's cancellation (context.WithoutCancel), so a client that hangs up the
+// instant the export starts still leaves the row behind.
+//
+// The row deliberately does NOT carry a row count: the count is unknowable
+// before the first page is fetched, and a number we cannot honour is a lie in a
+// permanent record. resource_id is empty for the same reason — a bulk export has
+// no single subject.
+func (h *exportsHandler) auditExport(r *http.Request, tenantID, resourceType, filename string, filters map[string]any) error {
+	return h.audit.Log(r.Context(), tenantID, domain.AuditActionExport, resourceType, "", "",
+		map[string]any{
+			"format":   "csv",
+			"filename": filename,
+			"filters":  filters,
+		})
+}
+
+// exportScope describes WHAT the export selected, for the audit row's metadata.
+// An empty date filter is recorded explicitly as "all" — "the operator took the
+// entire table" is precisely the fact worth having, and an absent key would read
+// as a missing detail rather than an unfiltered dump.
+func exportScope(from, to time.Time) map[string]any {
+	if from.IsZero() && to.IsZero() {
+		return map[string]any{"date_range": "all"}
+	}
+	m := map[string]any{}
+	if !from.IsZero() {
+		m["from"] = from.UTC().Format(time.RFC3339)
+	}
+	if !to.IsZero() {
+		m["to"] = to.UTC().Format(time.RFC3339)
+	}
+	return m
 }
 
 // csvSafe neutralizes spreadsheet (CSV) formula injection. A cell whose first
@@ -110,6 +213,11 @@ func writeCSVHeaders(w http.ResponseWriter, filenameStem string) *csv.Writer {
 // Prefixing such values with a single quote forces them to render as text.
 // Empty strings pass through. Applied to free-text, externally-controlled
 // columns (display names, external IDs, emails, codes, idempotency keys).
+//
+// The property being protected: the CSV is the artifact an operator hands an
+// AUDITOR. A file that executes code when opened is not evidence — and the
+// audit-log export makes this sharper still, because customer display names ride
+// into it through resource_label.
 func csvSafe(s string) string {
 	if s == "" {
 		return s
@@ -146,11 +254,25 @@ func flushAndContinue(cw *csv.Writer, w http.ResponseWriter) error {
 // server-side error log. Best-effort by construction: if the client
 // connection itself died, the marker write fails silently — that
 // client isn't reading anyway.
+//
+// The audit row is already written by this point (auditExport runs before the
+// stream), so an aborted export still leaves evidence that data was requested
+// and partially handed over — which is the honest record of what happened.
 func exportAbort(ctx context.Context, cw *csv.Writer, resource string, err error) {
 	slog.ErrorContext(ctx, "csv export aborted mid-stream — emitted EXPORT_INCOMPLETE marker",
 		"resource", resource, "error", err)
 	_ = cw.Write([]string{"EXPORT_INCOMPLETE", "the export aborted before completion — discard this file and retry"})
 	cw.Flush()
+}
+
+// exportAuditFailed answers a request whose audit row could not be written. No
+// CSV headers have been set and no bytes written, so this is a clean 500 — the
+// export simply does not happen. audit.Logger.Log has already logged the cause
+// and incremented velox_audit_write_errors_total.
+func exportAuditFailed(w http.ResponseWriter, r *http.Request, resourceType string, err error) {
+	slog.ErrorContext(r.Context(), "export REFUSED — its audit row could not be written (fail-closed)",
+		"resource", resourceType, "error", err)
+	respond.InternalError(w, r)
 }
 
 // timePtrCSV formats a *time.Time as RFC3339 or empty string. Used
@@ -176,7 +298,13 @@ func (h *exportsHandler) exportCustomers(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	cw := writeCSVHeaders(w, "customers")
+	filename := exportFilename("customers")
+	if err := h.auditExport(r, tenantID, "customer", filename, exportScope(from, to)); err != nil {
+		exportAuditFailed(w, r, "customer", err)
+		return
+	}
+
+	cw := writeCSVHeaders(w, filename)
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
@@ -242,7 +370,13 @@ func (h *exportsHandler) exportInvoices(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cw := writeCSVHeaders(w, "invoices")
+	filename := exportFilename("invoices")
+	if err := h.auditExport(r, tenantID, "invoice", filename, exportScope(from, to)); err != nil {
+		exportAuditFailed(w, r, "invoice", err)
+		return
+	}
+
+	cw := writeCSVHeaders(w, filename)
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
@@ -325,7 +459,13 @@ func (h *exportsHandler) exportSubscriptions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	cw := writeCSVHeaders(w, "subscriptions")
+	filename := exportFilename("subscriptions")
+	if err := h.auditExport(r, tenantID, "subscription", filename, exportScope(from, to)); err != nil {
+		exportAuditFailed(w, r, "subscription", err)
+		return
+	}
+
+	cw := writeCSVHeaders(w, filename)
 	defer cw.Flush()
 
 	if err := cw.Write([]string{
@@ -418,7 +558,13 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cw := writeCSVHeaders(w, "usage-events")
+	filename := exportFilename("usage-events")
+	if err := h.auditExport(r, tenantID, "usage_event", filename, exportScope(from, to)); err != nil {
+		exportAuditFailed(w, r, "usage_event", err)
+		return
+	}
+
+	cw := writeCSVHeaders(w, filename)
 	defer cw.Flush()
 
 	// provider_cost_* columns (ADR-079): the operator-warehouse margin
@@ -483,4 +629,114 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 		}
 		offset += exportPageSize
 	}
+}
+
+// ---- Audit log ----
+
+// exportAuditLog streams the tenant's audit log as CSV — the compliance evidence
+// pack, produced SERVER-SIDE.
+//
+// It replaces a dashboard Export button that paged /v1/audit-log in the browser
+// and stopped at 50,000 rows: a silent truncation of the evidence itself. The
+// operator got a file that looked complete, and nothing in it said otherwise.
+// audit.Logger.Stream applies no cap — the export is bounded by its filters and
+// nothing else.
+//
+// The export audits itself: the row is written before the stream begins, and the
+// stream's snapshot therefore CONTAINS it (newest-first, so it is the first data
+// row). "Who took a copy of the audit log" is the one question a tamper-evidence
+// system must never be unable to answer about itself.
+func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantID(r.Context())
+	if tenantID == "" {
+		respond.Unauthorized(w, r, "missing tenant context")
+		return
+	}
+	// Same param names + parsing as the audit-log READ route (audit.Handler.list),
+	// so the dashboard's on-screen filters and its Export produce the same set.
+	dateFrom, dateTo, err := timefilter.ParseRange(r, "date_from", "date_to")
+	if err != nil {
+		respond.FromError(w, r, err, "export")
+		return
+	}
+	q := r.URL.Query()
+	filter := audit.QueryFilter{
+		ResourceType: q.Get("resource_type"),
+		ResourceID:   q.Get("resource_id"),
+		Action:       q.Get("action"),
+		ActorID:      q.Get("actor_id"),
+		DateFrom:     dateFrom,
+		DateTo:       dateTo,
+	}
+
+	scope := exportScope(dateFrom, dateTo)
+	for k, v := range map[string]string{
+		"resource_type": filter.ResourceType,
+		"resource_id":   filter.ResourceID,
+		"action":        filter.Action,
+		"actor_id":      filter.ActorID,
+	} {
+		if v != "" {
+			scope[k] = v
+		}
+	}
+
+	filename := exportFilename("audit-log")
+	if err := h.auditExport(r, tenantID, "audit_log", filename, scope); err != nil {
+		exportAuditFailed(w, r, "audit_log", err)
+		return
+	}
+
+	cw := writeCSVHeaders(w, filename)
+	defer cw.Flush()
+
+	if err := cw.Write([]string{
+		"id", "created_at", "actor_type", "actor_id", "actor_name",
+		"action", "resource_type", "resource_id", "resource_label",
+		"ip_address", "request_id", "metadata_json",
+	}); err != nil {
+		return
+	}
+
+	n := 0
+	streamErr := h.auditLog.Stream(r.Context(), tenantID, filter, func(e domain.AuditEntry) error {
+		metaJSON := ""
+		if len(e.Metadata) > 0 {
+			if b, err := json.Marshal(e.Metadata); err == nil {
+				metaJSON = string(b)
+			}
+		}
+		// csvSafe every column that is not a Velox-minted id or a closed
+		// vocabulary. resource_label carries customer display names and
+		// plan/subscription codes; actor_name is a customer's display name on
+		// customer-actor rows; metadata is a free-form bag.
+		//
+		// request_id is neutralized too, and deliberately so. It is
+		// server-minted TODAY (ADR-090 §6 replaced chi's middleware, which
+		// copied an inbound X-Request-Id verbatim) — but audit_log is
+		// APPEND-ONLY, so every row written before that change still carries
+		// whatever string its caller chose, including a live formula. The
+		// column cannot be cleaned retroactively; it can only be rendered
+		// safely. ip_address needs no escaping by contrast: TrustedRealIP only
+		// ever yields a net.ParseIP-validated value.
+		if err := cw.Write([]string{
+			e.ID,
+			e.CreatedAt.UTC().Format(time.RFC3339),
+			e.ActorType, e.ActorID, csvSafe(e.ActorName),
+			e.Action, e.ResourceType, e.ResourceID, csvSafe(e.ResourceLabel),
+			e.IPAddress, csvSafe(e.RequestID), csvSafe(metaJSON),
+		}); err != nil {
+			return err
+		}
+		n++
+		if n%exportPageSize == 0 {
+			return flushAndContinue(cw, w)
+		}
+		return nil
+	})
+	if streamErr != nil {
+		exportAbort(r.Context(), cw, "audit_log", streamErr)
+		return
+	}
+	_ = flushAndContinue(cw, w)
 }

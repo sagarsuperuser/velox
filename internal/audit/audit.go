@@ -381,32 +381,12 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		}
 	}
 
-	// LEFT JOIN api_keys so the UI can show a human-readable key name instead
-	// of the raw actor_id (e.g., "Production" vs "vlx_secret_live_abc123…").
-	// Join is (tenant_id, id) which matches the api_keys PK's tenant scope.
-	//
-	// Also LEFT JOIN customers for actor_type='customer' rows (customer-
-	// portal-driven mutations) and users for actor_type='user' rows
-	// (dashboard session operators — actor identity from #225): the
-	// operator's email is the identity they recognize (the post-ADR-011
-	// users table carries email only — no display_name column). users is
-	// a global (non-RLS) table so the join works under TxTenant. COALESCE
-	// order is safe — the joins are mutually exclusive in practice
-	// (an actor_id is exactly one of key / customer / user).
-	query := `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
-		COALESCE(NULLIF(k.name, ''), c.display_name, u.email::text, '') AS actor_name,
-		al.action, al.resource_type, al.resource_id,
-		COALESCE(al.resource_label,''), al.metadata,
-		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
-		FROM audit_log al
-		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
-		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
-		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'` + whereClause
+	query := auditListSelect + whereClause
 
 	// Order by (created_at, id) DESC — id tiebreaker aligns with the
 	// cursor predicate's tuple ordering so seek + ORDER BY stay in
 	// lockstep regardless of microsecond-level ties.
-	query += " ORDER BY al.created_at DESC, al.id DESC"
+	query += auditListOrder
 	queryLimit := limit
 	if useCursor {
 		queryLimit = limit + 1
@@ -427,17 +407,99 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 
 	var entries []domain.AuditEntry
 	for rows.Next() {
-		var e domain.AuditEntry
-		var metaJSON []byte
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID, &e.ActorName,
-			&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
-			&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt); err != nil {
+		e, err := scanAuditEntry(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		_ = json.Unmarshal(metaJSON, &e.Metadata)
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
+}
+
+// auditListSelect is the row shape shared by the paged read (Query) and the
+// unbounded compliance export (Stream) — ONE select, so the CSV an operator
+// hands an auditor cannot drift from what the dashboard showed them.
+//
+// LEFT JOIN api_keys so the UI can show a human-readable key name instead of the
+// raw actor_id (e.g., "Production" vs "vlx_secret_live_abc123…"). Join is
+// (tenant_id, id), which matches the api_keys PK's tenant scope.
+//
+// Also LEFT JOIN customers for actor_type='customer' rows (customer-portal-driven
+// mutations) and users for actor_type='user' rows (dashboard session operators —
+// actor identity from #225): the operator's email is the identity they recognize
+// (the post-ADR-011 users table carries email only — no display_name column).
+// users is a global (non-RLS) table so the join works under TxTenant. COALESCE
+// order is safe — the joins are mutually exclusive in practice (an actor_id is
+// exactly one of key / customer / user).
+const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
+		COALESCE(NULLIF(k.name, ''), c.display_name, u.email::text, '') AS actor_name,
+		al.action, al.resource_type, al.resource_id,
+		COALESCE(al.resource_label,''), al.metadata,
+		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
+		FROM audit_log al
+		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
+		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
+		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'`
+
+// auditListOrder is newest-first, with the id tiebreaker the cursor predicate
+// keys on.
+const auditListOrder = " ORDER BY al.created_at DESC, al.id DESC"
+
+func scanAuditEntry(rows *sql.Rows) (domain.AuditEntry, error) {
+	var e domain.AuditEntry
+	var metaJSON []byte
+	if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID, &e.ActorName,
+		&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
+		&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt); err != nil {
+		return domain.AuditEntry{}, err
+	}
+	_ = json.Unmarshal(metaJSON, &e.Metadata)
+	return e, nil
+}
+
+// Stream hands EVERY audit row matching filter to fn, newest first, in one
+// snapshot transaction — no limit, no cap, no pagination.
+//
+// It backs the server-side audit-log CSV export (GET /v1/exports/audit-log.csv).
+// The dashboard used to build that file by PAGING THE API IN THE BROWSER and
+// stopping at 50,000 rows: a silent truncation of the compliance evidence
+// ITSELF, handed to an auditor as if it were the whole record. There is no cap
+// here on purpose — a truncated audit export is a lie about the log, and the
+// only honest bound is "what the filter selected".
+//
+// filter.Limit / filter.Offset / the cursor fields are IGNORED: the export is
+// defined by its predicates, not by a page.
+//
+// Rows are consumed as they arrive off the wire (database/sql + pgx stream
+// them), so the handler writes CSV to the socket while Postgres is still
+// producing — a million-row export does not first become a million-row slice in
+// memory. An error from fn aborts the walk and surfaces to the caller, which is
+// how a mid-stream failure reaches exportAbort's EXPORT_INCOMPLETE marker.
+func (l *Logger) Stream(ctx context.Context, tenantID string, filter QueryFilter, fn func(domain.AuditEntry) error) error {
+	tx, err := l.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	whereClause, args, _, _ := buildListWhere(tenantID, postgres.Livemode(ctx), filter)
+
+	rows, err := tx.QueryContext(ctx, auditListSelect+whereClause+auditListOrder, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		e, err := scanAuditEntry(rows)
+		if err != nil {
+			return err
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // FilterOptions returns the distinct actions and resource_types recorded for

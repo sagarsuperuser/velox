@@ -3,10 +3,11 @@ import { usePageTitle } from '@/hooks/usePageTitle'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from 'date-fns-tz'
+import { toast } from 'sonner'
 import { api, formatDateTime, formatRate, getTenantTimezone, formatCents } from '@/lib/api'
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
-import { downloadCSV } from '@/lib/csv'
+import { downloadServerCSV } from '@/lib/csv'
 import {
   describeAction,
   resourceLink,
@@ -257,65 +258,36 @@ export default function AuditLogPage() {
     : (entries.length > 0 ? encodeCursor(entries[entries.length - 1]) : '')
   const groups = groupByDate(entries)
 
-  // Export walks pages of 100 until either exhausted or the safety cap is
-  // reached. A fixed cap (50k) keeps the browser from OOMing on a massive
-  // tenant; beyond that, a server-side streaming export should take over.
-  const EXPORT_PAGE_SIZE = 100
-  const EXPORT_MAX_ROWS = 50_000
-
+  // Export streams from the SERVER (GET /v1/exports/audit-log.csv), applying the
+  // filters currently on screen.
+  //
+  // It used to page this API in the browser and stop at 50,000 rows — a SILENT
+  // truncation of the compliance evidence itself: the operator got a file that
+  // looked complete and nothing in it said otherwise. The server-side export has
+  // no cap (audit.Logger.Stream), streams rather than materializing, and — being
+  // bulk egress of the audit log — writes its own `export` audit row before the
+  // first byte leaves (ADR-090 §6). Exporting the evidence is itself evidence.
   const handleExport = async () => {
     setExporting(true)
     try {
-      const filters = new URLSearchParams()
-      if (resourceType) filters.set('resource_type', resourceType)
-      if (action) filters.set('action', action)
-      if (resourceIdFilter) filters.set('resource_id', resourceIdFilter)
-      if (actorFilter) filters.set('actor_id', actorFilter)
-      // Wrap to tenant-TZ start/end-of-day instants, identical to the list
-      // query above — otherwise the export anchors bare YYYY-MM-DD at UTC and
-      // a non-UTC tenant's CSV silently drops (or adds) rows near day edges
-      // vs. what's on screen.
-      if (dateFrom) filters.set('date_from', startOfDayInTZ(dateFrom))
-      if (dateTo) filters.set('date_to', endOfDayInTZ(dateTo))
+      const params = new URLSearchParams()
+      if (resourceType) params.set('resource_type', resourceType)
+      if (action) params.set('action', action)
+      if (resourceIdFilter) params.set('resource_id', resourceIdFilter)
+      if (actorFilter) params.set('actor_id', actorFilter)
+      // Wrap to tenant-TZ start/end-of-day instants, identical to the list query
+      // above — otherwise the export anchors bare YYYY-MM-DD at UTC and a
+      // non-UTC tenant's CSV silently drops (or adds) rows near day edges vs.
+      // what's on screen.
+      if (dateFrom) params.set('date_from', startOfDayInTZ(dateFrom))
+      if (dateTo) params.set('date_to', endOfDayInTZ(dateTo))
 
-      const all: AuditEntry[] = []
-      // First page rides the offset path (one COUNT); every subsequent page
-      // seeks via cursor — pre-fix the loop paid the all-tenant COUNT scan on
-      // every one of up to 500 pages.
-      let exportAfter = ''
-      while (all.length < EXPORT_MAX_ROWS) {
-        const params = new URLSearchParams(filters)
-        params.set('limit', String(EXPORT_PAGE_SIZE))
-        if (exportAfter) params.set('after', exportAfter)
-        else params.set('offset', '0')
-        const res = await api.listAuditLog(params.toString())
-        const batch = res.data || []
-        all.push(...batch)
-        if (batch.length < EXPORT_PAGE_SIZE) break
-        if (exportAfter && res.has_more === false) break
-        exportAfter = (exportAfter ? res.next_cursor : '') || encodeCursor(batch[batch.length - 1])
-      }
-
-      const rows = all.slice(0, EXPORT_MAX_ROWS).map(e => [
-        formatActorName(e),
-        e.actor_id,
-        e.action,
-        e.resource_type,
-        e.resource_id,
-        e.resource_label || '',
-        e.ip_address || '',
-        e.request_id || '',
-        formatDateTime(e.created_at),
-        // The action detail (amounts, old/new plan, cancel_at, …) lived only in
-        // the expanded UI row, never in the export — useless for a compliance
-        // evidence pack. Emit the raw metadata JSON; downloadCSV escapes it.
-        e.metadata && Object.keys(e.metadata).length ? JSON.stringify(e.metadata) : '',
-      ])
-      downloadCSV(
-        'audit-log.csv',
-        ['Actor', 'Actor ID', 'Action', 'Resource Type', 'Resource ID', 'Resource Label', 'IP', 'Request ID', 'Date', 'Details'],
-        rows,
-      )
+      const qs = params.toString()
+      await downloadServerCSV(`/v1/exports/audit-log.csv${qs ? `?${qs}` : ''}`, 'audit-log.csv')
+    } catch (err) {
+      // The export fails CLOSED when its own audit row can't be written: no file,
+      // and the operator is told, rather than handed a partial one.
+      toast.error(err instanceof Error ? err.message : 'Export failed')
     } finally {
       setExporting(false)
     }
