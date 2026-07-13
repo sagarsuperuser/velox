@@ -22,10 +22,10 @@ import (
 func MustWired(components ...any) {
 	for _, c := range components {
 		v := reflect.ValueOf(c)
-		if !v.IsValid() || (v.Kind() == reflect.Ptr && v.IsNil()) {
+		if !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil()) {
 			panic(fmt.Sprintf("audit.MustWired: component %T is nil", c))
 		}
-		for v.Kind() == reflect.Ptr {
+		for v.Kind() == reflect.Pointer {
 			v = v.Elem()
 		}
 		if v.Kind() != reflect.Struct {
@@ -47,7 +47,7 @@ func MustWired(components ...any) {
 			found = true
 			fv := v.Field(i)
 			switch fv.Kind() {
-			case reflect.Interface, reflect.Ptr:
+			case reflect.Interface, reflect.Pointer:
 				// IsNil works on unexported fields without Interface().
 				if fv.IsNil() {
 					panic(fmt.Sprintf("audit.MustWired: %s.%s is nil — SetAuditLogger not called for %T",
