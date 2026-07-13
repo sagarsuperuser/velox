@@ -72,3 +72,21 @@ The live-clock half still needs a durable flag — but only on the **money sweep
 - The 24-finding clock-delete-detach audit and the four-candidate design panel (2026-07-08/09); the Design-A → Design-B pivot (2026-07-09).
 - Implemented by migration 0144 + `internal/testclock` (teardown + Layer A/B completeness arch-tests + real-Postgres integration test) and the invoice/dunning/tax `is_simulated` sweep gates (#417/#420).
 - FE relative-time required-anchor helper: `web-v2/src/lib/effectiveNow.ts` (branded `EffectiveNow` + `effectiveNow`/`wallClockNow`), the `useEffectiveNow` / `useEffectiveNowResolver` hooks, the `no-restricted-syntax` lint gate (`web-v2/eslint.config.js`), and the drift-guard (`web-v2/tests/effectiveNow.test.ts`); builds on the #410/#411/#413 relative-time audit.
+
+## Amendment 2026-07-13 (ADR-090 arc): sim-axis columns promoted
+
+The "post-teardown forensic grouping" deferral above named its trigger — "a
+named audit need" — and the 2026-07-13 audit-subsystem e2e audit met it:
+after teardown the audit log is a simulation's ONLY surviving record, yet
+`sim_effective_at`/`test_clock_id` lived solely inside metadata JSON —
+unfilterable, unsortable, unindexed — and a clock advance collapsed months
+of simulated events into one wall-clock instant for every date filter and
+group header.
+
+Migration 0148 promotes both to nullable `audit_log` columns with a partial
+index on the clock slice; `audit.LogInTx` takes a typed `SimContext` and
+stamps columns + the legacy metadata keys the dashboard already renders.
+Query params and UI filters ship only once stamping reaches parity across
+writers (ADR-090 arc, sim-axis surfacing PR) so a `test_clock_id` filter can
+never silently under-select. Wall-clock `created_at` primacy (ADR-030) is
+unchanged.

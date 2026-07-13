@@ -73,6 +73,42 @@ func (m *memStore) RetireCommitSliceForReliefTx(_ context.Context, _ *sql.Tx, te
 	return commitGrantState{}, fmt.Errorf("no commit grant for invoice %s", invoiceID)
 }
 
+// Audited variants: the memStore has no real tx, so the emission runs with a
+// nil *sql.Tx — and to keep SHARED-FATE semantics faithful to the real
+// store, an emission error rolls the in-memory write back (the entry list is
+// restored) exactly as the aborted Postgres tx would. Content-level
+// assertions live in unit tests; the real rollback coupling is additionally
+// pinned by the real-Postgres tests in intx_audit_integration_test.go.
+func (m *memStore) AppendEntryAudited(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error) {
+	before := len(m.entries)
+	out, err := m.AppendEntry(ctx, tenantID, entry)
+	if err != nil {
+		return out, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			m.entries = m.entries[:before] // shared fate: roll the write back
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) AdjustAtomicAudited(ctx context.Context, tenantID, customerID, description string, amountCents int64, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error) {
+	before := len(m.entries)
+	out, err := m.AdjustAtomic(ctx, tenantID, customerID, description, amountCents)
+	if err != nil {
+		return out, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			m.entries = m.entries[:before] // shared fate: roll the write back
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) AppendEntry(_ context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
 	// Emulate the proration dedup partial unique index. Without this, tests
 	// exercising retry-after-partial-failure paths silently double-insert

@@ -10,6 +10,15 @@ import (
 
 type Store interface {
 	AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error)
+	// AppendEntryAudited / AdjustAtomicAudited run the caller-supplied audit
+	// emission on the SAME transaction as the ledger write (ADR-090 in-tx
+	// emission): ledger row and audit row commit or roll back together. The
+	// service builds the emission closure (it owns audit-row content); the
+	// store owns the transaction and exposes it to the closure. emit
+	// receives the persisted entry so the audit row can reference the
+	// store-assigned id. nil emit = unaudited write.
+	AppendEntryAudited(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error)
+	AdjustAtomicAudited(ctx context.Context, tenantID, customerID, description string, amountCents int64, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error)
 	// ListGrantSummaries returns the customer's positive blocks with
 	// per-block remaining (amount - consumed) — the commit/promo burndown
 	// rows. includeExhausted=false returns live blocks only.

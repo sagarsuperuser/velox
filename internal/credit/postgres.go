@@ -88,6 +88,17 @@ func (s *PostgresStore) emitBalanceCrossings(ctx context.Context, tx *sql.Tx, te
 }
 
 func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
+	return s.AppendEntryAudited(ctx, tenantID, entry, nil)
+}
+
+// AppendEntryAudited is AppendEntry with an in-tx audit emission hook: the
+// ledger write and its audit row commit or roll back together (ADR-090
+// shared fate). The service builds the emission (it owns row content); the
+// store owns the transaction and exposes it to the closure — never the
+// other way around. emit receives the persisted entry so the audit row can
+// reference the store-assigned id. nil emit = unaudited append (engine
+// paths that carry their own coverage story).
+func (s *PostgresStore) AppendEntryAudited(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -96,6 +107,11 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	out, err := s.appendEntryInTx(ctx, tx, tenantID, entry)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, out); err != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -376,6 +392,15 @@ func (s *PostgresStore) ExpireGrantAtomic(ctx context.Context, tenantID, custome
 func (s *PostgresStore) AdjustAtomic(
 	ctx context.Context, tenantID, customerID, description string, amountCents int64,
 ) (domain.CreditLedgerEntry, error) {
+	return s.AdjustAtomicAudited(ctx, tenantID, customerID, description, amountCents, nil)
+}
+
+// AdjustAtomicAudited is AdjustAtomic with an in-tx audit emission hook —
+// same contract as AppendEntryAudited (ADR-090 shared fate).
+func (s *PostgresStore) AdjustAtomicAudited(
+	ctx context.Context, tenantID, customerID, description string, amountCents int64,
+	emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error,
+) (domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -413,8 +438,12 @@ func (s *PostgresStore) AdjustAtomic(
 	}
 
 	if amountCents < 0 && currentBalance+amountCents < 0 {
-		return domain.CreditLedgerEntry{}, fmt.Errorf("insufficient balance: available %.2f, deduction %.2f",
-			float64(currentBalance)/100, float64(-amountCents)/100)
+		// errs.Invalid so the API surfaces a 400 — this is operator input
+		// exceeding the available balance, not a server fault (was a plain
+		// fmt.Errorf that respond.FromError mapped to 500 internal_error).
+		return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents",
+			fmt.Sprintf("insufficient balance: available %.2f, deduction %.2f",
+				float64(currentBalance)/100, float64(-amountCents)/100))
 	}
 
 	now := clock.Now(ctx)
@@ -435,9 +464,11 @@ func (s *PostgresStore) AdjustAtomic(
 			return domain.CreditLedgerEntry{}, fmt.Errorf("attribute clawback: %w", err)
 		}
 		if drained != -amountCents {
-			return domain.CreditLedgerEntry{}, fmt.Errorf(
+			// errs.Invalid → 400 for the same reason as the balance check
+			// above: operator asked for more than the drainable balance.
+			return domain.CreditLedgerEntry{}, errs.Invalid("amount_cents", fmt.Sprintf(
 				"insufficient drainable balance: active credit blocks cover %.2f of the %.2f deduction — the rest of the balance is expired credit pending the expiry sweep",
-				float64(drained)/100, float64(-amountCents)/100)
+				float64(drained)/100, float64(-amountCents)/100))
 		}
 		drainedFrom = blocks
 	}
@@ -469,6 +500,12 @@ func (s *PostgresStore) AdjustAtomic(
 	// ADR-078 balance-crossing events (advisory lock held above).
 	if err := s.emitBalanceCrossings(ctx, tx, tenantID, customerID, currentBalance, entry.BalanceAfter); err != nil {
 		return domain.CreditLedgerEntry{}, err
+	}
+
+	if emit != nil {
+		if err := emit(tx, entry); err != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

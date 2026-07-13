@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -126,6 +127,120 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// Signal the AuditLog middleware (if this request is under it) that an
 	// audit row has been written so its catch-all path suppresses a duplicate.
 	MarkHandled(ctx)
+	return nil
+}
+
+// Entry is the typed input to LogInTx. Action/ResourceType take the
+// domain.AuditAction* / existing wire strings — those strings are FROZEN
+// (ADR-090): the FE filter vocabulary, badge maps, and existing rows all key
+// on them, so a rename is a coordinated FE+MANUAL_TEST change, never a drive-by.
+type Entry struct {
+	Action        string
+	ResourceType  string
+	ResourceID    string
+	ResourceLabel string
+	Metadata      map[string]any
+	// Sim carries the simulated effect-time context for actions on
+	// clock-pinned entities (ADR-030 amendment; ADR-086 sim-axis). When
+	// set, it is written to the sim_effective_at / test_clock_id columns
+	// (migration 0148) AND mirrored into Metadata under the legacy keys the
+	// dashboard already renders — the columns become queryable once
+	// stamping reaches parity across writers (PR7 of the ADR-090 arc).
+	Sim *SimContext
+}
+
+// SimContext identifies the test clock and simulated instant an audited
+// action took effect at. Wall-clock created_at remains the primary
+// timestamp (ADR-030); this is the second axis.
+type SimContext struct {
+	EffectiveAt time.Time
+	TestClockID string
+}
+
+// LogInTx writes an audit row on the CALLER's transaction — the business
+// mutation and its audit row commit or roll back together (ADR-090 in-tx
+// emission, shared fate). This is what makes "mutation committed but audit
+// row missing" unrepresentable on covered paths; callers must propagate the
+// error (which aborts their tx), never discard it.
+//
+// LogInTx is TOTAL by construction (design-panel amendment A2): tenant_id is
+// taken from the transaction's own app.tenant_id GUC — it cannot disagree
+// with RLS, and a missing GUC fails loudly: NULLIF(…, ”) maps BOTH the
+// virgin-connection NULL and the pooled-connection empty string (a reverted
+// is_local set_config placeholder — the dominant case in a warm pool) onto
+// the NOT NULL constraint, so the guard does not silently depend on the
+// tenants FK. A metadata bag that cannot marshal degrades to a
+// {"marshal_error": …} payload instead of aborting a money transaction on a
+// telemetry bug; a zero-valued/partial SimContext is treated as absent
+// rather than polluting the partial clock index with empty strings;
+// livemode is stamped by the table trigger from the same tx session. The
+// vocabulary round-trip integration test INSERTs every declared action
+// constant so a value the schema rejects cannot ship.
+//
+// LogInTx does NOT mark the request handled: whether the middleware
+// catch-all should be suppressed is a REQUEST-scoped decision that belongs
+// to the route's owning handler after its operation commits — an in-tx
+// emission may be rolled back after this call returns, and a mutation deep
+// inside another route's flow (a proration-fallback grant inside a
+// change-plan request) must not suppress that route's own catch-all row.
+// Handlers whose primary action is the audited mutation call
+// audit.MarkHandled themselves on success (the migration bridge).
+func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
+	// Treat a partial/zero SimContext as absent — a half-set sim axis
+	// ('' clock id, zero time) is worse than none: it lands inside the
+	// partial index and defeats IS NOT NULL scoping.
+	if e.Sim != nil && (e.Sim.TestClockID == "" || e.Sim.EffectiveAt.IsZero()) {
+		e.Sim = nil
+	}
+	metadata := e.Metadata
+	if e.Sim != nil {
+		// Mirror into the legacy metadata keys the dashboard renders today;
+		// copy so the caller's map isn't mutated.
+		m := make(map[string]any, len(metadata)+2)
+		for k, v := range metadata {
+			m[k] = v
+		}
+		m["sim_effective_at"] = e.Sim.EffectiveAt.UTC().Format(time.RFC3339)
+		m["test_clock_id"] = e.Sim.TestClockID
+		metadata = m
+	}
+	metaJSON, err := json.Marshal(metadata)
+	if err != nil {
+		// Totality: never let an unmarshalable telemetry bag abort the
+		// business tx (a nil metaJSON would violate the JSONB NOT NULL and
+		// do exactly that). The row still lands, carrying the failure it
+		// represents.
+		metaJSON, _ = json.Marshal(map[string]string{"marshal_error": err.Error()})
+	}
+	if metadata == nil {
+		metaJSON = []byte("{}")
+	}
+
+	actorType, actorID := ResolveActor(ctx)
+
+	var simAt, clockID any
+	if e.Sim != nil {
+		simAt = e.Sim.EffectiveAt.UTC()
+		clockID = e.Sim.TestClockID
+	}
+
+	// created_at stays wall-clock (ADR-030); tenant_id comes from the tx
+	// GUC so the row is authoritative for the transaction it rides in.
+	// NULLIF folds the pooled-connection empty-string placeholder into
+	// NULL so the NOT NULL constraint — not the incidental tenants FK —
+	// is what rejects a GUC-less transaction.
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
+			resource_type, resource_id, resource_label, metadata, ip_address,
+			request_id, sim_effective_at, test_clock_id, created_at)
+		VALUES ($1, NULLIF(current_setting('app.tenant_id', true), ''), $2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+	`, postgres.NewID("vlx_aud"), actorType, actorID, e.Action, e.ResourceType,
+		e.ResourceID, e.ResourceLabel, metaJSON,
+		nullIfEmpty(ClientIP(ctx)), nullIfEmpty(chimw.GetReqID(ctx)),
+		simAt, clockID, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("audit log (in-tx): insert: %w", err)
+	}
 	return nil
 }
 
