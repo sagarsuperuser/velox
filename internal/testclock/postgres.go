@@ -10,6 +10,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -53,18 +54,27 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, clk domain.
 	return clk, nil
 }
 
-// Exists is a narrow existence check used by callers that only need
-// "is this clock attached-able?" (e.g., the customer service at
-// customer-create time). Uses Get under the hood; ErrNotFound → false,
-// other errors propagate. Soft-deleted clocks count as not-existing.
-func (s *PostgresStore) Exists(ctx context.Context, tenantID, id string) (bool, error) {
-	if _, err := s.Get(ctx, tenantID, id); err != nil {
+// ResolveSim answers "is this clock attached-able, and what instant does it
+// stand at?" in ONE read — used by the customer service at customer-create
+// time, which must both validate the pin and bind the new customer's audit row
+// onto the sim axis (ADR-090 §5).
+//
+// It returns the pair from a single Get precisely so the two halves cannot
+// drift: an "exists?" bool would send the caller back for the instant, and a
+// clock id paired with a separately-fetched instant is the half-truth
+// clock.Sim is designed to make unrepresentable.
+//
+// ErrNotFound → (zero, false, nil); other errors propagate. Soft-deleted clocks
+// count as not-existing.
+func (s *PostgresStore) ResolveSim(ctx context.Context, tenantID, id string) (clock.Sim, bool, error) {
+	clk, err := s.Get(ctx, tenantID, id)
+	if err != nil {
 		if errors.Is(err, errs.ErrNotFound) {
-			return false, nil
+			return clock.Sim{}, false, nil
 		}
-		return false, err
+		return clock.Sim{}, false, err
 	}
-	return true, nil
+	return clock.Sim{At: clk.FrozenTime, TestClockID: clk.ID}, true, nil
 }
 
 func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.TestClock, error) {

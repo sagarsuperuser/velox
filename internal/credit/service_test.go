@@ -680,17 +680,18 @@ type stubResolverForCustomer struct {
 	pinned map[string]time.Time
 }
 
-func (s *stubResolverForCustomer) EffectiveNowForCustomer(_ context.Context, _, customerID string) (time.Time, error) {
+func (s *stubResolverForCustomer) SimForCustomer(_ context.Context, _, customerID string) (clock.Sim, error) {
 	if t, ok := s.pinned[customerID]; ok {
-		return t, nil
+		// A pinned customer resolves BOTH halves — instant and clock.
+		return clock.Sim{At: t, TestClockID: "tc_stub"}, nil
 	}
-	return time.Time{}, errs.ErrNotFound
+	return clock.Sim{}, errs.ErrNotFound
 }
-func (s *stubResolverForCustomer) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Time{}, errs.ErrNotFound
+func (s *stubResolverForCustomer) SimForSubscription(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{}, errs.ErrNotFound
 }
-func (s *stubResolverForCustomer) EffectiveNowForInvoice(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Time{}, errs.ErrNotFound
+func (s *stubResolverForCustomer) SimForInvoice(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{}, errs.ErrNotFound
 }
 
 func TestGetBalance(t *testing.T) {

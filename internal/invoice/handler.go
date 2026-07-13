@@ -720,7 +720,7 @@ func (h *Handler) resendSetupLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+		_ = h.auditLogger.Log(h.svc.AuditCtx(r.Context(), inv), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"action":         "resend_setup_link",
 			"invoice_number": inv.InvoiceNumber,
 			"customer_id":    inv.CustomerID,
@@ -859,7 +859,7 @@ func (h *Handler) rotatePublicToken(w http.ResponseWriter, r *http.Request) {
 		// plaintext tokens in the audit log would turn the log into an
 		// attractive target for credential harvesting. Record only that
 		// a rotation happened.
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRotate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+		_ = h.auditLogger.Log(h.svc.AuditCtx(r.Context(), inv), tenantID, domain.AuditActionRotate, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":           inv.InvoiceNumber,
 			"customer_id":              inv.CustomerID,
 			"field":                    "public_token",
@@ -931,7 +931,7 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	// No recipient address in the append-only row (GDPR erasure) — the email
 	// outbox is the delivery record; the row links the invoice + customer.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+		_ = h.auditLogger.Log(h.svc.AuditCtx(r.Context(), inv), tenantID, domain.AuditActionSend, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number": inv.InvoiceNumber,
 			"customer_id":    inv.CustomerID,
 		})
@@ -1034,7 +1034,7 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 	// INV-NNN", the row an auditor looks for when money left the customer's card
 	// outside a billing run.
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCollect, "invoice", charged.ID, charged.InvoiceNumber, map[string]any{
+		_ = h.auditLogger.Log(h.svc.AuditCtx(r.Context(), charged), tenantID, domain.AuditActionCollect, "invoice", charged.ID, charged.InvoiceNumber, map[string]any{
 			"invoice_number": charged.InvoiceNumber,
 			"amount_cents":   inv.AmountDueCents,
 			"currency":       inv.Currency,
@@ -1098,12 +1098,26 @@ func (h *Handler) refund(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditLogger != nil {
 		// Label the row with the invoice number so it reads "Refunded
-		// INV-NNN" (a money-out action), matching finalize/void rows.
+		// INV-NNN" (a money-out action), matching finalize/void rows. The same
+		// read supplies the sim axis (AuditCtx) — a refund issued inside a
+		// simulation belongs to that clock's timeline.
 		refundLabel := ""
+		auditCtx := r.Context()
 		if refInv, gErr := h.svc.Get(r.Context(), tenantID, id); gErr == nil {
 			refundLabel = refInv.InvoiceNumber
+			auditCtx = h.svc.AuditCtx(auditCtx, refInv)
+		} else {
+			// The refund ALREADY happened — money moved — so the row is written
+			// either way; dropping it would be worse than an unlabelled one. But
+			// without the invoice we cannot resolve its clock, so a refund issued
+			// inside a simulation lands with NULL sim columns and silently
+			// disappears from ?test_clock_id=. Say so, loudly: a row missing from
+			// a filtered timeline is indistinguishable from an action that never
+			// happened, and this is the only place that knows it went missing.
+			slog.WarnContext(r.Context(), "refund audit row will be unstamped and unlabelled: invoice re-read failed",
+				"invoice_id", id, "credit_note_id", cn.ID, "error", gErr)
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRefund, "invoice", id, refundLabel, map[string]any{
+		_ = h.auditLogger.Log(auditCtx, tenantID, domain.AuditActionRefund, "invoice", id, refundLabel, map[string]any{
 			"invoice_id":          id,
 			"credit_note_id":      cn.ID,
 			"credit_note_number":  cn.CreditNoteNumber,
@@ -1154,7 +1168,7 @@ func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
 		if inv.Attention != nil {
 			afterReason = string(inv.Attention.Reason)
 		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
+		_ = h.auditLogger.Log(h.svc.AuditCtx(r.Context(), inv), tenantID, domain.AuditActionRetryTax, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
 			"invoice_number":   inv.InvoiceNumber,
 			"customer_id":      inv.CustomerID,
 			"tax_status":       inv.TaxStatus,

@@ -691,7 +691,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// scheduled" with no terminal "Subscription canceled" partner —
 	// the gap that surfaced this session.
 	engine.SetAuditLogger(auditLogger)
-	// Customer reader powers EffectiveNowForCustomer (subscription
+	// Customer reader powers SimForCustomer (subscription
 	// create / one-off invoice composer / clock-pinned customer
 	// path). Without this, the engine's customer-side clock resolution
 	// falls back to wall-clock, leaking simulated-time invariants on

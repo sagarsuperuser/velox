@@ -11,6 +11,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // AuditWriter is the narrow audit surface testclock uses.
@@ -80,11 +81,25 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCreate, "test_clock", clk.ID, clk.Name, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), clk), tenantID, domain.AuditActionCreate, "test_clock", clk.ID, clk.Name, map[string]any{
 			"frozen_time": clk.FrozenTime,
 		})
 	}
 	respond.JSON(w, r, http.StatusCreated, clk)
+}
+
+// auditCtx puts a test_clock row ON ITS OWN CLOCK'S sim axis: the clock is
+// both the resource and the pin, so sim_effective_at is the frozen instant the
+// clock stood at when the operator acted.
+//
+// This is what makes the clock filter self-contained after ADR-086 teardown.
+// Teardown hard-deletes every simulated business row, so a clock-scoped
+// forensic view is reconstructed entirely from audit_log — and without these
+// rows it would have the effects (invoices finalized, subs canceled) but not
+// the CAUSE: no "created", no "advanced to 2027-03-01", and no "deleted", which
+// is the row that explains why every other trace of the simulation is gone.
+func (h *Handler) auditCtx(ctx context.Context, clk domain.TestClock) context.Context {
+	return clock.WithSim(ctx, clock.Sim{At: clk.FrozenTime, TestClockID: clk.ID})
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +183,7 @@ func (h *Handler) advance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), clk), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, map[string]any{
 			"action":      "advanced",
 			"frozen_time": clk.FrozenTime,
 		})
@@ -193,7 +208,7 @@ func (h *Handler) retryAdvance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, map[string]any{
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), clk), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, map[string]any{
 			"action":      "retry_advance",
 			"frozen_time": clk.FrozenTime,
 		})
@@ -205,12 +220,27 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	id := chi.URLParam(r, "id")
 
+	// Read the clock BEFORE the teardown: after Delete it does not exist, and
+	// this row is the one that has to survive it. ADR-086 teardown hard-deletes
+	// the clock's entire simulated customer graph, so "deleted TC-x, frozen at
+	// 2027-03-01, N customers" is the last thing the audit log can say about the
+	// simulation — and the reason a clock-scoped query returns nothing else.
+	// A failed read costs the sim axis on this row, never the deletion.
+	auditCtx := r.Context()
+	label := ""
+	if clk, err := h.svc.Get(r.Context(), tenantID, id); err == nil {
+		auditCtx = h.auditCtx(auditCtx, clk)
+		label = clk.Name
+	}
+
 	if err := h.svc.Delete(r.Context(), tenantID, id); err != nil {
 		respond.FromError(w, r, err, "test_clock")
 		return
 	}
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionDelete, "test_clock", id, "", nil)
+		_ = h.auditLogger.Log(auditCtx, tenantID, domain.AuditActionDelete, "test_clock", id, label, map[string]any{
+			"action": "teardown",
+		})
 	}
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "deleted"})
 }

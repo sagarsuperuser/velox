@@ -19,20 +19,20 @@ type fakeResolver struct {
 	calls  int
 }
 
-func (f *fakeResolver) EffectiveNowForCustomer(_ context.Context, _, customerID string) (time.Time, error) {
+func (f *fakeResolver) SimForCustomer(_ context.Context, _, customerID string) (clock.Sim, error) {
 	f.calls++
 	if t, ok := f.frozen[customerID]; ok {
-		return t, nil
+		return clock.Sim{At: t, TestClockID: "tc_stub"}, nil
 	}
-	return time.Now().UTC(), nil
+	return clock.Sim{At: time.Now().UTC()}, nil
 }
 
-func (f *fakeResolver) EffectiveNowForSubscription(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Now().UTC(), nil
+func (f *fakeResolver) SimForSubscription(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{At: time.Now().UTC()}, nil
 }
 
-func (f *fakeResolver) EffectiveNowForInvoice(_ context.Context, _, _ string) (time.Time, error) {
-	return time.Now().UTC(), nil
+func (f *fakeResolver) SimForInvoice(_ context.Context, _, _ string) (clock.Sim, error) {
+	return clock.Sim{At: time.Now().UTC()}, nil
 }
 
 // TestIngest_TestClockPinnedCustomer locks the Tier A ingest fix from the

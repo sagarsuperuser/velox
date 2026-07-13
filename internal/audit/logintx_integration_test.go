@@ -8,6 +8,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
@@ -130,9 +131,12 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 			t.Fatalf("begin: %v", err)
 		}
 		defer postgres.Rollback(tx)
-		if err := logger.LogInTx(ctx, tx, audit.Entry{
+		// The sim axis is derived from the ctx's clock binding, never passed per
+		// emission (ADR-090 §5) — an emitter cannot forget it, and cannot set a
+		// clock id that disagrees with the instant.
+		simCtx := clock.WithSim(ctx, clock.Sim{At: simAt, TestClockID: "vlx_clk_1"})
+		if err := logger.LogInTx(simCtx, tx, audit.Entry{
 			Action: "cancel", ResourceType: "sim_probe", ResourceID: "vlx_probe_4",
-			Sim: &audit.SimContext{EffectiveAt: simAt, TestClockID: "vlx_clk_1"},
 		}); err != nil {
 			t.Fatalf("log: %v", err)
 		}
@@ -148,6 +152,60 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		}
 		if !strings.Contains(metaJSON, "sim_effective_at") || !strings.Contains(metaJSON, "vlx_clk_1") {
 			t.Errorf("legacy metadata mirror missing (dashboard renders these keys today): %s", metaJSON)
+		}
+		_ = tx.Commit()
+	})
+
+	t.Run("wall-clock ctx leaves the sim columns NULL", func(t *testing.T) {
+		// The partial index (0148) and every sim filter key on IS NOT NULL, so a
+		// wall-clock row must carry SQL NULL — not a zero time, not an empty
+		// string, either of which would drag real-world rows into the simulated
+		// slice.
+		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		if err := logger.LogInTx(ctx, tx, audit.Entry{
+			Action: "update", ResourceType: "wall_probe", ResourceID: "vlx_probe_8",
+		}); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		var colAt *time.Time
+		var colClock *string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT sim_effective_at, test_clock_id FROM audit_log WHERE resource_type = 'wall_probe'`,
+		).Scan(&colAt, &colClock); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if colAt != nil || colClock != nil {
+			t.Errorf("wall-clock row must have NULL sim columns; got (%v, %v)", colAt, colClock)
+		}
+		_ = tx.Commit()
+	})
+
+	t.Run("a half-set binding is treated as absent", func(t *testing.T) {
+		// A clock id with no instant is not a simulation — stamping it would put
+		// a row in the partial index whose sim time is unknowable.
+		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		halfCtx := clock.WithSim(ctx, clock.Sim{TestClockID: "vlx_clk_partial"})
+		if err := logger.LogInTx(halfCtx, tx, audit.Entry{
+			Action: "update", ResourceType: "half_probe", ResourceID: "vlx_probe_9",
+		}); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		var colClock *string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT test_clock_id FROM audit_log WHERE resource_type = 'half_probe'`,
+		).Scan(&colClock); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if colClock != nil {
+			t.Errorf("half-set binding must not stamp the clock; got %v", *colClock)
 		}
 		_ = tx.Commit()
 	})
@@ -171,30 +229,6 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		if !strings.Contains(err.Error(), "null value") {
 			t.Errorf("failure class must be the NOT NULL constraint (documented guard), got: %v", err)
 		}
-	})
-
-	t.Run("partial or zero SimContext is treated as absent", func(t *testing.T) {
-		tx, err := db.BeginTx(ctx, postgres.TxTenant, tenantID)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer postgres.Rollback(tx)
-		if err := logger.LogInTx(ctx, tx, audit.Entry{
-			Action: "update", ResourceType: "empty_sim_probe", ResourceID: "vlx_probe_7",
-			Sim: &audit.SimContext{}, // zero-valued: must not pollute the partial clock index
-		}); err != nil {
-			t.Fatalf("log: %v", err)
-		}
-		var simAt, clockID any
-		if err := tx.QueryRowContext(ctx,
-			`SELECT sim_effective_at, test_clock_id FROM audit_log WHERE resource_type = 'empty_sim_probe'`,
-		).Scan(&simAt, &clockID); err != nil {
-			t.Fatalf("read back: %v", err)
-		}
-		if simAt != nil || clockID != nil {
-			t.Errorf("zero SimContext must land as NULLs (outside the partial index); got (%v, %v)", simAt, clockID)
-		}
-		_ = tx.Commit()
 	})
 
 	t.Run("rollback takes the audit row with it — shared fate", func(t *testing.T) {

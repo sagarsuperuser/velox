@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -77,6 +78,11 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	defer postgres.Rollback(tx)
 
 	id := postgres.NewID("vlx_aud")
+	// Same ctx-derived sim axis as LogInTx (ADR-090 §5). The residual own-tx
+	// callers are not a lesser class of evidence: invoice.Service.Finalize —
+	// the canonical row for every engine-generated invoice, including every
+	// invoice a clock advance produces — still writes through this path.
+	simAt, clockID, metadata := simColumns(ctx, metadata)
 	metaJSON, _ := json.Marshal(metadata)
 	if metadata == nil {
 		metaJSON = []byte("{}")
@@ -95,17 +101,21 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// this for ~2 weeks via subscription.auditCtxForSub (since reverted
 	// 2026-05-28) — see ADR-030 amendment.
 	//
-	// Callers who care about the *simulated* effective time of an action
-	// on a clock-pinned entity pass it explicitly in metadata as
-	// `sim_effective_at` + `test_clock_id`; the audit UI renders that
-	// subline below the wall-clock primary timestamp.
+	// The SECOND axis is sim_effective_at + test_clock_id: the simulated instant
+	// the clock STOOD AT when this mutation was performed (not the period the
+	// mutation was about — an advance settles everything it finds due at one
+	// instant). Derived from the ctx's clock binding (simColumns), queryable via
+	// ?test_clock_id= / ?sim_from= / ?sim_to=. It is not a substitute for
+	// created_at — it is the only axis that survives ADR-086 teardown, which
+	// hard-deletes every simulated business row and leaves the audit log as
+	// the simulation's sole record.
 	_, err = tx.ExecContext(writeCtx, `
 		INSERT INTO audit_log (id, tenant_id, actor_type, actor_id, action,
 			resource_type, resource_id, resource_label, metadata, ip_address,
-			request_id, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			request_id, sim_effective_at, test_clock_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
-		nullIfEmpty(ipAddress), nullIfEmpty(requestID), time.Now().UTC())
+		nullIfEmpty(ipAddress), nullIfEmpty(requestID), simAt, clockID, time.Now().UTC())
 	if err != nil {
 		auditWriteErrors.WithLabelValues(tenantID).Inc()
 		slog.Error("audit: failed to insert entry",
@@ -134,27 +144,109 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 // domain.AuditAction* / existing wire strings — those strings are FROZEN
 // (ADR-090): the FE filter vocabulary, badge maps, and existing rows all key
 // on them, so a rename is a coordinated FE+MANUAL_TEST change, never a drive-by.
+//
+// There is deliberately NO sim field. The simulated-time axis
+// (sim_effective_at / test_clock_id) is derived by the writer from the ctx's
+// clock binding (clock.SimOf) — see simColumns. A per-emission field would
+// mean ~90 emitters each remembering to populate it, which is exactly how
+// stamping ended up partial: an emitter that forgets is invisible, and the
+// resulting clock filter lies by omission. Deriving it once, at the two
+// writers, makes the axis TOTAL for every path that runs under a bound clock
+// and makes "clock C at wall-clock now" unrepresentable (clock.Sim pairs the
+// halves). ADR-090 §5.
 type Entry struct {
 	Action        string
 	ResourceType  string
 	ResourceID    string
 	ResourceLabel string
 	Metadata      map[string]any
-	// Sim carries the simulated effect-time context for actions on
-	// clock-pinned entities (ADR-030 amendment; ADR-086 sim-axis). When
-	// set, it is written to the sim_effective_at / test_clock_id columns
-	// (migration 0148) AND mirrored into Metadata under the legacy keys the
-	// dashboard already renders — the columns become queryable once
-	// stamping reaches parity across writers (PR7 of the ADR-090 arc).
-	Sim *SimContext
 }
 
-// SimContext identifies the test clock and simulated instant an audited
-// action took effect at. Wall-clock created_at remains the primary
-// timestamp (ADR-030); this is the second axis.
-type SimContext struct {
-	EffectiveAt time.Time
-	TestClockID string
+// SIM-AXIS COVERAGE (ADR-090 §5) — what ?test_clock_id= can and cannot see.
+//
+// COVERED: every path that runs under a clock binding. That is every ForClock /
+// catchup phase (the advance binds clock.WithSim, so finalize, cancel, clawback
+// issue, dunning and threshold rows all inherit it), every service whose entry
+// point resolves an entity's pin (BindEffectiveNow yields the clock id along
+// with the instant, and refuses to erase an inherited one), and the
+// handler-level emitters that bind explicitly before emitting (invoice,
+// subscription, customer — including CREATE, which binds from the clock it is
+// handed because the customer pin does not exist yet — dunning, test_clock).
+//
+// A note on what "covered" means, so this list cannot quietly become a lie: a
+// path is covered if it EMITS and its emission runs under a binding. Credit
+// expiry runs under the catchup binding but emits NO audit row at all — the
+// credit ledger is event-sourced and immutable, so the expiry entry IS the
+// record, exactly as usage_events is the record for metering. It was listed
+// here as covered, which credited a row that does not exist. Closure trigger:
+// if credit expiry ever emits, it needs nothing but the ctx it already has.
+//
+// NOT COVERED — stated because a filter that omits rows silently is worse than
+// no filter at all:
+//
+//   - Operator-driven CREDIT-NOTE routes (create/issue/void/retry-refund/send).
+//     creditnote.Service has no clock.Resolver at all: the same defect that
+//     makes an operator-issued CN against a simulated invoice stamp wall-clock
+//     issued_at and is_simulated=false. Stamping the audit row while the entity
+//     stays wall-clock would hide that bug inside the audit layer. Closure: fix
+//     the CN clock binding — the sim axis then follows from ctx with no change
+//     here. (Clock-DRIVEN CN paths — the catchup clawback issuer — ARE stamped.)
+//   - PAYMENT-METHOD routes. Stripe PM state is a real-world effect with no
+//     simulated counterpart; paymentmethods is not in the clock domain. A
+//     clock-scoped view will not show "operator attached a card mid-simulation."
+//   - PUBLIC CHECKOUT rows (hosted-invoice Pay click, payment-update link,
+//     checkout setup). These paths never bind a pin — they stamp wall-clock and
+//     talk to real Stripe — so their rows are wall-clock rows about an entity
+//     that happens to be pinned. This is consistent with what the clock view
+//     already cannot show: the SETTLEMENT those clicks lead to is a Stripe
+//     webhook, which the registry already records as writing no audit row at
+//     all. Closure trigger: the same one — auditing the settle path.
+//
+// A row from either class has NULL sim columns and is therefore absent from the
+// simulated slice — not mis-attributed. That is the safe failure direction, and
+// it is the reason this comment exists instead of a plausible-looking guess.
+//
+// simColumns resolves the sim axis for an emission from the ctx's clock
+// binding: the clock whose world this code path is running in, and the
+// simulated instant it lands at. Returns (nil, nil) — SQL NULLs — for every
+// wall-clock path, which is the overwhelming majority of rows and the reason
+// the clock index (0148) is partial.
+//
+// It also mirrors the pair into the metadata bag under the legacy keys the
+// dashboard already renders, so the audit page's sim subline keeps working on
+// old and new rows alike. The mirror is a COPY — the caller's map is never
+// mutated, because emitters build their metadata once and reuse it.
+//
+// THE WRITER OWNS metadata["sim_effective_at"] AND metadata["test_clock_id"].
+// Emitters must not set them: this function overwrites both unconditionally,
+// silently, and an emitter cannot tell its value was dropped. Seven emitters
+// used to hand-stamp them. Four wrote the same instant this does and were pure
+// duplication. The other three (the trial-end cancel/activate rows) wrote the
+// TRIAL-END instant — a genuinely different fact — and had it destroyed under
+// catchup, because a catchup performs the cancel at the ADVANCE's instant,
+// which can be weeks of simulated time after the trial ended. All seven are
+// gone; the trial-end instant now travels as metadata["trial_end_at"], which
+// says what it is. If you need another simulated instant on a row, give it its
+// own key — do not overload this one.
+//
+// Both halves come from one clock.Sim, resolved from one read of the clock
+// (clock.Resolver / the ForClock drivers), so the column pair can never
+// disagree with itself. A partial binding reports Simulated()=false and is
+// treated as absent rather than half-stamped: a row with a clock id and a
+// wall-clock instant would sit IN the partial index and answer sim-time
+// queries with a lie.
+func simColumns(ctx context.Context, metadata map[string]any) (simAt, clockID any, meta map[string]any) {
+	sim, ok := clock.SimOf(ctx)
+	if !ok {
+		return nil, nil, metadata
+	}
+	m := make(map[string]any, len(metadata)+2)
+	for k, v := range metadata {
+		m[k] = v
+	}
+	m["sim_effective_at"] = sim.At.UTC().Format(time.RFC3339)
+	m["test_clock_id"] = sim.TestClockID
+	return sim.At.UTC(), sim.TestClockID, m
 }
 
 // LogInTx writes an audit row on the CALLER's transaction — the business
@@ -171,8 +263,9 @@ type SimContext struct {
 // the NOT NULL constraint, so the guard does not silently depend on the
 // tenants FK. A metadata bag that cannot marshal degrades to a
 // {"marshal_error": …} payload instead of aborting a money transaction on a
-// telemetry bug; a zero-valued/partial SimContext is treated as absent
-// rather than polluting the partial clock index with empty strings;
+// telemetry bug; a partial clock binding is treated as absent rather than
+// polluting the partial clock index with a half-truth; the sim axis is
+// derived from ctx, never supplied by the caller (simColumns);
 // livemode is stamped by the table trigger from the same tx session. The
 // vocabulary round-trip integration test INSERTs every declared action
 // constant so a value the schema rejects cannot ship.
@@ -197,24 +290,7 @@ type SimContext struct {
 // Self-marking is also load-bearing: POST /v1/tenants and both public checkout
 // routes emit ONLY in-tx, and nothing else would account for them.
 func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
-	// Treat a partial/zero SimContext as absent — a half-set sim axis
-	// ('' clock id, zero time) is worse than none: it lands inside the
-	// partial index and defeats IS NOT NULL scoping.
-	if e.Sim != nil && (e.Sim.TestClockID == "" || e.Sim.EffectiveAt.IsZero()) {
-		e.Sim = nil
-	}
-	metadata := e.Metadata
-	if e.Sim != nil {
-		// Mirror into the legacy metadata keys the dashboard renders today;
-		// copy so the caller's map isn't mutated.
-		m := make(map[string]any, len(metadata)+2)
-		for k, v := range metadata {
-			m[k] = v
-		}
-		m["sim_effective_at"] = e.Sim.EffectiveAt.UTC().Format(time.RFC3339)
-		m["test_clock_id"] = e.Sim.TestClockID
-		metadata = m
-	}
+	simAt, clockID, metadata := simColumns(ctx, e.Metadata)
 	metaJSON, err := json.Marshal(metadata)
 	if err != nil {
 		// Totality: never let an unmarshalable telemetry bag abort the
@@ -228,12 +304,6 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 	}
 
 	actorType, actorID := ResolveActor(ctx)
-
-	var simAt, clockID any
-	if e.Sim != nil {
-		simAt = e.Sim.EffectiveAt.UTC()
-		clockID = e.Sim.TestClockID
-	}
 
 	// created_at stays wall-clock (ADR-030); tenant_id comes from the tx
 	// GUC so the row is authoritative for the transaction it rides in.
@@ -314,6 +384,24 @@ func buildListWhere(tenantID string, livemode bool, filter QueryFilter) (whereCl
 	idx := 3
 	where := " AND al.tenant_id = $1 AND al.livemode = $2"
 
+	// Sim axis (0148). test_clock_id equality is what lets the planner ride
+	// idx_audit_log_clock (tenant_id, test_clock_id, sim_effective_at DESC)
+	// WHERE test_clock_id IS NOT NULL — leading equality on both key columns,
+	// then a pre-sorted range/order on the third.
+	if filter.TestClockID != "" {
+		where += andClause(&idx, "al.test_clock_id", &args, filter.TestClockID)
+	}
+	if !filter.SimFrom.IsZero() {
+		where += fmt.Sprintf(" AND al.sim_effective_at >= $%d", idx)
+		args = append(args, filter.SimFrom)
+		idx++
+	}
+	if !filter.SimTo.IsZero() {
+		where += fmt.Sprintf(" AND al.sim_effective_at <= $%d", idx)
+		args = append(args, filter.SimTo)
+		idx++
+	}
+
 	if filter.ResourceType != "" {
 		where += andClause(&idx, "al.resource_type", &args, filter.ResourceType)
 	}
@@ -341,11 +429,16 @@ func buildListWhere(tenantID string, livemode bool, filter QueryFilter) (whereCl
 		idx++
 	}
 
-	useCursor = !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
-	if useCursor {
-		where += fmt.Sprintf(" AND (al.created_at, al.id) < ($%d, $%d)", idx, idx+1)
-		args = append(args, filter.AfterCreatedAt, filter.AfterID)
-		idx += 2
+	// The seek predicate is on the SAME axis as the ORDER BY (created_at, id) —
+	// see auditListOrder. There is exactly ONE sort axis, deliberately: see the
+	// note on the sim filters in QueryFilter.
+	{
+		useCursor = !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
+		if useCursor {
+			where += fmt.Sprintf(" AND (al.created_at, al.id) < ($%d, $%d)", idx, idx+1)
+			args = append(args, filter.AfterCreatedAt, filter.AfterID)
+			idx += 2
+		}
 	}
 
 	return " WHERE " + where[5:], args, idx, useCursor // strip leading " AND "
@@ -435,7 +528,8 @@ const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
 		COALESCE(NULLIF(k.name, ''), c.display_name, u.email::text, '') AS actor_name,
 		al.action, al.resource_type, al.resource_id,
 		COALESCE(al.resource_label,''), al.metadata,
-		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at
+		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at,
+		al.sim_effective_at, COALESCE(al.test_clock_id,'')
 		FROM audit_log al
 		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
 		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
@@ -448,9 +542,12 @@ const auditListOrder = " ORDER BY al.created_at DESC, al.id DESC"
 func scanAuditEntry(rows *sql.Rows) (domain.AuditEntry, error) {
 	var e domain.AuditEntry
 	var metaJSON []byte
+	// The sim axis (0148) rides the SHARED select, so the list API and the CSV
+	// export can never disagree about which simulation a row belongs to.
 	if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID, &e.ActorName,
 		&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
-		&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt); err != nil {
+		&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt,
+		&e.SimEffectiveAt, &e.TestClockID); err != nil {
 		return domain.AuditEntry{}, err
 	}
 	_ = json.Unmarshal(metaJSON, &e.Metadata)
@@ -554,6 +651,68 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	return actions, resourceTypes, nil
 }
 
+// SimClock is one entry in the audit log's clock picker.
+type SimClock struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SimClocks returns the distinct test clocks that appear on the tenant's audit
+// rows, newest activity first, each with the best name the LOG itself knows.
+//
+// It deliberately does NOT read the test_clocks table. ADR-086 teardown
+// hard-deletes a clock when the operator is done with it, and that is exactly
+// when a forensic view is wanted — a picker sourced from test_clocks would go
+// empty at the moment it becomes useful. The name is recovered from the clock's
+// own audit rows (resource_type='test_clock', whose resource_label is the name
+// the operator gave it), which survive teardown by design; unnamed or
+// pre-0148 clocks fall back to the id in the UI.
+func (l *Logger) SimClocks(ctx context.Context, tenantID string) ([]SimClock, error) {
+	tx, err := l.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer postgres.Rollback(tx)
+
+	// Explicit tenant+livemode predicates for the same reason as Query: the RLS
+	// policy's column-free bypass OR-arm blocks index quals. The IS NOT NULL
+	// scope is the partial clock index's own predicate.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT c.test_clock_id, COALESCE(n.name, '') AS name
+		FROM (
+			SELECT test_clock_id, MAX(created_at) AS last_at
+			FROM audit_log
+			WHERE tenant_id = $1 AND livemode = $2 AND test_clock_id IS NOT NULL
+			GROUP BY test_clock_id
+			ORDER BY last_at DESC
+			LIMIT 100
+		) c
+		LEFT JOIN LATERAL (
+			SELECT resource_label AS name
+			FROM audit_log
+			WHERE tenant_id = $1 AND livemode = $2
+			  AND resource_type = 'test_clock' AND resource_id = c.test_clock_id
+			  AND COALESCE(resource_label, '') <> ''
+			ORDER BY created_at DESC
+			LIMIT 1
+		) n ON true
+		ORDER BY c.last_at DESC`, tenantID, postgres.Livemode(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []SimClock
+	for rows.Next() {
+		var c SimClock
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 type QueryFilter struct {
 	ResourceType string
 	ResourceID   string
@@ -564,8 +723,27 @@ type QueryFilter struct {
 	// means "no filter on this end."
 	DateFrom time.Time
 	DateTo   time.Time
-	Limit    int
-	Offset   int
+	// Sim axis (ADR-090 §5). TestClockID scopes to one simulation; SimFrom/SimTo
+	// window it in SIMULATED time. Both are meaningless for wall-clock rows,
+	// whose sim columns are NULL, so filtering on them excludes those rows by
+	// construction.
+	//
+	// There is deliberately NO "order by simulated time". sim_effective_at is
+	// the instant the clock STOOD AT when the mutation was performed, and an
+	// advance performs everything it settles at ONE instant — so within a clock
+	// the sim order and the wall-clock order are the same order (advances are
+	// monotonic; rows inside one advance tie and fall back to the id tiebreak
+	// either way). Across clocks it is worse than redundant: interleaving two
+	// unrelated simulations by their simulated instants produces a timeline that
+	// never happened. A sort control that changes nothing, under a label that
+	// promises it separates the events inside one advance, is a lie with a
+	// checkbox — so it does not exist. Ordering stays on created_at (see
+	// auditListOrder), and there is exactly one cursor axis to match.
+	TestClockID string
+	SimFrom     time.Time
+	SimTo       time.Time
+	Limit       int
+	Offset      int
 	// Cursor-based pagination (2026-05-29). Seek-method query:
 	// WHERE (al.created_at, al.id) < (AfterCreatedAt, AfterID).
 	// Mutually exclusive with Offset — handler routes by ?after=

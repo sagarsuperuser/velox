@@ -50,26 +50,37 @@ func (s *Service) SetResolver(r clock.Resolver) {
 	s.resolver = r
 }
 
-// effectiveNow returns the customer's "now": ctx-bound effective time
-// if an upstream entry point already bound it, frozen_time when the
-// customer is pinned to a test clock, wall-clock otherwise.
+// simNow returns the customer's simulated-time context: the ctx-bound one
+// if an upstream entry point already bound it, else the customer's own pin
+// (frozen_time + clock id when pinned to a test clock), else a bare
+// wall-clock Sim.
 //
 // Live mode skips the resolver lookup entirely — test clocks are
 // test-mode-only (DB CHECK on test_clocks.livemode), so a live
 // customer can never be pinned and the high-volume production ingest
 // path stays at zero extra queries.
-func (s *Service) effectiveNow(ctx context.Context, tenantID, customerID string) time.Time {
+func (s *Service) simNow(ctx context.Context, tenantID, customerID string) clock.Sim {
+	if sim, ok := clock.SimOf(ctx); ok {
+		return sim
+	}
 	if t, ok := clock.EffectiveNow(ctx); ok {
-		return t
+		// Bound instant whose clock is unknown — keep the instant, claim no clock.
+		return clock.Sim{At: t}
 	}
 	if s.resolver != nil && !postgres.Livemode(ctx) && customerID != "" {
-		if t, err := s.resolver.EffectiveNowForCustomer(ctx, tenantID, customerID); err == nil {
-			return t
+		if sim, err := s.resolver.SimForCustomer(ctx, tenantID, customerID); err == nil {
+			return sim
 		}
 		// Resolver errors mean the customer read failed — ingest's own
 		// store call will surface that; don't block on the clock here.
 	}
-	return time.Now().UTC()
+	return clock.Sim{At: time.Now().UTC()}
+}
+
+// effectiveNow is simNow's instant — the value the ingest gates and
+// timestamps use.
+func (s *Service) effectiveNow(ctx context.Context, tenantID, customerID string) time.Time {
+	return s.simNow(ctx, tenantID, customerID).At
 }
 
 // IngestInput is the internal service input — uses resolved internal IDs only.
@@ -109,12 +120,17 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 	// makes strict past-only brittle to verify, and the 'backfill' origin
 	// tag already distinguishes these rows from live POST traffic for
 	// audit purposes.
-	now := s.effectiveNow(ctx, tenantID, input.CustomerID)
-	if input.Timestamp.After(now) {
+	sim := s.simNow(ctx, tenantID, input.CustomerID)
+	if input.Timestamp.After(sim.At) {
 		return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future for backfill — use POST /usage-events for real-time ingest")
 	}
-	// Carry the resolved now downstream so ingest doesn't re-resolve.
-	return s.ingestAudited(clock.WithEffectiveNow(ctx, now), tenantID, input, domain.UsageOriginBackfill, s.backfillEmission(ctx))
+	// Carry the resolved sim context downstream so ingest doesn't re-resolve —
+	// and so the audit emission inherits the CLOCK, not just the instant. The
+	// emission closure must be built from the BOUND ctx (it was previously
+	// built from the outer one, which is why an operator backdating usage into
+	// a simulation left an audit row with no sim axis).
+	bound := clock.WithSim(ctx, sim)
+	return s.ingestAudited(bound, tenantID, input, domain.UsageOriginBackfill, s.backfillEmission(bound))
 }
 
 // backfillEmission records the operator's backdated insert on the ingest tx.

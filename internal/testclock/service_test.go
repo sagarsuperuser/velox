@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
+	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
 // --- Tests ---
@@ -799,4 +800,80 @@ func (r *stubRunner) RunCycleForClock(_ context.Context, _, clockID string, _ in
 	}
 	r.store.subsOnClock[clockID] = subs
 	return invoices, nil
+}
+
+// simCapturingRunner records the ctx catchup hands each billing phase, so the
+// test can assert what is bound on it.
+type simCapturingRunner struct {
+	sims []clock.Sim
+	ok   []bool
+}
+
+func (r *simCapturingRunner) capture(ctx context.Context) {
+	sim, ok := clock.SimOf(ctx)
+	r.sims = append(r.sims, sim)
+	r.ok = append(r.ok, ok)
+}
+
+func (r *simCapturingRunner) RunCycleForClock(ctx context.Context, _, _ string, _ int) (int, []error) {
+	r.capture(ctx)
+	return 0, nil
+}
+
+func (r *simCapturingRunner) ScanThresholdsForClock(ctx context.Context, _, _ string, _ int) (int, []error) {
+	r.capture(ctx)
+	return 0, nil
+}
+
+func (r *simCapturingRunner) RetryPendingChargesForClock(ctx context.Context, _, _ string, _ int) (int, []error) {
+	r.capture(ctx)
+	return 0, nil
+}
+
+func (r *simCapturingRunner) EnrollStalledForDunningForClock(ctx context.Context, _, _ string, _ int) (int, []error) {
+	r.capture(ctx)
+	return 0, nil
+}
+
+// TestRunCatchup_BindsClockOntoCtx is the linchpin of the audit sim axis
+// (ADR-090 §5): catchup binds the CLOCK, not just its frozen instant, onto the
+// ctx every phase inherits. Every audit row a clock advance produces —
+// finalize, cancel, credit expiry, clawback issue, dunning — is emitted under
+// this ctx, and the Logger stamps sim_effective_at / test_clock_id from it.
+//
+// If this binding regresses to a bare WithEffectiveNow, no emitter breaks and
+// no test fails except this one: the rows keep landing, silently missing the
+// clock, and the ?test_clock_id= filter starts lying by omission — the exact
+// class the sim axis exists to kill. That is why it is asserted on the driver,
+// not on any one emitter.
+func TestRunCatchup_BindsClockOntoCtx(t *testing.T) {
+	frozen := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	store := newMockStore()
+	store.clocks["c1"] = domain.TestClock{
+		ID: "c1", TenantID: "t1", Status: domain.TestClockStatusAdvancing, FrozenTime: frozen,
+	}
+	s := NewService(store)
+	runner := &simCapturingRunner{}
+	s.SetBillingRunner(runner)
+
+	if err := s.RunCatchup(context.Background(), CatchupJob{
+		TenantID: "t1", ClockID: "c1", PrevFrozenTime: frozen.AddDate(0, -3, 0),
+	}); err != nil {
+		t.Fatalf("RunCatchup: %v", err)
+	}
+
+	if len(runner.sims) == 0 {
+		t.Fatal("no billing phase ran — the binding assertion would be vacuous")
+	}
+	for i, sim := range runner.sims {
+		if !runner.ok[i] {
+			t.Fatalf("phase %d ran on a ctx with NO clock binding — audit rows from it would carry no sim axis", i)
+		}
+		if sim.TestClockID != "c1" {
+			t.Errorf("phase %d: test_clock_id = %q, want c1", i, sim.TestClockID)
+		}
+		if !sim.At.Equal(frozen) {
+			t.Errorf("phase %d: sim instant = %v, want frozen_time %v", i, sim.At, frozen)
+		}
+	}
 }

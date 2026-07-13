@@ -171,10 +171,6 @@ func (e *Engine) auditInvoiceFinalized(ctx context.Context, sub domain.Subscript
 			"currency":           inv.Currency,
 			"triggered_by":       string(inv.BillingReason),
 		}
-		if sub.TestClockID != "" {
-			meta["test_clock_id"] = sub.TestClockID
-			meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
-		}
 		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
 	}
 	if e.events != nil {
@@ -219,7 +215,7 @@ func (e *Engine) SetCreditHeadroomReader(r CreditHeadroomReader) {
 
 // CustomerReader is the narrow read interface the engine uses to
 // resolve a customer's test_clock_id pin (ADR-027). Implemented by
-// *customer.PostgresStore. Optional — when nil, EffectiveNowForCustomer
+// *customer.PostgresStore. Optional — when nil, SimForCustomer
 // falls back to wall-clock; this is the safe default for narrow unit
 // tests that don't exercise customer-level clock pins.
 type CustomerReader interface {
@@ -227,7 +223,7 @@ type CustomerReader interface {
 }
 
 // SetCustomerReader wires the customer reader used by
-// EffectiveNowForCustomer (and transitively EffectiveNowForInvoice on
+// SimForCustomer (and transitively SimForInvoice on
 // one-off invoices). Production wires *customer.PostgresStore via
 // api/router.go.
 func (e *Engine) SetCustomerReader(r CustomerReader) {
@@ -1087,28 +1083,48 @@ func (e *Engine) advanceCycleOrCancel(ctx context.Context, sub domain.Subscripti
 }
 
 // effectiveNow returns the clock time the engine should use for this sub.
-// If the sub is attached to a test clock, the clock's frozen_time wins;
-// otherwise wall-clock via e.clock. A deleted or unreadable test clock
-// falls back silently to wall-clock — a dangling test_clock_id must not
-// stall the billing tick for every other tenant.
+// Thin wrapper over simForSub — see there for the fallback semantics.
 func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time.Time {
+	return e.simForSub(ctx, sub).At
+}
+
+// simForSub resolves a sub's simulated-time context: the clock it is
+// pinned to and that clock's frozen_time. If the sub is attached to a test
+// clock, the clock's frozen_time wins; otherwise wall-clock via e.clock
+// with an EMPTY TestClockID (not in a simulation).
+//
+// A deleted or unreadable test clock falls back silently — a dangling
+// test_clock_id must not stall the billing tick for every other tenant. The
+// fallback drops the clock id, so it can never stamp "clock C at wall-clock
+// now," the half-truth the Sim type exists to make unrepresentable.
+//
+// Note what the fallback does NOT promise: that the instant is wall-clock.
+// e.clock.Now(ctx) READS the ctx binding, so under an already-bound ctx (a
+// catchup) it returns the SIMULATED instant, and the fallback's value is
+// {simulated instant, no clock} — the mirror-image half-truth. That value is
+// safe to use as a time (it is the catchup's own instant, which is what the
+// work should run at), but it must never be BOUND back onto ctx, or it
+// unstamps every audit row below it. clock.BindEffectiveNow refuses to bind a
+// clock-less Sim over an inherited one for exactly this reason; read its guard
+// before changing either side.
+func (e *Engine) simForSub(ctx context.Context, sub domain.Subscription) clock.Sim {
 	if sub.TestClockID == "" || e.testClocks == nil {
-		return e.clock.Now(ctx)
+		return clock.Sim{At: e.clock.Now(ctx)}
 	}
 	tc, err := e.testClocks.Get(ctx, sub.TenantID, sub.TestClockID)
 	if err != nil {
 		slog.Warn("test clock lookup failed, falling back to wall clock",
 			"subscription_id", sub.ID, "test_clock_id", sub.TestClockID, "error", err)
-		return e.clock.Now(ctx)
+		return clock.Sim{At: e.clock.Now(ctx)}
 	}
-	return tc.FrozenTime
+	return clock.Sim{At: tc.FrozenTime, TestClockID: sub.TestClockID}
 }
 
-// EffectiveNowForInvoice resolves the time anchor for any per-invoice
+// SimForInvoice resolves the simulated-time context for any per-invoice
 // state-machine step that needs to stay in the simulation. Resolves
-// invoice → subscription → test_clock and returns frozen_time when
-// pinned, wall-clock otherwise. Manual drafts (no subscription) fall
-// back to the customer pin via EffectiveNowForCustomer — one-off
+// invoice → subscription → test_clock and returns frozen_time + the clock
+// id when pinned, a bare wall-clock Sim otherwise. Manual drafts (no
+// subscription) fall back to the customer pin via SimForCustomer — one-off
 // invoices for clock-pinned customers stamp simulated time too.
 //
 // Used by dunning to keep `next_action_at` in the same time domain
@@ -1116,42 +1132,44 @@ func (e *Engine) effectiveNow(ctx context.Context, sub domain.Subscription) time
 // resolver, dunning would stamp wall-clock into a column the
 // orchestrator reads as simulated-time — and clock-pinned runs whose
 // stamps land outside the catchup window get stranded. ADR-029 follow-up.
+// It also carries the clock id, which is what lets every audit emission
+// downstream of a pin resolution land on the sim axis (ADR-090 §5).
 //
 // Errors fall back to wall-clock with a warn — same safety stance as
-// effectiveNow: a dangling subscription / clock pointer can't stall an
+// simForSub: a dangling subscription / clock pointer can't stall an
 // operator-triggered retry. The fallback may stamp the wrong domain
 // for clock-pinned runs, but failing the operator's action is worse.
-func (e *Engine) EffectiveNowForInvoice(ctx context.Context, tenantID, invoiceID string) (time.Time, error) {
+func (e *Engine) SimForInvoice(ctx context.Context, tenantID, invoiceID string) (clock.Sim, error) {
 	inv, err := e.invoices.GetInvoice(ctx, tenantID, invoiceID)
 	if err != nil {
-		return e.clock.Now(ctx), fmt.Errorf("get invoice for clock resolution: %w", err)
+		return clock.Sim{At: e.clock.Now(ctx)}, fmt.Errorf("get invoice for clock resolution: %w", err)
 	}
 	if inv.SubscriptionID == "" {
 		// One-off invoice: customer may still be clock-pinned (ADR-027).
-		return e.EffectiveNowForCustomer(ctx, tenantID, inv.CustomerID)
+		return e.SimForCustomer(ctx, tenantID, inv.CustomerID)
 	}
 	sub, err := e.subs.Get(ctx, tenantID, inv.SubscriptionID)
 	if err != nil {
 		slog.Warn("subscription lookup failed during clock resolution, falling back to wall clock",
 			"invoice_id", invoiceID, "subscription_id", inv.SubscriptionID, "error", err)
-		return e.clock.Now(ctx), nil
+		return clock.Sim{At: e.clock.Now(ctx)}, nil
 	}
-	return e.effectiveNow(ctx, sub), nil
+	return e.simForSub(ctx, sub), nil
 }
 
-// EffectiveNowForSubscription resolves the time anchor for an
+// SimForSubscription resolves the simulated-time context for an
 // operator-triggered action on an existing subscription (Activate,
-// ChangeItem, etc.). Loads the sub, then delegates to effectiveNow.
+// ChangeItem, etc.). Loads the sub, then delegates to simForSub.
 // Wall-clock fallback on error mirrors the other resolvers.
-func (e *Engine) EffectiveNowForSubscription(ctx context.Context, tenantID, subscriptionID string) (time.Time, error) {
+func (e *Engine) SimForSubscription(ctx context.Context, tenantID, subscriptionID string) (clock.Sim, error) {
 	sub, err := e.subs.Get(ctx, tenantID, subscriptionID)
 	if err != nil {
-		return e.clock.Now(ctx), fmt.Errorf("get subscription for clock resolution: %w", err)
+		return clock.Sim{At: e.clock.Now(ctx)}, fmt.Errorf("get subscription for clock resolution: %w", err)
 	}
-	return e.effectiveNow(ctx, sub), nil
+	return e.simForSub(ctx, sub), nil
 }
 
-// EffectiveNowForCustomer resolves the time anchor for an
+// SimForCustomer resolves the simulated-time context for an
 // operator-triggered action where only the customer is known
 // (subscription.Service.Create, one-off invoice composer). Reads
 // customer.test_clock_id directly — subs inherit the pin from the
@@ -1163,24 +1181,24 @@ func (e *Engine) EffectiveNowForSubscription(ctx context.Context, tenantID, subs
 // reader (narrow unit tests) or when the customer / clock lookup
 // fails. Same safety stance as the other resolvers: never block an
 // operator action on a dangling pin.
-func (e *Engine) EffectiveNowForCustomer(ctx context.Context, tenantID, customerID string) (time.Time, error) {
+func (e *Engine) SimForCustomer(ctx context.Context, tenantID, customerID string) (clock.Sim, error) {
 	if e.customers == nil {
-		return e.clock.Now(ctx), nil
+		return clock.Sim{At: e.clock.Now(ctx)}, nil
 	}
 	cust, err := e.customers.Get(ctx, tenantID, customerID)
 	if err != nil {
-		return e.clock.Now(ctx), fmt.Errorf("get customer for clock resolution: %w", err)
+		return clock.Sim{At: e.clock.Now(ctx)}, fmt.Errorf("get customer for clock resolution: %w", err)
 	}
 	if cust.TestClockID == "" || e.testClocks == nil {
-		return e.clock.Now(ctx), nil
+		return clock.Sim{At: e.clock.Now(ctx)}, nil
 	}
 	tc, err := e.testClocks.Get(ctx, tenantID, cust.TestClockID)
 	if err != nil {
 		slog.Warn("test clock lookup failed during customer clock resolution, falling back to wall clock",
 			"customer_id", customerID, "test_clock_id", cust.TestClockID, "error", err)
-		return e.clock.Now(ctx), nil
+		return clock.Sim{At: e.clock.Now(ctx)}, nil
 	}
-	return tc.FrozenTime, nil
+	return clock.Sim{At: tc.FrozenTime, TestClockID: cust.TestClockID}, nil
 }
 
 // TaxApplication is the invoice-level tax summary returned by
@@ -2015,10 +2033,6 @@ func (e *Engine) applyDueScheduledPlanChanges(ctx context.Context, sub domain.Su
 							"old_plan_id": was.PlanID,
 							"new_plan_id": newPlanByItem[was.ID],
 						}
-						if sub.TestClockID != "" {
-							meta["test_clock_id"] = sub.TestClockID
-							meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
-						}
 						_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.pending_change_applied", "subscription", sub.ID, sub.Code, meta)
 					}
 				}
@@ -2216,10 +2230,6 @@ func (e *Engine) handleTrialState(ctx context.Context, sub domain.Subscription, 
 					"action":       "trial_ended",
 					"customer_id":  sub.CustomerID,
 					"triggered_by": "schedule",
-				}
-				if sub.TestClockID != "" {
-					meta["test_clock_id"] = sub.TestClockID
-					meta["sim_effective_at"] = now.UTC().Format(time.RFC3339)
 				}
 				_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", sub.ID, sub.Code, meta)
 			}
@@ -5242,7 +5252,8 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 		// empty balance applies nothing. Failure → skip this invoice this tick
 		// (flag stays set; next sweep retries) rather than charge pre-credit.
 		if e.credits != nil && inv.AmountDueCents > 0 {
-			at, nowErr := e.EffectiveNowForInvoice(ctx, inv.TenantID, inv.ID)
+			sim, nowErr := e.SimForInvoice(ctx, inv.TenantID, inv.ID)
+			at := sim.At
 			if nowErr != nil {
 				at = e.clock.Now(ctx) // ADR-030: injected clock, never bare wall-clock
 			}
@@ -5625,9 +5636,12 @@ func (e *Engine) cancelTrialAtEndFromEngine(ctx context.Context, sub domain.Subs
 		if canceled.CanceledAt != nil {
 			meta["canceled_at"] = canceled.CanceledAt.UTC().Format(time.RFC3339)
 		}
-		if sub.TestClockID != "" {
-			meta["test_clock_id"] = sub.TestClockID
-			meta["sim_effective_at"] = sub.TrialEndAt.UTC().Format(time.RFC3339)
+		// trial_end_at is its own fact, under its own key. The row's sim axis
+		// (test_clock_id + sim_effective_at) is the audit writer's, resolved
+		// from the ctx clock binding — see subscription.cancelTrialAtEnd, the
+		// other writer of this vocabulary.
+		if sub.TrialEndAt != nil {
+			meta["trial_end_at"] = sub.TrialEndAt.UTC().Format(time.RFC3339)
 		}
 		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionCancel, "subscription", canceled.ID, canceled.Code, meta)
 	}
