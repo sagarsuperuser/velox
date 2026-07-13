@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -349,6 +350,19 @@ func replayExistingKey(w http.ResponseWriter, ctx context.Context, db *postgres.
 					"Keys for idempotent requests can only be used with the same parameters they were first used with.")
 				return
 			}
+			// A replay runs NO handler and executes NO mutation — it hands back
+			// the response the FIRST request produced, and that request emitted
+			// the audit row. Declare the request accounted-for so the
+			// root-mounted audit-coverage detector doesn't read this 2xx as a
+			// mutation that lost its row: the detector wraps this middleware
+			// (the catch-all it replaces was mounted INSIDE it and never saw
+			// replays), and without this every idempotent retry of a successful
+			// mutation would be reported as an uncovered mutation.
+			//
+			// Emitting a second row here would be worse than the false alarm: it
+			// would record a mutation that never happened, in an append-only log.
+			audit.MarkSkip(ctx)
+
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Idempotent-Replayed", "true")
 			w.WriteHeader(c.StatusCode)

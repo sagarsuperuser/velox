@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -297,10 +296,6 @@ func (h *Handler) updateMeter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The audit emission rode the UPDATE's own transaction (ADR-090), so
-	// suppress the middleware catch-all here — request-scoped, post-commit.
-	audit.MarkHandled(r.Context())
-
 	respond.JSON(w, r, http.StatusOK, meter)
 }
 
@@ -467,12 +462,6 @@ func (h *Handler) deleteMeterPricingRule(w http.ResponseWriter, r *http.Request)
 		respond.FromError(w, r, err, "meter_pricing_rule")
 		return
 	}
-
-	// The truthful delete row rode the DELETE's own transaction (ADR-090).
-	// Suppressing the catch-all here is what actually retires the fabricated
-	// "deleted meter {meter_id}" row this route has been writing: the
-	// heuristic classifier read parts[1] of the path as the resource id.
-	audit.MarkHandled(r.Context())
 
 	w.WriteHeader(http.StatusNoContent)
 }

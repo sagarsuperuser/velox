@@ -55,8 +55,8 @@ func (e *erroringAudit) Log(context.Context, string, string, string, string, str
 
 // TestCreateSetupSessionAudit pins the ADR-090 emission on
 // POST /v1/customers/{id}/payment-methods/setup-session — the operator minting
-// a card-capture capability link. Today its only audit trace is the middleware
-// catch-all's guessed row; after the catch-all dies, this is the record.
+// a card-capture capability link. Its only audit trace used to be the deleted
+// middleware catch-all's guessed row; this emission is now the record.
 //
 // Invariants:
 //

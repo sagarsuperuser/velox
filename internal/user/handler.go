@@ -287,6 +287,16 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve BEFORE the mutation. The audit row needs the session's identity,
+	// and resolving afterwards made the emission conditional on a second
+	// lookup succeeding — so a resolve failure left the mode SWITCHED with no
+	// record of who switched it. An unresolvable session is a 401 anyway.
+	sess, rerr := h.sessions.Resolve(r.Context(), c.Value)
+	if rerr != nil {
+		respond.Unauthorized(w, r, "invalid or expired session")
+		return
+	}
+
 	if err := h.sessions.SetLivemode(r.Context(), c.Value, req.Livemode); err != nil {
 		if errors.Is(err, session.ErrNotFound) {
 			respond.Unauthorized(w, r, "invalid or expired session")
@@ -297,12 +307,10 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
-		// Stamped with the NEW mode — the row lands in the partition the
-		// operator just switched into, alongside the actions that follow.
-		h.auditAuthEvent(r.Context(), r, req.Livemode, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
-			map[string]any{"livemode": req.Livemode})
-	}
+	// Stamped with the NEW mode — the row lands in the partition the
+	// operator just switched into, alongside the actions that follow.
+	h.auditAuthEvent(r.Context(), r, req.Livemode, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
+		map[string]any{"livemode": req.Livemode})
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"livemode": req.Livemode,
@@ -312,16 +320,28 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 // logout revokes the session row matching the cookie and clears the
 // cookie on the response. Idempotent — missing cookie is a no-op.
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	audited := false
 	c, err := r.Cookie(session.CookieName)
 	if err == nil && c.Value != "" {
 		// Resolve before revoke so the audit row carries the operator identity;
 		// a stale/expired cookie just yields no row.
 		if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
 			h.auditAuthEvent(r.Context(), r, sess.Livemode, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
+			audited = true
 		}
 		if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
 			slog.Error("session: revoke failed", "err", revokeErr)
 		}
+	}
+	if !audited {
+		// No cookie, or one that resolves to nothing: this logout revoked no
+		// session — it mutated nothing, so there is nothing to audit. Say so
+		// explicitly. To an observer at the transport a 204 with no audit row is
+		// otherwise indistinguishable from a real logout that LOST its row, and
+		// the audit-coverage detector would (correctly, on the evidence
+		// available to it) report every stale-cookie logout as an uncovered
+		// mutation.
+		audit.MarkSkip(r.Context())
 	}
 	h.cookie.ClearCookie(w)
 	w.WriteHeader(http.StatusNoContent)
@@ -352,6 +372,8 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	// generic 200 — the fixed response is the enumeration defence.
 	if h.resetThrottle != nil && !h.resetThrottle.allow(req.Email, time.Now()) {
 		slog.Warn("password reset throttled — send skipped", "reason", "per-address cap")
+		// Throttled: no token issued, nothing mutated, nothing to audit.
+		audit.MarkSkip(r.Context())
 		respond.JSON(w, r, http.StatusOK, map[string]string{
 			"message": "if that email is registered, a reset link has been sent",
 		})
@@ -388,6 +410,13 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		// is identical match-or-not) nor pollutes the log with spray attempts.
 		h.auditAuthEvent(r.Context(), r, false, "", tenantID, "password_reset_requested", "", req.Email,
 			map[string]any{"email": req.Email})
+	} else {
+		// No account matched (or issuance failed): no token exists, nothing was
+		// mutated, and deliberately nothing is written — a row here would turn
+		// the audit log into the account-existence oracle the fixed 200 exists to
+		// deny. Declared so the coverage detector reads "nothing to audit" rather
+		// than "a mutation lost its row".
+		audit.MarkSkip(r.Context())
 	}
 
 	// Whether reset emails can actually be DELIVERED on this deployment —

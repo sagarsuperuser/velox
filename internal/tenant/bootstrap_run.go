@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -52,6 +53,11 @@ type BootstrapDeps struct {
 	// CreateUserTx inserts the owner user + tenant attachment inside the
 	// bootstrap tx.
 	CreateUserTx func(ctx context.Context, tx *sql.Tx, email, passwordHash, tenantID, role string) (domain.User, error)
+	// Audit records the provisioning inside the bootstrap tx (ADR-090).
+	// Optional (nil => no rows), but the composition root always wires it:
+	// bootstrap mints a LIVE secret key and an owner account, and "where did
+	// this live key come from?" is precisely an audit question.
+	Audit AuditEmitter
 }
 
 // BootstrapOpts parameterize one bootstrap run.
@@ -221,6 +227,80 @@ func RunBootstrap(ctx context.Context, db *postgres.DB, deps BootstrapDeps, opts
 	ownerUser, err := deps.CreateUserTx(ctx, tx, ownerEmail, passwordHash, tenantID, "owner")
 	if err != nil {
 		return BootstrapResult{}, err
+	}
+
+	// ADR-090: record the provisioning in the NEW tenant's own log, on this
+	// same transaction (panel Q6's rule for the platform plane). Bootstrap
+	// mints a LIVE secret key and an owner account with no prior actor to
+	// attribute them to — "who created this live key, and when?" is exactly
+	// the question an auditor asks, and until now the answer was nowhere.
+	// actor = system: there is genuinely no authenticated identity here (the
+	// route runs only while zero tenants exist, gated by a bootstrap token).
+	if deps.Audit != nil {
+		// The tx runs under TxBypass (no tenant exists yet at BEGIN), so stamp
+		// the GUCs the audit INSERT reads: tenant_id comes from app.tenant_id
+		// and livemode is trigger-stamped from app.livemode. Account-plane
+		// facts are recorded LIVE, matching POST /v1/tenants.
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
+			return BootstrapResult{}, fmt.Errorf("stamp tenant for audit: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('app.livemode', 'on', true)`); err != nil {
+			return BootstrapResult{}, fmt.Errorf("stamp livemode for audit: %w", err)
+		}
+
+		if err := deps.Audit.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionCreate,
+			ResourceType:  "tenant",
+			ResourceID:    tenantID,
+			ResourceLabel: tenantName,
+			Metadata: map[string]any{
+				"action":        "bootstrap_provisioned",
+				"owner_user_id": ownerUser.ID,
+				"owner_email":   ownerEmail,
+			},
+		}); err != nil {
+			return BootstrapResult{}, fmt.Errorf("audit bootstrap tenant: %w", err)
+		}
+
+		// One row per minted credential — NEVER the key material, only its
+		// identity, type and mode. Mirrors the vocabulary of an ordinary
+		// api-key mint (auth.Handler.create), so a live-key audit query finds
+		// bootstrap keys and operator-minted keys the same way.
+		for _, k := range []struct {
+			id, name, keyType string
+			livemode          bool
+		}{
+			{testSecretID, "Bootstrap Key (Test)", "secret", false},
+			{liveSecretID, "Bootstrap Key (Live)", "secret", true},
+			{testPubID, "Bootstrap Publishable Key (Test)", "publishable", false},
+		} {
+			if err := deps.Audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionCreate,
+				ResourceType:  "api_key",
+				ResourceID:    k.id,
+				ResourceLabel: k.name,
+				Metadata: map[string]any{
+					"action":   "bootstrap_provisioned",
+					"key_type": k.keyType,
+					"livemode": k.livemode,
+				},
+			}); err != nil {
+				return BootstrapResult{}, fmt.Errorf("audit bootstrap key %s: %w", k.name, err)
+			}
+		}
+
+		if err := deps.Audit.LogInTx(ctx, tx, audit.Entry{
+			Action:       domain.AuditActionCreate,
+			ResourceType: "user",
+			ResourceID:   ownerUser.ID,
+			Metadata: map[string]any{
+				"action": "bootstrap_provisioned",
+				"role":   "owner",
+				"email":  ownerEmail,
+			},
+		}); err != nil {
+			return BootstrapResult{}, fmt.Errorf("audit bootstrap owner: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

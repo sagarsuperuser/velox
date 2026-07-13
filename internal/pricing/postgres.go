@@ -740,11 +740,11 @@ func (s *PostgresStore) DeleteMeterPricingRule(ctx context.Context, tenantID, id
 // DeleteMeterPricingRuleAudited deletes the rule and runs the caller-supplied
 // audit emission on the SAME transaction (ADR-090 shared fate).
 //
-// This route is ADR-090's poster child: the HTTP catch-all recorded this
-// DELETE as "deleted meter {meter_id}" (parseAuditPath took parts[1] as the
-// resource id) — a false permanent row in an append-only compliance log
-// claiming the operator destroyed a meter and all its pricing, when they
-// removed one dimension rule. The emission here replaces that lie.
+// This route is ADR-090's poster child: the deleted HTTP catch-all recorded this
+// DELETE as "deleted meter {meter_id}" (its path classifier took the second
+// segment as the resource id) — a false permanent row in an append-only
+// compliance log claiming the operator destroyed a meter and all its pricing,
+// when they removed one dimension rule. The emission here replaces that lie.
 //
 // DELETE … RETURNING makes the deleted row itself the evidence source: the
 // audit row's meter_id is the one the rule actually carried, read inside the

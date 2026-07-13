@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -62,15 +61,14 @@ func (h *Handler) triggerCycle(w http.ResponseWriter, r *http.Request) {
 
 	// ADR-090: the operator's TRIGGER gets its own row. The per-invoice
 	// finalize rows this run writes cannot answer "who started this cycle" —
-	// they are byte-identical whether the scheduler or an operator drove it,
-	// so the only record of a hand-run today is the middleware catch-all's
-	// heuristic row, which is about to be deleted.
+	// they are byte-identical whether the scheduler or an operator drove it.
 	//
 	// Residual OWN-TX emission, deliberately post-effect: the route owns no
 	// transaction (each invoice already committed inside the engine, with its
 	// own in-tx evidence), so there is nothing left to share fate with. The row
 	// therefore records what the run DID — the invoice count it actually
-	// produced — which is only knowable after it returns.
+	// produced — which is only knowable after it returns. A successful Log
+	// self-marks the request as accounted-for.
 	if aw := h.engine.auditWriter(); aw != nil {
 		if err := aw.Log(r.Context(), tenantID, domain.AuditActionRun, "billing", "", "", map[string]any{
 			"action":           "cycle_run_triggered",
@@ -80,14 +78,11 @@ func (h *Handler) triggerCycle(w http.ResponseWriter, r *http.Request) {
 			// Never swallowed (`_ =` is the pattern ADR-090 kills). The run is
 			// already committed, so the response keeps its invoice count rather
 			// than lying with a 500 — but the caller is TOLD the trigger could
-			// not be recorded, and the catch-all is left un-suppressed so its
-			// (correctly-shaped, for this one route) row still lands while it
-			// exists.
+			// not be recorded, and the request stays UNMARKED so the
+			// AuditCoverage detector reports the uncovered mutation.
 			slog.ErrorContext(r.Context(), "billing run: audit trigger row failed",
 				"tenant_id", tenantID, "error", err)
 			errStrings = append(errStrings, "billing run completed but its audit record failed")
-		} else {
-			audit.MarkHandled(r.Context())
 		}
 	}
 

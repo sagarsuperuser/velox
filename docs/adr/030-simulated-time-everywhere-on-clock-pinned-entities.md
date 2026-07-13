@@ -272,7 +272,10 @@ now" they actually experienced).
 - `internal/audit/audit.go`: `created_at = time.Now().UTC()`
   unconditionally; dropped the `clock` import.
 - `internal/api/middleware/audit.go`: same — middleware catch-all
-  stamps wall-clock.
+  stamps wall-clock. (That middleware was DELETED by ADR-090's uninstall,
+  2026-07-14; audit rows are now emitted in the business transaction and
+  `created_at` stays wall-clock there. The sim axis moved to first-class
+  `sim_effective_at` / `test_clock_id` columns — migration 0148.)
 - `internal/subscription/handler.go`: `auditCtxForSub` deleted;
   replaced with `auditMetaForSub(sub, extra) map[string]any` that
   injects `sim_effective_at` + `test_clock_id` into the metadata bag

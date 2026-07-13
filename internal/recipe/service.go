@@ -321,6 +321,12 @@ func (s *Service) Instantiate(
 	// against a NEWER template version is deferred (ADR-085); v1 ships a single
 	// version per recipe, so a re-apply at the same version is a pure no-op.
 	if existing, err := s.store.GetByKeyTx(ctx, tx, tenantID, recipeKey); err == nil {
+		// Declare the no-op to the audit-coverage detector. This request is a
+		// mutating POST that will answer 201 having changed NOTHING, so without
+		// the declaration it is indistinguishable — to an observer at the
+		// transport — from an install that forgot its audit row, and every
+		// re-apply would be reported as an uncovered mutation.
+		audit.MarkSkip(ctx)
 		return existing, nil
 	} else if !errors.Is(err, errs.ErrNotFound) {
 		return domain.RecipeInstance{}, err

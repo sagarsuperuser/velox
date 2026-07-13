@@ -136,14 +136,6 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The audit emission rode the INSERT's own transaction (ADR-090): the
-	// customer and its create row committed together, so suppress the
-	// middleware catch-all HERE — request-scoped and post-commit — rather
-	// than inside LogInTx, which cannot know whether its tx survives.
-	// Without this, the bridge window would write the true row AND the
-	// catch-all's guessed one for every create.
-	audit.MarkHandled(r.Context())
-
 	respond.JSON(w, r, http.StatusCreated, customer)
 }
 

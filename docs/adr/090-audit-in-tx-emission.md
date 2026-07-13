@@ -98,17 +98,64 @@ BOTH its `credit_note.issued` row and the grant's `grant` row.
 `GrantCommitForInvoiceTx` stays unaudited by design: it exists only inside
 invoice finalize, whose own `finalize` row is the canonical evidence.
 
-### 4. The migration bridge
+### 4. The migration bridge — DONE (uninstalled 2026-07-14)
 
-`LogInTx` does NOT mark the request handled: an in-tx emission can be
-rolled back after the call returns, and a secondary mutation deep inside
-another route's flow must not suppress that route's own catch-all row.
-Suppression is a REQUEST-scoped decision: the route's owning handler calls
-`audit.MarkHandled` after its operation commits. The catch-all (still
-installed), the heuristic classifiers, and `MarkSkip`/`MarkHandled` are
-deleted only at the END of the arc (registry + pure-observer detector PR),
-after a route-walk arch test proves declared coverage parity — uninstall is
-one complete change, never split.
+During the migration, `LogInTx` did NOT mark the request handled: an in-tx
+emission can be rolled back after the call returns, and a secondary mutation
+deep inside another route's flow must not suppress that route's own catch-all
+row. Suppression was a REQUEST-scoped decision made by the route's owning
+handler (`audit.MarkHandled`) after its operation committed. The catch-all
+stayed installed until the END of the arc, and the uninstall shipped as one
+complete change, never split.
+
+**It happened.** The catch-all writer (`mw.AuditLog`), its heuristic
+classifiers (`parseAuditPath`, `extractLabel`, `extractID`,
+`canonicalResourceType`), its response buffer (`bufferedResponse`), its writer
+(`writeAudit`), and `audit.MarkHandled` are DELETED. What replaced them:
+
+- **A route-audit registry** (`internal/api/audit_routes.go`) — one table
+  mapping every mutating (method, chi route pattern) to `explicit` (the route
+  emits its own typed row; the note names the emitter) or `exempt(reason)`,
+  where reason is a CLOSED enum and the note records the justification and any
+  accepted loss. 102 routes: 92 explicit, 10 exempt. (Backfill and bootstrap were reclassified from exempt to explicit during review: an operator backdating usage, and a first-run install minting a live secret key, are both money-relevant actions that must leave evidence.)
+- **A two-way-diff arch test** (`audit_routes_test.go`) — walks the LIVE chi
+  route table: an undeclared mutating route fails CI, and a stale registry
+  entry fails CI. This is the drift gate; a new route now forces an audit
+  decision at review time. It is the *only* thing standing between a new route
+  and silent un-auditing, which is why it diffs both directions.
+- **A pure-observer detector** (`mw.AuditCoverage`, mounted at the ROOT, not
+  on /v1 — RC1's fix). It NEVER mutates the response and NEVER buffers the
+  body: a mutating 2xx that produced no audit row and is not declared exempt
+  increments `velox_audit_uncovered_mutation_total{route}` and logs
+  `UNCOVERED MUTATION`. It reports; it does not invent.
+
+Two amendments this forced, both deliberate:
+
+- **`Log`/`LogInTx` now self-mark** (the §4 rule above, inverted). That rule
+  was written for the catch-all WRITER, where a stray mark cost a route its
+  only row. It does not carry to an OBSERVER: a rolled-back emission means the
+  handler answers non-2xx, and the detector only inspects 2xx. Self-marking was
+  also *required* — `POST /v1/tenants` and both public checkout routes emit only
+  in-tx and sit outside the old catch-all, so nothing else would account for
+  them. Named blind spot: a route that emits nothing of its own but nests
+  someone else's emission reads as covered at runtime — bounded by the
+  registry's static gate.
+- **`MarkSkip` survives, `MarkHandled` does not.** `MarkSkip` is now the
+  detector's "this request mutated nothing" declaration, and it is load-bearing:
+  four live paths return 2xx having mutated nothing (a stale-cookie logout, a
+  password reset for an unknown email — the fixed 200 *is* the enumeration
+  defence, a settings save that changed no field, an idempotency replay), plus
+  the read-only previews, a recipe re-apply that installs nothing, and a
+  credit-note issue that defers. Without the declaration each would report as an
+  uncovered mutation forever, and a detector that cries wolf on a normal client
+  retry is a detector nobody keeps. `MarkHandled` is gone because it was the
+  exported escape hatch that let a handler ASSERT coverage it did not have; the
+  only thing that may claim coverage now is a row that actually landed.
+
+The observer wraps the response's STATUS only (chi's `middleware.WrapResponseWriter`),
+never its body, so `http.Flusher` / `Hijacker` / `ReaderFrom` pass through untouched —
+the streaming CSV exports and the SSE stream are unaffected by it. A regression test
+pins that property.
 
 ### 5. Sim-time axis (ADR-086 amendment)
 

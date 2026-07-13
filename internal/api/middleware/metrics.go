@@ -133,8 +133,6 @@ var (
 		[]string{"reconciler", "mode", "outcome"},
 	)
 
-	auditWriteErrors *prometheus.CounterVec
-
 	stripeBreakerState = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "velox_stripe_breaker_state",
@@ -163,23 +161,6 @@ func RecordStripeBreakerState(state string) {
 		v = 2
 	}
 	stripeBreakerState.Set(v)
-}
-
-func init() {
-	c := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "velox_audit_write_errors_total",
-		Help: "Total failed audit log writes, labeled by tenant.",
-	}, []string{"tenant_id"})
-	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
-		// Already registered by another package — reuse the existing collector.
-		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			auditWriteErrors = are.ExistingCollector.(*prometheus.CounterVec)
-		} else {
-			panic(err)
-		}
-	} else {
-		auditWriteErrors = c
-	}
 }
 
 // Metrics returns middleware that records HTTP request metrics.
@@ -282,13 +263,6 @@ func RecordScheduledCleanup(table string, rows int) {
 		return
 	}
 	scheduledCleanupRows.WithLabelValues(table).Add(float64(rows))
-}
-
-// RecordAuditWriteError increments the per-tenant audit write error counter.
-// SOC-2 operators alert on sum(audit_write_errors_total) and drill into the
-// tenant_id label to find which tenants are affected.
-func RecordAuditWriteError(tenantID string) {
-	auditWriteErrors.WithLabelValues(tenantID).Inc()
 }
 
 // sanitizePath normalizes paths to prevent high-cardinality metric labels.

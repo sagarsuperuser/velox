@@ -16,6 +16,7 @@ import (
 
 	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -178,6 +179,12 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) respondIngestError(w http.ResponseWriter, r *http.Request, tenantID, idempotencyKey string, err error) {
 	if errors.Is(err, errs.ErrDuplicateKey) && idempotencyKey != "" {
 		if original, gerr := h.svc.GetByIdempotencyKey(r.Context(), tenantID, idempotencyKey); gerr == nil {
+			// A replay MUTATES NOTHING — it hands back the row the original
+			// request already wrote (and, for backfill, already audited).
+			// Declare that to the audit observer: without it every client
+			// retry of a backfill would report as an uncovered mutation, and
+			// a second audit row would record an insert that never happened.
+			audit.MarkSkip(r.Context())
 			w.Header().Set("Idempotent-Replayed", "true")
 			respond.JSON(w, r, http.StatusOK, original)
 			return

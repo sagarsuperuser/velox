@@ -56,9 +56,10 @@ func newProviderCostAuditFixture(t *testing.T) *providerCostAuditFixture {
 }
 
 // serve drives the real chi sub-router (PUT / and DELETE /{id}) so path params
-// and the handler's audit.MarkHandled call are exercised as mounted. The
-// request ctx carries the middleware's bookkeeping cell, so callers can assert
-// whether the catch-all would be suppressed for this request.
+// are exercised as mounted. The request ctx carries the audit bookkeeping cell,
+// so callers can assert the request is ACCOUNTED FOR — the property the
+// root-mounted AuditCoverage detector reads (an unaccounted-for mutating 2xx is
+// an uncovered mutation).
 func (f *providerCostAuditFixture) serve(t *testing.T, emitter usage.AuditEmitter, method, target, body string) (*httptest.ResponseRecorder, context.Context) {
 	t.Helper()
 	h := usage.NewProviderCostHandler(f.store, nil)
@@ -107,10 +108,10 @@ func TestProviderCostAudit_SharedFate(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("upsert: got %d, want 200; body=%s", rec.Code, rec.Body.String())
 		}
-		// The explicit row is the record — the middleware catch-all (still
-		// installed until the next PR) must not add its heuristic duplicate.
+		// The in-tx emission is the record, and its self-mark is what tells the
+		// coverage detector this mutation left evidence.
 		if !audit.WasHandled(reqCtx) {
-			t.Error("upsert must call audit.MarkHandled so the catch-all skips its guessed row")
+			t.Error("upsert emitted no audit row — the coverage detector will report it as an uncovered mutation")
 		}
 		rates, err := f.store.ListProviderCostRates(f.ctx, f.tenantID)
 		if err != nil {
@@ -212,7 +213,7 @@ func TestProviderCostAudit_SharedFate(t *testing.T) {
 			t.Fatalf("delete: got %d, want 204; body=%s", rec.Code, rec.Body.String())
 		}
 		if !audit.WasHandled(reqCtx) {
-			t.Error("delete must call audit.MarkHandled so the catch-all skips its guessed row")
+			t.Error("delete emitted no audit row — the coverage detector will report it as an uncovered mutation")
 		}
 		if n := f.rateCount(t); n != 0 {
 			t.Errorf("rate not deleted: %d rates left", n)
