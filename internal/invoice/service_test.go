@@ -201,6 +201,20 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return inv, nil
 }
 
+// Prior variant: the fake's "prior" is the current in-memory status —
+// exact, since the fake is single-threaded.
+func (m *memStore) UpdateStatusWithReversalPrior(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx, prior domain.InvoiceStatus) error) (domain.Invoice, error) {
+	prior := domain.InvoiceStatus("")
+	if inv, ok := m.invoices[id]; ok {
+		prior = inv.Status
+	}
+	var fn func(tx *sql.Tx) error
+	if reverseFn != nil {
+		fn = func(tx *sql.Tx) error { return reverseFn(tx, prior) }
+	}
+	return m.UpdateStatusWithReversal(ctx, tenantID, id, status, fn)
+}
+
 func (m *memStore) UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error) {
 	prev, ok := m.invoices[id]
 	if !ok || prev.TenantID != tenantID {

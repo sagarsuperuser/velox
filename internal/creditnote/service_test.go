@@ -151,6 +151,28 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	return cn, nil
 }
 
+// TransitionStatusAudited fake mirrors the real store: emit fires only on
+// a won CAS; nil tx is fine for content-level unit tests, and an emit error
+// leaves the flip un-rolled-back only in the fake (real-store shared fate
+// is pinned by integration tests) so it fails loudly instead.
+func (m *memStore) TransitionStatusAudited(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus, emit func(tx *sql.Tx) error) (bool, error) {
+	won, err := m.TransitionStatus(ctx, tenantID, id, from, to)
+	if err != nil || !won {
+		return won, err
+	}
+	if emit != nil {
+		if err := emit(nil); err != nil {
+			// roll the fake flip back for shared-fate fidelity
+			if cn, ok := m.notes[id]; ok {
+				cn.Status = from
+				m.notes[id] = cn
+			}
+			return false, err
+		}
+	}
+	return won, nil
+}
+
 func (m *memStore) TransitionStatus(_ context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {

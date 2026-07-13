@@ -273,7 +273,7 @@ func (s *PostgresStore) SetStripeCustomerIDAudited(ctx context.Context, tenantID
 	}
 	defer postgres.Rollback(tx)
 
-	_, err = tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		UPDATE customers
 		SET stripe_customer_id = $1, updated_at = $2
 		WHERE id = $3 AND tenant_id = $4
@@ -281,7 +281,13 @@ func (s *PostgresStore) SetStripeCustomerIDAudited(ctx context.Context, tenantID
 	if err != nil {
 		return fmt.Errorf("set stripe_customer_id: %w", err)
 	}
-	if emit != nil {
+	// Emit ONLY when a row was actually written: a zero-row UPDATE (customer
+	// on the other livemode plane under RLS, or torn down by a test-clock
+	// delete before a late webhook) must not fabricate evidence of a
+	// mutation that never happened. A same-value rewrite on webhook replay
+	// still emits — the row records a true completed-setup fact and the
+	// event-id dedup upstream bounds it to the rare race window.
+	if n, _ := res.RowsAffected(); n == 1 && emit != nil {
 		if err := emit(tx); err != nil {
 			return fmt.Errorf("audit emission: %w", err)
 		}

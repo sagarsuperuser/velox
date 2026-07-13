@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -112,11 +113,16 @@ func TestLifecycleEvents_EnqueuedInTransitionTx(t *testing.T) {
 	}
 
 	// (3) canceled (operator) — CancelAtomic; a second cancel (CAS loser)
-	// must not enqueue a second event.
-	if _, err := store.CancelAtomic(ctx, tenantID, sub.ID); err != nil {
+	// must not enqueue a second event. canceled_by is no longer hardcoded:
+	// it derives from the request identity (cancelActorLabel), the same rule
+	// the ADR-090 audit row uses, so the webhook and the audit evidence in
+	// one tx can't disagree. An OPERATOR cancel is therefore one whose ctx
+	// carries operator identity — a bare ctx is a background actor.
+	opCtx := auth.WithKeyID(ctx, "vlx_key_lifecycle_obx")
+	if _, err := store.CancelAtomic(opCtx, tenantID, sub.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	if _, err := store.CancelAtomic(ctx, tenantID, sub.ID); err == nil {
+	if _, err := store.CancelAtomic(opCtx, tenantID, sub.ID); err == nil {
 		t.Fatal("second cancel should fail (already canceled)")
 	}
 	if n, p := events(domain.EventSubscriptionCanceled); n != 1 || p["canceled_by"] != "operator" {

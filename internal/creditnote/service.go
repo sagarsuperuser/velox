@@ -982,13 +982,15 @@ func (s *Service) CreateAndIssueCommitRelief(ctx context.Context, tenantID strin
 			ResourceID:    cn.ID,
 			ResourceLabel: cn.CreditNoteNumber,
 			Metadata: map[string]any{
-				"credit_note_number":  cn.CreditNoteNumber,
-				"invoice_id":          cn.InvoiceID,
-				"customer_id":         cn.CustomerID,
-				"total_cents":         cn.TotalCents,
-				"refund_amount_cents": cn.RefundAmountCents,
-				"credit_amount_cents": cn.CreditAmountCents,
-				"out_of_band_cents":   cn.OutOfBandAmountCents,
+				"credit_note_number":       cn.CreditNoteNumber,
+				"invoice_id":               cn.InvoiceID,
+				"customer_id":              cn.CustomerID,
+				"total_cents":              cn.TotalCents,
+				"refund_amount_cents":      cn.RefundAmountCents,
+				"credit_amount_cents":      cn.CreditAmountCents,
+				"out_of_band_amount_cents": cn.OutOfBandAmountCents,
+				"reason":                   cn.Reason,
+				"currency":                 cn.Currency,
 			},
 		}); auditErr != nil {
 			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", auditErr)
@@ -1165,7 +1167,28 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	// draft so it leaves the reconciler scan and never applies. Pure status
 	// flip on a never-applied draft — no money movement, no tax call.
 	if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
-		if _, terr := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided); terr != nil {
+		// The draft→voided flip is a REAL committed mutation on a money
+		// document — it carries its evidence in the same tx (ADR-090;
+		// previously this path had zero audit rows once the handler's
+		// post-hoc row was deleted).
+		var emit func(tx *sql.Tx) error
+		if s.audit != nil {
+			emit = func(tx *sql.Tx) error {
+				return s.audit.LogInTx(ctx, tx, audit.Entry{
+					Action:        domain.AuditActionVoid,
+					ResourceType:  "credit_note",
+					ResourceID:    cn.ID,
+					ResourceLabel: cn.CreditNoteNumber,
+					Metadata: map[string]any{
+						"action":        "orphan_draft_voided",
+						"invoice_id":    cn.InvoiceID,
+						"customer_id":   cn.CustomerID,
+						"source_status": string(inv.Status),
+					},
+				})
+			}
+		}
+		if _, terr := s.store.TransitionStatusAudited(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided, emit); terr != nil {
 			return domain.CreditNote{}, fmt.Errorf("void orphaned clawback draft (source %s %s): %w", cn.InvoiceID, inv.Status, terr)
 		}
 		slog.InfoContext(ctx, "voided orphaned clawback draft (source annulled before issue)",
@@ -1276,13 +1299,15 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 			ResourceID:    cn.ID,
 			ResourceLabel: cn.CreditNoteNumber,
 			Metadata: map[string]any{
-				"credit_note_number":  cn.CreditNoteNumber,
-				"invoice_id":          cn.InvoiceID,
-				"customer_id":         cn.CustomerID,
-				"total_cents":         cn.TotalCents,
-				"refund_amount_cents": cn.RefundAmountCents,
-				"credit_amount_cents": cn.CreditAmountCents,
-				"out_of_band_cents":   cn.OutOfBandAmountCents,
+				"credit_note_number":       cn.CreditNoteNumber,
+				"invoice_id":               cn.InvoiceID,
+				"customer_id":              cn.CustomerID,
+				"total_cents":              cn.TotalCents,
+				"refund_amount_cents":      cn.RefundAmountCents,
+				"credit_amount_cents":      cn.CreditAmountCents,
+				"out_of_band_amount_cents": cn.OutOfBandAmountCents,
+				"reason":                   cn.Reason,
+				"currency":                 cn.Currency,
 			},
 		}); auditErr != nil {
 			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", auditErr)

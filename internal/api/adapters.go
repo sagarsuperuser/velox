@@ -502,6 +502,11 @@ type subscriptionCancelerAdapter struct {
 }
 
 func (a *subscriptionCancelerAdapter) Cancel(ctx context.Context, tenantID, id string) error {
+	// Stamp the origin so the cancel's audit row and its outbound
+	// subscription.canceled webhook — both written in the cancel tx — name
+	// dunning as the driver, rather than each guessing from the absence of
+	// a request actor (ADR-090 PR4 review).
+	ctx = subscription.WithCancelOrigin(ctx, "dunning")
 	_, _, err := a.svc.Cancel(ctx, tenantID, id)
 	return err
 }

@@ -907,7 +907,7 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	// committed, silently stripped the customer of paid-with credits on any
 	// transient failure (no reconciler re-drove it). The 0106 dedup index keeps
 	// the in-tx reversal exactly-once across redelivery.
-	voided, err := s.store.UpdateStatusWithReversal(ctx, tenantID, id, domain.InvoiceVoided, func(tx *sql.Tx) error {
+	voided, err := s.store.UpdateStatusWithReversalPrior(ctx, tenantID, id, domain.InvoiceVoided, func(tx *sql.Tx, prior domain.InvoiceStatus) error {
 		var creditsReversed, commitRetired int64
 		if s.creditReverser != nil && inv.CustomerID != "" {
 			reversed, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber)
@@ -940,7 +940,7 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 				"customer_id":        inv.CustomerID,
 				"total_amount_cents": inv.TotalAmountCents,
 				"currency":           inv.Currency,
-				"status_before":      string(inv.Status),
+				"status_before":      string(prior),
 			}
 			if creditsReversed > 0 {
 				meta["credits_reversed_cents"] = creditsReversed

@@ -155,8 +155,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			respond.FromError(w, r, err, "credit_note")
 			return
 		}
-		// Issued row rides Issue()'s coordinator tx (ADR-090).
-		audit.MarkHandled(r.Context())
+		// Outcome-conditional bridge (ADR-090): issued/voided outcomes
+		// carried their own in-tx rows — suppress the catch-all. A
+		// DEFERRED outcome (in-flight source; status still draft) mutated
+		// only at create time, so leave the catch-all armed to record the
+		// 201 create.
+		if issued.Status == domain.CreditNoteIssued || issued.Status == domain.CreditNoteVoided {
+			audit.MarkHandled(r.Context())
+		}
 		respond.JSON(w, r, http.StatusCreated, issued)
 		return
 	}
@@ -221,8 +227,15 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issued row rides Issue()'s coordinator tx (ADR-090).
-	audit.MarkHandled(r.Context())
+	// Outcome-conditional bridge (ADR-090): issued and orphan-voided
+	// outcomes carried in-tx rows; a deferred outcome mutated nothing, so
+	// the request is a read — skip the catch-all's spurious row.
+	switch cn.Status {
+	case domain.CreditNoteIssued, domain.CreditNoteVoided:
+		audit.MarkHandled(r.Context())
+	default:
+		audit.MarkSkip(r.Context())
+	}
 
 	respond.JSON(w, r, http.StatusOK, cn)
 }

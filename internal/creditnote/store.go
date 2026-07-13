@@ -47,6 +47,10 @@ type Store interface {
 	// only if the credit note is currently in `from`. Used to serialize the
 	// draft→issued transition against concurrent/retried Issue() calls.
 	TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
+	// TransitionStatusAudited emits on the CAS tx, only when the CAS won
+	// (ADR-090) — the orphan-void guard uses it so the draft→voided flip
+	// carries its evidence.
+	TransitionStatusAudited(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus, emit func(tx *sql.Tx) error) (bool, error)
 	// TransitionStatusTx is TransitionStatus on the caller's coordinator tx, so
 	// the CAS commits atomically with Issue()'s internal money effect.
 	TransitionStatusTx(ctx context.Context, tx *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)

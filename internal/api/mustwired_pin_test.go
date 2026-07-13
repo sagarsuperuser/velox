@@ -27,20 +27,32 @@ func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 	}
 	text := string(src)
 
-	mw := regexp.MustCompile(`audit\.MustWired\(([^)]*)\)`).FindStringSubmatch(text)
-	if mw == nil {
+	mws := regexp.MustCompile(`audit\.MustWired\(([^)]*)\)`).FindAllStringSubmatch(text, -1)
+	if len(mws) == 0 {
 		t.Fatal("audit.MustWired call not found in router.go")
 	}
 	wired := map[string]bool{}
-	for _, name := range strings.Split(mw[1], ",") {
-		wired[strings.TrimSpace(name)] = true
+	for _, mw := range mws {
+		for _, name := range strings.Split(mw[1], ",") {
+			wired[strings.TrimSpace(name)] = true
+		}
 	}
 
 	// Service/adapter receivers of SetAuditLogger(auditLogger). Handler
 	// receivers end in "H" by router convention and are exempt (see doc).
+	// Handler receivers of the LEGACY post-hoc Logger (invoiceH, subH, ...)
+	// are exempt — they hold the concrete *audit.Logger and fail at compile
+	// time. In-tx emitters are NOT exempt regardless of naming:
+	// publicPaymentH is one and must appear in a (guarded) MustWired call.
+	legacyHandlerExempt := map[string]bool{
+		"invoiceH": true, "subH": true, "creditNoteH": true, "customerH": true,
+		"settingsH": true, "authH": true, "dunningH": true, "pricingH": true,
+		"tenantStripeH": true, "webhookOutH": true, "testClockH": true,
+		"membersH": true, "dashboardAuthH": true, "paymentMethodsH": true,
+	}
 	for _, m := range regexp.MustCompile(`(\w+)\.SetAuditLogger\(auditLogger\)`).FindAllStringSubmatch(text, -1) {
 		recv := m[1]
-		if strings.HasSuffix(recv, "H") {
+		if legacyHandlerExempt[recv] {
 			continue
 		}
 		if !wired[recv] {

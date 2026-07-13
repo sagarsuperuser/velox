@@ -455,6 +455,13 @@ func (s *PostgresStore) BeginTx(ctx context.Context, tenantID string) (*sql.Tx, 
 }
 
 func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error) {
+	return s.TransitionStatusAudited(ctx, tenantID, id, from, to, nil)
+}
+
+// TransitionStatusAudited runs the caller-supplied audit emission on the
+// same tx as the CAS flip (ADR-090); emit fires only when the CAS won —
+// a lost transition mutates nothing and records nothing.
+func (s *PostgresStore) TransitionStatusAudited(ctx context.Context, tenantID, id string, from, to domain.CreditNoteStatus, emit func(tx *sql.Tx) error) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return false, err
@@ -464,6 +471,11 @@ func (s *PostgresStore) TransitionStatus(ctx context.Context, tenantID, id strin
 	won, err := s.TransitionStatusTx(ctx, tx, tenantID, id, from, to)
 	if err != nil {
 		return false, err
+	}
+	if won && emit != nil {
+		if err := emit(tx); err != nil {
+			return false, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
@@ -593,12 +605,16 @@ func (s *PostgresStore) ApplyRefundWebhookStatusAudited(ctx context.Context, ten
 	//     refund succeeded→failed (bank rejects an initially-accepted refund), so
 	//     a later 'failed' must win; a stale 'pending' must not clobber succeeded.
 	//   - 'pending' yields to any terminal.
-	// Same-value re-delivery is a harmless no-op (zero rows → handled below).
+	// Same-value re-delivery of ANY status (incl. pending→pending, which
+	// the two monotonic clauses alone would let through) is a zero-row
+	// no-op — the guard below distinguishes it from an unknown refund id,
+	// and no audit row is emitted for a transition that didn't happen.
 	var cn domain.CreditNote
 	flipped := true
 	err = tx.QueryRowContext(ctx, `
 		UPDATE credit_notes SET refund_status=$1, updated_at=$2
 		WHERE stripe_refund_id=$3
+		  AND refund_status IS DISTINCT FROM $1
 		  AND refund_status <> 'failed'
 		  AND ($1 = 'failed' OR refund_status <> 'succeeded')
 		RETURNING id, credit_note_number, customer_id, invoice_id`,

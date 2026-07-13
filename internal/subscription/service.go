@@ -1661,19 +1661,46 @@ func (s *Service) RemoveItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 // credit balance).
 // cancelActorLabel derives the timeline's "canceled by …" vocabulary from
 // the request identity (ADR-090 D16): a dashboard session or API key reads
-// as "operator", a stamped customer actor as "customer", and a bare
-// background ctx as "dunning" — the dunning exhaust-action adapter is
-// Service.Cancel's only background caller today (engine scheduled/trial
-// cancels take their own store paths and never route here).
+// as "operator", a stamped customer actor as "customer". Background callers
+// name themselves via WithCancelOrigin (the dunning adapter stamps
+// "dunning"); an unstamped background cancel is honestly "system".
+//
+// The SAME function feeds the outbound subscription.canceled webhook
+// (postgres.go, enqueued in the cancel tx), so the webhook and the audit
+// row can never disagree about who canceled.
 func cancelActorLabel(ctx context.Context) string {
 	switch actorType, _ := audit.ResolveActor(ctx); actorType {
 	case "user", "api_key":
 		return "operator"
 	case "customer":
 		return "customer"
-	default:
-		return "dunning"
 	}
+	// Background caller. The machinery that drove the cancel STAMPS its own
+	// identity (WithCancelOrigin) rather than us inferring it from the
+	// absence of a request actor — an unlabeled background canceller is
+	// honestly "system", never a guess at whichever background path happens
+	// to exist today.
+	if origin := CancelOrigin(ctx); origin != "" {
+		return origin
+	}
+	return "system"
+}
+
+type cancelOriginKey struct{}
+
+// WithCancelOrigin stamps the background machinery driving a cancel (e.g.
+// "dunning") so both the ADR-090 audit row and the outbound
+// subscription.canceled webhook — written in the SAME transaction — name it
+// identically. Request-driven cancels need no stamp: ResolveActor already
+// answers who they were.
+func WithCancelOrigin(ctx context.Context, origin string) context.Context {
+	return context.WithValue(ctx, cancelOriginKey{}, origin)
+}
+
+// CancelOrigin reads the stamp set by WithCancelOrigin ("" when unset).
+func CancelOrigin(ctx context.Context) string {
+	origin, _ := ctx.Value(cancelOriginKey{}).(string)
+	return origin
 }
 
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error) {
@@ -1692,8 +1719,48 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 	var cancelDraftCredit int64
 	var cancelDraftsHandled bool
 	canceled, err := s.store.CancelAtomicWithBill(ctx, tenantID, id, func(tx *sql.Tx, c domain.Subscription) error {
-		if s.biller == nil {
+		// ADR-090 in-tx emission runs at the END of this closure (emitCancelAudit)
+		// so the atomic-path credit amount can ride the row — but it fires
+		// UNCONDITIONALLY: audit coverage must not be conditioned on the
+		// unrelated biller dependency (a biller-less construction still
+		// flips the sub to canceled).
+		emitCancelAudit := func(credited int64, handled bool, currency string) error {
+			if s.audit == nil {
+				return nil
+			}
+			meta := map[string]any{
+				"customer_id": c.CustomerID,
+				"plan_ids":    planIDsFromItems(c.Items),
+				"canceled_by": cancelActorLabel(ctx),
+			}
+			if handled && credited > 0 {
+				meta["prorated_credit_cents"] = credited
+				// Currency from the final invoice built in this same tx;
+				// credit-only cancels (no final invoice) omit it and the
+				// timeline falls back to its default rendering — the
+				// fallback-path credit carries its own audited grant row.
+				if currency != "" {
+					meta["currency"] = currency
+				}
+			}
+			var sim *audit.SimContext
+			if c.TestClockID != "" {
+				sim = &audit.SimContext{EffectiveAt: clock.Now(ctx), TestClockID: c.TestClockID}
+			}
+			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionCancel,
+				ResourceType:  "subscription",
+				ResourceID:    c.ID,
+				ResourceLabel: c.Code,
+				Metadata:      meta,
+				Sim:           sim,
+			}); auditErr != nil {
+				return fmt.Errorf("audit emission: %w", auditErr)
+			}
 			return nil
+		}
+		if s.biller == nil {
+			return emitCancelAudit(0, false, "")
 		}
 		inv, billErr := s.biller.BillFinalOnImmediateCancelTx(ctx, tx, c)
 		if billErr != nil {
@@ -1712,37 +1779,7 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 		}
 		cancelDraftIDs, cancelDraftCredit, cancelDraftsHandled = ids, credited, handled
 
-		// ADR-090 in-tx emission: the cancel audit row rides the SAME tx as
-		// the status flip + final invoice, so dunning-driven cancels (the
-		// previously-invisible background path) and operator cancels record
-		// identically — and a rolled-back cancel leaves no phantom row.
-		// prorated_credit_cents carries the atomic-path amount only; the
-		// fallback path's credit lands post-commit as its own audited grant.
-		if s.audit != nil {
-			meta := map[string]any{
-				"customer_id": c.CustomerID,
-				"plan_ids":    planIDsFromItems(c.Items),
-				"canceled_by": cancelActorLabel(ctx),
-			}
-			if handled && credited > 0 {
-				meta["prorated_credit_cents"] = credited
-			}
-			var sim *audit.SimContext
-			if c.TestClockID != "" {
-				sim = &audit.SimContext{EffectiveAt: clock.Now(ctx), TestClockID: c.TestClockID}
-			}
-			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
-				Action:        domain.AuditActionCancel,
-				ResourceType:  "subscription",
-				ResourceID:    c.ID,
-				ResourceLabel: c.Code,
-				Metadata:      meta,
-				Sim:           sim,
-			}); auditErr != nil {
-				return fmt.Errorf("audit emission: %w", auditErr)
-			}
-		}
-		return nil
+		return emitCancelAudit(credited, handled, inv.Currency)
 	})
 	if err != nil {
 		return domain.Subscription{}, 0, err

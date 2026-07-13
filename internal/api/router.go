@@ -477,12 +477,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// SPA origin the Checkout success/cancel URLs redirect back to. In
 	// dev, leave empty and the handler falls back to http://localhost:5173
 	// so `make dev` works without extra config.
+	// Constructed as a named var (not an inline literal) so the ADR-090
+	// boot gate below can verify its audit emitter is wired.
+	hostedInvoiceStripe := &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: checkoutSessionStore, audit: auditLogger}
+
 	hostedInvoiceH := hostedinvoice.New(hostedinvoice.Deps{
 		Invoices:    invoiceSvc,
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: checkoutSessionStore, audit: auditLogger},
+		Stripe:      hostedInvoiceStripe,
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 
@@ -872,7 +876,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (publicPaymentH is exempt: its constructor legitimately returns nil
 	// when Stripe isn't configured, so its wiring is guarded above.)
 	audit.MustWired(creditSvc, tenantSvc, subSvc, invoiceSvc, creditNoteSvc,
-		stripeAdapter, paymentMethodsSvc, engine)
+		stripeAdapter, paymentMethodsSvc, engine, hostedInvoiceStripe)
+	if publicPaymentH != nil {
+		// Guarded: the constructor legitimately returns nil without Stripe
+		// keys; when it exists, its emitter must be wired.
+		audit.MustWired(publicPaymentH)
+	}
 
 	// Invoice finalize commits the upstream Stripe Tax calculation into a
 	// tax_transaction so the tenant's Stripe Tax reports reflect the final

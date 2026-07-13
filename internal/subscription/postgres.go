@@ -1050,10 +1050,14 @@ func (s *PostgresStore) transitionInTx(ctx context.Context, tx *sql.Tx, id strin
 		return domain.Subscription{}, err
 	}
 
-	// Operator-driven cancel (CancelAtomic / CancelAtomicWithBill both route
-	// here; cancelSpec is the only canceled-target spec). Enqueue in-tx.
+	// Cancel via CancelAtomic / CancelAtomicWithBill (cancelSpec is the only
+	// canceled-target spec). Enqueue in-tx. canceled_by comes from
+	// cancelActorLabel — the SAME rule the ADR-090 audit row in this very
+	// transaction uses, so the outbound webhook and the audit evidence can
+	// never disagree about who canceled. Pre-fix this hardcoded "operator"
+	// while the audit row could say "dunning" for the same event.
 	if spec.targetStatus == "canceled" {
-		extra := map[string]any{"canceled_by": "operator"}
+		extra := map[string]any{"canceled_by": cancelActorLabel(ctx)}
 		if sub.CanceledAt != nil {
 			extra["canceled_at"] = sub.CanceledAt.UTC()
 		}
