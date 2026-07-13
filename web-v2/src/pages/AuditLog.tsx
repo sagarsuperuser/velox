@@ -7,6 +7,14 @@ import { api, formatDateTime, formatRate, getTenantTimezone, formatCents } from 
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadCSV } from '@/lib/csv'
+import {
+  describeAction,
+  resourceLink,
+  HIGH_SEVERITY,
+  MEDIUM_SEVERITY,
+  DEFAULT_ACTIONS,
+  DEFAULT_RESOURCE_TYPES,
+} from '@/lib/auditVocabulary'
 import { Layout } from '@/components/Layout'
 import { EmptyState } from '@/components/EmptyState'
 import { useUrlState } from '@/hooks/useUrlState'
@@ -38,107 +46,6 @@ function encodeCursor(e: AuditEntry): string {
   return btoa(JSON.stringify({ id: e.id, created_at: e.created_at }))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
-}
-
-function describeAction(entry: AuditEntry): string {
-  const label = entry.resource_label || ''
-  // Item-level audit rows carry the meaningful discriminator in
-  // metadata.action (item_plan_changed / item_quantity_changed) —
-  // surface it cleanly instead of dumping the raw dotted action.
-  const metaAction = (entry.metadata?.action as string) || ''
-  switch (entry.action) {
-    case 'create':
-      if (entry.resource_type === 'payment_method') return `Added ${label || 'card'}`
-      if (entry.resource_type === 'api_key') return `Created API key${label ? ` "${label}"` : ''}`
-      if (entry.resource_type === 'webhook_endpoint') return `Created webhook endpoint${label ? ` ${label}` : ''}`
-      if (entry.resource_type === 'test_clock') return `Created test clock${label ? ` "${label}"` : ''}`
-      if (entry.resource_type === 'stripe_credentials') return `Connected Stripe (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
-      return `Created ${label || entry.resource_type}`
-    case 'update':
-      // Sub-action discriminator for the update bucket: surface a
-      // descriptive label per metadata.action when the bucket carries
-      // a known transition. Falls through to generic "Updated X" for
-      // anything not enumerated.
-      if (entry.resource_type === 'invoice' && metaAction === 'marked_uncollectible') return `Marked ${label || 'invoice'} uncollectible`
-      if (entry.resource_type === 'invoice' && metaAction === 'payment_recorded') return `Recorded offline payment on ${label || 'invoice'}`
-      if (entry.resource_type === 'invoice' && metaAction === 'portal_pay_attempted') return `Customer paid ${label || 'invoice'} via portal`
-      if (entry.resource_type === 'customer' && metaAction === 'profile_updated') return `Updated profile${label ? ` for ${label}` : ''}`
-      if (entry.resource_type === 'customer' && metaAction === 'billing_profile_upserted') return `Updated billing profile${label ? ` for ${label}` : ''}`
-      if (entry.resource_type === 'payment_method' && metaAction === 'default_changed') return `Set ${label || 'card'} as default`
-      if (entry.resource_type === 'subscription' && metaAction === 'cancel_cleared') return `Cleared scheduled cancellation${label ? ` on ${label}` : ''}`
-      if (entry.resource_type === 'subscription' && metaAction === 'trial_ended') return `Trial ended${label ? ` on ${label}` : ''}`
-      if (entry.resource_type === 'subscription' && metaAction === 'item_added') return `Added item${label ? ` to ${label}` : ''}`
-      if (entry.resource_type === 'subscription' && metaAction === 'item_removed') return `Removed item${label ? ` from ${label}` : ''}`
-      if (entry.resource_type === 'setting' && metaAction === 'settings_updated') {
-        const n = entry.metadata?.changed ? Object.keys(entry.metadata.changed as Record<string, unknown>).length : 0
-        return n > 0 ? `Updated settings (${n} field${n === 1 ? '' : 's'})` : 'Updated settings'
-      }
-      if (entry.resource_type === 'dunning_run' && metaAction === 'resolved') return `Resolved dunning run (${entry.metadata?.resolution})`
-      if (entry.resource_type === 'dunning_policy' && metaAction === 'set_default') return `Set dunning policy as default${label ? ` (${label})` : ''}`
-      if (entry.resource_type === 'test_clock' && metaAction === 'advanced') return `Advanced test clock${label ? ` "${label}"` : ''}`
-      if (entry.resource_type === 'test_clock' && metaAction === 'retry_advance') return `Retried clock advance${label ? ` on "${label}"` : ''}`
-      if (entry.resource_type === 'webhook_event' && metaAction === 'replayed') return `Replayed webhook event`
-      if (entry.resource_type === 'stripe_credentials' && metaAction === 'webhook_secret_set') return `Set Stripe webhook secret (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
-      return `Updated ${label || entry.resource_type}`
-    case 'delete':
-      if (entry.resource_type === 'payment_method') return `Removed ${label || 'card'}`
-      if (entry.resource_type === 'webhook_endpoint') return `Deleted webhook endpoint`
-      if (entry.resource_type === 'test_clock') return `Deleted test clock`
-      if (entry.resource_type === 'dunning_policy') return `Deleted dunning policy`
-      if (entry.resource_type === 'stripe_credentials') return `Disconnected Stripe (${(entry.metadata?.livemode as boolean) ? 'live' : 'test'})`
-      return `Deleted ${label || entry.resource_type}`
-    case 'activate': return `Activated ${label || 'subscription'}`
-    case 'cancel': return `Canceled ${label || 'subscription'}`
-    case 'pause': return `Paused ${label || 'subscription'}`
-    case 'resume': return `Resumed ${label || 'subscription'}`
-    case 'finalize': return `Finalized ${label || 'invoice'}`
-    case 'void': return `Voided ${label || 'invoice'}`
-    case 'collect': return `Collected payment on ${label || 'invoice'}`
-    case 'send': return `Emailed ${label || 'invoice'}`
-    case 'refund': return `Refunded ${label || 'invoice'}`
-    case 'retry_tax': return `Retried tax on ${label || 'invoice'}`
-    case 'issue': return `Issued ${label || 'credit note'}`
-    case 'resolve': return `Resolved ${label || 'dunning run'}`
-    case 'grant': return `Granted credits${label ? ` to ${label}` : ''}`
-    case 'adjust': return `Adjusted credits${label ? ` for ${label}` : ''}`
-    case 'credit.adjustment': return `Adjusted credits${label ? ` for ${label}` : ''}`
-    case 'credit.deduction': return `Deducted credits${label ? ` from ${label}` : ''}`
-    case 'credit_note.issued': return `Issued credit note ${label}`
-    case 'subscription.item_updated':
-      if (metaAction === 'item_plan_changed') return `Changed plan${label ? ` for ${label}` : ''}`
-      if (metaAction === 'item_quantity_changed') return `Changed quantity${label ? ` for ${label}` : ''}`
-      return `Updated item${label ? ` on ${label}` : ''}`
-    case 'subscription.proration_failed': return `Proration failed${label ? ` on ${label}` : ''}`
-    case 'revoke': return `Revoked API key${label ? ` "${label}"` : ''}`
-    case 'rotate':
-      if (entry.resource_type === 'api_key') return `Rotated API key${label ? ` "${label}"` : ''}`
-      if (entry.resource_type === 'webhook_endpoint') return `Rotated webhook secret`
-      if (entry.resource_type === 'stripe_credentials') return `Rotated Stripe webhook secret`
-      if (entry.resource_type === 'invoice') return `Rotated hosted-invoice link${label ? ` for ${label}` : ''}`
-      return `Rotated ${label || entry.resource_type}`
-    case 'run': return 'Billing cycle executed'
-    case 'change_plan': return `Changed plan${label ? ` for ${label}` : ''}`
-    default: return `${entry.action.replace(/_/g, ' ')} ${label || entry.resource_type}`
-  }
-}
-
-const HIGH_SEVERITY = new Set(['void', 'cancel', 'delete', 'revoke', 'credit.deduction', 'refund'])
-const MEDIUM_SEVERITY = new Set(['finalize', 'grant', 'issue', 'credit_note.issued', 'change_plan', 'subscription.item_updated', 'collect'])
-
-function resourceLink(entry: AuditEntry): string | null {
-  // Guard the empty-resource_id case — some audit rows (e.g. tenant-scope
-  // events, or events written before a child resource exists) carry an
-  // empty resource_id, and rendering "View" → /customers/ would land the
-  // user on a broken page.
-  if (!entry.resource_id) return null
-  switch (entry.resource_type) {
-    case 'invoice': return `/invoices/${entry.resource_id}`
-    case 'customer': return `/customers/${entry.resource_id}`
-    case 'subscription': return `/subscriptions/${entry.resource_id}`
-    case 'plan': return `/plans/${entry.resource_id}`
-    case 'meter': return `/meters/${entry.resource_id}`
-    default: return null
-  }
 }
 
 function formatActorName(entry: AuditEntry): string {
@@ -184,27 +91,6 @@ function prettyLabel(value: string): string {
     .replace(/-/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase()))
 }
-
-// Fallbacks for an empty tenant: without any audit rows the /filters endpoint
-// returns [], leaving the dropdowns blank. These lists give a new tenant the
-// common vocabulary (it's a hint, not a contract — merged with whatever the
-// server returns).
-const DEFAULT_RESOURCE_TYPES = [
-  'customer', 'subscription', 'invoice', 'plan', 'meter',
-  'credit', 'credit_note', 'api_key', 'billing', 'billing_profile',
-  'payment_method', 'dunning_policy', 'dunning_run', 'test_clock',
-  'webhook_endpoint', 'webhook_event', 'stripe_credentials',
-  'price_override', 'rating_rule', 'meter_pricing_rule',
-  // Emitted by the ADR-090 in-tx writers. (The dropdown normally comes from
-  // /filters — these only matter as the empty-log fallback.) Historical rows
-  // from the retired catch-all used the hyphenated 'provider-cost'; the
-  // snake_case form is the one every writer emits now.
-  'provider_cost', 'recipe', 'tenant', 'user',
-]
-const DEFAULT_ACTIONS = [
-  'create', 'update', 'delete', 'activate', 'cancel', 'pause', 'resume',
-  'finalize', 'void', 'run', 'grant', 'revoke',
-]
 
 // Test-clock sim-context keys auto-added to metadata by audit-callers
 // when the affected entity is clock-pinned (ADR-030 amendment

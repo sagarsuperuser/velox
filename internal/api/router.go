@@ -1208,7 +1208,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	r := chi.NewRouter()
 	r.Use(mw.Tracing())
-	r.Use(middleware.RequestID)
+	// NOT chi's middleware.RequestID — it honours an inbound X-Request-Id header
+	// verbatim, which would let a caller choose the request_id recorded on their
+	// own audit_log rows. mw.RequestID always mints server-side. See its doc
+	// comment and ADR-090 §6.
+	r.Use(mw.RequestID)
 	// Only honor X-Forwarded-For / X-Real-IP from configured trusted proxies.
 	// chi's middleware.RealIP trusted them unconditionally, letting any client
 	// forge a forwarding header to rotate its per-IP rate-limit bucket
