@@ -117,7 +117,7 @@ classifiers (`parseAuditPath`, `extractLabel`, `extractID`,
   mapping every mutating (method, chi route pattern) to `explicit` (the route
   emits its own typed row; the note names the emitter) or `exempt(reason)`,
   where reason is a CLOSED enum and the note records the justification and any
-  accepted loss. 102 routes: 90 explicit, 12 exempt.
+  accepted loss. 102 routes: 92 explicit, 10 exempt. (Backfill and bootstrap were reclassified from exempt to explicit during review: an operator backdating usage, and a first-run install minting a live secret key, are both money-relevant actions that must leave evidence.)
 - **A two-way-diff arch test** (`audit_routes_test.go`) — walks the LIVE chi
   route table: an undeclared mutating route fails CI, and a stale registry
   entry fails CI. This is the drift gate; a new route now forces an audit
@@ -152,12 +152,10 @@ Two amendments this forced, both deliberate:
   exported escape hatch that let a handler ASSERT coverage it did not have; the
   only thing that may claim coverage now is a row that actually landed.
 
-The uninstall also fixed a live bug it had been hiding: `bufferedResponse`
-implemented no `http.Flusher`, so `exports.go`'s `if f, ok := w.(http.Flusher)`
-assertion silently failed and every CSV export accumulated in memory instead of
-streaming — on the one route block given a five-minute timeout *because* it
-streams. And `tenant_settings.audit_fail_closed` (retired in code by ADR-089,
-column deliberately left behind for this PR) is dropped by migration 0149.
+The observer wraps the response's STATUS only (chi's `middleware.WrapResponseWriter`),
+never its body, so `http.Flusher` / `Hijacker` / `ReaderFrom` pass through untouched —
+the streaming CSV exports and the SSE stream are unaffected by it. A regression test
+pins that property.
 
 ### 5. Sim-time axis (ADR-086 amendment)
 

@@ -287,6 +287,16 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve BEFORE the mutation. The audit row needs the session's identity,
+	// and resolving afterwards made the emission conditional on a second
+	// lookup succeeding — so a resolve failure left the mode SWITCHED with no
+	// record of who switched it. An unresolvable session is a 401 anyway.
+	sess, rerr := h.sessions.Resolve(r.Context(), c.Value)
+	if rerr != nil {
+		respond.Unauthorized(w, r, "invalid or expired session")
+		return
+	}
+
 	if err := h.sessions.SetLivemode(r.Context(), c.Value, req.Livemode); err != nil {
 		if errors.Is(err, session.ErrNotFound) {
 			respond.Unauthorized(w, r, "invalid or expired session")
@@ -297,12 +307,10 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
-		// Stamped with the NEW mode — the row lands in the partition the
-		// operator just switched into, alongside the actions that follow.
-		h.auditAuthEvent(r.Context(), r, req.Livemode, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
-			map[string]any{"livemode": req.Livemode})
-	}
+	// Stamped with the NEW mode — the row lands in the partition the
+	// operator just switched into, alongside the actions that follow.
+	h.auditAuthEvent(r.Context(), r, req.Livemode, sess.UserID, sess.TenantID, "mode_changed", sess.UserID, "",
+		map[string]any{"livemode": req.Livemode})
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"livemode": req.Livemode,

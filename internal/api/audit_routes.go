@@ -153,10 +153,10 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"PATCH", "/metrics"}:  exempt(reasonSystemEndpoint, "same r.Handle expansion as POST /metrics."),
 	{"DELETE", "/metrics"}: exempt(reasonSystemEndpoint, "same r.Handle expansion as POST /metrics."),
 
-	{"POST", "/v1/bootstrap"}: exempt(reasonBootstrap, "One-time pre-tenant setup: runs only while zero tenants exist, and there is no tenant/actor to attribute a row to until it succeeds. The tenant it creates carries tenant.Service's own create row (ADR-090 PR4)."),
+	{"POST", "/v1/bootstrap"}: explicit("tenant.RunBootstrap emits on its own tx into the NEW tenant's log: create/tenant (action=bootstrap_provisioned) + one create/api_key row per minted credential (never the key material) + create/user for the owner. actor=system — there is genuinely no authenticated identity here. It mints a LIVE secret key, so \"who created this key?\" must be answerable."),
 
 	// --- inbound webhook ------------------------------------------------
-	{"POST", "/v1/webhooks/stripe/{endpoint_id}"}: exempt(reasonWebhookOwned, "Inbound Stripe delivery. Its EFFECTS are audited by the in-tx emissions the webhook handlers make (payment.Stripe → LogInTx: PM flips, refund-status flips, settles); the delivery itself is recorded in stripe_webhook_events (the idempotency + replay record). A row per delivery would duplicate that table without adding an actor."),
+	{"POST", "/v1/webhooks/stripe/{endpoint_id}"}: exempt(reasonWebhookOwned, "Inbound Stripe delivery. Some effects DO audit in-tx (payment-method flips → payment.Stripe.handleCheckoutCompleted; refund-status flips → creditnote.ApplyRefundWebhook). ACCEPTED LOSS, recorded rather than glossed: card SETTLEMENT (payment_intent.succeeded/failed → payment.SettleSucceeded/SettleFailed) writes NO audit_log row. The settle is not evidence-free — invoices.paid_at/status, the in-tx invoice.paid + payment.succeeded outbox events, and stripe_webhook_events all record it, and it is machine-driven with no operator to attribute (the 2026-06-12 audit ruled webhooks+timeline own that record). But audit_log itself cannot answer \"when was INV-1042 settled?\". Closure trigger: an auditor or DP asking for settlement evidence FROM the audit log → emit on the settle tx (invoice.MarkPaidCardSettlementTransition would need an emit hook, and domain would need a settle action)."),
 
 	// --- machine ingest -------------------------------------------------
 	// ACCEPTED LOSS (all four): "which credential ingested this event" is
@@ -166,7 +166,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	// key_id column on usage_events (per-event attribution), not a per-request
 	// audit row: at ingest volumes one audit row per call would outweigh the
 	// events themselves.
-	{"POST", "/v1/usage-events"}:       exempt(reasonMachineIngest, "High-volume metering ingest; usage_events IS the record. Accepted loss: no key_id on usage_events ⇒ ingesting credential unrecoverable."),
+	{"POST", "/v1/usage-events"}:       exempt(reasonMachineIngest, "High-volume metering ingest (~1000/s); usage_events IS the record, and a row per event would double the write volume of the hottest path. ACCEPTED LOSS, stated precisely: until this PR the retired catch-all wrote a generic 'create usage_event' row per REQUEST, so these routes DO lose audit_log rows they were getting — what is lost with them is (a) WHICH CREDENTIAL ingested an event (usage_events carries no key_id) and (b) the request-level trail. The events themselves, their timestamps and their origin tag remain. Closure trigger: a billing dispute or an injected-usage incident → stamp key_id at ingest (plumb the fact; no heuristics)."),
 	{"POST", "/v1/usage-events/batch"}: exempt(reasonMachineIngest, "Batch form of the same ingest. Same accepted loss."),
 	// NOT exempt, deliberately: backfill is an OPERATOR action on the money
 	// path. Inserting backdated usage changes what a customer is billed for a

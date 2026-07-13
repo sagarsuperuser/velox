@@ -1271,6 +1271,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	bootstrapH := tenant.NewBootstrapHandler(db, tenant.BootstrapDeps{
 		HashPassword: user.HashPassword,
 		CreateUserTx: user.NewPostgresStore(db).CreateInTx,
+		// Bootstrap mints a LIVE secret key and the owner account; the rows
+		// ride its own tx into the new tenant's log (ADR-090).
+		Audit: auditLogger,
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())

@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/config"
 	"github.com/sagarsuperuser/velox/internal/platform/migrate"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -68,6 +69,9 @@ func main() {
 	result, err := tenant.RunBootstrap(ctx, db, tenant.BootstrapDeps{
 		HashPassword: user.HashPassword,
 		CreateUserTx: userStore.CreateInTx,
+		// Same provisioning rows as the HTTP bootstrap route (ADR-090): the
+		// CLI path must not be the one that mints a live key unrecorded.
+		Audit: audit.NewLogger(db),
 	}, tenant.BootstrapOpts{
 		TenantName:      tenantName,
 		OwnerEmail:      bootstrapEmail,

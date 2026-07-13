@@ -1028,13 +1028,20 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		expired := claim.ExpiresAt != nil && time.Now().After(claim.ExpiresAt.Add(-time.Minute))
 		drifted := claim.AmountCents != inv.AmountDueCents
 		if !expired && !drifted && claim.URL != "" {
-			// Straight reuse: both devices get the SAME session.
+			// Straight reuse: both devices get the SAME session. NOTHING is
+			// mutated — the claim already exists and only its winner emitted.
+			// Declare that to the audit observer, or a customer clicking "Pay"
+			// twice reports as an uncovered mutation forever (ADR-090: a
+			// detector that cries wolf on a normal retry is one nobody keeps).
+			audit.MarkSkip(ctx)
 			return claim.URL, nil
 		}
 		if !expired && !drifted && claim.URL == "" {
 			// Pending claim (a crash between insert and create, or a racing
 			// winner mid-create): re-drive the create with the claim's own
 			// idempotency key — Stripe returns the SAME session either way.
+			// No new claim row, so no emission: same declaration as above.
+			audit.MarkSkip(ctx)
 			return a.mintForClaim(ctx, sc, claim, stripeCustomerID, inv, successURL, cancelURL)
 		}
 		if drifted && !expired && claim.StripeSessionID != "" {

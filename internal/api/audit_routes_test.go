@@ -171,8 +171,10 @@ func TestAuditRouteRegistry_ExemptionsStaySmall(t *testing.T) {
 		// it emits (usage.Service.Backfill → IngestAudited).
 		reasonMachineIngest:      3,
 		reasonNonMutatingPreview: 2, // invoice create_preview, recipe preview
-		reasonBootstrap:          1, // POST /v1/bootstrap
-		reasonWebhookOwned:       1, // inbound Stripe webhook
+		// POST /v1/bootstrap is NOT exempt: it mints a LIVE secret key and the
+		// owner account, and it emits its provisioning rows on its own tx.
+		reasonBootstrap:    0,
+		reasonWebhookOwned: 1, // inbound Stripe webhook
 	}
 	for reason, n := range want {
 		if got := len(byReason[reason]); got != n {
@@ -238,8 +240,15 @@ func TestAuditRouteExempt_LooksUpCanonically(t *testing.T) {
 	if !auditRouteExempt("POST", "/v1/usage-events") {
 		t.Error("POST /v1/usage-events should be exempt(machine_ingest)")
 	}
-	if !auditRouteExempt("POST", "/v1/bootstrap/") { // trailing slash, as Walk reports it
-		t.Error("POST /v1/bootstrap/ should canonicalize to /v1/bootstrap and be exempt(bootstrap)")
+	// Trailing slash, as chi.Walk reports a subrouter's r.Post("/") leaf.
+	if !auditRouteExempt("POST", "/v1/invoices/create_preview/") {
+		t.Error("POST /v1/invoices/create_preview/ should canonicalize to /v1/invoices/create_preview and be exempt(non_mutating_preview)")
+	}
+	// Bootstrap is EXPLICIT (it mints a live secret key and emits for it), so
+	// it must NOT resolve as exempt — a regression here would silence the
+	// detector on the one route that provisions a money-moving credential.
+	if auditRouteExempt("POST", "/v1/bootstrap") {
+		t.Error("POST /v1/bootstrap is explicit (it audits its own provisioning), not exempt")
 	}
 	if auditRouteExempt("POST", "/v1/credits/grant") {
 		t.Error("POST /v1/credits/grant is explicit, not exempt")

@@ -625,7 +625,7 @@ Boot warnings on startup (one each when var unset; never fatal):
 - [ ] **EX3 subscriptions**: `$API/v1/exports/subscriptions.csv` → subs with `plan_ids` (pipe-delimited).
 - [ ] **EX4 usage-events**: requires `from`+`to`; missing → 400. Span >366d → 400.
 - [ ] Publishable key is **rejected** from exports (403) — publishable keys carry no tenant-wide read scope (empty scope set, `permission.go`).
-- [ ] **Streaming actually streams (fixed 2026-07-14)**: on a tenant with a large export (≥50k usage events), `curl -N $API/v1/exports/usage-events.csv` prints rows progressively — first bytes arrive in well under a second, not after the whole file is assembled. (The deleted audit catch-all buffered every response body to sniff a label out of it, and its buffer implemented no `http.Flusher` — so `exports.go`'s flush was a silent no-op and the CSV accumulated in memory, on the one route block given a 5-minute timeout *because* it streams.)
+- [ ] **Streaming still streams**: on a tenant with a large export (≥ 50k usage events), `curl -N $API/v1/exports/usage-events.csv` prints rows progressively — first bytes arrive in well under a second, not after the whole file is assembled. (The audit observer wraps the status only; a regression test pins that `http.Flusher` survives the middleware chain.)
 
 ---
 

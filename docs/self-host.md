@@ -176,6 +176,7 @@ Key metrics to watch:
 - `velox_billing_cycle_duration_seconds` — cycle scan latency
 - `velox_tax_outcome_total{outcome,reason}` — tax-provider failure modes
 - `velox_audit_write_errors_total` — audit log write failures
+- `velox_audit_uncovered_mutation_total{route}` — a request mutated state and left NO audit row (should be flat zero; see the runbook)
 - `velox_stripe_breaker_state` — Stripe API circuit breaker (1 = open)
 
 ## Related
