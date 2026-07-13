@@ -127,11 +127,12 @@ func TestRecipeInstantiate_AuditSharedFate(t *testing.T) {
 			}
 		})
 
-		// Through the mounted route: the handler suppresses the catch-all on
-		// BOTH arms. On the no-op arm that suppression is the point — today the
-		// catch-all records a "created recipe" for an apply that installed
-		// nothing, which is exactly the fabricated evidence ADR-090 removes.
-		t.Run("handler suppresses the catch-all on the no-op re-apply", func(t *testing.T) {
+		// Through the mounted route: the request must come back ACCOUNTED FOR on
+		// BOTH arms — an install self-marks via its in-tx emission, and the no-op
+		// re-apply DECLARES itself (Service.Instantiate → audit.MarkSkip). Without
+		// the declaration the coverage detector would report every re-apply — a 201
+		// that installed nothing — as an uncovered mutation, forever.
+		t.Run("a no-op re-apply is declared, not reported", func(t *testing.T) {
 			h := NewHandler(f.svc)
 			reqCtx := audit.WithRequestState(auth.WithTenantID(ctx, tenantID))
 			req := httptest.NewRequest(http.MethodPost, "/anthropic_style/instantiate", strings.NewReader(`{}`)).
@@ -143,7 +144,7 @@ func TestRecipeInstantiate_AuditSharedFate(t *testing.T) {
 				t.Fatalf("instantiate: got %d, want 201; body=%s", rec.Code, rec.Body.String())
 			}
 			if !audit.WasHandled(reqCtx) {
-				t.Error("instantiate must call audit.MarkHandled — a no-op re-apply must not leave the catch-all to fabricate an install row")
+				t.Error("a no-op re-apply left the request unaccounted-for — the coverage detector would report it as an uncovered mutation (Service.Instantiate must MarkSkip on the badge-exists branch)")
 			}
 			if rows := recipeAuditRows(t, logger, ctx, tenantID); len(rows) != 1 {
 				t.Errorf("no-op re-apply over HTTP recorded an extra row: got %d", len(rows))

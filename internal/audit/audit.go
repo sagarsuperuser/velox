@@ -59,9 +59,9 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// Detach from the caller's cancellation (keeping its values — actor,
 	// client IP, request id still resolve) so a client disconnect right
 	// after the business operation commits cannot abort the audit write.
-	// Mirrors the middleware's writeAudit, which has always detached; before
-	// this, the explicit writer was the one audit path a disconnect could
-	// silently kill (ADR-089).
+	// This is the residual own-tx path (ADR-090): it carries a real
+	// post-commit window, which is exactly why LogInTx is the destination for
+	// every writer that owns a transaction.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
 
@@ -124,9 +124,9 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 		return fmt.Errorf("audit log: commit: %w", err)
 	}
 
-	// Signal the AuditLog middleware (if this request is under it) that an
-	// audit row has been written so its catch-all path suppresses a duplicate.
-	MarkHandled(ctx)
+	// This request produced audit evidence — the AuditCoverage detector must not
+	// report it as an uncovered mutation. Marked only after the COMMIT.
+	markEmitted(ctx)
 	return nil
 }
 
@@ -177,14 +177,25 @@ type SimContext struct {
 // vocabulary round-trip integration test INSERTs every declared action
 // constant so a value the schema rejects cannot ship.
 //
-// LogInTx does NOT mark the request handled: whether the middleware
-// catch-all should be suppressed is a REQUEST-scoped decision that belongs
-// to the route's owning handler after its operation commits — an in-tx
-// emission may be rolled back after this call returns, and a mutation deep
-// inside another route's flow (a proration-fallback grant inside a
-// change-plan request) must not suppress that route's own catch-all row.
-// Handlers whose primary action is the audited mutation call
-// audit.MarkHandled themselves on success (the migration bridge).
+// LogInTx marks the request as having produced audit evidence (ADR-090 §4,
+// amended by the uninstall PR — the ADR's "LogInTx does NOT mark the request
+// handled" rule was written for the catch-all WRITER, where suppression cost a
+// route its only row; it does not carry to a pure OBSERVER):
+//
+//   - Rolled back after we return? Then the mutation failed and the handler
+//     answers non-2xx, and the detector only inspects 2xx — so a rolled-back
+//     emission can never make an uncovered mutation look covered.
+//   - A secondary emission deep inside another route's flow (the
+//     proration-fallback grant inside a change-plan request) marks that request
+//     too. That costs nothing REAL — the detector is a runtime backstop, and the
+//     thing that actually holds a route to its own emission is the route-audit
+//     registry + its arch test (internal/api/audit_routes.go), which forces every
+//     mutating route to declare explicit or exempt(reason) in review. The blind
+//     spot is bounded and named: a route that emits nothing of its own but nests
+//     someone else's emission reads as covered at runtime.
+//
+// Self-marking is also load-bearing: POST /v1/tenants and both public checkout
+// routes emit ONLY in-tx, and nothing else would account for them.
 func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 	// Treat a partial/zero SimContext as absent — a half-set sim axis
 	// ('' clock id, zero time) is worse than none: it lands inside the
@@ -241,6 +252,13 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 	if err != nil {
 		return fmt.Errorf("audit log (in-tx): insert: %w", err)
 	}
+
+	// This request produced audit evidence. Marked only AFTER a successful
+	// INSERT: a failed emission must leave the request unaccounted-for, so the
+	// caller's tx aborts (shared fate) and — if some caller were to swallow that
+	// and still answer 2xx — the detector reports it rather than trusting a row
+	// that isn't there.
+	markEmitted(ctx)
 	return nil
 }
 

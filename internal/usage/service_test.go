@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,6 +41,22 @@ func (m *memStore) Ingest(_ context.Context, tenantID string, e domain.UsageEven
 
 // IngestBatch mirrors the real store's atomic contract: any non-dup error
 // aborts the whole batch with nothing written; dups count as deduped.
+// IngestAudited mirrors the real store's shared-fate contract: an emit error
+// rolls the in-memory write back.
+func (m *memStore) IngestAudited(ctx context.Context, tenantID string, e domain.UsageEvent, emit func(tx *sql.Tx, out domain.UsageEvent) error) (domain.UsageEvent, error) {
+	out, err := m.Ingest(ctx, tenantID, e)
+	if err != nil {
+		return out, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			delete(m.events, out.ID) // shared fate: roll the write back
+			return domain.UsageEvent{}, err
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) IngestBatch(ctx context.Context, tenantID string, events []domain.UsageEvent) (int, int, error) {
 	staged := newMemStore()
 	for k, v := range m.events {

@@ -220,16 +220,15 @@ func TestCustomerCreateAudit_SharedFate(t *testing.T) {
 	})
 }
 
-// TestCustomerCreateRoute_MarksHandled: with the explicit in-tx emission in
-// place, POST /v1/customers must ALSO suppress the middleware catch-all —
-// otherwise the bridge window (the catch-all is still installed until the
-// uninstall PR) records every create TWICE: once truthfully, once guessed
-// from the URL. Mounted route, real service.
-func TestCustomerCreateRoute_MarksHandled(t *testing.T) {
+// TestCustomerCreateRoute_IsAccountedFor: the in-tx emission's self-mark is what
+// tells the root-mounted AuditCoverage detector that this mutation left evidence.
+// A create that stops emitting is reported as an uncovered mutation — it is no
+// longer papered over by a row guessed from the URL. Mounted route, real service.
+func TestCustomerCreateRoute_IsAccountedFor(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
 	defer cancel()
-	tenantID := testutil.CreateTestTenant(t, db, "Customer Create MarkHandled")
+	tenantID := testutil.CreateTestTenant(t, db, "Customer Create Accounted")
 
 	svc := customer.NewService(customer.NewPostgresStore(db))
 	svc.SetAuditLogger(audit.NewLogger(db))
@@ -245,6 +244,6 @@ func TestCustomerCreateRoute_MarksHandled(t *testing.T) {
 		t.Fatalf("create: got %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 	if !audit.WasHandled(reqCtx) {
-		t.Error("create must call audit.MarkHandled so the catch-all skips its guessed duplicate row")
+		t.Error("create emitted no audit row — the coverage detector will report it as an uncovered mutation")
 	}
 }

@@ -127,12 +127,12 @@ type TenantSettings struct {
 	// newly issued invoices. Per-invoice override via invoices.footer is
 	// already supported and takes precedence.
 	InvoiceFooter string `json:"invoice_footer,omitempty"`
-	// audit_fail_closed was retired by ADR-089: the post-commit 503 swap it
+	// audit_fail_closed was retired by ADR-089 (the post-commit 503 swap it
 	// controlled was cached by the Idempotency layer, permanently stranding
-	// committed mutations behind an error. Fail-closed semantics return
-	// structurally with in-tx audit emission (the audit redesign), where no
-	// post-commit window exists to police. The DB column remains until the
-	// redesign's uninstall migration drops it.
+	// committed mutations behind an error) and its column was DROPPED by
+	// migration 0149. Fail-closed is now structural, not a setting: audit rows
+	// ride the business transaction (ADR-090 LogInTx), so there is no
+	// post-commit window to police and nothing left to opt into.
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

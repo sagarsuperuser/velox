@@ -47,7 +47,7 @@ var allowedCrossDomainImports = map[string][]string{
 	"hostedinvoice":  {"auth", "invoice"},                      // auth = customer-actor ctx stamping for the public checkout audit row (ADR-090 PR4)
 	"invoice":        {"audit", "auth", "payment", "tax"},      // audit = in-tx Void emission (ADR-090 PR4); // payment = error-taxonomy value types only (PaymentError, ErrPaymentTransient — classified by the finalize decline arm); never the Service
 	"payment":        {"audit", "auth", "tax", "tenantstripe"}, // audit = in-tx emissions: checkout PM flip, token consume/restore (ADR-090 PR4)
-	"paymentmethods": {"audit", "auth", "payment"},             // audit = MarkHandled on the setup-session route, whose capability-grant row the service emits (ADR-090 PR5)
+	"paymentmethods": {"auth", "payment"},                      // audit edge GONE with MarkHandled (ADR-090 uninstall): the service emits through its own narrow interface
 	"pricing":        {"audit", "auth"},                        // audit = in-tx emissions: meter PATCH, meter-pricing-rule DELETE (ADR-090 PR5)
 	"recipe":         {"audit", "auth"},
 	"session":        {"auth"},

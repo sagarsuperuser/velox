@@ -544,14 +544,12 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The cancel audit row rides the cancel transaction itself now
-	// (ADR-090, Service.Cancel emission) — same row content, plus dunning-
-	// driven cancels record identically instead of being invisible. The
-	// fallback-path proration credit lands post-commit as its own audited
-	// grant row rather than a field here. Mark handled so the middleware
-	// catch-all doesn't add a generic duplicate.
+	// The cancel audit row rides the cancel transaction itself (ADR-090,
+	// Service.Cancel emission) — same row content, plus dunning-driven cancels
+	// record identically instead of being invisible. The fallback-path proration
+	// credit lands post-commit as its own audited grant row rather than a field
+	// here.
 	_ = prorationCreditCents
-	audit.MarkHandled(r.Context())
 
 	// subscription.canceled is enqueued IN the cancel tx (store-level
 	// DispatchTx subset) — do not also fire it here.

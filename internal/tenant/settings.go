@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -419,16 +420,22 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Field-level change audit (the catch-all row only records that a PUT
-	// happened). Diff computed over the JSON field names so new settings
-	// fields are covered automatically. No-op saves write nothing — the
-	// catch-all still records the request, same as before this existed.
+	// Field-level change audit. Diff computed over the JSON field names so new
+	// settings fields are covered automatically.
+	//
+	// A save that changed no field mutated nothing an operator could later be
+	// asked about, so it records nothing — and says so (MarkSkip), rather than
+	// leaving a 200-with-no-row that the audit-coverage detector must read as a
+	// lost audit row. (The deleted catch-all used to record every no-op save as a
+	// generic "update setting" with an empty resource_id.)
 	if h.auditLogger != nil && haveBefore {
 		if changed := diffSettings(before, result); len(changed) > 0 {
 			_ = h.auditLogger.Log(r.Context(), tenantID, "update", "setting", "", "Settings", map[string]any{
 				"action":  "settings_updated",
 				"changed": changed,
 			})
+		} else {
+			audit.MarkSkip(r.Context())
 		}
 	}
 

@@ -25,6 +25,20 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error) {
+	return s.IngestAudited(ctx, tenantID, event, nil)
+}
+
+// IngestAudited is Ingest with an in-tx audit emission hook (ADR-090).
+//
+// Live ingest (POST /v1/usage-events, /batch, the LiteLLM spend callback)
+// passes nil: it is machine metering at up to ~1000/s, usage_events IS the
+// record, and a row per event would double the write volume of the hottest
+// path for no forensic gain. BACKFILL is the exception and passes an emitter:
+// an operator inserting BACKDATED usage is changing what a customer will be
+// billed for a period that may already have closed — an operator action on the
+// money path, not machine telemetry. Sharing the ingest tx means a backfilled
+// event that cannot be recorded is not ingested at all.
+func (s *PostgresStore) IngestAudited(ctx context.Context, tenantID string, event domain.UsageEvent, emit func(tx *sql.Tx, out domain.UsageEvent) error) (domain.UsageEvent, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.UsageEvent{}, err
@@ -34,6 +48,11 @@ func (s *PostgresStore) Ingest(ctx context.Context, tenantID string, event domai
 	event, err = ingestOneTx(ctx, tx, tenantID, event)
 	if err != nil {
 		return domain.UsageEvent{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, event); err != nil {
+			return domain.UsageEvent{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.UsageEvent{}, err

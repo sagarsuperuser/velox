@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -22,11 +24,18 @@ import (
 type Service struct {
 	store    Store
 	resolver clock.Resolver
+	audit    AuditEmitter
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
+
+// SetAuditLogger wires in-tx audit emission for BACKFILL. Live ingest stays
+// unaudited by design (machine metering; usage_events is the record) — but an
+// operator inserting BACKDATED usage is changing what a customer gets billed
+// for a period that may already have closed, so that action is recorded.
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.audit = a }
 
 // SetResolver wires the unified clock.Resolver (implemented by
 // *billing.Engine). Ingest timestamps default to and gate against the
@@ -105,7 +114,33 @@ func (s *Service) Backfill(ctx context.Context, tenantID string, input IngestInp
 		return domain.UsageEvent{}, errs.Invalid("timestamp", "must not be in the future for backfill — use POST /usage-events for real-time ingest")
 	}
 	// Carry the resolved now downstream so ingest doesn't re-resolve.
-	return s.ingest(clock.WithEffectiveNow(ctx, now), tenantID, input, domain.UsageOriginBackfill)
+	return s.ingestAudited(clock.WithEffectiveNow(ctx, now), tenantID, input, domain.UsageOriginBackfill, s.backfillEmission(ctx))
+}
+
+// backfillEmission records the operator's backdated insert on the ingest tx.
+// action=create + resource_type="usage_event" (frozen vocabulary); the
+// metadata carries what makes it billing-relevant: WHICH customer/meter, the
+// quantity, and the BACKDATED timestamp (the whole point — it may land in a
+// period that has already been invoiced).
+func (s *Service) backfillEmission(ctx context.Context) func(tx *sql.Tx, out domain.UsageEvent) error {
+	if s.audit == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.UsageEvent) error {
+		return s.audit.LogInTx(ctx, tx, audit.Entry{
+			Action:       domain.AuditActionCreate,
+			ResourceType: "usage_event",
+			ResourceID:   out.ID,
+			Metadata: map[string]any{
+				"action":      "usage_backfilled",
+				"customer_id": out.CustomerID,
+				"meter_id":    out.MeterID,
+				"quantity":    out.Quantity.String(),
+				"event_at":    out.Timestamp.UTC().Format(time.RFC3339),
+				"origin":      string(out.Origin),
+			},
+		})
+	}
 }
 
 // MaxDimensionKeys caps the size of the JSONB dimensions map on each
@@ -145,11 +180,17 @@ func validateDimensions(dims map[string]any) error {
 }
 
 func (s *Service) ingest(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin) (domain.UsageEvent, error) {
+	return s.ingestAudited(ctx, tenantID, input, origin, nil)
+}
+
+// ingestAudited is ingest with an optional in-tx audit emission. Only backfill
+// supplies one; every live path passes nil (see PostgresStore.IngestAudited).
+func (s *Service) ingestAudited(ctx context.Context, tenantID string, input IngestInput, origin domain.UsageEventOrigin, emit func(tx *sql.Tx, out domain.UsageEvent) error) (domain.UsageEvent, error) {
 	prepared, err := s.prepare(ctx, tenantID, input, origin)
 	if err != nil {
 		return domain.UsageEvent{}, err
 	}
-	event, err := s.store.Ingest(ctx, tenantID, prepared)
+	event, err := s.store.IngestAudited(ctx, tenantID, prepared, emit)
 	if err == nil {
 		// Count only rows that actually landed. An idempotency-replay errors
 		// out of store.Ingest (no new row), so it isn't counted — the metric

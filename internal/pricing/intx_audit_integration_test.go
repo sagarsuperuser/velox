@@ -113,7 +113,7 @@ func (f pricingFixture) seedMeter(t *testing.T, key string) domain.Meter {
 // TestMeterUpdateAudit_SharedFate pins the ADR-090 emission on
 // PATCH /v1/meters/{id} (pricing.Service.UpdateMeter →
 // PostgresStore.UpdateMeterAudited). The route had NO emission of its own —
-// only the HTTP catch-all — yet it is the operator action that binds or
+// only the deleted HTTP catch-all — yet it is the operator action that binds or
 // UNBINDS a meter's default rating rule, i.e. the single change that decides
 // whether unmatched usage bills at all.
 //
@@ -371,13 +371,15 @@ func TestMeterPricingRuleDeleteAudit_SharedFate(t *testing.T) {
 	})
 }
 
-// TestMeterRoutes_MarkHandled: both migrated routes must suppress the
-// middleware catch-all now that they emit their own row. Without this, the
-// bridge window (catch-all still installed) double-records the meter PATCH —
-// and, worse, keeps writing the fabricated "deleted meter {meter_id}" row
-// alongside the truthful pricing-rule delete.
-func TestMeterRoutes_MarkHandled(t *testing.T) {
-	f := newPricingFixture(t, "Meter Routes MarkHandled")
+// TestMeterRoutes_AreAccountedFor: both routes emit their own in-tx row, whose
+// self-mark accounts for the request. The pricing-rule DELETE is the headline
+// case of the whole redesign — the deleted catch-all recorded it as "deleted
+// meter {meter_id}" (its classifier read parts[1] of the path as the resource
+// id), a permanent row asserting the operator destroyed a meter that still
+// exists. If this route ever stops emitting, the coverage detector reports it
+// rather than a fabricated row papering over it.
+func TestMeterRoutes_AreAccountedFor(t *testing.T) {
+	f := newPricingFixture(t, "Meter Routes Accounted")
 	rule := f.seedRatingRule(t, "tokens")
 	m := f.seedMeter(t, "markhandled")
 
@@ -393,7 +395,7 @@ func TestMeterRoutes_MarkHandled(t *testing.T) {
 	h := pricing.NewHandler(f.auditedSvc())
 	passthrough := func(next http.Handler) http.Handler { return next }
 
-	t.Run("PATCH /meters/{id} marks handled", func(t *testing.T) {
+	t.Run("PATCH /meters/{id} is accounted for", func(t *testing.T) {
 		reqCtx := audit.WithRequestState(auth.WithTenantID(f.ctx, f.tenantID))
 		req := httptest.NewRequest(http.MethodPatch, "/"+m.ID,
 			strings.NewReader(`{"name":"Renamed"}`)).WithContext(reqCtx)
@@ -404,11 +406,11 @@ func TestMeterRoutes_MarkHandled(t *testing.T) {
 			t.Fatalf("patch meter: got %d, want 200; body=%s", rec.Code, rec.Body.String())
 		}
 		if !audit.WasHandled(reqCtx) {
-			t.Error("meter PATCH must call audit.MarkHandled so the catch-all skips its guessed row")
+			t.Error("meter PATCH emitted no audit row — the coverage detector will report it as an uncovered mutation")
 		}
 	})
 
-	t.Run("DELETE /meters/{meter_id}/pricing-rules/{id} marks handled", func(t *testing.T) {
+	t.Run("DELETE /meters/{meter_id}/pricing-rules/{id} is accounted for", func(t *testing.T) {
 		reqCtx := audit.WithRequestState(auth.WithTenantID(f.ctx, f.tenantID))
 		req := httptest.NewRequest(http.MethodDelete, "/"+pr.ID, nil).WithContext(reqCtx)
 		rec := httptest.NewRecorder()
@@ -418,7 +420,7 @@ func TestMeterRoutes_MarkHandled(t *testing.T) {
 			t.Fatalf("delete rule: got %d, want 204; body=%s", rec.Code, rec.Body.String())
 		}
 		if !audit.WasHandled(reqCtx) {
-			t.Error("pricing-rule DELETE must call audit.MarkHandled — otherwise the catch-all still writes 'deleted meter {meter_id}', the exact false record ADR-090 exists to kill")
+			t.Error("pricing-rule DELETE emitted no audit row — this is the route whose fabricated 'deleted meter {meter_id}' row ADR-090 exists to kill; it must carry its own truthful evidence")
 		}
 	})
 }

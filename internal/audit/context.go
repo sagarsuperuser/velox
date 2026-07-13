@@ -14,54 +14,89 @@ const (
 	ipKey
 )
 
-// requestState lets a handler signal the AuditLog middleware to suppress its
-// catch-all write. Two reasons set it:
-//   - MarkHandled: the handler wrote its own richer audit row, so the generic
-//     middleware row would be a duplicate.
-//   - MarkSkip: the request performs no auditable mutation (a read-only POST
-//     such as an invoice or recipe *preview*), so there is nothing to audit at
-//     all — like a GET, which the middleware already bypasses.
+// requestState answers ONE request-scoped question: "is this request's audit
+// story accounted for?" Exactly two things set it:
 //
-// Kept as a pointer so the mutation is visible back to the middleware frame
-// through the ctx value lookup.
+//   - a successful emission — Logger.Log and Logger.LogInTx self-mark, so any
+//     real audit row for this request counts, wherever in the call stack it was
+//     written (handler, service, or an in-tx emission deep inside a store).
+//   - MarkSkip: the code that owns the decision declaring this request mutated
+//     nothing, so there is nothing to audit — a read-only POST (invoice/recipe
+//     *preview*), or a no-op branch of a mutating route (a logout with a stale
+//     cookie, a password-reset for an unknown email, a settings save that
+//     changed no field, an idempotency replay, a recipe re-apply that installs
+//     nothing). Without this declaration those paths are indistinguishable, to
+//     an observer at the transport, from a mutation that FORGOT its audit row —
+//     and a detector that cries wolf on a normal client retry is a detector
+//     nobody keeps.
+//
+// One reader consumes it: the AuditCoverage detector (a pure observer — a
+// mutating 2xx that is not accounted for is an UNCOVERED MUTATION, the thing
+// the deleted catch-all used to paper over with a guessed row).
+//
+// There is deliberately no exported "I wrote a row" mark. The old MarkHandled
+// let a handler ASSERT coverage; the only thing that may assert coverage now is
+// an audit row that actually landed.
+//
+// Kept as a pointer so a mark made anywhere downstream is visible back in the
+// middleware frame through the ctx value lookup.
 type requestState struct {
-	suppressed atomic.Bool
+	accounted atomic.Bool
 }
 
-// WithRequestState seeds a fresh bookkeeping cell on the request context.
-// Only the AuditLog middleware should call this; MarkHandled on a ctx that
-// hasn't been seeded is a no-op (correct for background jobs / CLI callers).
+// WithRequestState seeds the bookkeeping cell on the request context. The
+// AuditCoverage detector does this once, at the root, for every request.
+//
+// IDEMPOTENT BY CONTRACT: if a cell is already present, the SAME cell is kept.
+// A second seed would SHADOW the first — emissions would mark the inner cell
+// while the detector read the outer, so every covered route would look
+// uncovered. One request, one cell.
+//
+// A ctx that was never seeded (background jobs, CLI callers) makes the marks
+// no-ops, which is correct — nothing is observing.
 func WithRequestState(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(stateKey).(*requestState); ok {
+		return ctx
+	}
 	return context.WithValue(ctx, stateKey, &requestState{})
 }
 
-// MarkHandled records that an explicit audit write has occurred on this
-// request. The AuditLog middleware checks this to avoid a duplicate row.
-func MarkHandled(ctx context.Context) {
+// markEmitted records that an audit row for this request actually landed.
+// Unexported ON PURPOSE: only Logger.Log / Logger.LogInTx call it, and only
+// after a successful INSERT. A caller that wants to say "nothing happened here"
+// says MarkSkip; nobody gets to claim a row that was never written.
+func markEmitted(ctx context.Context) {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
-		s.suppressed.Store(true)
+		s.accounted.Store(true)
 	}
 }
 
-// MarkSkip records that this request performs no auditable mutation — e.g. a
-// read-only POST such as an invoice or recipe *preview* that reads data but
-// writes nothing. The AuditLog middleware otherwise classifies every
-// successful non-GET request as a mutation (POST→create), which would record
-// a spurious row (and, for invoices, a "View" link that 405s on the
-// POST-only create_preview route). Read-only handlers call this so the
-// catch-all write is skipped, exactly as it is for GET.
+// MarkSkip declares that this request performs no auditable mutation, so the
+// AuditCoverage detector must not report it as an uncovered mutation. It is a
+// claim about REALITY — "this 2xx changed nothing" — and it is wrong to call it
+// on any path that mutated state.
+//
+// Live callers: the read-only POST previews (invoice create_preview, recipe
+// preview), the idempotency replay (the cached response of a request whose
+// original DID emit), the stale-cookie logout, the unknown-email password reset
+// (the fixed 200 is the enumeration defence), a settings save that changed no
+// field, a recipe re-apply that installs nothing, and a credit-note issue that
+// defers.
 func MarkSkip(ctx context.Context) {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
-		s.suppressed.Store(true)
+		s.accounted.Store(true)
 	}
 }
 
-// WasHandled reports whether the catch-all middleware write should be
-// suppressed — because a handler wrote its own row (MarkHandled) or opted out
-// as non-mutating (MarkSkip).
+// WasHandled reports whether this request's audit story is accounted for: a row
+// was emitted (Log / LogInTx self-mark), or the owning code declared there was
+// nothing to audit (MarkSkip).
+//
+// The AuditCoverage detector reads it as "this mutation left evidence" — and a
+// mutating 2xx for which it is FALSE is an uncovered mutation.
 func WasHandled(ctx context.Context) bool {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
-		return s.suppressed.Load()
+		return s.accounted.Load()
 	}
 	return false
 }

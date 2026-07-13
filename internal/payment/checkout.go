@@ -177,11 +177,6 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		respond.FromError(w, r, err, "customer")
 		return
 	}
-	// This route's audit row is written explicitly above, so the middleware
-	// catch-all must stand down rather than add its heuristic duplicate
-	// (ADR-090 §4 — suppression is the owning handler's request-scoped call,
-	// made only after the mutation + emission actually committed).
-	audit.MarkHandled(r.Context())
 
 	// Build contextual return URLs. If the caller passed return_url
 	// (the page they came from), use it; otherwise default to the

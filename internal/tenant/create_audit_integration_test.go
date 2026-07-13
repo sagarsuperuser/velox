@@ -19,10 +19,12 @@ func (failingEmitter) LogInTx(_ context.Context, _ *sql.Tx, _ audit.Entry) error
 	return errors.New("injected audit failure")
 }
 
-// Platform tenant creation previously left NO audit trail (the /v1/tenants
-// group mounts no catch-all middleware). Panel Q6: the create row lands in
-// the NEW tenant's own log, in the same tx as the tenants INSERT — pinned
-// in both shared-fate directions here.
+// Platform tenant creation previously left NO audit trail: the deleted catch-all
+// was mounted only on the /v1 block, and /v1/tenants sits outside it (ADR-090
+// RC1 — coverage anchored to transport). Panel Q6: the create row lands in the
+// NEW tenant's own log, in the same tx as the tenants INSERT — pinned in both
+// shared-fate directions here. This emission is also what accounts for the
+// request to the coverage detector; nothing else would.
 func TestTenantCreate_AuditSharedFate(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

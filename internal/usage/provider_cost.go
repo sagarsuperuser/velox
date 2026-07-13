@@ -395,7 +395,6 @@ func (h *ProviderCostHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "provider_cost_rate")
 		return
 	}
-	audit.MarkHandled(r.Context())
 	respond.JSON(w, r, http.StatusOK, out)
 }
 
@@ -432,7 +431,6 @@ func (h *ProviderCostHandler) delete(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "provider_cost_rate")
 		return
 	}
-	audit.MarkHandled(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 

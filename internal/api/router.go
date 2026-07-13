@@ -618,6 +618,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	pricingSvc.SetAuditLogger(auditLogger)
 	recipeSvc.SetAuditLogger(auditLogger)
 	providerCostH.SetAuditLogger(auditLogger)
+	// usage: BACKFILL only — live machine ingest stays unaudited by design
+	// (usage_events is the record); a backdated operator insert is a money-path
+	// action and rides the ingest tx.
+	usageSvc.SetAuditLogger(auditLogger)
 	webhookOutH.SetAuditLogger(auditLogger)
 	// Service-level audit logger so state-changing service calls reachable
 	// from multiple entry points (operator handler + dunning adapter + any
@@ -884,7 +888,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// when Stripe isn't configured, so its wiring is guarded above.)
 	audit.MustWired(creditSvc, tenantSvc, subSvc, invoiceSvc, creditNoteSvc,
 		stripeAdapter, paymentMethodsSvc, engine, hostedInvoiceStripe,
-		customerSvc, pricingSvc, recipeSvc, providerCostH)
+		customerSvc, pricingSvc, recipeSvc, providerCostH, usageSvc)
 	if publicPaymentH != nil {
 		// Guarded: the constructor legitimately returns nil without Stripe
 		// keys; when it exists, its emitter must be wired.
@@ -1234,6 +1238,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	})
 
 	r.Use(mw.SecurityHeaders())
+
+	// Audit-coverage detector (ADR-090). A PURE OBSERVER: it reports any
+	// mutating 2xx that produced no audit row and is not declared exempt in the
+	// route-audit registry (audit_routes.go) — slog.Error + the
+	// velox_audit_uncovered_mutation_total counter. It never touches the
+	// response and never buffers the body.
+	//
+	// Mounted at the ROOT, not on /v1: the catch-all it replaces only ever saw
+	// the /v1 block, so /v1/auth, /v1/tenants, /v1/public/*, /v1/webhooks and
+	// /v1/bootstrap were invisible to it (ADR-090 RC1). It also sits AFTER
+	// RequestID + TrustedRealIP so the ctx it seeds for every downstream audit
+	// emission carries the request id and the real client IP.
+	r.Use(mw.AuditCoverage(auditRouteExempt))
+
 	// NOTE: middleware.Timeout(30s) used to live here as a global cap,
 	// but the Week 6 SSE stream needs an unbounded connection lifetime
 	// — clients tail webhook events for hours. Push the timeout DOWN
@@ -1329,9 +1347,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// kill any long-lived EventSource connection at 30s). We re-apply
 	// the same auth chain that /v1/* gets (session cookie OR Bearer
 	// API key, rate limit, perm check) but specifically NOT
-	// idempotency / audit log (no value on a streaming GET) and NOT
-	// the Timeout. The stream is GET-only and read-only; no body to
-	// idempotency-key, nothing to audit beyond the existing access log.
+	// idempotency (no value on a streaming GET) and NOT the Timeout.
+	// The stream is GET-only and read-only; no body to idempotency-key,
+	// nothing to audit beyond the existing access log.
 	r.Route("/v1/webhook_events/stream", func(r chi.Router) {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
@@ -1343,14 +1361,21 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// timeout instead of the general 30s CRUD cap: a full usage-events
 	// export legitimately streams longer than 30s, and the old cap
 	// killed it mid-file — which, pre-P12, produced a silently
-	// truncated CSV (see exportAbort). Same auth chain + audit log as
-	// /v1; idempotency skipped (GET-only). Each endpoint requires the
+	// truncated CSV (see exportAbort). Same auth chain as /v1;
+	// idempotency skipped (GET-only). Each endpoint requires the
 	// corresponding *Read permission, so a publishable key restricted
 	// to one resource can only export what it can list.
+	//
+	// The audit catch-all used to be mounted here too — and it BUFFERED the
+	// whole response to sniff a label out of it. Its buffer implemented no
+	// http.Flusher, so exports.go's `if f, ok := w.(http.Flusher)` assertion
+	// silently failed and the CSV accumulated in memory rather than streaming
+	// — on the one route block given five minutes precisely BECAUSE it streams.
+	// The catch-all is gone (ADR-090); nothing between the handler and the
+	// socket buffers anything now.
 	r.Route("/v1/exports", func(r chi.Router) {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
-		r.Use(mw.AuditLog(db))
 		r.Use(middleware.Timeout(5 * time.Minute))
 		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
 		r.Mount("/", exportsH.Routes(
@@ -1373,7 +1398,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// paths ride their own (much larger) bucket — see ingestLimiter.
 		r.Use(mw.SplitRateLimit(isIngestPath, ingestLimiter, rateLimiter))
 		r.Use(mw.Idempotency(db))
-		r.Use(mw.AuditLog(db))
+		// No audit middleware here. Audit rows are EMITTED by the code that
+		// owns the mutation, inside its transaction (audit.Logger.LogInTx), and
+		// every mutating route declares where its evidence comes from in the
+		// route-audit registry (audit_routes.go). The root-mounted
+		// mw.AuditCoverage detector reports any route that stops emitting.
 		// Per-request timeout for ordinary CRUD endpoints. The SSE
 		// stream lives above this block (it's mounted on a sibling
 		// /v1/webhook_events/stream route) so it doesn't inherit the

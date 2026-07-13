@@ -60,8 +60,8 @@ func (s *mappingSetupStore) GetPaymentSetup(ctx context.Context, tenantID, custo
 //  2. an emit failure ABORTS the mapping write (shared fate) — no
 //     stripe_customer_id can commit unrecorded, and no row survives the abort;
 //  3. an UNKNOWN customer id (zero-row UPDATE) emits NOTHING — the
-//     fabricated-evidence class the middleware catch-all is being deleted for
-//     (it would have recorded "updated customer {id}" for a customer that was
+//     fabricated-evidence class the middleware catch-all was deleted for (it
+//     would have recorded "updated customer {id}" for a customer that was
 //     never touched).
 //
 // Mutation-verify: return nil instead of the error in persistStripeMapping's

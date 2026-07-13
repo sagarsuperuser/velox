@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -11,6 +12,10 @@ import (
 
 type Store interface {
 	Ingest(ctx context.Context, tenantID string, event domain.UsageEvent) (domain.UsageEvent, error)
+	// IngestAudited runs the caller-supplied audit emission on the ingest's
+	// own transaction (ADR-090). Only BACKFILL passes an emitter — live
+	// machine ingest passes nil (see PostgresStore.IngestAudited).
+	IngestAudited(ctx context.Context, tenantID string, event domain.UsageEvent, emit func(tx *sql.Tx, out domain.UsageEvent) error) (domain.UsageEvent, error)
 	// IngestBatch writes every event in ONE transaction — all-or-nothing,
 	// so a client retry after a mid-batch abort never re-ingests a
 	// committed prefix. Idempotency replays are counted in deduped, not

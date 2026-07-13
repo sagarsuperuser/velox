@@ -13,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
@@ -371,11 +370,5 @@ func (h *Handler) operatorCreateSetupSession(w http.ResponseWriter, r *http.Requ
 		respond.FromError(w, r, err, "payment_method")
 		return
 	}
-	// The service wrote this route's audit row (setup_session_created) and an
-	// emission failure would have failed the call above — so the middleware
-	// catch-all must stand down rather than add its heuristic duplicate
-	// (ADR-090 §4: suppression is the owning handler's request-scoped call,
-	// made only after the action succeeded).
-	audit.MarkHandled(r.Context())
 	respond.JSON(w, r, http.StatusCreated, setupSessionResponse{URL: url, SessionID: sessionID})
 }

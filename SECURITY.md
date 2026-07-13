@@ -28,7 +28,7 @@ We commit to:
 
 - Vulnerabilities in the operator's deployment environment (Kubernetes cluster, managed Postgres, load balancer, secrets store, IAM)
 - Vulnerabilities in third-party services that Velox integrates with (Stripe, cloud providers, email providers, S3, KMS) — report those to the vendor
-- Configuration mistakes by the operator (e.g., running with `VELOX_ENCRYPTION_KEY` unset in a non-production env, leaving `audit_fail_closed` disabled when SOC 2 type 2 requires fail-closed)
+- Configuration mistakes by the operator (e.g., running with `VELOX_ENCRYPTION_KEY` unset in a non-production env, or exposing the dashboard without TLS termination)
 - DoS via traffic flooding (a property of the operator's load balancer + WAF, not Velox)
 - Self-XSS, social engineering, physical attacks
 - Reports against forks or vendored copies of Velox — please reproduce on the canonical `main` branch first
