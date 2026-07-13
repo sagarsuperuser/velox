@@ -8,7 +8,7 @@
     "dev": "vite",
     "prebuild": "npm run copy-spec",
     "build": "tsc -b && vite build",
-    "test": "node --test tests/*.test.ts",
+    "test": "node --test --import ./tests/support/register-alias.mjs tests/*.test.ts",
     "lint": "eslint .",
     "preview": "vite preview",
     "copy-spec": "node scripts/copy-openapi-spec.mjs",
