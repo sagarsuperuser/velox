@@ -8,6 +8,14 @@ import { api, formatDateTime, formatRate, getTenantTimezone, formatCents } from 
 import { startOfDayInTZ, endOfDayInTZ } from '@/lib/dates'
 import type { AuditEntry } from '@/lib/api'
 import { downloadServerCSV } from '@/lib/csv'
+import {
+  describeAction,
+  resourceLink,
+  HIGH_SEVERITY,
+  MEDIUM_SEVERITY,
+  DEFAULT_ACTIONS,
+  DEFAULT_RESOURCE_TYPES,
+} from '@/lib/auditVocabulary'
 import { Layout } from '@/components/Layout'
 import { EmptyState } from '@/components/EmptyState'
 import { useUrlState } from '@/hooks/useUrlState'
