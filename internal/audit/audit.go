@@ -55,7 +55,13 @@ func NewLogger(db *postgres.DB) *Logger {
 // before the resource is hydratable, or the resource has no operator-
 // facing name); the page falls back to the resource_type.
 func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error {
-	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Detach from the caller's cancellation (keeping its values — actor,
+	// client IP, request id still resolve) so a client disconnect right
+	// after the business operation commits cannot abort the audit write.
+	// Mirrors the middleware's writeAudit, which has always detached; before
+	// this, the explicit writer was the one audit path a disconnect could
+	// silently kill (ADR-089).
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
 
 	tx, err := l.db.BeginTx(writeCtx, postgres.TxTenant, tenantID)

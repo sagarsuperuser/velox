@@ -1301,7 +1301,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Route("/v1/exports", func(r chi.Router) {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
-		r.Use(mw.AuditLog(db, settingsStore))
+		r.Use(mw.AuditLog(db))
 		r.Use(middleware.Timeout(5 * time.Minute))
 		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
 		r.Mount("/", exportsH.Routes(
@@ -1324,7 +1324,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// paths ride their own (much larger) bucket — see ingestLimiter.
 		r.Use(mw.SplitRateLimit(isIngestPath, ingestLimiter, rateLimiter))
 		r.Use(mw.Idempotency(db))
-		r.Use(mw.AuditLog(db, settingsStore))
+		r.Use(mw.AuditLog(db))
 		// Per-request timeout for ordinary CRUD endpoints. The SSE
 		// stream lives above this block (it's mounted on a sibling
 		// /v1/webhook_events/stream route) so it doesn't inherit the
