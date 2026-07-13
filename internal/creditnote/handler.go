@@ -132,7 +132,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			respond.FromError(w, r, err, "credit_note")
 			return
 		}
-		h.auditLogCreditNote(r, tenantID, cn)
+		// Issued row rides the relief coordinator tx (ADR-090); suppress
+		// the middleware catch-all duplicate.
+		audit.MarkHandled(r.Context())
 		respond.JSON(w, r, http.StatusCreated, cn)
 		return
 	}
@@ -153,7 +155,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			respond.FromError(w, r, err, "credit_note")
 			return
 		}
-		h.auditLogCreditNote(r, tenantID, issued)
+		// Issued row rides Issue()'s coordinator tx (ADR-090).
+		audit.MarkHandled(r.Context())
 		respond.JSON(w, r, http.StatusCreated, issued)
 		return
 	}
@@ -218,7 +221,8 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.auditLogCreditNote(r, tenantID, cn)
+	// Issued row rides Issue()'s coordinator tx (ADR-090).
+	audit.MarkHandled(r.Context())
 
 	respond.JSON(w, r, http.StatusOK, cn)
 }
@@ -457,22 +461,4 @@ func (h *Handler) sendEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{"status": "sent"})
-}
-
-// auditLogCreditNote logs a credit note issue event. Shared by issue and auto-issue paths.
-func (h *Handler) auditLogCreditNote(r *http.Request, tenantID string, cn domain.CreditNote) {
-	if h.auditLogger == nil {
-		return
-	}
-	_ = h.auditLogger.Log(r.Context(), tenantID, "credit_note.issued", "credit_note", cn.ID, cn.CreditNoteNumber, map[string]any{
-		"credit_note_number":       cn.CreditNoteNumber,
-		"invoice_id":               cn.InvoiceID,
-		"customer_id":              cn.CustomerID,
-		"total_cents":              cn.TotalCents,
-		"refund_amount_cents":      cn.RefundAmountCents,
-		"credit_amount_cents":      cn.CreditAmountCents,
-		"out_of_band_amount_cents": cn.OutOfBandAmountCents,
-		"reason":                   cn.Reason,
-		"currency":                 cn.Currency,
-	})
 }

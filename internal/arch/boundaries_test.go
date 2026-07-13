@@ -44,15 +44,15 @@ var allowedCrossDomainImports = map[string][]string{
 	"customer":       {"audit", "auth", "tax"},
 	"dashmembers":    {"audit", "auth", "session"},
 	"dunning":        {"auth"},
-	"hostedinvoice":  {"invoice"},
-	"invoice":        {"auth", "payment", "tax"}, // payment = error-taxonomy value types only (PaymentError, ErrPaymentTransient — classified by the finalize decline arm); never the Service
-	"payment":        {"auth", "tax", "tenantstripe"},
+	"hostedinvoice":  {"auth", "invoice"}, // auth = customer-actor ctx stamping for the public checkout audit row (ADR-090 PR4)
+	"invoice":        {"audit", "auth", "payment", "tax"}, // audit = in-tx Void emission (ADR-090 PR4); // payment = error-taxonomy value types only (PaymentError, ErrPaymentTransient — classified by the finalize decline arm); never the Service
+	"payment":        {"audit", "auth", "tax", "tenantstripe"}, // audit = in-tx emissions: checkout PM flip, token consume/restore (ADR-090 PR4)
 	"paymentmethods": {"auth", "payment"},
 	"pricing":        {"auth"},
 	"recipe":         {"audit", "auth"},
 	"session":        {"auth"},
 	"subscription":   {"audit", "auth", "tax"}, // tax = shared value types/classification (ADR-052 class; used for deferral-fact stamping on proration invoices)
-	"tenant":         {"auth"},
+	"tenant":         {"audit", "auth"}, // audit = in-tx tenant-provisioning emission (ADR-090 PR4, panel Q6)
 	"tenantstripe":   {"auth"},
 	"testclock":      {"auth"},
 	"usage":          {"auth", "subscription"},

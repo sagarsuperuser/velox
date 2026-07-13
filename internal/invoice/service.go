@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -162,6 +163,10 @@ type Service struct {
 // audit row regardless of which path triggered the transition.
 type AuditLogger interface {
 	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+	// LogInTx is the ADR-090 in-tx emission: Void uses it inside
+	// UpdateStatusWithReversal so the status flip, the credit reversal,
+	// the commit-grant retirement, and the audit row share one fate.
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
 }
 
 // SetTenantSettingsReader wires the tenant-settings reader used to default a
@@ -903,22 +908,57 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.Invoice
 	// transient failure (no reconciler re-drove it). The 0106 dedup index keeps
 	// the in-tx reversal exactly-once across redelivery.
 	voided, err := s.store.UpdateStatusWithReversal(ctx, tenantID, id, domain.InvoiceVoided, func(tx *sql.Tx) error {
-		if s.creditReverser == nil || inv.CustomerID == "" {
-			return nil
+		var creditsReversed, commitRetired int64
+		if s.creditReverser != nil && inv.CustomerID != "" {
+			reversed, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber)
+			if rerr != nil {
+				return rerr
+			}
+			creditsReversed = reversed
+			// ADR-078 D3: voiding a commit FUNDING invoice retires the funded
+			// grant's remaining balance in this same tx (no-op for non-commit
+			// invoices). Void is the ONLY retire trigger — uncollectible and
+			// the dunning pause/cancel terminals leave the block live as a
+			// collections stance, and voided→paid is rejected so a retired
+			// grant can never be paid for afterwards. The consumed_cents CAS
+			// inside makes the legal uncollectible→void sequence and retries
+			// converge on one retirement.
+			retired, rerr := s.creditReverser.RetireCommitGrantForInvoiceTx(ctx, tx, tenantID, inv.ID)
+			if rerr != nil {
+				return rerr
+			}
+			commitRetired = retired
 		}
-		if _, rerr := s.creditReverser.ReverseForInvoiceTx(ctx, tx, tenantID, inv.CustomerID, inv.ID, inv.InvoiceNumber); rerr != nil {
-			return rerr
+		// ADR-090 in-tx emission — one canonical void row for BOTH the
+		// operator endpoint and engine-triggered voids (unpaid-prebill
+		// relief), which previously left no audit trail at all. The
+		// reversal/retirement amounts ride the row so the ledger effects
+		// of the void are readable without cross-referencing the ledger.
+		if s.audit != nil {
+			meta := map[string]any{
+				"invoice_number":     inv.InvoiceNumber,
+				"customer_id":        inv.CustomerID,
+				"total_amount_cents": inv.TotalAmountCents,
+				"currency":           inv.Currency,
+				"status_before":      string(inv.Status),
+			}
+			if creditsReversed > 0 {
+				meta["credits_reversed_cents"] = creditsReversed
+			}
+			if commitRetired > 0 {
+				meta["commit_retired_cents"] = commitRetired
+			}
+			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionVoid,
+				ResourceType:  "invoice",
+				ResourceID:    inv.ID,
+				ResourceLabel: inv.InvoiceNumber,
+				Metadata:      meta,
+			}); auditErr != nil {
+				return fmt.Errorf("audit emission: %w", auditErr)
+			}
 		}
-		// ADR-078 D3: voiding a commit FUNDING invoice retires the funded
-		// grant's remaining balance in this same tx (no-op for non-commit
-		// invoices). Void is the ONLY retire trigger — uncollectible and
-		// the dunning pause/cancel terminals leave the block live as a
-		// collections stance, and voided→paid is rejected so a retired
-		// grant can never be paid for afterwards. The consumed_cents CAS
-		// inside makes the legal uncollectible→void sequence and retries
-		// converge on one retirement.
-		_, rerr := s.creditReverser.RetireCommitGrantForInvoiceTx(ctx, tx, tenantID, inv.ID)
-		return rerr
+		return nil
 	})
 	if err != nil {
 		return domain.Invoice{}, err

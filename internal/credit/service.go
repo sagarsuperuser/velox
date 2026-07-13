@@ -309,7 +309,7 @@ func (s *Service) GrantTx(ctx context.Context, tx *sql.Tx, tenantID string, inpu
 		return domain.CreditLedgerEntry{}, errs.Invalid("grant_kind",
 			"must be empty or 'promotional' — commit grants are created by finalizing a commit invoice")
 	}
-	return s.store.AppendEntryTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
+	out, err := s.store.AppendEntryTx(ctx, tx, tenantID, domain.CreditLedgerEntry{
 		CustomerID:  input.CustomerID,
 		EntryType:   domain.CreditGrant,
 		AmountCents: input.AmountCents,
@@ -328,6 +328,29 @@ func (s *Service) GrantTx(ctx context.Context, tx *sql.Tx, tenantID string, inpu
 		SourceCreditNoteID:       input.SourceCreditNoteID,
 		CreatedAt:                input.At,
 	})
+	if err != nil {
+		return out, err
+	}
+	// ADR-090: the caller-tx twin emits on the CALLER's tx — this closes
+	// the Grant/GrantTx audit divergence declared in ADR-090 §3 (CN-issue
+	// grants, atomic proration grants). Same frozen content as
+	// grantEmission; the error aborts the caller's whole coordinator tx.
+	if s.auditLogger != nil {
+		if err := s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionGrant,
+			ResourceType:  "credit",
+			ResourceID:    out.ID,
+			ResourceLabel: out.Description,
+			Metadata: map[string]any{
+				"customer_id":  out.CustomerID,
+				"amount_cents": out.AmountCents,
+				"description":  out.Description,
+			},
+		}); err != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // GrantForCreditNote is the retry-safe Grant variant used by

@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	veloxauth "github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -104,7 +106,19 @@ type Stripe struct {
 	anomalies          PaymentAnomalyRecorder     // optional; durable marker for the attention banner (ADR-068)
 	checkoutSessions   *CheckoutSessionStore      // optional; claim-ledger truth-sync + settle-time expire (ADR-068)
 	sessionClients     *StripeClients             // optional; raw mode-keyed clients for session expire calls
+	audit              AuditEmitter               // optional; ADR-090 in-tx emission for the checkout-completed PM flip
 }
+
+// AuditEmitter is the narrow in-tx audit seam (ADR-090).
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
+
+// SetAuditLogger wires in-tx audit emission for the
+// checkout.session.completed payment-setup flip — previously that webhook's
+// only durable mutation left no audit trail (and payment-mode+save-card had
+// no sibling record at all).
+func (s *Stripe) SetAuditLogger(a AuditEmitter) { s.audit = a }
 
 // PaymentAnomalyRecorder persists the durable payment-anomaly marker the
 // dashboard attention classifier reads (ADR-068). Implemented by
@@ -1116,6 +1130,7 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 	// Extract velox_customer_id from metadata (set during checkout session creation)
 	customerID := ""
 	sessionID := ""
+	veloxPurpose := ""
 	if payload, ok := event.Payload["raw"]; ok {
 		var raw struct {
 			Data struct {
@@ -1129,6 +1144,7 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		if err := json.Unmarshal([]byte(payload.(string)), &raw); err == nil {
 			customerID = raw.Data.Object.Metadata["velox_customer_id"]
 			sessionID = raw.Data.Object.ID
+			veloxPurpose = raw.Data.Object.Metadata["velox_purpose"]
 			if event.CustomerExternalID == "" {
 				event.CustomerExternalID = raw.Data.Object.Customer
 			}
@@ -1202,7 +1218,31 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		StripePaymentMethodID:       card.PaymentMethodID,
 	}
 
-	if _, err := s.paymentSetups.UpsertPaymentSetup(ctx, tenantID, setup); err != nil {
+	// Attribute customer-driven completions to the CUSTOMER actor — the
+	// same velox_purpose gate as the setup_intent attach path (#461); an
+	// operator-driven or purposeless session stays system-attributed.
+	auditCtx := ctx
+	if veloxPurpose == "hosted_invoice_pay" || veloxPurpose == purposePaymentUpdateToken {
+		auditCtx = veloxauth.WithCustomerActor(ctx, customerID)
+	}
+	var emit func(tx *sql.Tx) error
+	if s.audit != nil {
+		emit = func(tx *sql.Tx) error {
+			return s.audit.LogInTx(auditCtx, tx, audit.Entry{
+				Action:       domain.AuditActionUpdate,
+				ResourceType: "customer",
+				ResourceID:   customerID,
+				Metadata: map[string]any{
+					"action":             "payment_setup_completed",
+					"card_brand":         setup.CardBrand,
+					"card_last4":         setup.CardLast4,
+					"stripe_customer_id": event.CustomerExternalID,
+					"velox_purpose":      veloxPurpose,
+				},
+			})
+		}
+	}
+	if _, err := s.paymentSetups.UpsertPaymentSetupAudited(ctx, tenantID, setup, emit); err != nil {
 		return fmt.Errorf("update payment setup: %w", err)
 	}
 

@@ -44,6 +44,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/invoice"
@@ -368,7 +369,11 @@ func (h *Handler) createCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	}
 
 	successURL, cancelURL := h.checkoutReturnURLs(inv.PublicToken)
-	sessionURL, err := h.stripe.CreateInvoicePaymentSession(r.Context(), inv.TenantID, inv, successURL, cancelURL)
+	// The hosted-invoice token IS a customer credential — stamp the
+	// customer actor so the checkout-claim audit row (ADR-090, emitted in
+	// the claim tx downstream) attributes to the customer, not "System".
+	ctx := auth.WithCustomerActor(r.Context(), inv.CustomerID)
+	sessionURL, err := h.stripe.CreateInvoicePaymentSession(ctx, inv.TenantID, inv, successURL, cancelURL)
 	if err != nil {
 		// Typed claim-protocol outcomes get honest 409s (ADR-068), not a
 		// misleading stripe_error 502: the invoice settled/voided under us,

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -1062,6 +1063,15 @@ func TestRecordPayment(t *testing.T) {
 // layer audit + webhook emit fire on state transitions.
 type captureAuditInvoice struct {
 	entries []capturedAuditEntryInvoice
+}
+
+// LogInTx captures like Log — a nil tx is fine for content-level tests;
+// shared-fate semantics are pinned by the real-Postgres integration tests.
+func (c *captureAuditInvoice) LogInTx(_ context.Context, _ *sql.Tx, e audit.Entry) error {
+	c.entries = append(c.entries, capturedAuditEntryInvoice{
+		action: e.Action, resourceID: e.ResourceID, resourceType: e.ResourceType, metadata: e.Metadata,
+	})
+	return nil
 }
 
 type capturedAuditEntryInvoice struct {

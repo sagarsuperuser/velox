@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -569,6 +570,15 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 }
 
 func (s *PostgresStore) ApplyRefundWebhookStatus(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error {
+	return s.ApplyRefundWebhookStatusAudited(ctx, tenantID, stripeRefundID, status, nil)
+}
+
+// ApplyRefundWebhookStatusAudited is ApplyRefundWebhookStatus with an in-tx
+// audit emission hook (ADR-090). emit fires ONLY when the monotonic guard
+// actually flipped a row — a stale/no-op redelivery records nothing, so the
+// log never claims a transition that didn't happen. The flipped CN's
+// identifiers ride RETURNING so the emission can reference them.
+func (s *PostgresStore) ApplyRefundWebhookStatusAudited(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus, emit func(tx *sql.Tx, cn domain.CreditNote) error) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -584,16 +594,17 @@ func (s *PostgresStore) ApplyRefundWebhookStatus(ctx context.Context, tenantID, 
 	//     a later 'failed' must win; a stale 'pending' must not clobber succeeded.
 	//   - 'pending' yields to any terminal.
 	// Same-value re-delivery is a harmless no-op (zero rows → handled below).
-	res, err := tx.ExecContext(ctx, `
+	var cn domain.CreditNote
+	flipped := true
+	err = tx.QueryRowContext(ctx, `
 		UPDATE credit_notes SET refund_status=$1, updated_at=$2
 		WHERE stripe_refund_id=$3
 		  AND refund_status <> 'failed'
-		  AND ($1 = 'failed' OR refund_status <> 'succeeded')`,
-		status, clock.Now(ctx), stripeRefundID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+		  AND ($1 = 'failed' OR refund_status <> 'succeeded')
+		RETURNING id, credit_note_number, customer_id, invoice_id`,
+		status, clock.Now(ctx), stripeRefundID).Scan(&cn.ID, &cn.CreditNoteNumber, &cn.CustomerID, &cn.InvoiceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		flipped = false
 		// Zero rows = either no CN carries this refund id (foreign/dashboard
 		// refund, or not-yet-committed), OR the monotonic guard correctly
 		// skipped a stale pending over a terminal. Distinguish: a genuinely
@@ -606,6 +617,13 @@ func (s *PostgresStore) ApplyRefundWebhookStatus(ctx context.Context, tenantID, 
 		}
 		if !exists {
 			return errs.ErrNotFound
+		}
+	} else if err != nil {
+		return err
+	}
+	if flipped && emit != nil {
+		if err := emit(tx, cn); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
 		}
 	}
 	return tx.Commit()

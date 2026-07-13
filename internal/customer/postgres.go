@@ -259,6 +259,14 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Cu
 // on the lazy-create path and by the legacy /v1/checkout/setup
 // operator flow on initial bootstrap.
 func (s *PostgresStore) SetStripeCustomerID(ctx context.Context, tenantID, customerID, stripeCustomerID string) error {
+	return s.SetStripeCustomerIDAudited(ctx, tenantID, customerID, stripeCustomerID, nil)
+}
+
+// SetStripeCustomerIDAudited runs the caller-supplied audit emission on the
+// same tx as the mapping write (ADR-090). The checkout.session.completed
+// payment-setup flip uses it — previously that background webhook mutation
+// left no audit trail at all.
+func (s *PostgresStore) SetStripeCustomerIDAudited(ctx context.Context, tenantID, customerID, stripeCustomerID string, emit func(tx *sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -272,6 +280,11 @@ func (s *PostgresStore) SetStripeCustomerID(ctx context.Context, tenantID, custo
 	`, stripeCustomerID, clock.Now(ctx), customerID, tenantID)
 	if err != nil {
 		return fmt.Errorf("set stripe_customer_id: %w", err)
+	}
+	if emit != nil {
+		if err := emit(tx); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	return tx.Commit()
 }

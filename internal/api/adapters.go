@@ -88,6 +88,12 @@ func (a *compositePaymentSetupStore) GetPaymentSetup(ctx context.Context, tenant
 }
 
 func (a *compositePaymentSetupStore) UpsertPaymentSetup(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup) (domain.CustomerPaymentSetup, error) {
+	return a.UpsertPaymentSetupAudited(ctx, tenantID, ps, nil)
+}
+
+// UpsertPaymentSetupAudited threads the ADR-090 emission onto the mapping
+// write's tx (the only durable mutation on this path post-0097).
+func (a *compositePaymentSetupStore) UpsertPaymentSetupAudited(ctx context.Context, tenantID string, ps domain.CustomerPaymentSetup, emit func(tx *sql.Tx) error) (domain.CustomerPaymentSetup, error) {
 	// Only the stripe_customer_id mapping survives on this code
 	// path. Card details, default-PM flag, and setup_status now
 	// live on payment_methods (written via paymentmethods.Service
@@ -95,10 +101,13 @@ func (a *compositePaymentSetupStore) UpsertPaymentSetup(ctx context.Context, ten
 	// ignored — they're either redundant with payment_methods or
 	// state-machine vestiges from the dropped summary table.
 	if ps.StripeCustomerID != "" && ps.CustomerID != "" {
-		if err := a.customers.SetStripeCustomerID(ctx, tenantID, ps.CustomerID, ps.StripeCustomerID); err != nil {
+		if err := a.customers.SetStripeCustomerIDAudited(ctx, tenantID, ps.CustomerID, ps.StripeCustomerID, emit); err != nil {
 			return domain.CustomerPaymentSetup{}, err
 		}
 	}
+	// When no mapping write happened (missing ids), the emission is
+	// intentionally dropped — there is no durable mutation to attach
+	// evidence to.
 	// Return the post-write composed view so callers see their
 	// write reflected.
 	return a.GetPaymentSetup(ctx, tenantID, ps.CustomerID)
@@ -967,6 +976,11 @@ type hostedInvoiceStripeAdapter struct {
 	// with a claim-derived Stripe idempotency key, so one invoice can never
 	// hold two live payable sessions.
 	sessions *payment.CheckoutSessionStore
+	// audit is the ADR-090 in-tx emitter: the hosted-checkout claim (the
+	// flow's one durable mutation) carries its evidence atomically. Set at
+	// construction — a public customer-token money path must not silently
+	// run unaudited.
+	audit *audit.Logger
 }
 
 func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
@@ -1049,7 +1063,24 @@ func (a *hostedInvoiceStripeAdapter) CreateInvoicePaymentSession(
 		return "", fmt.Errorf("read open checkout claim: %w", err)
 	}
 
-	freshClaim, _, err := a.sessions.ClaimOpen(ctx, tenantID, inv.ID, inv.AmountDueCents, inv.Currency, livemode)
+	var emit func(tx *sql.Tx, claim payment.CheckoutClaim) error
+	if a.audit != nil {
+		emit = func(tx *sql.Tx, claim payment.CheckoutClaim) error {
+			return a.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionUpdate,
+				ResourceType:  "invoice",
+				ResourceID:    inv.ID,
+				ResourceLabel: inv.InvoiceNumber,
+				Metadata: map[string]any{
+					"action":       "hosted_checkout_started",
+					"amount_cents": claim.AmountCents,
+					"currency":     claim.Currency,
+					"claim_id":     claim.ID,
+				},
+			})
+		}
+	}
+	freshClaim, _, err := a.sessions.ClaimOpenAudited(ctx, tenantID, inv.ID, inv.AmountDueCents, inv.Currency, livemode, emit)
 	if err != nil {
 		// ErrInvoiceNotPayable / ErrChargeInFlight propagate typed — the
 		// handler maps them to honest 409s.

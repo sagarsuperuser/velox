@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -15,6 +16,22 @@ type memoryStore struct {
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{tenants: make(map[string]domain.Tenant)}
+}
+
+// CreateAudited mirrors the real store's shared-fate contract: emission
+// error rolls the in-memory create back.
+func (m *memoryStore) CreateAudited(ctx context.Context, t domain.Tenant, emit func(tx *sql.Tx, out domain.Tenant) error) (domain.Tenant, error) {
+	out, err := m.Create(ctx, t)
+	if err != nil {
+		return out, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			delete(m.tenants, out.ID)
+			return domain.Tenant{}, err
+		}
+	}
+	return out, nil
 }
 
 func (m *memoryStore) Create(_ context.Context, t domain.Tenant) (domain.Tenant, error) {

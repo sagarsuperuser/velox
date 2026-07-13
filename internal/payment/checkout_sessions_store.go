@@ -63,6 +63,13 @@ func NewCheckoutSessionStore(db *postgres.DB) *CheckoutSessionStore {
 // the loser gets the winner's row and re-drives its Stripe create with the
 // winner's claim-derived idempotency key).
 func (s *CheckoutSessionStore) ClaimOpen(ctx context.Context, tenantID, invoiceID string, amountCents int64, currency string, livemode bool) (CheckoutClaim, bool, error) {
+	return s.ClaimOpenAudited(ctx, tenantID, invoiceID, amountCents, currency, livemode, nil)
+}
+
+// ClaimOpenAudited is ClaimOpen with an in-tx audit emission hook (ADR-090).
+// emit fires ONLY on the winner path (the call that actually created the
+// claim) — the loser/reuse paths mutate nothing new, so they record nothing.
+func (s *CheckoutSessionStore) ClaimOpenAudited(ctx context.Context, tenantID, invoiceID string, amountCents int64, currency string, livemode bool, emit func(tx *sql.Tx, claim CheckoutClaim) error) (CheckoutClaim, bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return CheckoutClaim{}, false, err
@@ -124,7 +131,7 @@ func (s *CheckoutSessionStore) ClaimOpen(ctx context.Context, tenantID, invoiceI
 					return CheckoutClaim{}, false, fmt.Errorf("fetch winning claim after unique violation: %w", gErr)
 				}
 				// Winner's claim already closed — re-attempt the claim.
-				c, w, rErr := s.ClaimOpen(ctx, tenantID, invoiceID, amountCents, currency, livemode)
+				c, w, rErr := s.ClaimOpenAudited(ctx, tenantID, invoiceID, amountCents, currency, livemode, emit)
 				if rErr == nil || !postgres.IsUniqueViolation(rErr) {
 					return c, w, rErr
 				}
@@ -132,6 +139,11 @@ func (s *CheckoutSessionStore) ClaimOpen(ctx context.Context, tenantID, invoiceI
 			return CheckoutClaim{}, false, fmt.Errorf("claim contention did not converge for invoice %s", invoiceID)
 		}
 		return CheckoutClaim{}, false, fmt.Errorf("insert claim: %w", err)
+	}
+	if emit != nil {
+		if err := emit(tx, claim); err != nil {
+			return CheckoutClaim{}, false, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return CheckoutClaim{}, false, err

@@ -12,6 +12,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -124,9 +125,13 @@ type Service struct {
 // adapter, etc). Pre-fix the audit-write lived only in Handler — which
 // meant dunning's auto-pause path bypassed it entirely, leaving the
 // Activity timeline blank for any sub paused by exhausted dunning.
-// Matches *audit.Logger.Log so SetAuditLogger(auditLogger) wires it.
+// Matches *audit.Logger so SetAuditLogger(auditLogger) wires it.
 type AuditLogger interface {
 	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+	// LogInTx is the ADR-090 in-tx emission: the audit row rides the
+	// caller's transaction (Cancel uses it inside CancelAtomicWithBill so
+	// the cancel flip, the final invoice, and the audit row share fate).
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
 }
 
 // SetAuditLogger wires the audit logger used by state-changing service
@@ -1654,6 +1659,23 @@ func (s *Service) RemoveItemTx(ctx context.Context, tx *sql.Tx, tenantID, subscr
 // (industry standard — Stripe / Lago / Chargebee / Orb all surface
 // the credit on the subscription timeline, not just the customer's
 // credit balance).
+// cancelActorLabel derives the timeline's "canceled by …" vocabulary from
+// the request identity (ADR-090 D16): a dashboard session or API key reads
+// as "operator", a stamped customer actor as "customer", and a bare
+// background ctx as "dunning" — the dunning exhaust-action adapter is
+// Service.Cancel's only background caller today (engine scheduled/trial
+// cancels take their own store paths and never route here).
+func cancelActorLabel(ctx context.Context) string {
+	switch actorType, _ := audit.ResolveActor(ctx); actorType {
+	case "user", "api_key":
+		return "operator"
+	case "customer":
+		return "customer"
+	default:
+		return "dunning"
+	}
+}
+
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
 
@@ -1689,6 +1711,37 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subsc
 			return fmt.Errorf("cancel proration drafts: %w", draftErr)
 		}
 		cancelDraftIDs, cancelDraftCredit, cancelDraftsHandled = ids, credited, handled
+
+		// ADR-090 in-tx emission: the cancel audit row rides the SAME tx as
+		// the status flip + final invoice, so dunning-driven cancels (the
+		// previously-invisible background path) and operator cancels record
+		// identically — and a rolled-back cancel leaves no phantom row.
+		// prorated_credit_cents carries the atomic-path amount only; the
+		// fallback path's credit lands post-commit as its own audited grant.
+		if s.audit != nil {
+			meta := map[string]any{
+				"customer_id": c.CustomerID,
+				"plan_ids":    planIDsFromItems(c.Items),
+				"canceled_by": cancelActorLabel(ctx),
+			}
+			if handled && credited > 0 {
+				meta["prorated_credit_cents"] = credited
+			}
+			var sim *audit.SimContext
+			if c.TestClockID != "" {
+				sim = &audit.SimContext{EffectiveAt: clock.Now(ctx), TestClockID: c.TestClockID}
+			}
+			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionCancel,
+				ResourceType:  "subscription",
+				ResourceID:    c.ID,
+				ResourceLabel: c.Code,
+				Metadata:      meta,
+				Sim:           sim,
+			}); auditErr != nil {
+				return fmt.Errorf("audit emission: %w", auditErr)
+			}
+		}
 		return nil
 	})
 	if err != nil {

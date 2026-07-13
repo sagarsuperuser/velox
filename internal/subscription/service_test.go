@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -3587,6 +3588,14 @@ func TestSubMutators_StampSimTimeOnClockPinnedSub(t *testing.T) {
 // resume auto-clears via the new scan phases.
 type captureAudit struct {
 	entries []capturedAuditEntry
+}
+
+// LogInTx captures like Log (nil tx fine for content-level unit tests).
+func (c *captureAudit) LogInTx(_ context.Context, _ *sql.Tx, e audit.Entry) error {
+	c.entries = append(c.entries, capturedAuditEntry{
+		action: e.Action, resourceID: e.ResourceID, resourceType: e.ResourceType, metadata: e.Metadata,
+	})
+	return nil
 }
 
 type capturedAuditEntry struct {
