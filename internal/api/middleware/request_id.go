@@ -38,9 +38,17 @@ const requestIDPrefix = "req_"
 //     docs: there are no hits. Velox's published contract is the Velox-Request-Id
 //     RESPONSE header (respond.go), which the dashboard captures (web-v2
 //     lib/api.ts) and the docs point support at. That contract is unchanged.
-//   - Cross-service trace continuity is already carried properly by W3C Trace
-//     Context, which mw.Tracing() (otelhttp) propagates from inbound headers.
-//     X-Request-Id would be a second, weaker, unauthenticated tracing channel.
+//   - Cross-service trace continuity belongs to W3C Trace Context, which
+//     mw.Tracing() (otelhttp) propagates from inbound headers. Be precise about
+//     what that buys today: tracing is a NO-OP unless OTEL_EXPORTER_OTLP_ENDPOINT
+//     is set (internal/platform/telemetry), so on a default deployment there is
+//     no cross-service correlation channel at all. That is a real, if small,
+//     ACCEPTED LOSS: a caller that wants to correlate its own request with a
+//     Velox audit row must now read the Velox-Request-Id response header rather
+//     than dictate the id up front. We take that trade because an inbound
+//     X-Request-Id would be a second, weaker, UNAUTHENTICATED channel — and it is
+//     the one that lands in the compliance log. Closure trigger: a caller with a
+//     concrete cross-service correlation need → wire OTLP, not a client-chosen id.
 //   - Recording the client's string anywhere on the row — even under an
 //     honestly-named metadata key — puts unverified client input into a
 //     permanent append-only compliance record. The audit redesign's rule is that

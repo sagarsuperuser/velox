@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -27,6 +28,29 @@ import (
 // by 0150 — which is exactly what makes it useful below as the "still holds the
 // grants" role that proves the triggers are an independent second layer.
 const defaultRuntimeRoleURL = "postgres://velox_app:velox_app@localhost:5432/velox_test?sslmode=disable"
+
+// runtimeRoleURL resolves the velox_app (runtime-role) connection string.
+//
+// It DERIVES from the suite's own TEST_DATABASE_URL rather than hardcoding a
+// database name: the suite can be pointed at a throwaway database (parallel
+// agents, CI matrices), and a hardcoded "velox_test" would then assert against
+// the WRONG database — passing while the database under test kept its grants.
+// Only the role is swapped; host, database and params are inherited.
+func runtimeRoleURL() string {
+	if explicit := os.Getenv("TEST_RUNTIME_ROLE_DATABASE_URL"); explicit != "" {
+		return explicit
+	}
+	suite := os.Getenv("TEST_DATABASE_URL")
+	if suite == "" {
+		return defaultRuntimeRoleURL
+	}
+	u, err := url.Parse(suite)
+	if err != nil {
+		return defaultRuntimeRoleURL
+	}
+	u.User = url.UserPassword("velox_app", "velox_app")
+	return u.String()
+}
 
 // TestAuditLog_AppendOnlyIsTwoIndependentLayers pins the defense-in-depth
 // posture migration 0150 establishes for the append-only audit log.
@@ -93,10 +117,7 @@ func TestAuditLog_AppendOnlyIsTwoIndependentLayers(t *testing.T) {
 	// triggers, so this fails even though velox_app cannot see the row under
 	// RLS (no app.tenant_id GUC set) — the statement never gets that far.
 	t.Run("layer 1: velox_app is refused at the permission check", func(t *testing.T) {
-		runtimeURL := os.Getenv("TEST_RUNTIME_ROLE_DATABASE_URL")
-		if runtimeURL == "" {
-			runtimeURL = defaultRuntimeRoleURL
-		}
+		runtimeURL := runtimeRoleURL()
 		pool, err := sql.Open("pgx", runtimeURL)
 		if err != nil {
 			t.Fatalf("open velox_app pool: %v", err)
