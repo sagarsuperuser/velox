@@ -134,7 +134,7 @@ export default function SubscriptionDetailPage() {
   // pulled from the audit log. Separate query key from the period-
   // progress visualization further down; the two are unrelated despite
   // both being called "timeline" in local parlance.
-  const { data: activityTimelineData } = useQuery({
+  const { data: activityTimelineData, isError: activityTimelineError } = useQuery({
     queryKey: ['subscription-activity-timeline', id],
     queryFn: () => api.getSubscriptionTimeline(id!).then(r => ({ events: r.events || [], truncated: !!r.truncated })),
     enabled: !!id,
@@ -143,6 +143,10 @@ export default function SubscriptionDetailPage() {
   // Backend caps the feed at the 100 newest audit rows; when true, the
   // earliest events (create/activate) are missing from the top of the list.
   const activityTimelineTruncated = activityTimelineData?.truncated ?? false
+  // The backend now 500s when the audit store is down (it used to return an
+  // empty 200) — the whole point is that "couldn't load history" must not
+  // render identically to "no history", so the error keeps the card visible
+  // with an explicit failure state instead of hiding it.
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['subscription', id] })
@@ -1061,12 +1065,17 @@ export default function SubscriptionDetailPage() {
       {/* Activity Timeline (T0-18) — lifecycle audit feed. Mirrors the
           invoice payment-activity panel so CS reps see the same shape
           on both resources. Hidden when there's nothing to show. */}
-      {activityTimeline.length > 0 && (
+      {(activityTimeline.length > 0 || activityTimelineError) && (
         <Card className="mt-6">
           <CardHeader>
             <CardTitle className="text-sm">Activity</CardTitle>
           </CardHeader>
           <CardContent>
+            {activityTimelineError && (
+              <p className="text-xs text-destructive">
+                Couldn&apos;t load activity — the audit history is temporarily unavailable. Refresh to retry.
+              </p>
+            )}
             {activityTimelineTruncated && (
               <p className="text-xs text-muted-foreground mb-3">
                 Showing the 100 most recent events — earlier history isn&apos;t displayed.

@@ -101,6 +101,9 @@ func TestActivityTimeline_ScopePinnedAndTruncationFlagged(t *testing.T) {
 	if rec.gotFilter.ResourceType != "subscription" || rec.gotFilter.ResourceID != subID {
 		t.Errorf("audit query must stay pinned to this subscription; got filter %+v", rec.gotFilter)
 	}
+	if rec.gotFilter.Limit != 100 {
+		t.Errorf("timeline must request the store's 100-row clamp explicitly; got Limit=%d", rec.gotFilter.Limit)
+	}
 
 	var resp struct {
 		Events    []map[string]any `json:"events"`

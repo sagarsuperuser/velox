@@ -2,18 +2,26 @@ package audit_test
 
 import (
 	"context"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sagarsuperuser/velox/internal/audit"
+	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
 
 // Read-path integration coverage (audit e2e 2026-07-13 — the read path had
-// ZERO tests). Pins: explicit tenant+livemode predicate isolation, the
-// cursor round-trip with over-fetch, FilterOptions scoping, and the 0147
-// index migration (duplicate dropped, read index present).
+// ZERO tests). Pins: tenant+livemode isolation, the cursor limit+1
+// over-fetch and page continuation, FilterOptions mode scoping (with a
+// mode-distinct action so leakage is visible), the 0147 index columns, the
+// negative-offset clamp at the handler, and — the core of PR2 — an EXPLAIN
+// assertion that the explicit predicates actually drive the read index
+// (results alone cannot pin that: RLS returns identical rows either way,
+// only the plan differs; see TestBuildListWhere_PinsPredicates for the
+// code-level twin).
 func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	tenant1 := testutil.CreateTestTenant(t, db, "Read Path T1")
@@ -27,9 +35,10 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 
 	logger := audit.NewLogger(db)
 
-	// Seed: 3 live rows for tenant1, 1 test-mode row for tenant1,
-	// 1 live row for tenant2 (with a distinct action so FilterOptions
-	// leakage would be visible).
+	// Seed: 3 live rows for tenant1; 1 test-mode row for tenant1 with a
+	// MODE-DISTINCT action+resource (so FilterOptions leakage across the
+	// mode plane is observable, not masked by identical vocabulary); 1 live
+	// row for tenant2 with a TENANT-DISTINCT action.
 	for _, action := range []string{"invoice.finalize", "invoice.void", "invoice.send"} {
 		if err := logger.Log(ctxLive, tenant1, action, "invoice", "vlx_inv_t1", "", nil); err != nil {
 			t.Fatalf("seed t1 live: %v", err)
@@ -37,7 +46,7 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 		// Distinct created_at per row so cursor ordering is deterministic.
 		time.Sleep(5 * time.Millisecond)
 	}
-	if err := logger.Log(ctxTest, tenant1, "invoice.finalize", "invoice", "vlx_inv_t1_test", "", nil); err != nil {
+	if err := logger.Log(ctxTest, tenant1, "testmode.probe", "probe", "vlx_prb_1", "", nil); err != nil {
 		t.Fatalf("seed t1 test-mode: %v", err)
 	}
 	if err := logger.Log(ctxLive, tenant2, "customer.delete", "customer", "vlx_cus_t2", "", nil); err != nil {
@@ -56,6 +65,9 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 			if e.TenantID != tenant1 {
 				t.Errorf("cross-tenant row leaked: %+v", e)
 			}
+			if e.Action == "testmode.probe" {
+				t.Errorf("test-mode row leaked into live query")
+			}
 		}
 
 		testMode, total, err := logger.Query(ctxTest, tenant1, audit.QueryFilter{})
@@ -67,32 +79,38 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 		}
 	})
 
-	t.Run("cursor page 2 continues without overlap", func(t *testing.T) {
-		page1, _, err := logger.Query(ctxLive, tenant1, audit.QueryFilter{Limit: 2})
+	t.Run("cursor over-fetches limit+1 and page 2 continues without overlap", func(t *testing.T) {
+		page1, _, err := logger.Query(ctxLive, tenant1, audit.QueryFilter{Limit: 1})
 		if err != nil {
 			t.Fatalf("page 1: %v", err)
 		}
-		if len(page1) != 2 {
-			t.Fatalf("page 1 rows: got %d, want 2", len(page1))
+		if len(page1) != 1 {
+			t.Fatalf("page 1 rows: got %d, want 1 (offset path returns exactly limit)", len(page1))
 		}
-		last := page1[len(page1)-1]
 
 		// Cursor path over-fetches limit+1 so the handler can derive
-		// has_more; only 1 row remains, so expect exactly 1.
+		// has_more without a COUNT: 2 rows remain past the cursor, so a
+		// Limit-1 ask must return exactly 2. If this returns 1, the
+		// over-fetch was dropped and has_more silently breaks.
 		page2, _, err := logger.Query(ctxLive, tenant1, audit.QueryFilter{
-			Limit:          2,
-			AfterCreatedAt: last.CreatedAt,
-			AfterID:        last.ID,
+			Limit:          1,
+			AfterCreatedAt: page1[0].CreatedAt,
+			AfterID:        page1[0].ID,
 		})
 		if err != nil {
 			t.Fatalf("page 2: %v", err)
 		}
-		if len(page2) != 1 {
-			t.Fatalf("page 2 rows: got %d, want 1", len(page2))
+		if len(page2) != 2 {
+			t.Fatalf("cursor over-fetch: got %d rows for Limit=1, want 2 (limit+1)", len(page2))
 		}
-		seen := map[string]bool{page1[0].ID: true, page1[1].ID: true}
-		if seen[page2[0].ID] {
-			t.Errorf("cursor page 2 re-served a page-1 row: %s", page2[0].ID)
+		for _, e := range page2 {
+			if e.ID == page1[0].ID {
+				t.Errorf("cursor page 2 re-served the page-1 row %s", e.ID)
+			}
+		}
+		// DESC ordering must hold across the seek boundary.
+		if page2[0].CreatedAt.Before(page2[1].CreatedAt) {
+			t.Errorf("cursor page ordering not DESC: %v then %v", page2[0].CreatedAt, page2[1].CreatedAt)
 		}
 	})
 
@@ -105,10 +123,13 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 			if a == "customer.delete" {
 				t.Error("tenant2's action leaked into tenant1's filter vocabulary")
 			}
+			if a == "testmode.probe" {
+				t.Error("test-mode action leaked into the live-mode filter vocabulary")
+			}
 		}
 		for _, rt := range resourceTypes {
-			if rt == "customer" {
-				t.Error("tenant2's resource_type leaked into tenant1's filter vocabulary")
+			if rt == "customer" || rt == "probe" {
+				t.Errorf("foreign-plane resource_type %q leaked into live vocabulary", rt)
 			}
 		}
 		if len(actions) != 3 {
@@ -116,31 +137,87 @@ func TestAuditReadPath_PredicatesCursorAndIndex(t *testing.T) {
 		}
 	})
 
-	t.Run("0147 index shape", func(t *testing.T) {
+	t.Run("0147 index columns", func(t *testing.T) {
 		tx, err := db.BeginTx(ctx, postgres.TxBypass, "")
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 		defer postgres.Rollback(tx)
 		rows, err := tx.QueryContext(ctx,
-			`SELECT indexname FROM pg_indexes WHERE tablename = 'audit_log'`)
+			`SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'audit_log'`)
 		if err != nil {
 			t.Fatalf("pg_indexes: %v", err)
 		}
 		defer func() { _ = rows.Close() }()
-		have := map[string]bool{}
+		defs := map[string]string{}
 		for rows.Next() {
-			var n string
-			if err := rows.Scan(&n); err != nil {
+			var n, d string
+			if err := rows.Scan(&n, &d); err != nil {
 				t.Fatalf("scan: %v", err)
 			}
-			have[n] = true
+			defs[n] = d
 		}
-		if !have["idx_audit_log_tenant_read"] {
-			t.Error("idx_audit_log_tenant_read missing — migration 0147 not applied?")
+		readIdx, ok := defs["idx_audit_log_tenant_read"]
+		if !ok {
+			t.Fatal("idx_audit_log_tenant_read missing — migration 0147 not applied?")
 		}
-		if have["idx_audit_log_created"] || have["idx_audit_log_tenant"] {
-			t.Error("duplicate (tenant_id, created_at DESC) index survived 0147")
+		if !strings.Contains(readIdx, "(tenant_id, livemode, created_at DESC, id DESC)") {
+			t.Errorf("read index columns drifted from the seek shape: %s", readIdx)
+		}
+		if _, exists := defs["idx_audit_log_created"]; exists {
+			t.Error("idx_audit_log_created survived 0147 (0030 already dropped its duplicate twin)")
+		}
+	})
+
+	// The core PR2 pin: with the explicit predicates the planner drives
+	// idx_audit_log_tenant_read via an Index Cond; on RLS quals alone it
+	// structurally cannot (the policy's bypass OR-arm references no
+	// columns). enable_seqscan=off removes the tiny-table bias so the
+	// assertion is about qual derivability, not cost: if the predicates
+	// are ever reverted, no Index Cond on tenant_id can exist and this
+	// fails even with seq scans disabled.
+	t.Run("EXPLAIN uses the read index via Index Cond", func(t *testing.T) {
+		tx, err := db.BeginTx(postgres.WithLivemode(ctx, true), postgres.TxTenant, tenant1)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer postgres.Rollback(tx)
+		if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+			t.Fatalf("disable seqscan: %v", err)
+		}
+		rows, err := tx.QueryContext(ctx, `EXPLAIN (COSTS OFF)
+			SELECT al.id FROM audit_log al
+			WHERE al.tenant_id = $1 AND al.livemode = $2
+			ORDER BY al.created_at DESC, al.id DESC LIMIT 50`, tenant1, true)
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		defer func() { _ = rows.Close() }()
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			plan.WriteString(line + "\n")
+		}
+		p := plan.String()
+		if !strings.Contains(p, "idx_audit_log_tenant_read") {
+			t.Errorf("plan does not use idx_audit_log_tenant_read:\n%s", p)
+		}
+		if !strings.Contains(p, "Index Cond:") || !strings.Contains(p, "tenant_id") {
+			t.Errorf("plan lacks a tenant_id Index Cond (predicates not index-driving):\n%s", p)
+		}
+	})
+
+	t.Run("handler clamps negative offset", func(t *testing.T) {
+		h := audit.NewHandler(logger)
+		req := httptest.NewRequest("GET", "/?offset=-5", nil)
+		reqCtx := context.WithValue(postgres.WithLivemode(base, true), auth.TestTenantIDKey(), tenant1)
+		rec := httptest.NewRecorder()
+		h.Routes().ServeHTTP(rec, req.WithContext(reqCtx))
+		if rec.Code != 200 {
+			t.Fatalf("negative offset must clamp to 0, not error: got %d body=%s", rec.Code, rec.Body.String())
 		}
 	})
 }
