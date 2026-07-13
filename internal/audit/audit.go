@@ -181,9 +181,16 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		limit = 100
 	}
 
-	args := []any{}
-	idx := 1
-	where := ""
+	// Explicit tenant + livemode predicates. RLS (TxTenant) already enforces
+	// both, but the tenant-isolation policy carries a column-free bypass-GUC
+	// OR-arm, so the planner can never derive index quals from RLS alone —
+	// without these, every audit read (COUNT, page fetch, cursor seek) was a
+	// full seq scan across ALL tenants' rows. The values mirror exactly what
+	// BeginTx stamps into the GUCs from this same ctx, so the predicates can
+	// only ever narrow, never disagree; RLS stays as the isolation backstop.
+	args := []any{tenantID, postgres.Livemode(ctx)}
+	idx := 3
+	where := " AND al.tenant_id = $1 AND al.livemode = $2"
 
 	if filter.ResourceType != "" {
 		where += andClause(&idx, "al.resource_type", &args, filter.ResourceType)
@@ -305,10 +312,15 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	defer postgres.Rollback(tx)
 
 	// Cap at 500 to bound payload — a tenant shouldn't organically produce
-	// more distinct actions than that; if they do, the cap bias is toward
-	// the most recent rows.
+	// more distinct actions than that; if they do, the cap drops the values
+	// sorting LAST alphabetically (ORDER BY action), not the oldest ones.
+	// Explicit tenant+livemode predicates for the same reason as Query: the
+	// RLS policy's column-free bypass OR-arm blocks index quals, and these
+	// two DISTINCTs run on every dashboard audit-page load.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT DISTINCT action FROM audit_log ORDER BY action LIMIT 500`)
+		`SELECT DISTINCT action FROM audit_log
+		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY action LIMIT 500`,
+		tenantID, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -323,7 +335,9 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	_ = rows.Close()
 
 	rows, err = tx.QueryContext(ctx,
-		`SELECT DISTINCT resource_type FROM audit_log ORDER BY resource_type LIMIT 500`)
+		`SELECT DISTINCT resource_type FROM audit_log
+		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY resource_type LIMIT 500`,
+		tenantID, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, nil, err
 	}

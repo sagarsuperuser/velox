@@ -136,10 +136,13 @@ export default function SubscriptionDetailPage() {
   // both being called "timeline" in local parlance.
   const { data: activityTimelineData } = useQuery({
     queryKey: ['subscription-activity-timeline', id],
-    queryFn: () => api.getSubscriptionTimeline(id!).then(r => r.events || []),
+    queryFn: () => api.getSubscriptionTimeline(id!).then(r => ({ events: r.events || [], truncated: !!r.truncated })),
     enabled: !!id,
   })
-  const activityTimeline = activityTimelineData ?? []
+  const activityTimeline = activityTimelineData?.events ?? []
+  // Backend caps the feed at the 100 newest audit rows; when true, the
+  // earliest events (create/activate) are missing from the top of the list.
+  const activityTimelineTruncated = activityTimelineData?.truncated ?? false
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['subscription', id] })
@@ -1064,6 +1067,11 @@ export default function SubscriptionDetailPage() {
             <CardTitle className="text-sm">Activity</CardTitle>
           </CardHeader>
           <CardContent>
+            {activityTimelineTruncated && (
+              <p className="text-xs text-muted-foreground mb-3">
+                Showing the 100 most recent events — earlier history isn&apos;t displayed.
+              </p>
+            )}
             <div className="relative">
               {activityTimeline.map((event, i) => (
                 <div key={i} className="flex gap-4 pb-2 last:pb-0">

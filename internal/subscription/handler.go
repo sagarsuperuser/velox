@@ -3135,19 +3135,31 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	// Per-row metadata check below.
 
 	events := []timelineEvent{}
+	truncated := false
 
 	if h.auditLogger != nil {
 		// Pull a generous slice of audit entries for this sub — the UI
 		// shows the most recent first anyway, and subs rarely have more
 		// than a few dozen mutations over their lifetime. 100 is the
-		// store's hard clamp (audit.Logger.Query) — asking for more was
-		// silently reduced, so say what we get.
-		entries, _, err := h.auditLogger.Query(r.Context(), tenantID, audit.QueryFilter{
+		// store's hard clamp (audit.Logger.Query). The offset path's total
+		// count tells us whether the sub outgrew it; the response carries
+		// an explicit `truncated` flag so >100-row histories can't
+		// silently start mid-life (the DESC query keeps the NEWEST rows,
+		// so it's the earliest events — create/activate — that drop).
+		//
+		// The filter is deliberately pinned to this one subscription
+		// (ResourceType+ResourceID): the timeline is an object-scoped
+		// activity view under PermSubscriptionRead, NOT a general audit
+		// reader — cross-resource querying stays behind the audit-log
+		// route's stricter permission. TestActivityTimeline_* pin both
+		// this scope and the error/truncation contracts.
+		entries, total, err := h.auditLogger.Query(r.Context(), tenantID, audit.QueryFilter{
 			ResourceType: "subscription",
 			ResourceID:   id,
 			Limit:        100,
 		})
 		if err == nil {
+			truncated = total > len(entries)
 			// Plan-name lookup so the timeline shows "Pro Monthly" instead
 			// of "vlx_pln_d83g2obmajdtlif0mk00". Collect every plan_id
 			// referenced in metadata (plan_id, old_plan_id, new_plan_id)
@@ -3204,8 +3216,14 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		} else {
+			// Audit rows are this endpoint's ONLY event source — an empty
+			// 200 on query failure was indistinguishable from "no history",
+			// on a surface whose purpose is forensic reconstruction. Fail
+			// loud instead.
 			slog.ErrorContext(r.Context(), "subscription timeline: audit query",
 				"subscription_id", id, "error", err)
+			respond.InternalError(w, r)
+			return
 		}
 	}
 
@@ -3219,5 +3237,10 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 		return events[i].Timestamp < events[j].Timestamp
 	})
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"events": events})
+	respond.JSON(w, r, http.StatusOK, map[string]any{
+		"events": events,
+		// True when the sub has more audit rows than the 100 fetched —
+		// the timeline then starts mid-history (earliest events dropped).
+		"truncated": truncated,
+	})
 }
