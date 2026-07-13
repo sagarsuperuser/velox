@@ -39,7 +39,10 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		// swept from every .Log call site; the totality gate must cover the
 		// FULL vocabulary or a schema rejection ships to a money tx).
 		"credit.adjustment", "credit.deduction",
-		"credit_note.issued", "member.joined",
+		"credit_note.issued",
+		// ADR-081 membership: all four, not just member.joined — the list
+		// claimed to be a full sweep while three of them were missing.
+		"member.invited", "member.joined", "member.invite_revoked", "member.removed",
 		"subscription.item_updated", "subscription.pending_change_applied",
 		"subscription.proration_failed", "subscription.threshold_crossed",
 		"subscription.threshold_deferred",

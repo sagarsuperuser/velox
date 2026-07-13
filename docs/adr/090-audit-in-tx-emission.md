@@ -168,6 +168,48 @@ keys the dashboard renders. Query params / UI filters ship only after
 stamping reaches parity across writers (the sim-axis surfacing PR), so the
 filter can never lie by omission.
 
+### 6. Row integrity: the parts of a row a client must not be able to write
+
+Two residual holes in the row's *evidentiary* value, both closed here.
+
+**`request_id` was client-writable.** chi's `middleware.RequestID` uses an
+inbound `X-Request-Id` header verbatim when present, generating one only when it
+is absent. `audit_log.request_id` is presented in the UI as forensic correlation
+evidence and is what support uses to join a customer's report back to server
+logs — so a caller could pick the correlation id on their own audit rows: pin it
+to a constant to make their actions unjoinable, collide it with another tenant's
+traffic, or forge a value implying an action came from elsewhere. Correlation
+evidence an adversary can write is not evidence; CloudTrail's `eventID`, Stripe's
+request id and GCP's `insertId` are all server-minted.
+
+`mw.RequestID` (internal/api/middleware/request_id.go) replaces chi's and ALWAYS
+mints server-side (`req_` + xid), storing under chi's own `RequestIDKey` so every
+existing `chimw.GetReqID` reader — the audit writer, `telemetry.ContextHandler`,
+`respond.go`, `payment/stripe` — is unchanged.
+
+The inbound value is DROPPED, not preserved under a second key. Nothing consumed
+it (no `X-Request-Id` reference exists in the repo, web-v2 or docs; the published
+contract is the `Velox-Request-Id` RESPONSE header); cross-service trace
+continuity is already carried properly by W3C Trace Context via `mw.Tracing()`;
+and recording an unverified client string anywhere on the row — even under an
+honestly-named key — is precisely the "unverified input in a permanent record"
+class this redesign exists to kill. **Accepted loss, written down:** rows written
+BEFORE this change may carry a client-supplied `request_id`, and append-only
+forbids rewriting them. A `req_` prefix marks the server-minted era; a
+`request_id` without it is not trustworthy as provenance.
+
+**The append-only triggers were the only barrier.** `audit_log` is immutable via
+BEFORE UPDATE/DELETE (0011) and BEFORE TRUNCATE (0115) triggers that hold even
+for an RLS-bypassing role — but `velox_app` still HELD `UPDATE`/`DELETE`/
+`TRUNCATE` from 0001's blanket `GRANT ALL` (0115's own header admits it was never
+revoked). One dropped or disabled trigger and the tamper-evidence log was
+writable by the role that serves customer traffic. Migration 0150 revokes those
+three privileges from `velox_app` (INSERT/SELECT retained — the writer only ever
+appends). The privilege system and the triggers now fail independently:
+`velox_app` is refused at the permission check (42501) before a trigger runs; the
+owner/superuser is still refused by the trigger (P0001). Retention purges are
+unaffected — they remain an owner-role operation, as 0011 documented.
+
 ## Consequences
 
 - Explicit emissions gain a hard error contract: callers PROPAGATE LogInTx
