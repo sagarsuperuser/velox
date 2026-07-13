@@ -165,7 +165,7 @@ type SimContext struct {
 //
 // LogInTx is TOTAL by construction (design-panel amendment A2): tenant_id is
 // taken from the transaction's own app.tenant_id GUC — it cannot disagree
-// with RLS, and a missing GUC fails loudly: NULLIF(…, '') maps BOTH the
+// with RLS, and a missing GUC fails loudly: NULLIF(…, ”) maps BOTH the
 // virgin-connection NULL and the pooled-connection empty string (a reverted
 // is_local set_config placeholder — the dominant case in a warm pool) onto
 // the NOT NULL constraint, so the guard does not silently depend on the
