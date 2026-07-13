@@ -698,6 +698,53 @@ func (s *PostgresStore) ActivateAfterTrial(ctx context.Context, tenantID, id str
 // first-period invoice (the cycle scheduler skips the just-elapsed in_advance
 // segment, so a lost day-1 invoice is a permanent revenue leak). ADR-056.
 // billFn may be nil.
+// ActivateDraftWithBill — see the Store interface doc. Draft→active flip +
+// period/anchor stamps + day-1 bill in one tx (the ADR-056 pattern applied to
+// the plain-draft path).
+func (s *PostgresStore) ActivateDraftWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'active',
+		    activated_at = $1,
+		    started_at = $1,
+		    current_billing_period_start = $2,
+		    current_billing_period_end = $3,
+		    next_billing_at = $3,
+		    billing_anchor_day = $4,
+		    updated_at = $1
+		WHERE id = $5 AND status = 'draft'
+		RETURNING `+subCols,
+		at, periodStart, periodEnd, anchorDay, id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		// Row exists in another status (or not at all) — surface the same
+		// typed error the pre-fix service check produced.
+		return domain.Subscription{}, errs.InvalidState("can only activate draft subscriptions")
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+	if billFn != nil {
+		if err := billFn(tx, sub); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
 func (s *PostgresStore) ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

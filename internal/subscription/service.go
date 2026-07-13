@@ -760,31 +760,54 @@ func (s *Service) Activate(ctx context.Context, tenantID, id string) (domain.Sub
 	// simulated time on clock-pinned subs.
 	ctx = s.bindForSub(ctx, tenantID, id)
 	now := s.clock.Now(ctx)
-	sub.Status = domain.SubscriptionActive
-	sub.ActivatedAt = &now
-	sub.StartedAt = &now
 
-	if sub.CurrentBillingPeriodStart == nil {
-		// Activate uses the same first-period helper as Create's
-		// StartNow branch: period begins at `now` (day-snapped) and
-		// ends at the next calendar boundary (calendar billing) or
-		// `now + 1 month` (anniversary). Pre-fix this hardcoded
-		// beginningOfMonth(now) which BACKDATED periodStart to the
-		// first of the current month — a sub activated Nov 29 was
-		// billed for the full Nov cycle including the days it was a
-		// draft. Pre-fix also ignored sub.BillingTime entirely — an
-		// anniversary draft activated mid-month still got calendar-
-		// anchored periods.
+	// First-period math: same helper as Create's StartNow branch — period
+	// begins at `now` (day-snapped) and ends at the next calendar boundary
+	// (calendar billing) or `now + 1 month` (anniversary). (The historical
+	// beginningOfMonth backdating bug and its fix are recorded on
+	// firstPeriodForActivate.) A draft that already carries a period (e.g.
+	// seeded by an earlier flow) keeps it unchanged.
+	ps, pe := sub.CurrentBillingPeriodStart, sub.CurrentBillingPeriodEnd
+	anchorDay := sub.BillingAnchorDay
+	if ps == nil {
 		loc := s.tenantLocation(ctx, sub.TenantID)
 		interval := s.firstPlanInterval(ctx, tenantID, sub.Items)
-		ps, pe, anchorDay := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
-		sub.CurrentBillingPeriodStart = &ps
-		sub.CurrentBillingPeriodEnd = &pe
-		sub.NextBillingAt = &pe
-		sub.BillingAnchorDay = anchorDay
+		p1, p2, a := firstPeriodForActivate(now, sub.BillingTime, interval, loc)
+		ps, pe, anchorDay = &p1, &p2, a
 	}
 
-	return s.store.Update(ctx, tenantID, sub)
+	// Atomic flip + day-1 bill (ADR-056 pattern, draft sibling): the
+	// in_advance first invoice rides the SAME tx as the activation. Pre-fix
+	// Activate flipped status without ever billing — the first base fee of a
+	// draft-then-activated in_advance sub was silently never invoiced by any
+	// path (BillOnCreate only runs on create; the first cycle close bills the
+	// NEXT period in advance). A bill failure rolls the activation back.
+	var firstInv domain.Invoice
+	var haveInv bool
+	activated, err := s.store.ActivateDraftWithBill(ctx, tenantID, id, now, *ps, *pe, anchorDay, func(tx *sql.Tx, a domain.Subscription) error {
+		if s.biller == nil {
+			return nil
+		}
+		inv, ok, billErr := s.biller.BillOnCreateTx(ctx, tx, a)
+		if billErr != nil {
+			return fmt.Errorf("first-invoice-on-activate: %w", billErr)
+		}
+		firstInv, haveInv = inv, ok
+		return nil
+	})
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	// Post-commit external steps (tax commit + auto-charge) — mirrors Create:
+	// Stripe calls never ride a DB tx; the invoice is durable + atomic with
+	// the flip, and failures here are recovered by the tax-commit reconciler /
+	// auto-charge retry sweep.
+	if haveInv {
+		s.biller.FinalizeOnCreateInvoice(ctx, activated, firstInv)
+	}
+
+	return activated, nil
 }
 
 // ---- Items ----

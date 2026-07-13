@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -288,6 +289,32 @@ func (m *memStore) ActivateAfterTrial(ctx context.Context, tenantID, id string, 
 	s.UpdatedAt = clock.Now(ctx)
 	m.subs[id] = s
 	s.Items = m.hydrateItems(id)
+	return s, nil
+}
+
+func (m *memStore) ActivateDraftWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error) {
+	prev, existed := m.subs[id]
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	if s.Status != domain.SubscriptionDraft {
+		return domain.Subscription{}, errs.InvalidState("can only activate draft subscriptions")
+	}
+	s.Status = domain.SubscriptionActive
+	s.ActivatedAt, s.StartedAt = &at, &at
+	s.CurrentBillingPeriodStart, s.CurrentBillingPeriodEnd = &periodStart, &periodEnd
+	s.NextBillingAt = &periodEnd
+	s.BillingAnchorDay = anchorDay
+	m.subs[id] = s
+	if billFn != nil {
+		if err := billFn(nil, s); err != nil {
+			if existed {
+				m.subs[id] = prev
+			}
+			return domain.Subscription{}, err
+		}
+	}
 	return s, nil
 }
 
@@ -1287,6 +1314,8 @@ func TestPeriod_DayGradeSnap(t *testing.T) {
 	}
 }
 
+var errWiring = errors.New("injected bill failure")
+
 func TestActivateAndCancel(t *testing.T) {
 	svc := NewService(newMemStore(), nil)
 	ctx := context.Background()
@@ -1310,6 +1339,61 @@ func TestActivateAndCancel(t *testing.T) {
 		_, err := svc.Activate(ctx, "t1", sub.ID)
 		if err == nil {
 			t.Fatal("expected error activating non-draft")
+		}
+	})
+
+	t.Run("activating a draft BILLS day-1 in the flip tx (ADR-056 sibling)", func(t *testing.T) {
+		// Pre-fix: Activate flipped status without ever calling the biller —
+		// the first in_advance base fee of a draft-then-activated sub was
+		// never invoiced by any path (revenue leak).
+		svcB := NewService(newMemStore(), nil)
+		fb := &fakeBiller{createTxOK: true, createTxInv: domain.Invoice{ID: "inv_day1"}}
+		svcB.SetBiller(fb)
+		draft, err := svcB.Create(ctx, "t1", CreateInput{
+			Code: "sub-act-bill", DisplayName: "ActBill", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}},
+		})
+		if err != nil {
+			t.Fatalf("create draft: %v", err)
+		}
+		if fb.createTxCalls != 0 {
+			t.Fatalf("draft create must not bill, got %d", fb.createTxCalls)
+		}
+		activated, err := svcB.Activate(ctx, "t1", draft.ID)
+		if err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		if fb.createTxCalls != 1 {
+			t.Errorf("BillOnCreateTx calls = %d, want 1 (day-1 rides the flip tx)", fb.createTxCalls)
+		}
+		if fb.finalizeCalls != 1 {
+			t.Errorf("FinalizeOnCreateInvoice calls = %d, want 1 (post-commit external leg)", fb.finalizeCalls)
+		}
+		if activated.CurrentBillingPeriodStart == nil || activated.NextBillingAt == nil {
+			t.Error("activation must stamp the first billing period before billing")
+		}
+	})
+
+	t.Run("bill failure rolls the activation back — never an active sub with a lost invoice", func(t *testing.T) {
+		svcB := NewService(newMemStore(), nil)
+		fb := &fakeBiller{createTxErr: errWiring}
+		svcB.SetBiller(fb)
+		draft, err := svcB.Create(ctx, "t1", CreateInput{
+			Code: "sub-act-fail", DisplayName: "ActFail", CustomerID: "c",
+			Items: []CreateItemInput{{PlanID: "p"}},
+		})
+		if err != nil {
+			t.Fatalf("create draft: %v", err)
+		}
+		if _, err := svcB.Activate(ctx, "t1", draft.ID); err == nil {
+			t.Fatal("expected activation to fail when the day-1 bill fails")
+		}
+		got, err := svcB.Get(ctx, "t1", draft.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.Status != domain.SubscriptionDraft {
+			t.Errorf("status = %s, want draft (atomic rollback)", got.Status)
 		}
 	})
 
