@@ -60,6 +60,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	// Clamp, matching the limit convention below (Query clamps limit to
+	// [50 default, 100 max]) — a negative offset previously reached
+	// Postgres verbatim and surfaced as a 500.
+	if offset < 0 {
+		offset = 0
+	}
 
 	dateFrom, dateTo, err := timefilter.ParseRange(r, "date_from", "date_to")
 	if err != nil {
@@ -78,7 +84,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		Offset:       offset,
 	}
 	// Cursor pagination (2026-05-29). ?after= takes precedence over
-	// ?offset=. Malformed cursors silently fall back to offset.
+	// ?offset=. A malformed cursor is a 400, not a silent fallback — the
+	// old fallback-to-offset restarted a paginating client at page 1,
+	// which a CSV page-walk read as "export complete" (silent truncation
+	// / duplication with zero error signal).
 	// Cursor encode/decode inlined here rather than imported from
 	// internal/api/middleware because middleware/audit.go imports
 	// this package (audit_log row-writer middleware) — circular dep
@@ -86,10 +95,16 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	// Cursor (base64(json{id, created_at})) so SPA clients can pass
 	// audit cursors interchangeably with cursors from other endpoints.
 	if c := r.URL.Query().Get("after"); c != "" {
-		if cur, err := decodeAuditCursor(c); err == nil {
-			filter.AfterCreatedAt = cur.CreatedAt
-			filter.AfterID = cur.ID
+		cur, err := decodeAuditCursor(c)
+		// A structurally-valid cursor with a zero id/timestamp would fall
+		// through Query's useCursor check onto the offset path — the same
+		// silent page-1 restart through the back door — so reject it too.
+		if err != nil || cur.ID == "" || cur.CreatedAt.IsZero() {
+			respond.BadRequest(w, r, "invalid `after` cursor — pass the next_cursor value from a previous page verbatim")
+			return
 		}
+		filter.AfterCreatedAt = cur.CreatedAt
+		filter.AfterID = cur.ID
 	}
 
 	entries, total, err := h.logger.Query(r.Context(), tenantID, filter)

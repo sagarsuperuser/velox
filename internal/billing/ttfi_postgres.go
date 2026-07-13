@@ -50,13 +50,22 @@ func (r *PostgresTTFIReader) FirstInvoiceFinalizedAt(ctx context.Context, tenant
 	// scanned into sql.NullTime. The where clause matches what
 	// internal/invoice/handler.go:311 emits on Finalize:
 	// auditLogger.Log(ctx, tenantID, AuditActionFinalize, "invoice", inv.ID, ...)
+	//
+	// Explicit tenant_id + livemode predicates for the same reason as
+	// audit.Query (PR2 of the audit e2e arc): the RLS policy's column-free
+	// bypass OR-arm blocks planner-derived index quals, so RLS-only quals
+	// made this MIN() a scan across ALL tenants' audit rows; with them it
+	// descends idx_audit_log_resource. Values mirror the GUCs BeginTx set
+	// from this same ctx.
 	var t sql.NullTime
 	err = tx.QueryRowContext(ctx, `
 		SELECT MIN(created_at)
 		FROM audit_log
-		WHERE action = $1
-		  AND resource_type = $2
-	`, domain.AuditActionFinalize, "invoice").Scan(&t)
+		WHERE tenant_id = $1
+		  AND livemode = $2
+		  AND action = $3
+		  AND resource_type = $4
+	`, tenantID, postgres.Livemode(ctx), domain.AuditActionFinalize, "invoice").Scan(&t)
 	if err != nil {
 		return nil, fmt.Errorf("ttfi: query first finalize: %w", err)
 	}

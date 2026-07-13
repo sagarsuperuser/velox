@@ -791,6 +791,8 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 - [ ] Status colors: emerald/amber/red/violet/blue.
 - [ ] Subscription detail UI shows Activity card; resolved actor renders "by {actor_name}".
 - [ ] Nonexistent sub ID → 404.
+- [ ] **Audit-store failure is a 5xx, not an empty timeline**: with the audit query failing (e.g. stop Postgres mid-session), `GET /v1/subscriptions/{id}/timeline` → 500 — never a 200 with `events: []` masquerading as "no history".
+- [ ] **>100-event history says so**: the response carries `truncated: true` and the Activity card shows "Showing the 100 most recent events — earlier history isn't displayed." (the earliest rows — create/activate — are the ones missing). Subs with ≤100 events: `truncated: false`, no notice.
 
 ## FLOW B13: Multi-dimensional meters
 
@@ -1411,6 +1413,8 @@ Mirrors Stripe's customer-page "Sent emails" section (docs.stripe.com/invoicing/
 - [ ] **Operator rows show the operator's name**: dashboard-driven rows render the user's display name or email in the Actor column (never the raw `user` enum or a bare `vlx_usr_…` id).
 - [ ] **Humanized rows**: the action badge reads "Subscription Item Updated", not `subscription.item_updated`; metadata labels case acronyms correctly ("IP Address", not "Ip Address"); structured metadata values (e.g. the settings `changed` map) render as JSON, not `[object Object]`; item add/remove/update rows on a subscription carry the sub's code as the label; expanded Resource ID has a copy button.
 - [ ] **Cursor pagination**: the list pages with Previous/Next (no numbered jumps); footer reads "Page N · M total". Paging deep does not slow down (seek pagination — only page 1 computes the total). Filters reset to page 1.
+- [ ] **Malformed cursor is a 400, not silent page 1**: `curl -H "Authorization: Bearer <key>" "/v1/audit-log?after=garbage"` → 400 `invalid \`after\` cursor…` (never a 200 of page-1 rows — a corrupted cursor mid-page-walk must fail loud, not silently restart/duplicate an export). `?offset=-5` is clamped to 0, not a 500.
+- [ ] **Audit reads are index-backed, mode-scoped**: with test-mode selected in the dashboard, `/audit-log` shows only test-mode rows (live rows absent) and vice versa; the action/resource filter dropdowns offer only values seen in the current mode when that mode has rows (an empty mode falls back to the FE's built-in default vocabulary). (Under the hood: explicit tenant+livemode predicates drive `idx_audit_log_tenant_read` — EXPLAIN shows an Index Scan, not a seq scan, migration 0147.)
 - [ ] Destructive rows have red left border. Expand → metadata + "View" link.
 - [ ] Filters: resource type, action, date range. Export CSV → all entries.
 - [ ] **Export honors the tenant timezone**: on a non-UTC tenant (e.g. IST), set a date-range filter so a row sits within an hour of a day boundary; the exported CSV contains exactly the rows shown on screen for that range — no edge row silently dropped from (or added to) the export.

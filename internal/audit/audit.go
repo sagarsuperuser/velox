@@ -164,26 +164,22 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// Query reads audit entries for a tenant.
-func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter) ([]domain.AuditEntry, int, error) {
-	tx, err := l.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer postgres.Rollback(tx)
-
-	// Default 50, clamp to 100 — was silently falling back to 50 on
-	// >100 asks (no-silent-fallbacks principle, 2026-05-28).
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 50
-	} else if limit > 100 {
-		limit = 100
-	}
-
-	args := []any{}
-	idx := 1
-	where := ""
+// buildListWhere assembles the WHERE clause + args shared by the list and
+// COUNT queries. Split out as a pure function so tests can pin the explicit
+// tenant + livemode predicates: RLS (TxTenant) already enforces both, but the
+// tenant-isolation policy carries a column-free bypass-GUC OR-arm, so the
+// planner can never derive index quals from RLS alone — without the explicit
+// predicates, every audit read (COUNT, page fetch, cursor seek) was a full
+// seq scan across ALL tenants' rows (audit e2e 2026-07-13, F3). The values
+// mirror exactly what BeginTx stamps into the GUCs from the caller's ctx, so
+// they can only ever narrow, never disagree; RLS stays as the isolation
+// backstop. Removing them keeps results identical (RLS masks it) and only
+// destroys the query plan — which is why TestBuildListWhere_PinsPredicates
+// exists.
+func buildListWhere(tenantID string, livemode bool, filter QueryFilter) (whereClause string, args []any, nextIdx int, useCursor bool) {
+	args = []any{tenantID, livemode}
+	idx := 3
+	where := " AND al.tenant_id = $1 AND al.livemode = $2"
 
 	if filter.ResourceType != "" {
 		where += andClause(&idx, "al.resource_type", &args, filter.ResourceType)
@@ -212,17 +208,34 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		idx++
 	}
 
-	useCursor := !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
+	useCursor = !filter.AfterCreatedAt.IsZero() && filter.AfterID != ""
 	if useCursor {
 		where += fmt.Sprintf(" AND (al.created_at, al.id) < ($%d, $%d)", idx, idx+1)
 		args = append(args, filter.AfterCreatedAt, filter.AfterID)
 		idx += 2
 	}
 
-	whereClause := ""
-	if where != "" {
-		whereClause = " WHERE " + where[5:] // Remove leading " AND "
+	return " WHERE " + where[5:], args, idx, useCursor // strip leading " AND "
+}
+
+// Query reads audit entries for a tenant.
+func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter) ([]domain.AuditEntry, int, error) {
+	tx, err := l.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return nil, 0, err
 	}
+	defer postgres.Rollback(tx)
+
+	// Default 50, clamp to 100 — was silently falling back to 50 on
+	// >100 asks (no-silent-fallbacks principle, 2026-05-28).
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	whereClause, args, idx, useCursor := buildListWhere(tenantID, postgres.Livemode(ctx), filter)
 
 	// Cursor path skips COUNT — handler derives hasMore from
 	// limit+1 over-fetch. Offset path keeps the count for the
@@ -305,10 +318,15 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	defer postgres.Rollback(tx)
 
 	// Cap at 500 to bound payload — a tenant shouldn't organically produce
-	// more distinct actions than that; if they do, the cap bias is toward
-	// the most recent rows.
+	// more distinct actions than that; if they do, the cap drops the values
+	// sorting LAST alphabetically (ORDER BY action), not the oldest ones.
+	// Explicit tenant+livemode predicates for the same reason as Query: the
+	// RLS policy's column-free bypass OR-arm blocks index quals, and these
+	// two DISTINCTs run on every dashboard audit-page load.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT DISTINCT action FROM audit_log ORDER BY action LIMIT 500`)
+		`SELECT DISTINCT action FROM audit_log
+		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY action LIMIT 500`,
+		tenantID, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -323,7 +341,9 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	_ = rows.Close()
 
 	rows, err = tx.QueryContext(ctx,
-		`SELECT DISTINCT resource_type FROM audit_log ORDER BY resource_type LIMIT 500`)
+		`SELECT DISTINCT resource_type FROM audit_log
+		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY resource_type LIMIT 500`,
+		tenantID, postgres.Livemode(ctx))
 	if err != nil {
 		return nil, nil, err
 	}

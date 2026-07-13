@@ -255,7 +255,7 @@ export const api = {
   getPaymentTimeline: (invoiceId: string) =>
     apiRequest<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
   getSubscriptionTimeline: (subscriptionId: string) =>
-    apiRequest<{ events: TimelineEvent[] }>('GET', `/subscriptions/${subscriptionId}/timeline`),
+    apiRequest<{ events: TimelineEvent[]; truncated?: boolean }>('GET', `/subscriptions/${subscriptionId}/timeline`),
 
   // Legacy `setupPayment` (/checkout/setup) and `getPaymentStatus`
   // (/checkout/status) were removed in the unified-PM-paths cleanup.
