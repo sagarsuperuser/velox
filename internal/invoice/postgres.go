@@ -1683,8 +1683,9 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 			source_plan_changed_at, source_subscription_item_id, source_change_type,
 			tax_provider, tax_calculation_id, tax_reverse_charge, tax_exempt_reason,
 			tax_status, tax_deferred_at, tax_retry_count, tax_pending_reason, tax_error_code, billing_reason,
-			stripe_invoice_id, public_token_encrypted, public_token_hash, paid_at, voided_at, is_simulated)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
+			stripe_invoice_id, public_token_encrypted, public_token_hash, paid_at, voided_at, is_simulated,
+			billing_timezone)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48)
 		RETURNING `+invCols,
 		id, tenantID, inv.CustomerID, postgres.NullableString(inv.SubscriptionID), inv.InvoiceNumber,
 		inv.Status, inv.PaymentStatus, inv.Currency,
@@ -1707,6 +1708,7 @@ func (s *PostgresStore) createWithLineItemsInTx(ctx context.Context, tx *sql.Tx,
 		postgres.NullableString(encToken), postgres.NullableString(tokenHash),
 		postgres.NullableTime(inv.PaidAt), postgres.NullableTime(inv.VoidedAt),
 		inv.IsSimulated,
+		postgres.NullableString(inv.BillingTimezone),
 	).Scan(s.scanInvDest(&inv)...)
 
 	if err != nil {
