@@ -11,6 +11,13 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Activating a draft subscription now bills the day-1 invoice — atomically (2026-07-13).** The draft→activate path flipped status and anchored the period but never called the biller: an in_advance sub composed as a draft and then activated had its first base fee silently never invoiced by any path (the cycle close bills the NEXT period in advance). Found live by the TZ1 manual-test pass. The day-1 invoice now rides the same transaction as the flip (the ADR-056 pattern already used by create-active and trial-end); a bill failure rolls the activation back.
+
+- **Coordinator-tx invoices now carry their ADR-077 timezone stamp (2026-07-13).** The atomic INSERT twin (`CreateWithLineItemsTx` — day-1 `start_now`, atomic cancel-final, swaps, proration) silently dropped `billing_timezone`: its column list was never updated when the stamp shipped, so those invoices would re-render their document dates under a future org-timezone change instead of keeping the zone they were issued in. Found by the TZ1 manual-test pass; a twin-parity integration test now diffs every persisted column across both INSERT paths so the next field added to one twin fails CI instead of vanishing.
+
+
 ### Removed
 
 - **Dead `payment_overdue` field removed from the invoice API + schema (2026-07-12).** The column was created with a `DEFAULT false` in the initial schema and never written by any code path; its only reader was the invoice-attention classifier's "overdue" arm, which therefore could never fire. Both are deleted (migration 0146). The live "Past due" signal is unaffected — it's computed from `due_at` at query time (the invoice list `?overdue=` filter), not from this column, so nothing observable changes. Integrators reading `invoice.payment_overdue` (always `false`) should drop it.

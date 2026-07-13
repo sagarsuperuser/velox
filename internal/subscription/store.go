@@ -176,6 +176,16 @@ type Store interface {
 	// first-period invoice (revenue leak). billFn may be nil.
 	ActivateAfterTrialWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error)
 
+	// ActivateDraftWithBill atomically flips a DRAFT subscription to active —
+	// stamping activation instants, the first billing period, and the anchor
+	// day — AND runs billFn (the day-1 in_advance invoice) in the SAME tx.
+	// The draft→activate sibling of ActivateAfterTrialWithBill: pre-fix the
+	// plain Activate flipped status without ever billing, so a draft-then-
+	// activated in_advance sub's first base fee was silently never invoiced
+	// (the revenue-leak class ADR-056 fixed for trial→active). A billFn error
+	// rolls the activation back — never an active sub with a lost invoice.
+	ActivateDraftWithBill(ctx context.Context, tenantID, id string, at, periodStart, periodEnd time.Time, anchorDay int, billFn func(tx *sql.Tx, activated domain.Subscription) error) (domain.Subscription, error)
+
 	// EndTrialEarly is the operator-driven counterpart to
 	// ActivateAfterTrial. In one atomic UPDATE it: flips status to
 	// 'active', stamps activated_at if currently NULL, truncates

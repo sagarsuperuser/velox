@@ -825,6 +825,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 ## FLOW B15: `in_advance` plan happy path (ADR-031)
 
 - [ ] **A tax-deferred day-1 DRAFT defers credit application too (ADR-088)** — with Stripe Tax erroring, a credit-holding customer's day-1 invoice parks as a tax-pending draft with credits UNAPPLIED; when tax retry finalizes it, the sweep applies credits before charging.
+- [ ] **Activating a DRAFT bills day-1 atomically (ADR-056 sibling)** — create a draft sub on an in_advance plan, then POST /{id}/activate → the sub flips active AND the `subscription_create` invoice exists with the first period (pre-fix the flip billed nothing: the first base fee was silently never invoiced). *(automated: `TestActivateAndCancel` billing subtests + `TestActivateDraftWithBill_*`)*
 - [ ] **Credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee, subscribe to an in_advance plan. Day-1 invoice lands **Paid** with a Credits Applied line covering the total; balance drained; no Stripe charge. With a partial balance: Credits Applied for the balance, card charged exactly the remainder (card-less: remainder queues + setup email).
 
 Verifies the day-1 invoice + the cycle-close invoice that bills the upcoming period's base.
