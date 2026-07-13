@@ -88,6 +88,17 @@ func (s *PostgresStore) emitBalanceCrossings(ctx context.Context, tx *sql.Tx, te
 }
 
 func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry) (domain.CreditLedgerEntry, error) {
+	return s.AppendEntryAudited(ctx, tenantID, entry, nil)
+}
+
+// AppendEntryAudited is AppendEntry with an in-tx audit emission hook: the
+// ledger write and its audit row commit or roll back together (ADR-090
+// shared fate). The service builds the emission (it owns row content); the
+// store owns the transaction and exposes it to the closure — never the
+// other way around. emit receives the persisted entry so the audit row can
+// reference the store-assigned id. nil emit = unaudited append (engine
+// paths that carry their own coverage story).
+func (s *PostgresStore) AppendEntryAudited(ctx context.Context, tenantID string, entry domain.CreditLedgerEntry, emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error) (domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -96,6 +107,11 @@ func (s *PostgresStore) AppendEntry(ctx context.Context, tenantID string, entry 
 	out, err := s.appendEntryInTx(ctx, tx, tenantID, entry)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, out); err != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -376,6 +392,15 @@ func (s *PostgresStore) ExpireGrantAtomic(ctx context.Context, tenantID, custome
 func (s *PostgresStore) AdjustAtomic(
 	ctx context.Context, tenantID, customerID, description string, amountCents int64,
 ) (domain.CreditLedgerEntry, error) {
+	return s.AdjustAtomicAudited(ctx, tenantID, customerID, description, amountCents, nil)
+}
+
+// AdjustAtomicAudited is AdjustAtomic with an in-tx audit emission hook —
+// same contract as AppendEntryAudited (ADR-090 shared fate).
+func (s *PostgresStore) AdjustAtomicAudited(
+	ctx context.Context, tenantID, customerID, description string, amountCents int64,
+	emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error,
+) (domain.CreditLedgerEntry, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditLedgerEntry{}, err
@@ -469,6 +494,12 @@ func (s *PostgresStore) AdjustAtomic(
 	// ADR-078 balance-crossing events (advisory lock held above).
 	if err := s.emitBalanceCrossings(ctx, tx, tenantID, customerID, currentBalance, entry.BalanceAfter); err != nil {
 		return domain.CreditLedgerEntry{}, err
+	}
+
+	if emit != nil {
+		if err := emit(tx, entry); err != nil {
+			return domain.CreditLedgerEntry{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

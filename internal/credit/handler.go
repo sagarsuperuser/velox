@@ -10,23 +10,18 @@ import (
 
 	mw "github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
-	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 type Handler struct {
-	svc         *Service
-	auditLogger *audit.Logger
+	svc *Service
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
-
-// SetAuditLogger configures audit logging for financial operations.
-func (h *Handler) SetAuditLogger(l *audit.Logger) { h.auditLogger = l }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -54,13 +49,8 @@ func (h *Handler) grant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionGrant, "credit", entry.ID, entry.Description, map[string]any{
-			"customer_id":  entry.CustomerID,
-			"amount_cents": entry.AmountCents,
-			"description":  entry.Description,
-		})
-	}
+	// Audit emission moved into the service's ledger transaction (ADR-090):
+	// the grant and its audit row now commit or roll back together.
 	mw.RecordCreditOperation("grant")
 
 	respond.JSON(w, r, http.StatusCreated, entry)
@@ -81,17 +71,7 @@ func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditLogger != nil {
-		action := "credit.adjustment"
-		if entry.AmountCents < 0 {
-			action = "credit.deduction"
-		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, action, "credit", entry.ID, entry.Description, map[string]any{
-			"customer_id":  entry.CustomerID,
-			"amount_cents": entry.AmountCents,
-			"description":  entry.Description,
-		})
-	}
+	// Audit emission moved into the service's ledger transaction (ADR-090).
 	mw.RecordCreditOperation("adjustment")
 
 	respond.JSON(w, r, http.StatusCreated, entry)

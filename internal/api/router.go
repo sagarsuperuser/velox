@@ -566,7 +566,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	stripeAdapter.SetEmailPaymentFailed(paymentFailedEmail, customerEmailAdapter)
 
 	// Audit logging for financial operations
-	creditH.SetAuditLogger(auditLogger)
+	// credit: in-tx emission on the SERVICE (ADR-090 first domain batch) —
+	// grant/adjust audit rows ride the ledger transaction.
+	creditSvc.SetAuditLogger(auditLogger)
 	invoiceH.SetAuditLogger(auditLogger)
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)

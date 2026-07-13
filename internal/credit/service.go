@@ -8,19 +8,37 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). The service builds
+// the emission content at the state-transition site; the store threads the
+// closure onto its transaction so ledger write and audit row share fate.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
+
 type Service struct {
-	store    Store
-	resolver clock.Resolver
+	store       Store
+	resolver    clock.Resolver
+	auditLogger AuditEmitter
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
+
+// SetAuditLogger wires in-tx audit emission for operator-facing credit
+// mutations (grant / adjust). Moved here from the handler (ADR-090): the
+// handler's post-hoc Log ran on its own tx AFTER the ledger commit, so a
+// crash or disconnect between the two left a committed money mutation with
+// no audit row — and a failed ledger write could never phantom-log, but a
+// logged-then-failed pattern elsewhere could. In-tx emission makes both
+// classes unrepresentable.
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.auditLogger = a }
 
 // SetResolver wires the unified clock.Resolver. Customer-scoped credit
 // mutations (Grant, ApplyToInvoice, etc.) bind effective-now from the
@@ -125,7 +143,7 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 			"must be empty or 'promotional' — commit grants are created by finalizing a commit invoice")
 	}
 
-	return s.store.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+	return s.store.AppendEntryAudited(ctx, tenantID, domain.CreditLedgerEntry{
 		CustomerID:               input.CustomerID,
 		EntryType:                domain.CreditGrant,
 		AmountCents:              input.AmountCents,
@@ -139,7 +157,29 @@ func (s *Service) Grant(ctx context.Context, tenantID string, input GrantInput) 
 		SourceCreditNoteID:       input.SourceCreditNoteID,
 		GrantKind:                input.GrantKind,
 		CreatedAt:                input.At,
-	})
+	}, s.grantEmission(ctx))
+}
+
+// grantEmission builds the in-tx audit emission for an operator/API grant.
+// Wire strings (action "grant", resource "credit") and metadata keys are
+// FROZEN — the dashboard's filter vocabulary and badges key on them.
+func (s *Service) grantEmission(ctx context.Context) func(tx *sql.Tx, out domain.CreditLedgerEntry) error {
+	if s.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.CreditLedgerEntry) error {
+		return s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionGrant,
+			ResourceType:  "credit",
+			ResourceID:    out.ID,
+			ResourceLabel: out.Description,
+			Metadata: map[string]any{
+				"customer_id":  out.CustomerID,
+				"amount_cents": out.AmountCents,
+				"description":  out.Description,
+			},
+		})
+	}
 }
 
 // GrantCommitForInvoiceTx appends the commit grant on the CALLER's tx —
@@ -589,5 +629,28 @@ func (s *Service) Adjust(ctx context.Context, tenantID string, input AdjustInput
 		return domain.CreditLedgerEntry{}, errs.Required("description")
 	}
 
-	return s.store.AdjustAtomic(ctx, tenantID, input.CustomerID, desc, input.AmountCents)
+	var emit func(tx *sql.Tx, out domain.CreditLedgerEntry) error
+	if s.auditLogger != nil {
+		// Frozen wire strings: positive adjustments audit as
+		// "credit.adjustment", deductions as "credit.deduction" — the split
+		// the dashboard's severity styling keys on.
+		action := "credit.adjustment"
+		if input.AmountCents < 0 {
+			action = "credit.deduction"
+		}
+		emit = func(tx *sql.Tx, out domain.CreditLedgerEntry) error {
+			return s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+				Action:        action,
+				ResourceType:  "credit",
+				ResourceID:    out.ID,
+				ResourceLabel: out.Description,
+				Metadata: map[string]any{
+					"customer_id":  out.CustomerID,
+					"amount_cents": out.AmountCents,
+					"description":  out.Description,
+				},
+			})
+		}
+	}
+	return s.store.AdjustAtomicAudited(ctx, tenantID, input.CustomerID, desc, input.AmountCents, emit)
 }
