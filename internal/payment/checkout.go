@@ -256,11 +256,14 @@ func (h *CheckoutHandler) persistStripeMapping(ctx context.Context, tenantID str
 				Action:       domain.AuditActionUpdate,
 				ResourceType: "customer",
 				ResourceID:   req.CustomerID,
-				// The name the operator is syncing to Stripe on this very
-				// request — the handler has no customer store to read a
-				// canonical label from, and "" would render as a bare
-				// "customer" row in the AuditLog page.
-				ResourceLabel: req.CustomerName,
+				// Deliberately NO label: req.CustomerName is the REQUEST's
+				// claim, not the system's record of who this customer is, and
+				// audit_log is append-only — a caller sending a name that
+				// doesn't match the stored customer would permanently label
+				// the row with a value nothing verified. The dashboard falls
+				// back to the resource type and deep-links resource_id, so
+				// the operator still resolves the real customer.
+				ResourceLabel: "",
 				Metadata: map[string]any{
 					"action":             "checkout_setup_started",
 					"stripe_customer_id": stripeCustomerID,

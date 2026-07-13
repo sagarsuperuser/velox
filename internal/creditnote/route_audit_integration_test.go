@@ -376,16 +376,16 @@ func TestVoidAudit_SharedFate(t *testing.T) {
 		}
 	})
 
-	t.Run("void that loses the CAS to a concurrent issue emits nothing", func(t *testing.T) {
+	// The guard rejects an ALREADY-issued note before the CAS is ever reached.
+	// That is the easy half; the subtest after this one exercises the race the
+	// CAS actually exists for.
+	t.Run("void of an already-issued note is rejected by the guard and emits nothing", func(t *testing.T) {
 		cn := seedDraft(t, "void-lostcas")
 
 		svc := creditnote.NewService(store, invStore, nil)
 		svc.SetNumberGenerator(&seqNumbers{prefix: "VOIDLOST"})
 		svc.SetAuditLogger(logger)
 
-		// Simulate the race the CAS closes: the note leaves 'draft' between
-		// Void's guard reads and its flip. The CAS must lose, no row is written,
-		// and the caller gets the truthful error for the CURRENT state.
 		won, err := store.TransitionStatus(ctx, tenantID, cn.ID, domain.CreditNoteDraft, domain.CreditNoteIssued)
 		if err != nil || !won {
 			t.Fatalf("seed the concurrent issue: won=%v err=%v", won, err)
@@ -405,6 +405,65 @@ func TestVoidAudit_SharedFate(t *testing.T) {
 			t.Errorf("audit row emitted for a void that never happened: %+v", rows)
 		}
 	})
+
+	// THE RACE THE CAS EXISTS FOR. Void's guards read the note on a DIFFERENT
+	// transaction than its flip, so an Issue() can land in between: the guard
+	// sees 'draft' and admits the void, while the row is already 'issued' with
+	// the customer's credit granted. Pre-fix, Void then blind-wrote 'voided'
+	// over it — credit granted against a note recorded as void, and (because
+	// the over-credit ceiling sums only non-voided notes) the same money
+	// creditable a second time.
+	//
+	// A stale-read store reproduces that interleaving deterministically: the
+	// guard is handed a 'draft' snapshot while the DB row is already 'issued'.
+	// The CAS must LOSE — no flip, no audit row, and a truthful error.
+	t.Run("void that loses the CAS mid-flight leaves the issued state and emits nothing", func(t *testing.T) {
+		cn := seedDraft(t, "void-caslost-race")
+
+		draftSnapshot, err := store.Get(ctx, tenantID, cn.ID)
+		if err != nil {
+			t.Fatalf("snapshot the draft: %v", err)
+		}
+
+		// The concurrent Issue() commits — the note is now issued in the DB.
+		won, err := store.TransitionStatus(ctx, tenantID, cn.ID, domain.CreditNoteDraft, domain.CreditNoteIssued)
+		if err != nil || !won {
+			t.Fatalf("seed the concurrent issue: won=%v err=%v", won, err)
+		}
+
+		// ...but Void's guard still sees the pre-issue snapshot.
+		svc := creditnote.NewService(staleReadStore{Store: store, stale: draftSnapshot}, invStore, nil)
+		svc.SetNumberGenerator(&seqNumbers{prefix: "VOIDRACE"})
+		svc.SetAuditLogger(logger)
+
+		if _, err := svc.Void(ctx, tenantID, cn.ID); err == nil {
+			t.Fatal("a void that loses the CAS must return an error, not silently report success")
+		}
+
+		got, err := store.Get(ctx, tenantID, cn.ID)
+		if err != nil {
+			t.Fatalf("get credit note: %v", err)
+		}
+		if got.Status != domain.CreditNoteIssued {
+			t.Fatalf("status: got %q, want issued — the losing void must not clobber the issued state (this is the money bug)", got.Status)
+		}
+		if rows := cnAuditRows(ctx, t, logger, tenantID, cn.ID); len(rows) != 0 {
+			t.Errorf("audit row emitted for a void the CAS rejected: %+v", rows)
+		}
+	})
+}
+
+// staleReadStore hands Void's guard a stale snapshot of the credit note while
+// the real row has already moved on — the deterministic stand-in for a
+// concurrent Issue() landing between the guard read and the flip. Every other
+// method (including the CAS itself) goes to the real store.
+type staleReadStore struct {
+	creditnote.Store
+	stale domain.CreditNote
+}
+
+func (s staleReadStore) Get(_ context.Context, _, _ string) (domain.CreditNote, error) {
+	return s.stale, nil
 }
 
 // TestRetryRefundAudit_SharedFate pins the ADR-090 emission on POST
@@ -499,7 +558,17 @@ func TestRetryRefundAudit_SharedFate(t *testing.T) {
 		}
 	})
 
-	t.Run("idempotent re-drive returning the same pending emits nothing", func(t *testing.T) {
+	// An operator's retry is a MONEY ACTION: it issues a real refund request
+	// against the customer's payment. Stripe may idempotently converge (same
+	// refund id, same status) so nothing in the DB moves — but the attempt
+	// happened, and a compliance log that omits repeated cash-back attempts
+	// because they converged is lying by silence. So the retry emits even when
+	// the persisted state does not move; `status_changed` distinguishes the two.
+	//
+	// This is the DELIBERATE OPPOSITE of ApplyRefundWebhook, where a no-op
+	// redelivery is a non-event Stripe happened to send twice and recording it
+	// would fabricate a transition that never occurred.
+	t.Run("idempotent re-drive still records the operator's retry, flagged as no-change", func(t *testing.T) {
 		cn := seedIssuedRefundCN(t, "retry-noop", domain.RefundPending, "re_retry_noop")
 
 		// Stripe dedups on velox_cn_<id> and hands back the SAME refund, still
@@ -516,8 +585,15 @@ func TestRetryRefundAudit_SharedFate(t *testing.T) {
 		if got.RefundStatus != domain.RefundPending || got.StripeRefundID != "re_retry_noop" {
 			t.Fatalf("persisted refund leg moved: got (%s, %s), want (pending, re_retry_noop)", got.RefundStatus, got.StripeRefundID)
 		}
-		if rows := cnAuditRows(ctx, t, logger, tenantID, cn.ID); len(rows) != 0 {
-			t.Errorf("audit row fabricated for a retry that changed nothing: %+v", rows)
+		rows := cnAuditRows(ctx, t, logger, tenantID, cn.ID)
+		if len(rows) != 1 {
+			t.Fatalf("the operator's retry must be recorded even when Stripe converged; got %d rows: %+v", len(rows), rows)
+		}
+		if rows[0].Metadata["action"] != "refund_retried" {
+			t.Errorf("metadata action: got %v, want refund_retried", rows[0].Metadata["action"])
+		}
+		if changed, _ := rows[0].Metadata["status_changed"].(bool); changed {
+			t.Errorf("status_changed: got true, want false — the row must say the state did not move")
 		}
 	})
 

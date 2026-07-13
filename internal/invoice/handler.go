@@ -287,6 +287,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The create row rode the invoice's own transaction (ADR-090). Suppress
+	// the catch-all: its heuristic row would be a near-identical duplicate.
+	audit.MarkHandled(r.Context())
+
 	respond.JSON(w, r, http.StatusCreated, inv)
 }
 
@@ -305,6 +309,14 @@ func (h *Handler) addLineItem(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "invoice")
 		return
 	}
+
+	// The line_item_added row rode the invoice's own transaction (ADR-090).
+	// Suppressing the catch-all here is not cosmetic: "line-items" is not in
+	// its verb list, so it falls through to the POST default and writes
+	// `create invoice {id}` — a permanent row asserting the operator CREATED
+	// an invoice they only appended a line to. That fabrication is the exact
+	// class ADR-090 exists to kill.
+	audit.MarkHandled(r.Context())
 
 	respond.JSON(w, r, http.StatusCreated, item)
 }

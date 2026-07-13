@@ -126,8 +126,13 @@ func TestCheckoutSetupAudit_SharedFate(t *testing.T) {
 		if r.Metadata["stripe_customer_id"] != "cus_stripe_ok" {
 			t.Errorf("stripe_customer_id in metadata = %v, want cus_stripe_ok", r.Metadata["stripe_customer_id"])
 		}
-		if r.ResourceLabel != "Checkout Co" {
-			t.Errorf("resource_label = %q, want the customer name the operator synced to Stripe", r.ResourceLabel)
+		// No label by design: the only name available here is the REQUEST's
+		// claim, and audit_log is append-only — a caller sending a name that
+		// doesn't match the stored customer would permanently label the row
+		// with a value nothing verified. The dashboard falls back to the
+		// resource type and deep-links resource_id.
+		if r.ResourceLabel != "" {
+			t.Errorf("resource_label = %q, want empty — unverified request input must not enter a permanent record", r.ResourceLabel)
 		}
 		got, err := customers.Get(ctx, tenantID, c.ID)
 		if err != nil {
@@ -206,4 +211,57 @@ type countingCheckoutEmitter struct {
 func (c *countingCheckoutEmitter) LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error {
 	c.calls++
 	return c.inner.LogInTx(ctx, tx, e)
+}
+
+// A checkout.session.completed for a customer that no longer exists (hard
+// deleted by a test-clock teardown, or on the other livemode plane than the
+// webhook) must ACK — not error. Returning an error here would loop Stripe's
+// redelivery for days against a customer Velox will never have again. The
+// operator route takes the OPPOSITE branch on the same store error and 404s;
+// that divergence is the point of the store reporting rather than deciding.
+func TestCheckoutCompleted_MissingCustomer_AcksAndEmitsNothing(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+	tenantID := testutil.CreateTestTenant(t, db, "Checkout Completed Ghost")
+
+	customers := customer.NewPostgresStore(db)
+	logger := audit.NewLogger(db)
+	store := &mappingSetupStore{customers: customers}
+
+	ghostID := postgres.NewID("vlx_cus") // never inserted
+
+	calls := 0
+	emit := func(tx *sql.Tx) error {
+		calls++
+		return logger.LogInTx(ctx, tx, audit.Entry{
+			Action:       domain.AuditActionUpdate,
+			ResourceType: "customer",
+			ResourceID:   ghostID,
+			Metadata:     map[string]any{"action": "payment_setup_completed"},
+		})
+	}
+
+	_, err := store.UpsertPaymentSetupAudited(ctx, tenantID, domain.CustomerPaymentSetup{
+		CustomerID:       ghostID,
+		TenantID:         tenantID,
+		StripeCustomerID: "cus_stripe_ghost",
+	}, emit)
+
+	// The store REPORTS the miss (the webhook handler is what swallows it).
+	if !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("mapping write for a missing customer must report ErrNotFound; got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("emit fired %d time(s) for a customer that does not exist — fabricated evidence", calls)
+	}
+	rows, _, qErr := logger.Query(ctx, tenantID, audit.QueryFilter{
+		ResourceType: "customer", ResourceID: ghostID,
+	})
+	if qErr != nil {
+		t.Fatalf("query audit: %v", qErr)
+	}
+	if len(rows) != 0 {
+		t.Errorf("audit rows for a customer that never existed: %+v", rows)
+	}
 }

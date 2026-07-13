@@ -215,7 +215,7 @@ func (m *memStore) UpdateRefundStatus(ctx context.Context, tenantID, id string, 
 // UpdateRefundStatusAudited mirrors the real store: `prior` is the state the
 // write replaced, and emit fires only when the persisted refund state actually
 // moved (status or refund id) — a same-value re-drive records nothing.
-func (m *memStore) UpdateRefundStatusAudited(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error) error {
+func (m *memStore) UpdateRefundStatusAudited(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
 		return errs.ErrNotFound
@@ -228,8 +228,10 @@ func (m *memStore) UpdateRefundStatusAudited(_ context.Context, tenantID, id str
 	}
 	m.notes[id] = cn
 	changed := cn.RefundStatus != prior || cn.StripeRefundID != priorRefundID
-	if changed && emit != nil {
-		if err := emit(nil, cn, prior); err != nil {
+	// Mirrors the real store: emit ALWAYS runs (with `changed`); the caller
+	// decides whether the fact is audit-worthy.
+	if emit != nil {
+		if err := emit(nil, cn, prior, changed); err != nil {
 			// roll the fake write back for shared-fate fidelity
 			cn.RefundStatus = prior
 			cn.StripeRefundID = priorRefundID

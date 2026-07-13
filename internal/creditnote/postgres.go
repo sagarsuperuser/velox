@@ -594,7 +594,7 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 //
 // An emission failure aborts the write (shared fate) — the refund state and its
 // evidence commit together or not at all.
-func (s *PostgresStore) UpdateRefundStatusAudited(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error) error {
+func (s *PostgresStore) UpdateRefundStatusAudited(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -628,9 +628,14 @@ func (s *PostgresStore) UpdateRefundStatusAudited(ctx context.Context, tenantID,
 	if stripeRefundID != "" {
 		updated.StripeRefundID = stripeRefundID
 	}
+	// The store REPORTS whether the persisted state moved; it does not decide
+	// whether that is audit-worthy. The two callers want opposite semantics:
+	// a webhook no-op is a non-event (no row), while an operator's retry hit
+	// Stripe and IS the event whether or not the status moved. Handing
+	// `changed` to the closure keeps that judgement where the intent lives.
 	changed := updated.RefundStatus != cur.RefundStatus || updated.StripeRefundID != cur.StripeRefundID
-	if changed && emit != nil {
-		if err := emit(tx, updated, cur.RefundStatus); err != nil {
+	if emit != nil {
+		if err := emit(tx, updated, cur.RefundStatus, changed); err != nil {
 			return fmt.Errorf("audit emission: %w", err)
 		}
 	}

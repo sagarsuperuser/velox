@@ -214,6 +214,10 @@ func (s *Service) CreateSetupSession(ctx context.Context, tenantID, customerID, 
 	// Stripe session is inert — it charges nothing and expires — and a retry
 	// mints a fresh one.
 	if s.auditLogger != nil {
+		// No label: this service holds no customer reader, and inventing one
+		// from request input would put an unverified value in an append-only
+		// record. The dashboard falls back to the resource type and
+		// deep-links resource_id.
 		if err := s.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "customer", customerID, "", map[string]any{
 			"action":     "setup_session_created",
 			"session_id": sessionID,

@@ -1243,6 +1243,16 @@ func (s *Stripe) handleCheckoutCompleted(ctx context.Context, tenantID string, e
 		}
 	}
 	if _, err := s.paymentSetups.UpsertPaymentSetupAudited(ctx, tenantID, setup, emit); err != nil {
+		// The customer isn't there to map — hard-deleted by a test-clock
+		// teardown, or on the other livemode plane than this webhook. There is
+		// nothing to record and nothing a retry would fix, so ACK the event:
+		// returning an error here would loop Stripe's redelivery for days
+		// against a customer that no longer exists.
+		if errors.Is(err, errs.ErrNotFound) {
+			slog.WarnContext(ctx, "checkout.session.completed: customer not found for payment-setup mapping — acking event",
+				"customer_id", customerID, "stripe_customer_id", event.CustomerExternalID)
+			return nil
+		}
 		return fmt.Errorf("update payment setup: %w", err)
 	}
 

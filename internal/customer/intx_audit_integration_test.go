@@ -10,6 +10,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
+	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/testutil"
 )
@@ -113,13 +114,20 @@ func TestSetStripeCustomerIDAudit_SharedFate(t *testing.T) {
 		}
 	})
 
-	t.Run("nonexistent customer emits nothing and returns nil", func(t *testing.T) {
+	// A zero-row UPDATE means the customer isn't there to map. It must emit
+	// NOTHING (evidence of a mutation that never happened) and must REPORT the
+	// miss rather than succeed silently — a silent success let the operator
+	// route hand back a Stripe session for a customer Velox does not have, and
+	// left the request with zero audit rows once the handler suppressed the
+	// catch-all. The two callers then diverge on purpose: the operator route
+	// 404s; the webhook acks (see payment.handleCheckoutCompleted).
+	t.Run("nonexistent customer emits nothing and reports ErrNotFound", func(t *testing.T) {
 		ghostID := postgres.NewID("vlx_cus") // never inserted
 
 		calls := 0
 		err := store.SetStripeCustomerIDAudited(ctx, tenantID, ghostID, "cus_stripe_ghost", emitFor(ghostID, &calls))
-		if err != nil {
-			t.Fatalf("zero-row UPDATE must not error (a late webhook for a torn-down customer is a no-op): %v", err)
+		if !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("zero-row UPDATE must report ErrNotFound, not silent success; got %v", err)
 		}
 		if calls != 0 {
 			t.Fatalf("emit fired %d time(s) for a customer whose row was never written — FABRICATED EVIDENCE", calls)

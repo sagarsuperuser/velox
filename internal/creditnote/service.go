@@ -1391,7 +1391,35 @@ func (s *Service) runPostIssueExternalLegs(ctx context.Context, tenantID, id str
 			cn.RefundStatus = domain.RefundPending
 		}
 		if cn.RefundStatus != domain.RefundNone {
-			if err := s.store.UpdateRefundStatus(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID); err != nil {
+			// Record the refund leg's OUTCOME on the same write (ADR-090).
+			// The credit_note.issued row carries the refund AMOUNT, but not
+			// whether the money actually went back: an issue-time `failed`
+			// leg means the customer was NOT refunded, which is exactly the
+			// alertable fact an operator greps for — and the webhook and
+			// retry paths both record it. Only a real state move emits.
+			var emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error
+			if s.audit != nil {
+				emit = func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error {
+					if !changed {
+						return nil
+					}
+					return s.audit.LogInTx(ctx, tx, audit.Entry{
+						Action:        domain.AuditActionUpdate,
+						ResourceType:  "credit_note",
+						ResourceID:    updated.ID,
+						ResourceLabel: updated.CreditNoteNumber,
+						Metadata: map[string]any{
+							"action":              "refund_status_changed",
+							"refund_status":       string(updated.RefundStatus),
+							"prior_refund_status": string(prior),
+							"stripe_refund_id":    updated.StripeRefundID,
+							"invoice_id":          updated.InvoiceID,
+							"customer_id":         updated.CustomerID,
+						},
+					})
+				}
+			}
+			if err := s.store.UpdateRefundStatusAudited(ctx, tenantID, id, cn.RefundStatus, cn.StripeRefundID, emit); err != nil {
 				slog.Warn("failed to persist refund status",
 					"credit_note_id", cn.ID, "refund_status", cn.RefundStatus,
 					"stripe_refund_id", cn.StripeRefundID, "error", err)
@@ -1506,16 +1534,21 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 		return domain.CreditNote{}, errs.InvalidState("invoice has no PaymentIntent — refund cannot be processed via Stripe")
 	}
 
-	// ADR-090 in-tx emission for the operator retry. The store fires it ONLY when
-	// the persisted refund state actually moves (refund_status changed, or a new
-	// stripe_refund_id landed), and `prior` is read under the row lock inside
-	// that write's tx — so an idempotent re-drive that gets the same 'pending'
-	// back from Stripe mutates nothing and records nothing. `update` + a metadata
-	// `action` discriminator keeps the wire vocabulary frozen; the sibling shape
-	// is ApplyRefundWebhook's refund_status_changed.
-	var emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error
+	// ADR-090 in-tx emission for the operator retry. Emitted UNCONDITIONALLY —
+	// including when the persisted state doesn't move. The audit-worthy fact
+	// here is not the state transition but the OPERATOR ACTION: this call
+	// issues a real Stripe refund request against the customer's payment. An
+	// idempotent re-drive (Stripe returns the same refund id and status) still
+	// happened, and a compliance log that omits repeated cash-back attempts
+	// because they converged is lying by silence. `changed` rides the row so a
+	// reader can tell a state-moving retry from a converged one.
+	//
+	// This is deliberately the OPPOSITE of ApplyRefundWebhook's gate: there, a
+	// no-op redelivery is a non-event Stripe happened to send twice, so
+	// recording it would fabricate a transition that never occurred.
+	var emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error
 	if s.audit != nil {
-		emit = func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error {
+		emit = func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error {
 			return s.audit.LogInTx(ctx, tx, audit.Entry{
 				Action:        domain.AuditActionUpdate,
 				ResourceType:  "credit_note",
@@ -1525,6 +1558,7 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 					"action":              "refund_retried",
 					"refund_status":       string(updated.RefundStatus),
 					"prior_refund_status": string(prior),
+					"status_changed":      changed,
 					"stripe_refund_id":    updated.StripeRefundID,
 					"invoice_id":          updated.InvoiceID,
 					"customer_id":         updated.CustomerID,

@@ -301,13 +301,26 @@ func (s *PostgresStore) SetStripeCustomerIDAudited(ctx context.Context, tenantID
 	if err != nil {
 		return fmt.Errorf("set stripe_customer_id: %w", err)
 	}
-	// Emit ONLY when a row was actually written: a zero-row UPDATE (customer
-	// on the other livemode plane under RLS, or torn down by a test-clock
-	// delete before a late webhook) must not fabricate evidence of a
-	// mutation that never happened. A same-value rewrite on webhook replay
-	// still emits — the row records a true completed-setup fact and the
-	// event-id dedup upstream bounds it to the rare race window.
-	if n, _ := res.RowsAffected(); n == 1 && emit != nil {
+	// A zero-row UPDATE means the customer isn't there to map (unknown id, the
+	// other livemode plane under RLS, or torn down by a test-clock delete
+	// before a late webhook). Report it as ErrNotFound and emit NOTHING: the
+	// mutation did not happen, so evidence of it would be fabricated, and a
+	// silent success would let the caller hand back a Stripe session for a
+	// customer Velox does not have.
+	//
+	// The two callers want opposite handling and BOTH are correct, so the
+	// store reports the fact and lets them decide: the operator checkout route
+	// turns it into a 404, while the checkout.session.completed webhook
+	// tolerates it (acking the event rather than looping Stripe's retries
+	// forever against a customer that no longer exists).
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set stripe_customer_id: rows affected: %w", err)
+	}
+	if n == 0 {
+		return errs.ErrNotFound
+	}
+	if emit != nil {
 		if err := emit(tx); err != nil {
 			return fmt.Errorf("audit emission: %w", err)
 		}
