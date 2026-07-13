@@ -32,6 +32,15 @@ type Store interface {
 	GetMeterByKey(ctx context.Context, tenantID, key string) (domain.Meter, error)
 	ListMeters(ctx context.Context, tenantID string) ([]domain.Meter, error)
 	UpdateMeter(ctx context.Context, tenantID string, m domain.Meter) (domain.Meter, error)
+	// UpdateMeterAudited runs the caller-supplied audit emission on the SAME
+	// transaction as the meter UPDATE (ADR-090 in-tx emission): the patched
+	// row and its audit row commit or roll back together. The service builds
+	// the emission (it owns audit-row content); the store owns the tx and
+	// exposes it. emit receives the UPDATE's RETURNING row — the values that
+	// actually landed, read inside the tx, never a pre-tx snapshot. It runs
+	// only when a row was updated (a missing meter returns ErrNotFound and
+	// emits nothing). nil emit = unaudited write.
+	UpdateMeterAudited(ctx context.Context, tenantID string, m domain.Meter, emit func(tx *sql.Tx, out domain.Meter) error) (domain.Meter, error)
 
 	// Plans
 	CreatePlan(ctx context.Context, tenantID string, p domain.Plan) (domain.Plan, error)
@@ -55,6 +64,14 @@ type Store interface {
 	GetMeterPricingRule(ctx context.Context, tenantID, id string) (domain.MeterPricingRule, error)
 	ListMeterPricingRulesByMeter(ctx context.Context, tenantID, meterID string) ([]domain.MeterPricingRule, error)
 	DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error
+	// DeleteMeterPricingRuleAudited runs the caller-supplied audit emission
+	// on the SAME transaction as the DELETE (ADR-090). emit receives the
+	// DELETED row (RETURNING) — so the audit row carries the rule's true
+	// meter_id, read inside the tx, rather than a URL segment the caller
+	// could have mismatched. It runs ONLY when a row was actually removed;
+	// deleting a nonexistent rule returns ErrNotFound and emits nothing.
+	// nil emit = unaudited delete.
+	DeleteMeterPricingRuleAudited(ctx context.Context, tenantID, id string, emit func(tx *sql.Tx, deleted domain.MeterPricingRule) error) error
 }
 
 type RatingRuleFilter struct {

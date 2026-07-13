@@ -34,7 +34,7 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		domain.AuditActionResume, domain.AuditActionFinalize, domain.AuditActionVoid,
 		domain.AuditActionRevoke, domain.AuditActionGrant, domain.AuditActionRefund,
 		domain.AuditActionCollect, domain.AuditActionSend, domain.AuditActionRetryTax,
-		domain.AuditActionRotate,
+		domain.AuditActionRotate, domain.AuditActionRun,
 		// Dotted + auth service vocabulary in live use (frozen wire strings —
 		// swept from every .Log call site; the totality gate must cover the
 		// FULL vocabulary or a schema rejection ships to a money tx).

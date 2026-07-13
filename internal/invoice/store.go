@@ -11,6 +11,18 @@ import (
 type Store interface {
 	Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
+	// CreateAudited / CreateWithLineItemsAudited / AddLineItemAtomicAudited run
+	// the caller-supplied audit emission on the SAME transaction as the write
+	// (ADR-090 in-tx emission): the invoice mutation and its audit row commit
+	// or roll back together. The service builds the emission closure (it owns
+	// audit-row content — the manual-create / line-item-added intent); the
+	// store owns the transaction and exposes it to the closure. emit receives
+	// the PERSISTED row(s) so the audit row can reference the store-assigned
+	// id, invoice number, and recomputed totals. nil emit = unaudited write —
+	// what the engine's cycle/threshold paths pass, since their canonical
+	// evidence is the finalize row.
+	CreateAudited(ctx context.Context, tenantID string, inv domain.Invoice, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error)
+	CreateWithLineItemsAudited(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 	GetByNumber(ctx context.Context, tenantID, number string) (domain.Invoice, error)
 	GetByProrationSource(ctx context.Context, tenantID, subscriptionID, subscriptionItemID string, changeType domain.ItemChangeType, changeAt time.Time) (domain.Invoice, error)
@@ -76,6 +88,11 @@ type Store interface {
 	// when two clients append lines concurrently. Returns the inserted line
 	// item and the updated invoice.
 	AddLineItemAtomic(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, domain.Invoice, error)
+	// AddLineItemAtomicAudited is AddLineItemAtomic with an in-tx audit
+	// emission (see CreateAudited). emit receives the persisted line item and
+	// the rewritten invoice — the invoice number it labels the row with is
+	// therefore read INSIDE the tx, under the same row lock as the mutation.
+	AddLineItemAtomicAudited(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem, emit func(tx *sql.Tx, item domain.InvoiceLineItem, inv domain.Invoice) error) (domain.InvoiceLineItem, domain.Invoice, error)
 
 	// UpdateTaxAtomic re-stamps an invoice's tax decision after a manual
 	// retry. Locks the invoice row, gates on tax_status in (pending, failed)

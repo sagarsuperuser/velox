@@ -162,6 +162,17 @@ func (s *PostgresStore) decryptBillingProfile(bp domain.CustomerBillingProfile) 
 }
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Customer) (domain.Customer, error) {
+	return s.CreateAudited(ctx, tenantID, c, nil)
+}
+
+// CreateAudited inserts the customer and runs the caller-supplied audit
+// emission on the SAME transaction (ADR-090 shared fate): a committed
+// customer with no audit row — and an audit row for a customer whose INSERT
+// lost a unique-violation race — are both unrepresentable. The emission runs
+// only after the INSERT's RETURNING has yielded a row, so it can never
+// fabricate evidence of a create that didn't happen; an emit error aborts the
+// whole tx (the customer is NOT created).
+func (s *PostgresStore) CreateAudited(ctx context.Context, tenantID string, c domain.Customer, emit func(tx *sql.Tx, out domain.Customer) error) (domain.Customer, error) {
 	enc, err := s.encryptCustomer(c)
 	if err != nil {
 		return domain.Customer{}, err
@@ -198,6 +209,15 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, c domain.Cu
 	c, err = s.decryptCustomer(c)
 	if err != nil {
 		return domain.Customer{}, err
+	}
+
+	// Emit on the INSERT's own tx, with the RETURNING-scanned (and
+	// decrypted) row — the audit label/flags describe what actually landed,
+	// never the pre-write input.
+	if emit != nil {
+		if err := emit(tx, c); err != nil {
+			return domain.Customer{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

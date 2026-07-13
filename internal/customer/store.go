@@ -2,12 +2,21 @@ package customer
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
 type Store interface {
 	Create(ctx context.Context, tenantID string, c domain.Customer) (domain.Customer, error)
+	// CreateAudited runs the caller-supplied audit emission on the SAME
+	// transaction as the customer INSERT (ADR-090 in-tx emission): the
+	// customer row and its audit row commit or roll back together. The
+	// service builds the emission (it owns audit-row content); the store
+	// owns the transaction and exposes it. emit receives the persisted
+	// customer so the row can reference the store-assigned id. nil emit =
+	// unaudited write (narrow tests, internal callers).
+	CreateAudited(ctx context.Context, tenantID string, c domain.Customer, emit func(tx *sql.Tx, out domain.Customer) error) (domain.Customer, error)
 	Get(ctx context.Context, tenantID, id string) (domain.Customer, error)
 	GetByExternalID(ctx context.Context, tenantID, externalID string) (domain.Customer, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.Customer, int, error)

@@ -290,6 +290,45 @@ func (m *memStore) DeleteMeterPricingRule(_ context.Context, tenantID, id string
 	return nil
 }
 
+// Audited variants (ADR-090): the fake has no real tx, so the emission runs
+// with a nil *sql.Tx — and to keep SHARED-FATE faithful to the Postgres
+// store, an emission error rolls the in-memory write back exactly as the
+// aborted tx would. The real coupling is pinned against Postgres in
+// intx_audit_integration_test.go.
+func (m *memStore) UpdateMeterAudited(ctx context.Context, tenantID string, meter domain.Meter, emit func(tx *sql.Tx, out domain.Meter) error) (domain.Meter, error) {
+	before, existed := m.meters[meter.ID]
+	out, err := m.UpdateMeter(ctx, tenantID, meter)
+	if err != nil {
+		return domain.Meter{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			if existed {
+				m.meters[meter.ID] = before // shared fate: roll the write back
+			}
+			return domain.Meter{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) DeleteMeterPricingRuleAudited(ctx context.Context, tenantID, id string, emit func(tx *sql.Tx, deleted domain.MeterPricingRule) error) error {
+	deleted, ok := m.meterRules[id]
+	if !ok || deleted.TenantID != tenantID {
+		return errs.ErrNotFound // zero-row delete: never emits
+	}
+	if err := m.DeleteMeterPricingRule(ctx, tenantID, id); err != nil {
+		return err
+	}
+	if emit != nil {
+		if err := emit(nil, deleted); err != nil {
+			m.meterRules[id] = deleted // shared fate: roll the delete back
+			return fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return nil
+}
+
 // *Tx variants forward to the non-Tx methods — the in-memory fake doesn't
 // model transaction semantics, and recipe-package tests that need real
 // rollback go through the Postgres integration tests instead.

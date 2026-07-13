@@ -48,6 +48,14 @@ const (
 	// audit queries can surface "who rotated what, when" separately from
 	// generic updates.
 	AuditActionRotate = "rotate"
+	// AuditActionRun covers an operator-triggered billing cycle
+	// (POST /v1/billing/run). Its own action because the per-invoice
+	// finalize rows a run writes are identical whether the scheduler or an
+	// operator drove the cycle — only this row answers "who started it".
+	// The wire string is NOT new: it is exactly what the middleware
+	// catch-all has recorded for this route since day one, now given a
+	// constant and an explicit emitter (ADR-090 frozen vocabulary).
+	AuditActionRun = "run"
 )
 
 type TenantSettings struct {

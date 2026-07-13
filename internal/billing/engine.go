@@ -115,6 +115,14 @@ func (e *Engine) SetAuditLogger(a AuditWriter) {
 	e.auditLogger = a
 }
 
+// auditWriter exposes the engine's wired audit seam to the billing HTTP
+// handler (same package). POST /v1/billing/run emits its operator-trigger row
+// through the SAME logger the run's finalize rows use, so there is exactly ONE
+// wiring point for the domain — engine.SetAuditLogger, already fail-closed at
+// boot via audit.MustWired(engine) — and no second Set* line for the composition
+// root to forget (the silent-un-audit failure mode ADR-090 exists to kill).
+func (e *Engine) auditWriter() AuditWriter { return e.auditLogger }
+
 // dispatchEvent enqueues an outbound webhook event and LOGS on failure rather
 // than silently dropping it. Once the enqueue commits the dispatcher delivers
 // durably (ADR-040 outbox); a non-nil error means the enqueue INSERT failed and

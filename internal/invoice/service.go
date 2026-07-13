@@ -438,7 +438,7 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 
 	// Bare-header create — caller adds line items incrementally afterwards.
 	if len(input.LineItems) == 0 {
-		return s.store.Create(ctx, tenantID, inv)
+		return s.store.CreateAudited(ctx, tenantID, inv, s.createEmission(ctx, 0))
 	}
 
 	// Atomic create-with-lines: validate + build every line, sum the
@@ -466,7 +466,38 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 	inv.SubtotalCents = subtotal
 	inv.TotalAmountCents = subtotal
 	inv.AmountDueCents = subtotal
-	return s.store.CreateWithLineItems(ctx, tenantID, inv, items)
+	return s.store.CreateWithLineItemsAudited(ctx, tenantID, inv, items, s.createEmission(ctx, len(items)))
+}
+
+// createEmission builds the in-tx audit emission for an operator/API invoice
+// create (POST /v1/invoices). BOTH manual-create store paths carry it — the
+// bare-header create and the atomic create-with-lines — so the audit row does
+// not depend on which shape the composer sent; lineItemCount is the only
+// difference in content. Engine/cycle invoices reach the store through the
+// un-audited variants: their canonical evidence is the finalize row, and
+// double-emitting a 'create' there would fabricate an operator action.
+//
+// Wire strings (action "create", resource "invoice") and metadata keys are
+// FROZEN — the dashboard's filter vocabulary and badges key on them.
+// nil when no logger is wired (unit tests): the store then skips emission.
+func (s *Service) createEmission(ctx context.Context, lineItemCount int) func(tx *sql.Tx, out domain.Invoice) error {
+	if s.audit == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.Invoice) error {
+		return s.audit.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionCreate,
+			ResourceType:  "invoice",
+			ResourceID:    out.ID,
+			ResourceLabel: out.InvoiceNumber,
+			Metadata: map[string]any{
+				"customer_id":        out.CustomerID,
+				"total_amount_cents": out.TotalAmountCents,
+				"currency":           out.Currency,
+				"line_item_count":    lineItemCount,
+			},
+		})
+	}
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
@@ -1242,8 +1273,35 @@ func (s *Service) AddLineItem(ctx context.Context, tenantID, invoiceID string, i
 	if li.CommitExpiresAt != nil && !li.CommitExpiresAt.After(s.clock.Now(ctx)) {
 		return domain.InvoiceLineItem{}, errs.Invalid("commit_expires_at", "must be in the future")
 	}
-	item, _, err := s.store.AddLineItemAtomic(ctx, tenantID, invoiceID, li)
+	item, _, err := s.store.AddLineItemAtomicAudited(ctx, tenantID, invoiceID, li, s.lineItemAddedEmission(ctx))
 	return item, err
+}
+
+// lineItemAddedEmission builds the in-tx audit emission for POST
+// /v1/invoices/{id}/line-items. The event is a MUTATION of the invoice (its
+// totals are rewritten), so it rides the frozen action vocabulary as
+// action=update on resource_type="invoice" with a metadata "action"
+// discriminator — inventing a top-level "line_item_added" action string would
+// break the dashboard's filter/badge maps, which key on the existing set.
+// nil when no logger is wired (unit tests): the store then skips emission.
+func (s *Service) lineItemAddedEmission(ctx context.Context) func(tx *sql.Tx, item domain.InvoiceLineItem, inv domain.Invoice) error {
+	if s.audit == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, item domain.InvoiceLineItem, inv domain.Invoice) error {
+		return s.audit.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionUpdate,
+			ResourceType:  "invoice",
+			ResourceID:    inv.ID,
+			ResourceLabel: inv.InvoiceNumber,
+			Metadata: map[string]any{
+				"action":       "line_item_added",
+				"description":  item.Description,
+				"amount_cents": item.AmountCents,
+				"quantity":     item.Quantity,
+			},
+		})
+	}
 }
 
 // buildLineItem validates an AddLineItemInput and returns the domain line

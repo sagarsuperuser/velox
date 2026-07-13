@@ -2,6 +2,7 @@ package customer
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -88,6 +90,13 @@ type SubscriptionChecker interface {
 	NonTerminalForCustomer(ctx context.Context, tenantID, customerID string) ([]NonTerminalSubscription, error)
 }
 
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). The service builds
+// the emission content at the mutation site; the store threads the closure
+// onto its transaction so the business write and the audit row share fate.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
+
 type Service struct {
 	store         Store
 	stripeSyncer  StripeSyncer
@@ -97,11 +106,19 @@ type Service struct {
 	events        domain.EventDispatcher
 	resolver      clock.Resolver
 	subChecker    SubscriptionChecker
+	auditLogger   AuditEmitter
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
+
+// SetAuditLogger wires in-tx audit emission for customer creation (ADR-090).
+// Nil-safe: unwired services skip emission, which keeps narrow unit tests
+// fake-friendly. Distinct from Handler.SetAuditLogger (the post-hoc writer
+// still used by update / billing-profile / token-rotate) — the same
+// *audit.Logger satisfies both.
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.auditLogger = a }
 
 // SetResolver wires the unified clock.Resolver. At Update /
 // UpsertBillingProfile and other customer-scoped mutations, ctx is
@@ -248,13 +265,41 @@ func (s *Service) Create(ctx context.Context, tenantID string, input CreateInput
 		return domain.Customer{}, err
 	}
 
-	return s.store.Create(ctx, tenantID, domain.Customer{
+	return s.store.CreateAudited(ctx, tenantID, domain.Customer{
 		ExternalID:       input.ExternalID,
 		DisplayName:      input.DisplayName,
 		Email:            input.Email,
 		AdditionalEmails: cc,
 		TestClockID:      input.TestClockID,
-	})
+	}, s.createEmission(ctx))
+}
+
+// createEmission builds the in-tx audit emission for a customer create.
+// Wire strings (action "create", resource "customer") are FROZEN — the
+// dashboard's filter vocabulary and its /customers/{id} deep-link key on
+// them.
+//
+// PII rule (pinned by TestAudit_NoCustomerPIIInMetadata): audit_log is
+// append-only at the DB level, so a customer email copied into metadata
+// could never be erased — a GDPR-deletion dead end. Record the FLAG
+// (email_set) and the operator's own external_id; the address itself stays
+// on the mutable, erasable customer row this audit row links to.
+func (s *Service) createEmission(ctx context.Context) func(tx *sql.Tx, out domain.Customer) error {
+	if s.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.Customer) error {
+		return s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionCreate,
+			ResourceType:  "customer",
+			ResourceID:    out.ID,
+			ResourceLabel: out.DisplayName,
+			Metadata: map[string]any{
+				"external_id": out.ExternalID,
+				"email_set":   out.Email != "",
+			},
+		})
+	}
 }
 
 func (s *Service) Get(ctx context.Context, tenantID, id string) (domain.Customer, error) {

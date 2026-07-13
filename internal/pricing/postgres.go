@@ -329,6 +329,18 @@ func (s *PostgresStore) ListMeters(ctx context.Context, tenantID string) ([]doma
 }
 
 func (s *PostgresStore) UpdateMeter(ctx context.Context, tenantID string, m domain.Meter) (domain.Meter, error) {
+	return s.UpdateMeterAudited(ctx, tenantID, m, nil)
+}
+
+// UpdateMeterAudited patches the meter and runs the caller-supplied audit
+// emission on the SAME transaction (ADR-090 shared fate). The emission sees
+// the RETURNING row — the state that actually landed, read under this tx —
+// and only ever runs when the UPDATE matched a row: a PATCH against a meter
+// that doesn't exist (or lives on the other livemode plane / another tenant
+// under RLS) returns ErrNotFound with no audit row, so the log can never
+// assert a change to a meter that was never touched. An emit error aborts
+// the patch.
+func (s *PostgresStore) UpdateMeterAudited(ctx context.Context, tenantID string, m domain.Meter, emit func(tx *sql.Tx, out domain.Meter) error) (domain.Meter, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Meter{}, err
@@ -349,6 +361,11 @@ func (s *PostgresStore) UpdateMeter(ctx context.Context, tenantID string, m doma
 	}
 	if err != nil {
 		return domain.Meter{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, m); err != nil {
+			return domain.Meter{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Meter{}, err
@@ -717,22 +734,47 @@ func (s *PostgresStore) ListMeterPricingRulesByMeter(ctx context.Context, tenant
 }
 
 func (s *PostgresStore) DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error {
+	return s.DeleteMeterPricingRuleAudited(ctx, tenantID, id, nil)
+}
+
+// DeleteMeterPricingRuleAudited deletes the rule and runs the caller-supplied
+// audit emission on the SAME transaction (ADR-090 shared fate).
+//
+// This route is ADR-090's poster child: the HTTP catch-all recorded this
+// DELETE as "deleted meter {meter_id}" (parseAuditPath took parts[1] as the
+// resource id) — a false permanent row in an append-only compliance log
+// claiming the operator destroyed a meter and all its pricing, when they
+// removed one dimension rule. The emission here replaces that lie.
+//
+// DELETE … RETURNING makes the deleted row itself the evidence source: the
+// audit row's meter_id is the one the rule actually carried, read inside the
+// tx — not the {meter_id} URL segment, which the router never checks against
+// the rule (a caller can pass any meter id and still delete the rule; see the
+// note in the final report). A DELETE that removes no row yields ErrNoRows →
+// ErrNotFound (the handler's 404) and emits NOTHING.
+func (s *PostgresStore) DeleteMeterPricingRuleAudited(ctx context.Context, tenantID, id string, emit func(tx *sql.Tx, deleted domain.MeterPricingRule) error) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
 	}
 	defer postgres.Rollback(tx)
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM meter_pricing_rules WHERE id = $1`, id)
+	deleted, err := scanMeterPricingRule(tx.QueryRowContext(ctx, `
+		DELETE FROM meter_pricing_rules
+		 WHERE id = $1
+		RETURNING id, tenant_id, meter_id, rating_rule_version_id,
+		          dimension_match, aggregation_mode, priority,
+		          created_at, updated_at
+	`, id))
 	if err != nil {
+		// scanMeterPricingRule already folds sql.ErrNoRows → errs.ErrNotFound:
+		// the zero-row delete never reaches emit.
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return errs.ErrNotFound
+	if emit != nil {
+		if err := emit(tx, deleted); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	return tx.Commit()
 }

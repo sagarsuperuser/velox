@@ -11,11 +11,19 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). The service builds
+// the emission content at the mutation site; the store threads the closure
+// onto its transaction so the pricing write and the audit row share fate.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
 
 // SubscriptionPlanUsageReader counts subscriptions referencing a plan.
 // Used by UpdatePlan to enforce immutability of billing-affecting
@@ -34,11 +42,19 @@ type SubscriptionPlanUsageReader interface {
 type Service struct {
 	store        Store
 	subPlanUsage SubscriptionPlanUsageReader
+	auditLogger  AuditEmitter
 }
 
 func NewService(store Store) *Service {
 	return &Service{store: store}
 }
+
+// SetAuditLogger wires in-tx audit emission for the pricing mutations that
+// own their transaction in the store: meter PATCH and pricing-rule DELETE
+// (ADR-090). Nil-safe — an unwired service skips emission, which keeps the
+// narrow unit tests fake-friendly. The handler's remaining post-hoc
+// AuditWriter (plan/meter create, rule upsert, override) is a separate seam.
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.auditLogger = a }
 
 // SetSubscriptionPlanUsageReader wires the live-sub counter used by
 // UpdatePlan to gate billing-affecting field mutations. Optional —
@@ -352,7 +368,49 @@ func (s *Service) UpdateMeter(ctx context.Context, tenantID, id string, input Up
 		}
 		m.RatingRuleVersionID = rid
 	}
-	return s.store.UpdateMeter(ctx, tenantID, m)
+	return s.store.UpdateMeterAudited(ctx, tenantID, m, s.meterUpdateEmission(ctx, input))
+}
+
+// meterUpdateEmission builds the in-tx audit emission for a meter PATCH.
+// Wire strings (action "update", resource "meter") are FROZEN — they match
+// the meter CREATE row, so a meter's audit timeline stays one resource.
+//
+// Metadata records the fields the REQUEST actually set, valued from the
+// UPDATE's RETURNING row (read inside the tx). It is deliberately NOT a diff
+// against the service's pre-tx GetMeter snapshot: that snapshot is read
+// outside the write's transaction, so a concurrent PATCH could make the
+// "before" side of such a diff a value that was never the row's state at
+// write time. Request-intent + committed-value is the pair that cannot lie.
+//
+// rating_rule_version_id is emitted even when cleared to "" — unbinding a
+// meter's default rate is precisely the change that silently unbills usage,
+// so "the operator removed the default binding" must be visible, not absent.
+func (s *Service) meterUpdateEmission(ctx context.Context, input UpdateMeterInput) func(tx *sql.Tx, out domain.Meter) error {
+	if s.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.Meter) error {
+		meta := map[string]any{"key": out.Key}
+		if input.Name != nil {
+			meta["name"] = out.Name
+		}
+		if input.Unit != nil {
+			meta["unit"] = out.Unit
+		}
+		if input.Aggregation != nil {
+			meta["aggregation"] = out.Aggregation
+		}
+		if input.RatingRuleVersionID != nil {
+			meta["rating_rule_version_id"] = out.RatingRuleVersionID
+		}
+		return s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionUpdate,
+			ResourceType:  "meter",
+			ResourceID:    out.ID,
+			ResourceLabel: out.Name,
+			Metadata:      meta,
+		})
+	}
 }
 
 func (s *Service) GetMeter(ctx context.Context, tenantID, id string) (domain.Meter, error) {
@@ -650,8 +708,37 @@ func (s *Service) ListMeterPricingRulesByMeter(ctx context.Context, tenantID, me
 // DeleteMeterPricingRule removes a rule. Pre-existing usage events are
 // not retroactively re-scored; deletion only affects future billing
 // finalize cycles.
+//
+// The audit row rides the DELETE's own tx (ADR-090). Before this, the route
+// was covered only by the HTTP catch-all, which recorded it as
+// "delete meter {meter_id}" — a permanent, un-editable claim that the
+// operator destroyed the whole meter. resource_type stays the EXISTING
+// "meter_pricing_rule" string (the upsert emission and the dashboard's
+// filter vocabulary already use it), so a rule's create/update and its
+// delete land on one resource timeline.
 func (s *Service) DeleteMeterPricingRule(ctx context.Context, tenantID, id string) error {
-	return s.store.DeleteMeterPricingRule(ctx, tenantID, id)
+	return s.store.DeleteMeterPricingRuleAudited(ctx, tenantID, id, s.pricingRuleDeleteEmission(ctx))
+}
+
+// pricingRuleDeleteEmission builds the in-tx audit emission for a
+// pricing-rule DELETE. Content comes from the DELETED row (RETURNING), not
+// from the request: meter_id is the rule's own, so the row is true even
+// though the route's {meter_id} segment is never checked against the rule.
+func (s *Service) pricingRuleDeleteEmission(ctx context.Context) func(tx *sql.Tx, deleted domain.MeterPricingRule) error {
+	if s.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, deleted domain.MeterPricingRule) error {
+		return s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:       domain.AuditActionDelete,
+			ResourceType: "meter_pricing_rule",
+			ResourceID:   deleted.ID,
+			Metadata: map[string]any{
+				"meter_id":               deleted.MeterID,
+				"rating_rule_version_id": deleted.RatingRuleVersionID,
+			},
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

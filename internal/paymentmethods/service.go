@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -190,7 +191,37 @@ func (s *Service) CreateSetupSession(ctx context.Context, tenantID, customerID, 
 		"velox_livemode":    livemodeLabel(ctx),
 		"velox_purpose":     "portal_add_payment_method",
 	}
-	return s.stripe.CreateSetupCheckoutSession(ctx, stripeCustomerID, successURL, cancelURL, metadata)
+	checkoutURL, sessionID, err = s.stripe.CreateSetupCheckoutSession(ctx, stripeCustomerID, successURL, cancelURL, metadata)
+	if err != nil {
+		// Nothing was minted — emit nothing. A failed Stripe call must not
+		// leave evidence of a capability that does not exist.
+		return "", "", err
+	}
+	// ADR-090 residual OWN-TX emission — legitimate here because there is no
+	// business transaction to ride: the real mutation is EXTERNAL (the Stripe
+	// Checkout session), and the only local write on this path
+	// (customers.stripe_customer_id, inside EnsureStripeCustomer) happens on
+	// the FIRST call for a customer and never again.
+	//
+	// So the row is emitted UNCONDITIONALLY for the operator action, NOT gated
+	// on that incidental mapping write: minting this URL is a card-capture
+	// CAPABILITY GRANT (anyone holding it can attach a payment method to this
+	// customer), and gating on the first-call-only write would silently
+	// un-audit every subsequent link for the same customer.
+	//
+	// The error PROPAGATES (never `_ =`): a capability the compliance log
+	// cannot record must not be handed back to the caller. The un-returned
+	// Stripe session is inert — it charges nothing and expires — and a retry
+	// mints a fresh one.
+	if s.auditLogger != nil {
+		if err := s.auditLogger.Log(ctx, tenantID, domain.AuditActionUpdate, "customer", customerID, "", map[string]any{
+			"action":     "setup_session_created",
+			"session_id": sessionID,
+		}); err != nil {
+			return "", "", fmt.Errorf("audit setup session: %w", err)
+		}
+	}
+	return checkoutURL, sessionID, nil
 }
 
 // appendQuery appends a key=value query fragment to the given URL,

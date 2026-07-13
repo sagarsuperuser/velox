@@ -146,23 +146,30 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-090 bridge, now UNCONDITIONAL. The create itself carries a real `create`
+	// row emitted on the credit-note insert's own tx (svc.Create → store
+	// CreateUnderInvoiceLock*Audited), so EVERY successful outcome below already
+	// has explicit evidence — including the DEFERRED auto-issue (in-flight source;
+	// status still draft), whose only mutation WAS the create. Previously this
+	// branch left the catch-all armed for exactly that case, because no real
+	// create row existed; it does now, so the catch-all's heuristic row would be a
+	// duplicate, not coverage. Suppress it in all outcomes.
+	audit.MarkHandled(r.Context())
+
 	// Auto-issue if requested (create + issue in one call)
 	if input.AutoIssue {
 		issued, err := h.svc.Issue(r.Context(), tenantID, cn.ID)
 		if err != nil {
-			// CN was created but issue failed — void the draft to avoid orphans
+			// CN was created but issue failed — void the draft to avoid orphans.
+			// The void is itself a CAS-gated audited flip (svc.Void), so the
+			// created-then-voided pair leaves a truthful two-row trail.
 			_, _ = h.svc.Void(r.Context(), tenantID, cn.ID)
 			respond.FromError(w, r, err, "credit_note")
 			return
 		}
-		// Outcome-conditional bridge (ADR-090): issued/voided outcomes
-		// carried their own in-tx rows — suppress the catch-all. A
-		// DEFERRED outcome (in-flight source; status still draft) mutated
-		// only at create time, so leave the catch-all armed to record the
-		// 201 create.
-		if issued.Status == domain.CreditNoteIssued || issued.Status == domain.CreditNoteVoided {
-			audit.MarkHandled(r.Context())
-		}
+		// Issue() adds its own `credit_note.issued` row on its coordinator tx
+		// (or, when it defers, no row at all — the create row above is then the
+		// whole and accurate story).
 		respond.JSON(w, r, http.StatusCreated, issued)
 		return
 	}
@@ -259,6 +266,14 @@ func (h *Handler) retryRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-090: the refund-state change rides its own persist tx (svc.RetryRefund
+	// → store UpdateRefundStatusAudited) and emits ONLY when the state actually
+	// moved. A retry that re-drives the idempotent Stripe refund and gets the
+	// same 'pending' back changed nothing, so it records nothing — the catch-all
+	// row would be a fabricated "update" of a state that never moved. Suppress it
+	// either way; the emission is the truthful arbiter.
+	audit.MarkHandled(r.Context())
+
 	respond.JSON(w, r, http.StatusOK, cn)
 }
 
@@ -275,6 +290,11 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "credit_note")
 		return
 	}
+
+	// ADR-090: the draft→voided CAS carried its `void` row on the flip's own tx
+	// (svc.Void → store TransitionStatusAudited) — a 200 here means the CAS won,
+	// so the row exists. Suppress the catch-all duplicate.
+	audit.MarkHandled(r.Context())
 
 	respond.JSON(w, r, http.StatusOK, cn)
 }

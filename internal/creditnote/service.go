@@ -329,13 +329,47 @@ func (s *Service) create(ctx context.Context, tenantID string, input CreateInput
 		return s.buildCreditNote(ctx, tenantID, input, inv, subtotal, existingTotal, existingTaxReversed, existingCNs)
 	}
 
+	// ADR-090 in-tx emission. The `create` row rides the SAME transaction as the
+	// header+lines insert — the store's own tx on the operator HTTP path, the
+	// caller's coordinator tx on the in-tx clawback path — so a credit note can
+	// never commit without its evidence (nor evidence without the note), and
+	// both create paths carry the identical row (the own-tx/caller-tx divergence
+	// ADR-090 §3 closed for grants).
+	//
+	// Fires once per INSERTED row: a build rejection (cap, allocation) returns
+	// before the insert and records nothing. An AUTO-ISSUE create emits this one
+	// `create` row here and the separate `credit_note.issued` row in Issue() —
+	// two rows for two facts, never a duplicate create.
+	//
+	// The commit-relief coordinator (CreateAndIssueCommitRelief) deliberately
+	// does NOT route through here: it creates+issues in a single tx with no draft
+	// ever observable, and its `credit_note.issued` row is the canonical evidence.
+	var emit func(tx *sql.Tx, created domain.CreditNote) error
+	if s.audit != nil {
+		emit = func(tx *sql.Tx, created domain.CreditNote) error {
+			return s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionCreate,
+				ResourceType:  "credit_note",
+				ResourceID:    created.ID,
+				ResourceLabel: created.CreditNoteNumber,
+				Metadata: map[string]any{
+					"invoice_id":  created.InvoiceID,
+					"customer_id": created.CustomerID,
+					"total_cents": created.TotalCents,
+					"reason":      created.Reason,
+					"currency":    created.Currency,
+				},
+			})
+		}
+	}
+
 	var cn domain.CreditNote
 	if tx != nil {
 		// Coordinator-owned tx: the credit note commits atomically with the
 		// caller's other writes (e.g. a subscription item delete).
-		cn, err = s.store.CreateUnderInvoiceLockTx(ctx, tx, tenantID, input.InvoiceID, lineRows, buildFn)
+		cn, err = s.store.CreateUnderInvoiceLockTxAudited(ctx, tx, tenantID, input.InvoiceID, lineRows, buildFn, emit)
 	} else {
-		cn, err = s.store.CreateUnderInvoiceLock(ctx, tenantID, input.InvoiceID, lineRows, buildFn)
+		cn, err = s.store.CreateUnderInvoiceLockAudited(ctx, tenantID, input.InvoiceID, lineRows, buildFn, emit)
 	}
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -1472,6 +1506,33 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 		return domain.CreditNote{}, errs.InvalidState("invoice has no PaymentIntent — refund cannot be processed via Stripe")
 	}
 
+	// ADR-090 in-tx emission for the operator retry. The store fires it ONLY when
+	// the persisted refund state actually moves (refund_status changed, or a new
+	// stripe_refund_id landed), and `prior` is read under the row lock inside
+	// that write's tx — so an idempotent re-drive that gets the same 'pending'
+	// back from Stripe mutates nothing and records nothing. `update` + a metadata
+	// `action` discriminator keeps the wire vocabulary frozen; the sibling shape
+	// is ApplyRefundWebhook's refund_status_changed.
+	var emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error
+	if s.audit != nil {
+		emit = func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error {
+			return s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionUpdate,
+				ResourceType:  "credit_note",
+				ResourceID:    updated.ID,
+				ResourceLabel: updated.CreditNoteNumber,
+				Metadata: map[string]any{
+					"action":              "refund_retried",
+					"refund_status":       string(updated.RefundStatus),
+					"prior_refund_status": string(prior),
+					"stripe_refund_id":    updated.StripeRefundID,
+					"invoice_id":          updated.InvoiceID,
+					"customer_id":         updated.CustomerID,
+				},
+			})
+		}
+	}
+
 	// Same idempotency key as Issue() — Stripe dedups against this so
 	// the retry is safe even if the prior attempt actually succeeded
 	// (network failure after Stripe completed): Stripe returns the
@@ -1479,10 +1540,16 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 	idempotencyKey := fmt.Sprintf("velox_cn_%s", cn.ID)
 	refundID, refStatus, refundErr := s.refunder.CreateRefund(ctx, inv.StripePaymentIntentID, cn.RefundAmountCents, idempotencyKey)
 	if refundErr != nil {
-		// Persist the still-failed state so the next retry has the
-		// latest error context and the dashboard surfaces accurate
-		// status.
-		_ = s.store.UpdateRefundStatus(ctx, tenantID, id, domain.RefundFailed, cn.StripeRefundID)
+		// Persist the still-failed state so the next retry has the latest error
+		// context and the dashboard surfaces accurate status. It rides the same
+		// audited write: a real pending→failed move records its row (this is the
+		// operator-visible money fact the retry produced); a failed→failed
+		// re-drive moves nothing and records nothing. The persist error is
+		// LOGGED, never discarded, and the Stripe error stays primary.
+		if perr := s.store.UpdateRefundStatusAudited(ctx, tenantID, id, domain.RefundFailed, cn.StripeRefundID, emit); perr != nil {
+			slog.ErrorContext(ctx, "persist failed refund status after retry",
+				"credit_note_id", id, "error", perr)
+		}
 		return domain.CreditNote{}, fmt.Errorf("stripe refund retry: %w", refundErr)
 	}
 
@@ -1490,10 +1557,10 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 	// (still settling), not necessarily succeeded; the refund webhook settles it.
 	// Recording a blanket succeeded here would re-introduce the false-success lie
 	// and permanently 409 a legitimate later retry.
-	if err := s.store.UpdateRefundStatus(ctx, tenantID, id, refStatus, refundID); err != nil {
-		// Stripe call succeeded but local persist failed. The
-		// idempotency key on the next retry converges (Stripe
-		// returns same refund_id, local persist runs again).
+	if err := s.store.UpdateRefundStatusAudited(ctx, tenantID, id, refStatus, refundID, emit); err != nil {
+		// Stripe call succeeded but local persist (or its audit emission —
+		// shared fate) failed. The idempotency key on the next retry converges
+		// (Stripe returns the same refund_id, local persist runs again).
 		return domain.CreditNote{}, fmt.Errorf("persist refund status: %w", err)
 	}
 
@@ -1563,5 +1630,49 @@ func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditN
 	if cn.StripeRefundID != "" || cn.RefundStatus == domain.RefundSucceeded {
 		return domain.CreditNote{}, errs.InvalidState("cannot void a credit note whose refund has already been processed — voiding would drop the executed refund from the over-refund cap and allow a duplicate refund. Reconcile the existing refund instead.")
 	}
-	return s.store.UpdateStatus(ctx, tenantID, id, domain.CreditNoteVoided)
+
+	// ADR-090 in-tx emission. The flip is a CAS (draft→voided), not the former
+	// blind `UPDATE … WHERE id=$1`: an audit row may only evidence a transition
+	// that PROVABLY happened, and only the CAS can prove it — a zero-row flip
+	// records nothing. draft is the sole voidable state (the two guards above
+	// reject issued and voided), so it is the only legal from-status.
+	var emit func(tx *sql.Tx) error
+	if s.audit != nil {
+		emit = func(tx *sql.Tx) error {
+			return s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionVoid,
+				ResourceType:  "credit_note",
+				ResourceID:    cn.ID,
+				ResourceLabel: cn.CreditNoteNumber,
+				Metadata: map[string]any{
+					"credit_note_number": cn.CreditNoteNumber,
+					"invoice_id":         cn.InvoiceID,
+					"customer_id":        cn.CustomerID,
+				},
+			})
+		}
+	}
+	won, err := s.store.TransitionStatusAudited(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided, emit)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if !won {
+		// The note left 'draft' between the guard reads above and the flip (a
+		// concurrent Issue() or Void()). Nothing was written and nothing was
+		// recorded — re-read and return the canonical error for its CURRENT
+		// state rather than reporting a void that didn't happen.
+		cur, gerr := s.store.Get(ctx, tenantID, id)
+		if gerr != nil {
+			return domain.CreditNote{}, gerr
+		}
+		switch cur.Status {
+		case domain.CreditNoteVoided:
+			return domain.CreditNote{}, errs.InvalidState("credit note is already voided")
+		case domain.CreditNoteIssued:
+			return domain.CreditNote{}, errs.InvalidState("cannot void an issued credit note — issued credit notes are final financial documents")
+		default:
+			return domain.CreditNote{}, errs.InvalidState(fmt.Sprintf("credit note is no longer voidable (current status: %s)", cur.Status))
+		}
+	}
+	return s.store.Get(ctx, tenantID, id)
 }

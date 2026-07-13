@@ -38,6 +38,35 @@ func (m *memStore) Create(_ context.Context, tenantID string, cn domain.CreditNo
 }
 
 func (m *memStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	return m.CreateUnderInvoiceLockAudited(ctx, tenantID, invoiceID, lines, build, nil)
+}
+
+// CreateUnderInvoiceLockAudited mirrors the real store: emit fires once, with
+// the CREATED row, only after a successful insert; an emit error fails the
+// create (the double can't roll back — real shared fate is pinned by the
+// real-Postgres integration test).
+func (m *memStore) CreateUnderInvoiceLockAudited(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error) {
+	created, err := m.createUnderInvoiceLock(ctx, tenantID, invoiceID, lines, build)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, created); err != nil {
+			delete(m.notes, created.ID)
+			delete(m.lineItems, created.ID)
+			return domain.CreditNote{}, err
+		}
+	}
+	return created, nil
+}
+
+// CreateUnderInvoiceLockTxAudited runs the same emission on the caller's tx —
+// the double has no real tx, so it delegates.
+func (m *memStore) CreateUnderInvoiceLockTxAudited(ctx context.Context, _ *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error) {
+	return m.CreateUnderInvoiceLockAudited(ctx, tenantID, invoiceID, lines, build, emit)
+}
+
+func (m *memStore) createUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
 	m.lastLockLines = lines
 	var existing []domain.CreditNote
 	for _, cn := range m.notes {
@@ -134,22 +163,8 @@ func (m *memStore) List(_ context.Context, filter ListFilter) ([]domain.CreditNo
 	return result, nil
 }
 
-func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error) {
-	cn, ok := m.notes[id]
-	if !ok || cn.TenantID != tenantID {
-		return domain.CreditNote{}, errs.ErrNotFound
-	}
-	cn.Status = status
-	now := time.Now().UTC()
-	if status == domain.CreditNoteIssued {
-		cn.IssuedAt = &now
-	}
-	if status == domain.CreditNoteVoided {
-		cn.VoidedAt = &now
-	}
-	m.notes[id] = cn
-	return cn, nil
-}
+// NOTE: no UpdateStatus on the double — the unguarded status writer was deleted
+// with the ADR-090 void emission; every status write is a CAS.
 
 // TransitionStatusAudited fake mirrors the real store: emit fires only on
 // a won CAS; nil tx is fine for content-level unit tests, and an emit error
@@ -193,14 +208,35 @@ func (m *memStore) TransitionStatus(_ context.Context, tenantID, id string, from
 	return true, nil
 }
 
-func (m *memStore) UpdateRefundStatus(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
+func (m *memStore) UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
+	return m.UpdateRefundStatusAudited(ctx, tenantID, id, status, stripeRefundID, nil)
+}
+
+// UpdateRefundStatusAudited mirrors the real store: `prior` is the state the
+// write replaced, and emit fires only when the persisted refund state actually
+// moved (status or refund id) — a same-value re-drive records nothing.
+func (m *memStore) UpdateRefundStatusAudited(_ context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus) error) error {
 	cn, ok := m.notes[id]
 	if !ok || cn.TenantID != tenantID {
 		return errs.ErrNotFound
 	}
+	prior := cn.RefundStatus
+	priorRefundID := cn.StripeRefundID
 	cn.RefundStatus = status
-	cn.StripeRefundID = stripeRefundID
+	if stripeRefundID != "" {
+		cn.StripeRefundID = stripeRefundID
+	}
 	m.notes[id] = cn
+	changed := cn.RefundStatus != prior || cn.StripeRefundID != priorRefundID
+	if changed && emit != nil {
+		if err := emit(nil, cn, prior); err != nil {
+			// roll the fake write back for shared-fate fidelity
+			cn.RefundStatus = prior
+			cn.StripeRefundID = priorRefundID
+			m.notes[id] = cn
+			return err
+		}
+	}
 	return nil
 }
 
