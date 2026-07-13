@@ -60,33 +60,6 @@ func (s *SettingsStore) ListTenantIDs(ctx context.Context) ([]string, error) {
 	return ids, rows.Err()
 }
 
-// IsAuditFailClosed returns whether the tenant has opted into fail-closed
-// audit logging. Returns false for tenants with no settings row yet (the
-// default state after bootstrap), so new tenants default to fail-open.
-//
-// Called from the audit middleware on every mutating request, so it does a
-// single-column SELECT rather than hydrating the full settings struct.
-func (s *SettingsStore) IsAuditFailClosed(ctx context.Context, tenantID string) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return false, err
-	}
-	defer postgres.Rollback(tx)
-
-	var v bool
-	err = tx.QueryRowContext(ctx, `SELECT audit_fail_closed FROM tenant_settings WHERE tenant_id = $1`, tenantID).Scan(&v)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return v, nil
-}
-
 // DefaultSettings returns a fresh TenantSettings populated with
 // Velox defaults. Single source of truth for "what does an
 // uninitialized tenant look like" — used by SettingsStore.Get
@@ -126,7 +99,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
-			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at
+			credit_balance_low_threshold_cents, created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1
 	`, tenantID).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRate, &ts.TaxName, &ts.TaxInclusive,
@@ -138,7 +111,7 @@ func (s *SettingsStore) Get(ctx context.Context, tenantID string) (domain.Tenant
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
 		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
-		&ts.AuditFailClosed, &ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		// Synthesize Velox defaults so callers don't have to handle
@@ -174,8 +147,8 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			company_postal_code, company_country,
 			company_email, company_phone,
 			logo_url, brand_color, tax_id, support_url, invoice_footer,
-			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$28)
+			credit_balance_low_threshold_cents, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$27)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 			default_currency = EXCLUDED.default_currency, timezone = EXCLUDED.timezone,
 			invoice_prefix = EXCLUDED.invoice_prefix, net_payment_terms = EXCLUDED.net_payment_terms,
@@ -196,7 +169,6 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			brand_color = EXCLUDED.brand_color,
 			tax_id = EXCLUDED.tax_id, support_url = EXCLUDED.support_url,
 			invoice_footer = EXCLUDED.invoice_footer,
-			audit_fail_closed = EXCLUDED.audit_fail_closed,
 			credit_balance_low_threshold_cents = EXCLUDED.credit_balance_low_threshold_cents,
 			updated_at = EXCLUDED.updated_at
 		RETURNING tenant_id, default_currency, timezone, invoice_prefix,
@@ -209,7 +181,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 			COALESCE(company_email,''), COALESCE(company_phone,''), COALESCE(logo_url,''),
 			COALESCE(brand_color,''),
 			COALESCE(tax_id,''), COALESCE(support_url,''), COALESCE(invoice_footer,''),
-			audit_fail_closed, credit_balance_low_threshold_cents, created_at, updated_at
+			credit_balance_low_threshold_cents, created_at, updated_at
 	`, ts.TenantID, ts.DefaultCurrency, ts.Timezone, ts.InvoicePrefix,
 		ts.NetPaymentTerms, ts.TaxProvider, ts.TaxRate, ts.TaxName, ts.TaxInclusive, ts.DefaultProductTaxCode,
 		ts.TaxOnFailure,
@@ -222,7 +194,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		postgres.NullableString(ts.BrandColor),
 		postgres.NullableString(ts.TaxID), postgres.NullableString(ts.SupportURL),
 		postgres.NullableString(ts.InvoiceFooter),
-		ts.AuditFailClosed, ts.CreditBalanceLowThresholdCents, now,
+		ts.CreditBalanceLowThresholdCents, now,
 	).Scan(&ts.TenantID, &ts.DefaultCurrency, &ts.Timezone, &ts.InvoicePrefix,
 		&ts.NetPaymentTerms, &ts.TaxProvider, &ts.TaxRate, &ts.TaxName, &ts.TaxInclusive,
 		&ts.DefaultProductTaxCode, &ts.TaxOnFailure,
@@ -233,7 +205,7 @@ func (s *SettingsStore) Upsert(ctx context.Context, ts domain.TenantSettings) (d
 		&ts.CompanyEmail, &ts.CompanyPhone, &ts.LogoURL,
 		&ts.BrandColor,
 		&ts.TaxID, &ts.SupportURL, &ts.InvoiceFooter,
-		&ts.AuditFailClosed, &ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
+		&ts.CreditBalanceLowThresholdCents, &ts.CreatedAt, &ts.UpdatedAt)
 	if err != nil {
 		return domain.TenantSettings{}, err
 	}
@@ -377,10 +349,9 @@ func NewSettingsHandler(store *SettingsStore) *SettingsHandler {
 
 // SetAuditLogger wires the audit recorder used to log settings changes with
 // field-level before/after detail. Settings carry compliance-sensitive knobs
-// (audit_fail_closed, default_currency, timezone, net terms, tax config) —
-// before this, a settings change produced only the catch-all row with
-// metadata={"path":"/v1/settings"} and no record of WHAT changed; notably,
-// disabling fail-closed audit policy itself left no field-level trace.
+// (default_currency, timezone, net terms, tax config) — before this, a
+// settings change produced only the catch-all row with
+// metadata={"path":"/v1/settings"} and no record of WHAT changed.
 func (h *SettingsHandler) SetAuditLogger(a SettingsAuditRecorder) { h.auditLogger = a }
 
 func (h *SettingsHandler) Routes() chi.Router {

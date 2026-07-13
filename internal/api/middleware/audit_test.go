@@ -24,18 +24,6 @@ func (s *stubAuditWriter) Write(_ context.Context, _, _, _, _, _, _ string) erro
 	return s.err
 }
 
-type stubSettings struct {
-	failClosed bool
-	lookupErr  error
-}
-
-func (s *stubSettings) IsAuditFailClosed(_ context.Context, _ string) (bool, error) {
-	if s.lookupErr != nil {
-		return false, s.lookupErr
-	}
-	return s.failClosed, nil
-}
-
 func tenantCtx(t *testing.T, r *http.Request, tenantID string) *http.Request {
 	t.Helper()
 	ctx := context.WithValue(r.Context(), auth.TestTenantIDKey(), tenantID)
@@ -52,7 +40,7 @@ func okHandler() http.Handler {
 
 func TestAudit_Success_FlushesHandlerResponse(t *testing.T) {
 	writer := &stubAuditWriter{}
-	mw := auditLogWith(writer, &stubSettings{})
+	mw := auditLogWith(writer)
 	h := mw(okHandler())
 
 	req := httptest.NewRequest("POST", "/v1/customers", strings.NewReader(`{}`))
@@ -74,11 +62,17 @@ func TestAudit_Success_FlushesHandlerResponse(t *testing.T) {
 	}
 }
 
-func TestAudit_FailOpen_FlushesAndEmitsMetric(t *testing.T) {
+// ADR-089 regression pin: on audit write failure the handler's committed
+// response must be served UNTOUCHED — status, headers, and body. The retired
+// fail-closed mode replaced it with a 503 that the Idempotency middleware
+// (mounted outside this one) cached for 24h, permanently stranding the real
+// response of an already-committed mutation and inviting fresh-key
+// double-execution. The middleware must never again mutate the response.
+func TestAudit_WriteFailure_ServesResponseUntouchedAndEmitsMetric(t *testing.T) {
 	before := testutil.ToFloat64(auditWriteErrors.WithLabelValues("t-open"))
 
 	writer := &stubAuditWriter{err: errors.New("db is down")}
-	mw := auditLogWith(writer, &stubSettings{failClosed: false})
+	mw := auditLogWith(writer)
 	h := mw(okHandler())
 
 	req := httptest.NewRequest("POST", "/v1/customers", strings.NewReader(`{}`))
@@ -87,10 +81,16 @@ func TestAudit_FailOpen_FlushesAndEmitsMetric(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
-		t.Errorf("fail-open must preserve handler status: got %d, want 201", rec.Code)
+		t.Errorf("audit failure must preserve handler status: got %d, want 201", rec.Code)
+	}
+	if rec.Code == http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "audit_error") {
+		t.Errorf("audit failure must never surface as 503 audit_error (ADR-089); got %d %q", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "Acme") {
-		t.Errorf("fail-open must flush body; got %q", rec.Body.String())
+		t.Errorf("audit failure must flush handler body; got %q", rec.Body.String())
+	}
+	if rec.Header().Get("X-Thing") != "yes" {
+		t.Errorf("audit failure must propagate handler headers; got X-Thing=%q", rec.Header().Get("X-Thing"))
 	}
 
 	after := testutil.ToFloat64(auditWriteErrors.WithLabelValues("t-open"))
@@ -99,65 +99,12 @@ func TestAudit_FailOpen_FlushesAndEmitsMetric(t *testing.T) {
 	}
 }
 
-func TestAudit_FailClosed_Returns503AndEmitsMetric(t *testing.T) {
-	before := testutil.ToFloat64(auditWriteErrors.WithLabelValues("t-closed"))
-
-	writer := &stubAuditWriter{err: errors.New("db is down")}
-	mw := auditLogWith(writer, &stubSettings{failClosed: true})
-	h := mw(okHandler())
-
-	req := httptest.NewRequest("POST", "/v1/customers", strings.NewReader(`{}`))
-	req = tenantCtx(t, req, "t-closed")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("fail-closed status: got %d, want 503", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), `"audit_error"`) {
-		t.Errorf("fail-closed body: got %q, want audit_error envelope", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "Acme") {
-		t.Errorf("fail-closed must NOT flush handler body; got %q", rec.Body.String())
-	}
-	// Handler-set headers must not leak on fail-closed — 503 payload is ours.
-	if rec.Header().Get("X-Thing") != "" {
-		t.Errorf("fail-closed must not propagate handler headers; got X-Thing=%q", rec.Header().Get("X-Thing"))
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("fail-closed Content-Type: got %q, want application/json", ct)
-	}
-
-	after := testutil.ToFloat64(auditWriteErrors.WithLabelValues("t-closed"))
-	if after-before != 1 {
-		t.Errorf("audit_write_errors_total{tenant_id=\"t-closed\"}: delta=%v, want 1", after-before)
-	}
-}
-
-// A broken settings lookup must fail-safe to closed — a malfunctioning
-// settings query silently downgrading a SOC-2 tenant to fail-open would
-// be the exact compliance hole this feature exists to close.
-func TestAudit_SettingsLookupError_FailsSafeClosed(t *testing.T) {
-	writer := &stubAuditWriter{err: errors.New("db is down")}
-	mw := auditLogWith(writer, &stubSettings{lookupErr: errors.New("settings unreachable")})
-	h := mw(okHandler())
-
-	req := httptest.NewRequest("POST", "/v1/customers", strings.NewReader(`{}`))
-	req = tenantCtx(t, req, "t-unknown")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("unknown policy must fail-safe to 503: got %d", rec.Code)
-	}
-}
-
 // Non-2xx handler responses must skip audit entirely (no-op) and flush
 // the handler's error response verbatim — we only record successful
 // mutations in audit_log.
 func TestAudit_Non2xx_SkipsAudit(t *testing.T) {
 	writer := &stubAuditWriter{err: errors.New("should not be called")}
-	mw := auditLogWith(writer, &stubSettings{failClosed: true})
+	mw := auditLogWith(writer)
 
 	errHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -197,7 +144,7 @@ func (r *recordingAuditWriter) Write(_ context.Context, tenantID, action, resour
 // (broken). Asserts the middleware now lifts `id` from the response JSON.
 func TestAudit_Create_FillsResourceIDFromResponseBody(t *testing.T) {
 	writer := &recordingAuditWriter{}
-	mw := auditLogWith(writer, &stubSettings{})
+	mw := auditLogWith(writer)
 
 	created := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
@@ -230,7 +177,7 @@ func TestAudit_Create_FillsResourceIDFromResponseBody(t *testing.T) {
 }
 
 // Non-mutating methods must bypass the middleware entirely — no buffering,
-// no settings lookup, no audit write.
+// no audit write.
 // TestAudit_MarkSkip_SuppressesCatchAll proves a read-only POST handler that
 // calls audit.MarkSkip produces no catch-all audit row, while its response is
 // still flushed. This is the path invoice/recipe *preview* endpoints use so
@@ -238,7 +185,7 @@ func TestAudit_Create_FillsResourceIDFromResponseBody(t *testing.T) {
 // nothing.
 func TestAudit_MarkSkip_SuppressesCatchAll(t *testing.T) {
 	writer := &stubAuditWriter{err: errors.New("should not be called")}
-	mw := auditLogWith(writer, &stubSettings{})
+	mw := auditLogWith(writer)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		audit.MarkSkip(r.Context())
 		w.WriteHeader(http.StatusOK)
@@ -263,8 +210,7 @@ func TestAudit_MarkSkip_SuppressesCatchAll(t *testing.T) {
 
 func TestAudit_GET_Bypassed(t *testing.T) {
 	writer := &stubAuditWriter{err: errors.New("should not be called")}
-	settings := &stubSettings{lookupErr: errors.New("should not be called")}
-	mw := auditLogWith(writer, settings)
+	mw := auditLogWith(writer)
 	h := mw(okHandler())
 
 	req := httptest.NewRequest("GET", "/v1/customers", nil)

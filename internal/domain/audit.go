@@ -119,13 +119,14 @@ type TenantSettings struct {
 	// newly issued invoices. Per-invoice override via invoices.footer is
 	// already supported and takes precedence.
 	InvoiceFooter string `json:"invoice_footer,omitempty"`
-	// AuditFailClosed makes audit log write failures hard-fail the request
-	// with 503 audit_error instead of logging and returning the handler's
-	// response. SOC-2-bound tenants opt in so a recorded action is a
-	// precondition for a 2xx response.
-	AuditFailClosed bool      `json:"audit_fail_closed"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	// audit_fail_closed was retired by ADR-089: the post-commit 503 swap it
+	// controlled was cached by the Idempotency layer, permanently stranding
+	// committed mutations behind an error. Fail-closed semantics return
+	// structurally with in-tx audit emission (the audit redesign), where no
+	// post-commit window exists to police. The DB column remains until the
+	// redesign's uninstall migration drops it.
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // StripeProviderCredentials holds a tenant's connection to their own Stripe

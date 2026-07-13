@@ -17,15 +17,8 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
-// AuditSettingsLookup returns whether a tenant has opted into fail-closed
-// audit logging. Kept as a narrow interface so the middleware can be tested
-// without a real SettingsStore.
-type AuditSettingsLookup interface {
-	IsAuditFailClosed(ctx context.Context, tenantID string) (bool, error)
-}
-
 // auditWriter persists a single audit entry. Introduced as an injection
-// point so the middleware logic (buffering, fail-closed branch) can be unit
+// point so the middleware logic (buffering, failure branch) can be unit
 // tested without a live database. Production uses the postgres-backed
 // implementation below.
 type auditWriter interface {
@@ -39,9 +32,11 @@ func (p *postgresAuditWriter) Write(ctx context.Context, tenantID, action, resou
 }
 
 // bufferedResponse captures status, headers, and body so the middleware can
-// decide whether to flush the handler's response or replace it with 503
-// after the audit write attempt. Handlers see a normal ResponseWriter and
-// have no awareness the response is held back.
+// read the response JSON (extractLabel / extractID) before flushing it.
+// Handlers see a normal ResponseWriter and have no awareness the response
+// is held back. The buffer is flushed VERBATIM on every path — ADR-089 bans
+// replacing a committed mutation's response (the old fail-closed 503 swap
+// was cached by the Idempotency layer and poisoned keys for 24h).
 type bufferedResponse struct {
 	header      http.Header
 	status      int
@@ -80,18 +75,20 @@ func (b *bufferedResponse) flushTo(w http.ResponseWriter) {
 // (POST/PUT/PATCH/DELETE outside system endpoints) to audit_log. The write
 // is synchronous because the entry is compliance evidence, not best-effort.
 //
-// On audit write failure the tenant's audit_fail_closed setting decides:
-//   - fail-open (default): log + increment metric; flush the handler response.
-//     Preserves availability at the cost of an accepted compliance gap that
-//     operators must notice via the metric.
-//   - fail-closed: log + increment metric; return 503 audit_error instead of
-//     the handler's response. Paired with API idempotency keys so client
-//     retries don't double-mutate when the business tx already committed.
-func AuditLog(db *postgres.DB, settings AuditSettingsLookup) func(http.Handler) http.Handler {
-	return auditLogWith(&postgresAuditWriter{db: db}, settings)
+// On audit write failure the request is served anyway (fail-open): log +
+// increment velox_audit_write_errors_total; flush the handler response
+// untouched. The former per-tenant fail-closed mode (503 audit_error
+// replacing the committed response) is retired — see ADR-089: the business
+// tx had already committed, so the 503 was a lie the Idempotency layer then
+// cached for 24h, stranding the real response and inviting fresh-key
+// double-mutations. Fail-closed semantics return, structurally, with in-tx
+// audit emission (the audit redesign's LogInTx), where mutation and audit
+// row share one transaction and there is no post-commit window to police.
+func AuditLog(db *postgres.DB) func(http.Handler) http.Handler {
+	return auditLogWith(&postgresAuditWriter{db: db})
 }
 
-func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Handler) http.Handler {
+func auditLogWith(writer auditWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "POST" && r.Method != "PUT" && r.Method != "PATCH" && r.Method != "DELETE" {
@@ -152,30 +149,6 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 			if err := writer.Write(r.Context(), tenantID,
 				action, resourceType, resourceID, resourceLabel, r.URL.Path); err != nil {
 				RecordAuditWriteError(tenantID)
-
-				failClosed := false
-				if settings != nil {
-					fc, lookupErr := settings.IsAuditFailClosed(r.Context(), tenantID)
-					if lookupErr != nil {
-						// Can't determine policy — fail-safe to closed so a
-						// broken settings lookup doesn't silently downgrade a
-						// SOC-2 tenant to fail-open.
-						slog.Error("audit fail-closed lookup failed",
-							"error", lookupErr, "tenant_id", tenantID)
-						failClosed = true
-					} else {
-						failClosed = fc
-					}
-				}
-
-				if failClosed {
-					slog.Error("audit write failed — returning 503 (fail-closed)",
-						"error", err, "tenant_id", tenantID,
-						"action", action, "resource_type", resourceType, "resource_id", resourceID)
-					writeAuditError(w)
-					return
-				}
-
 				slog.Error("audit write failed — request served anyway (fail-open)",
 					"error", err, "tenant_id", tenantID,
 					"action", action, "resource_type", resourceType, "resource_id", resourceID)
@@ -184,15 +157,6 @@ func auditLogWith(writer auditWriter, settings AuditSettingsLookup) func(http.Ha
 			buf.flushTo(w)
 		})
 	}
-}
-
-// writeAuditError emits the 503 body returned to fail-closed tenants when
-// the audit write fails. Matches the shape of respond.JSON error envelopes
-// so clients can treat it like any other API error.
-func writeAuditError(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(`{"error":{"code":"audit_error","message":"audit log unavailable; request not completed from an auditing standpoint — retry"}}`))
 }
 
 // extractLabel pulls a human-readable label from the response JSON.

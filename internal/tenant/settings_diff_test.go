@@ -18,7 +18,7 @@ func TestDiffSettings(t *testing.T) {
 		Timezone:        "Asia/Kolkata",
 		NetPaymentTerms: 30,
 		TaxName:         "GST",
-		AuditFailClosed: false,
+		TaxInclusive:    false,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 	}
@@ -33,7 +33,7 @@ func TestDiffSettings(t *testing.T) {
 		after := base
 		after.DefaultCurrency = "EUR"
 		after.NetPaymentTerms = 15
-		after.AuditFailClosed = true
+		after.TaxInclusive = true
 		d := diffSettings(base, after)
 		if len(d) != 3 {
 			t.Fatalf("diff = %v, want 3 entries", d)
@@ -42,8 +42,8 @@ func TestDiffSettings(t *testing.T) {
 		if !ok || cur["from"] != "USD" || cur["to"] != "EUR" {
 			t.Errorf("default_currency diff = %v, want USD→EUR", d["default_currency"])
 		}
-		if _, ok := d["audit_fail_closed"]; !ok {
-			t.Error("audit_fail_closed flip must be recorded — it's the compliance-policy knob")
+		if _, ok := d["tax_inclusive"]; !ok {
+			t.Error("tax_inclusive flip must be recorded — bool flips are compliance-relevant")
 		}
 		if _, ok := d["net_payment_terms"]; !ok {
 			t.Error("net_payment_terms change must be recorded")
