@@ -12,6 +12,8 @@ import (
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
+	veloxauth "github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
@@ -54,7 +56,12 @@ type PublicPaymentHandler struct {
 	customers PublicPaymentCustomerReader
 	ensurer   StripeCustomerEnsurer
 	returnURL string
+	audit     AuditEmitter
 }
+
+// SetAuditLogger wires ADR-090 in-tx emission for the token consume/restore
+// pair — the public payment-update flow's durable mutations.
+func (h *PublicPaymentHandler) SetAuditLogger(a AuditEmitter) { h.audit = a }
 
 func NewPublicPaymentHandler(tokens *TokenService, db *postgres.DB, clients *StripeClients, customers PublicPaymentCustomerReader, ensurer StripeCustomerEnsurer, returnURL string) *PublicPaymentHandler {
 	if tokens == nil || !clients.Has() {
@@ -245,7 +252,24 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 	// (a loser or a replay sees consumed=false → invalid-token). Consuming here
 	// rather than up-front means only a genuine external Stripe failure past
 	// this point burns the token — not a recoverable precondition.
-	consumed, err := h.tokens.Consume(scopedCtx, token.TenantID, rawToken)
+	// The token IS a customer credential — stamp the customer actor so the
+	// consume/restore audit rows attribute to the customer (ADR-090 D16).
+	scopedCtx = veloxauth.WithCustomerActor(scopedCtx, token.CustomerID)
+	var consumeEmit func(tx *sql.Tx) error
+	if h.audit != nil {
+		consumeEmit = func(tx *sql.Tx) error {
+			return h.audit.LogInTx(scopedCtx, tx, audit.Entry{
+				Action:       domain.AuditActionUpdate,
+				ResourceType: "customer",
+				ResourceID:   token.CustomerID,
+				Metadata: map[string]any{
+					"action":     "payment_update_checkout_started",
+					"invoice_id": token.InvoiceID,
+				},
+			})
+		}
+	}
+	consumed, err := h.tokens.ConsumeAudited(scopedCtx, token.TenantID, rawToken, consumeEmit)
 	if err != nil {
 		slog.ErrorContext(scopedCtx, "public payment: consume token", "error", err)
 		respond.InternalError(w, r)
@@ -312,7 +336,23 @@ func (h *PublicPaymentHandler) createCheckoutSession(w http.ResponseWriter, r *h
 		// error doesn't permanently kill the customer's emailed link;
 		// the recency guard inside Restore bounds this to the
 		// consume→create window of this request.
-		if restoreErr := h.tokens.Restore(scopedCtx, token.TenantID, rawToken); restoreErr != nil {
+		var restoreEmit func(tx *sql.Tx) error
+		if h.audit != nil {
+			restoreEmit = func(tx *sql.Tx) error {
+				return h.audit.LogInTx(scopedCtx, tx, audit.Entry{
+					Action:       domain.AuditActionUpdate,
+					ResourceType: "customer",
+					ResourceID:   token.CustomerID,
+					Metadata: map[string]any{
+						"action":     "payment_update_checkout_restored",
+						"invoice_id": token.InvoiceID,
+					},
+				})
+			}
+		}
+		// The paired restore row keeps the log truthful: without it the
+		// consume row would claim a checkout that never produced a session.
+		if restoreErr := h.tokens.RestoreAudited(scopedCtx, token.TenantID, rawToken, restoreEmit); restoreErr != nil {
 			slog.ErrorContext(scopedCtx, "public payment: restore token after create failure", "error", restoreErr)
 		}
 		// Customer-facing endpoint — TIER 2 sanitization (ADR-026):

@@ -127,6 +127,13 @@ func (s *TokenService) Validate(ctx context.Context, rawToken string) (*PaymentU
 // The caller passes the tenantID returned by Validate so the update runs under
 // tenant RLS.
 func (s *TokenService) Consume(ctx context.Context, tenantID, rawToken string) (bool, error) {
+	return s.ConsumeAudited(ctx, tenantID, rawToken, nil)
+}
+
+// ConsumeAudited is Consume with an in-tx audit emission hook (ADR-090).
+// emit fires ONLY when this call won the CAS — the losing request of a
+// concurrent double-click records nothing.
+func (s *TokenService) ConsumeAudited(ctx context.Context, tenantID, rawToken string, emit func(tx *sql.Tx) error) (bool, error) {
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(hash[:])
 
@@ -147,6 +154,11 @@ func (s *TokenService) Consume(ctx context.Context, tenantID, rawToken string) (
 	if err != nil {
 		return false, err
 	}
+	if n == 1 && emit != nil {
+		if err := emit(tx); err != nil {
+			return false, fmt.Errorf("audit emission: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -161,6 +173,14 @@ func (s *TokenService) Consume(ctx context.Context, tenantID, rawToken string) (
 // consume-create window of THIS request — a token consumed by a
 // successful session create minutes ago cannot be revived by a replay.
 func (s *TokenService) Restore(ctx context.Context, tenantID, rawToken string) error {
+	return s.RestoreAudited(ctx, tenantID, rawToken, nil)
+}
+
+// RestoreAudited is Restore with an in-tx audit emission hook (ADR-090):
+// the revival row keeps the log truthful — without it, a consumed-then-
+// restored token would show a "checkout started" row for a flow that never
+// produced a session. emit fires only when a row was actually revived.
+func (s *TokenService) RestoreAudited(ctx context.Context, tenantID, rawToken string, emit func(tx *sql.Tx) error) error {
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(hash[:])
 
@@ -170,11 +190,17 @@ func (s *TokenService) Restore(ctx context.Context, tenantID, rawToken string) e
 	}
 	defer postgres.Rollback(tx)
 
-	if _, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		UPDATE payment_update_tokens SET used_at = NULL
 		WHERE token_hash = $1 AND used_at IS NOT NULL AND used_at > NOW() - INTERVAL '1 minute'
-	`, tokenHash); err != nil {
+	`, tokenHash)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 && emit != nil {
+		if err := emit(tx); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	return tx.Commit()
 }

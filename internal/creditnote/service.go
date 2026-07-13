@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -91,6 +92,14 @@ type Service struct {
 	credits  CreditGranter
 	numbers  NumberGenerator
 	taxRev   TaxReverser
+	audit    AuditEmitter
+}
+
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). Issue() emits the
+// credit_note.issued row on its own coordinator tx — one canonical row for
+// operator issues, engine adjustments, reconciler retries, and catchup.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
 }
 
 func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits ...CreditGranter) *Service {
@@ -100,6 +109,10 @@ func NewService(store Store, invoices InvoiceReader, refunder Refunder, credits 
 	}
 	return s
 }
+
+// SetAuditLogger wires in-tx audit emission for Issue()/relief (ADR-090).
+// Optional — nil skips emission (unit-test fakes).
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.audit = a }
 
 // SetNumberGenerator sets the sequential number generator (breaks circular dep).
 func (s *Service) SetNumberGenerator(ng NumberGenerator) {
@@ -960,6 +973,30 @@ func (s *Service) CreateAndIssueCommitRelief(ctx context.Context, tenantID strin
 		return domain.CreditNote{}, fmt.Errorf("retire commit slice: %w", err)
 	}
 
+	// ADR-090 in-tx emission — mirrors Issue()'s row so relief CNs are as
+	// visible as ordinary issues.
+	if s.audit != nil {
+		if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+			Action:        "credit_note.issued",
+			ResourceType:  "credit_note",
+			ResourceID:    cn.ID,
+			ResourceLabel: cn.CreditNoteNumber,
+			Metadata: map[string]any{
+				"credit_note_number":       cn.CreditNoteNumber,
+				"invoice_id":               cn.InvoiceID,
+				"customer_id":              cn.CustomerID,
+				"total_cents":              cn.TotalCents,
+				"refund_amount_cents":      cn.RefundAmountCents,
+				"credit_amount_cents":      cn.CreditAmountCents,
+				"out_of_band_amount_cents": cn.OutOfBandAmountCents,
+				"reason":                   cn.Reason,
+				"currency":                 cn.Currency,
+			},
+		}); auditErr != nil {
+			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", auditErr)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return domain.CreditNote{}, fmt.Errorf("commit relief tx: %w", err)
 	}
@@ -1130,7 +1167,28 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 	// draft so it leaves the reconciler scan and never applies. Pure status
 	// flip on a never-applied draft — no money movement, no tax call.
 	if inv.Status == domain.InvoiceVoided || inv.Status == domain.InvoiceUncollectible {
-		if _, terr := s.store.TransitionStatus(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided); terr != nil {
+		// The draft→voided flip is a REAL committed mutation on a money
+		// document — it carries its evidence in the same tx (ADR-090;
+		// previously this path had zero audit rows once the handler's
+		// post-hoc row was deleted).
+		var emit func(tx *sql.Tx) error
+		if s.audit != nil {
+			emit = func(tx *sql.Tx) error {
+				return s.audit.LogInTx(ctx, tx, audit.Entry{
+					Action:        domain.AuditActionVoid,
+					ResourceType:  "credit_note",
+					ResourceID:    cn.ID,
+					ResourceLabel: cn.CreditNoteNumber,
+					Metadata: map[string]any{
+						"action":        "orphan_draft_voided",
+						"invoice_id":    cn.InvoiceID,
+						"customer_id":   cn.CustomerID,
+						"source_status": string(inv.Status),
+					},
+				})
+			}
+		}
+		if _, terr := s.store.TransitionStatusAudited(ctx, tenantID, id, domain.CreditNoteDraft, domain.CreditNoteVoided, emit); terr != nil {
 			return domain.CreditNote{}, fmt.Errorf("void orphaned clawback draft (source %s %s): %w", cn.InvoiceID, inv.Status, terr)
 		}
 		slog.InfoContext(ctx, "voided orphaned clawback draft (source annulled before issue)",
@@ -1226,6 +1284,33 @@ func (s *Service) Issue(ctx context.Context, tenantID, id string) (domain.Credit
 		// comment above): a concurrent/retried Issue() can't double-reduce.
 		if _, err := s.invoices.ApplyCreditNoteTx(ctx, tx, tenantID, cn.InvoiceID, cn.TotalCents); err != nil {
 			return domain.CreditNote{}, fmt.Errorf("reduce invoice amount: %w", err)
+		}
+	}
+
+	// ADR-090 in-tx emission — rides the coordinator tx with the CAS and
+	// the internal effect, and only on the CAS-won path (lost CAS, defers,
+	// and orphan-void produce no new issue fact). One canonical row for
+	// operator issues, engine adjustments, reconciler retries, and catchup
+	// — the background paths previously left no audit trail at all.
+	if s.audit != nil {
+		if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+			Action:        "credit_note.issued",
+			ResourceType:  "credit_note",
+			ResourceID:    cn.ID,
+			ResourceLabel: cn.CreditNoteNumber,
+			Metadata: map[string]any{
+				"credit_note_number":       cn.CreditNoteNumber,
+				"invoice_id":               cn.InvoiceID,
+				"customer_id":              cn.CustomerID,
+				"total_cents":              cn.TotalCents,
+				"refund_amount_cents":      cn.RefundAmountCents,
+				"credit_amount_cents":      cn.CreditAmountCents,
+				"out_of_band_amount_cents": cn.OutOfBandAmountCents,
+				"reason":                   cn.Reason,
+				"currency":                 cn.Currency,
+			},
+		}); auditErr != nil {
+			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", auditErr)
 		}
 	}
 
@@ -1422,7 +1507,31 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 // (pending→succeeded/failed) that the create-call cannot observe. Returns
 // ErrNotFound for an unknown/foreign refund id — the caller decides ack vs retry.
 func (s *Service) ApplyRefundWebhook(ctx context.Context, tenantID, stripeRefundID string, status domain.RefundStatus) error {
-	return s.store.ApplyRefundWebhookStatus(ctx, tenantID, stripeRefundID, status)
+	// ADR-090 in-tx emission: the refund-status transition and its audit
+	// row commit together; the store fires the emission ONLY when the
+	// monotonic guard actually flipped a row, so stale redeliveries never
+	// fabricate evidence. `update` + metadata action discriminator keeps
+	// the wire vocabulary frozen (renders via the FE's update branch); the
+	// failed flip is the alertable value an operator greps for.
+	var emit func(tx *sql.Tx, cn domain.CreditNote) error
+	if s.audit != nil {
+		emit = func(tx *sql.Tx, cn domain.CreditNote) error {
+			return s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionUpdate,
+				ResourceType:  "credit_note",
+				ResourceID:    cn.ID,
+				ResourceLabel: cn.CreditNoteNumber,
+				Metadata: map[string]any{
+					"action":           "refund_status_changed",
+					"refund_status":    string(status),
+					"stripe_refund_id": stripeRefundID,
+					"invoice_id":       cn.InvoiceID,
+					"customer_id":      cn.CustomerID,
+				},
+			})
+		}
+	}
+	return s.store.ApplyRefundWebhookStatusAudited(ctx, tenantID, stripeRefundID, status, emit)
 }
 
 func (s *Service) Void(ctx context.Context, tenantID, id string) (domain.CreditNote, error) {

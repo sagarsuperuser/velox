@@ -17,6 +17,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/api/middleware"
 	"github.com/sagarsuperuser/velox/internal/api/respond"
 	"github.com/sagarsuperuser/velox/internal/api/timefilter"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -659,14 +660,11 @@ func (h *Handler) void(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionVoid, "invoice", inv.ID, inv.InvoiceNumber, map[string]any{
-			"invoice_number":     inv.InvoiceNumber,
-			"customer_id":        inv.CustomerID,
-			"total_amount_cents": inv.TotalAmountCents,
-			"currency":           inv.Currency,
-		})
-	}
+	// The void audit row rides the void transaction itself (ADR-090,
+	// Service.Void emission — one canonical row for this endpoint AND
+	// engine-triggered voids, which previously left no trail). Mark
+	// handled so the middleware catch-all doesn't add a duplicate.
+	audit.MarkHandled(r.Context())
 
 	// invoice.voided is emitted by service.Void (single-writer — covers
 	// this endpoint AND engine-triggered voids via InvoiceVoider).

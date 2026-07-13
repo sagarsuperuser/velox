@@ -20,13 +20,31 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 }
 
 func (s *PostgresStore) Create(ctx context.Context, t domain.Tenant) (domain.Tenant, error) {
+	return s.CreateAudited(ctx, t, nil)
+}
+
+// CreateAudited creates the tenant and runs the caller-supplied audit
+// emission in ONE transaction (ADR-090 shared fate). The tenant's id is
+// generated up front so the tx can be opened AS the new tenant: audit_log
+// is FORCE-RLS'd, and a platform-plane action lands in the NEW tenant's own
+// log (design-panel Q6 — no separate platform log), which requires the
+// app.tenant_id GUC to be the new id before the audit INSERT runs. The
+// tenants table itself carries no RLS, so the INSERT is unaffected by the
+// tenant-scoped GUC.
+func (s *PostgresStore) CreateAudited(ctx context.Context, t domain.Tenant, emit func(tx *sql.Tx, out domain.Tenant) error) (domain.Tenant, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.db.QueryTimeout)
 	defer cancel()
 
 	id := postgres.NewID("vlx_ten")
 	now := time.Now().UTC()
 
-	err := s.db.Pool.QueryRowContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, id)
+	if err != nil {
+		return domain.Tenant{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenants (id, name, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $4)
 		RETURNING id, name, status, created_at, updated_at
@@ -34,6 +52,14 @@ func (s *PostgresStore) Create(ctx context.Context, t domain.Tenant) (domain.Ten
 		&t.ID, &t.Name, &t.Status, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
+		return domain.Tenant{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, t); err != nil {
+			return domain.Tenant{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return domain.Tenant{}, err
 	}
 	return t, nil

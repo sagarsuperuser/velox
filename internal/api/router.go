@@ -477,12 +477,16 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// SPA origin the Checkout success/cancel URLs redirect back to. In
 	// dev, leave empty and the handler falls back to http://localhost:5173
 	// so `make dev` works without extra config.
+	// Constructed as a named var (not an inline literal) so the ADR-090
+	// boot gate below can verify its audit emitter is wired.
+	hostedInvoiceStripe := &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: checkoutSessionStore, audit: auditLogger}
+
 	hostedInvoiceH := hostedinvoice.New(hostedinvoice.Deps{
 		Invoices:    invoiceSvc,
 		Customers:   customerStore,
 		Settings:    settingsStore,
 		CreditNotes: &creditNoteListerAdapter{svc: creditNoteSvc},
-		Stripe:      &hostedInvoiceStripeAdapter{clients: stripeClients, ensurer: paymentMethodsStripe, sessions: checkoutSessionStore},
+		Stripe:      hostedInvoiceStripe,
 		BaseURL:     strings.TrimSpace(os.Getenv("HOSTED_INVOICE_BASE_URL")),
 	})
 
@@ -569,6 +573,22 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// credit: in-tx emission on the SERVICE (ADR-090 first domain batch) —
 	// grant/adjust audit rows ride the ledger transaction.
 	creditSvc.SetAuditLogger(auditLogger)
+	// tenant: platform provisioning previously left NO audit trail (the
+	// /v1/tenants group mounts no catch-all); the create row now rides the
+	// tenants INSERT tx, landing in the NEW tenant's own log (panel Q6).
+	tenantSvc.SetAuditLogger(auditLogger)
+	// creditnote: Issue()/relief emit on their coordinator tx — one
+	// canonical credit_note.issued row for operator, engine, reconciler,
+	// and catchup paths; refund-webhook status flips emit on the store tx.
+	creditNoteSvc.SetAuditLogger(auditLogger)
+	// payment: checkout.session.completed PM flip (webhook-driven,
+	// previously invisible) + the public payment-update token consume/
+	// restore pair. The hosted-invoice checkout claim gets its emitter at
+	// construction (hostedInvoiceStripeAdapter literal above).
+	stripeAdapter.SetAuditLogger(auditLogger)
+	if publicPaymentH != nil {
+		publicPaymentH.SetAuditLogger(auditLogger)
+	}
 	invoiceH.SetAuditLogger(auditLogger)
 	subH.SetAuditLogger(auditLogger)
 	creditNoteH.SetAuditLogger(auditLogger)
@@ -848,6 +868,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// missing, naming every nil field, instead of silently diverging on a
 	// money path at runtime (2026-07-10 design review, redesign #3 stage 1).
 	engine.MustValidate()
+	// Same fail-closed shape for ADR-090 audit wiring: services skip
+	// emission on a nil emitter (fake-friendly in tests), so a forgotten
+	// SetAuditLogger line silently un-audits a domain. Every in-tx-audited
+	// component joins this list in the PR that audits it;
+	// TestMustWired_CoversEveryAuditedComponent pins the list.
+	// (publicPaymentH is exempt: its constructor legitimately returns nil
+	// when Stripe isn't configured, so its wiring is guarded above.)
+	audit.MustWired(creditSvc, tenantSvc, subSvc, invoiceSvc, creditNoteSvc,
+		stripeAdapter, paymentMethodsSvc, engine, hostedInvoiceStripe)
+	if publicPaymentH != nil {
+		// Guarded: the constructor legitimately returns nil without Stripe
+		// keys; when it exists, its emitter must be wired.
+		audit.MustWired(publicPaymentH)
+	}
 
 	// Invoice finalize commits the upstream Stripe Tax calculation into a
 	// tax_transaction so the tenant's Stripe Tax reports reflect the final

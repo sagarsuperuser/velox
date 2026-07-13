@@ -509,18 +509,40 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, s
 // Mirrors subscription.CreateWithBill — the store owns the tx, the cross-domain
 // effect is a callback so no peer-package import leaks in.
 func (s *PostgresStore) UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error) {
+	var fn func(tx *sql.Tx, prior domain.InvoiceStatus) error
+	if reverseFn != nil {
+		fn = func(tx *sql.Tx, _ domain.InvoiceStatus) error { return reverseFn(tx) }
+	}
+	return s.UpdateStatusWithReversalPrior(ctx, tenantID, id, status, fn)
+}
+
+// UpdateStatusWithReversalPrior is UpdateStatusWithReversal handing the
+// closure the invoice's TRUE prior status, read FOR UPDATE on this same tx
+// before the flip — the service's earlier snapshot races concurrent
+// transitions, and an audit row stamping status_before from it could
+// permanently record the wrong provenance (ADR-090 PR4 review).
+func (s *PostgresStore) UpdateStatusWithReversalPrior(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx, prior domain.InvoiceStatus) error) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
 	defer postgres.Rollback(tx)
 
+	// Row lock + true prior status; same row the CAS below updates, so no
+	// new lock ordering edge.
+	var prior string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status FROM invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+		id, tenantID).Scan(&prior); err != nil {
+		return domain.Invoice{}, fmt.Errorf("lock invoice for status flip: %w", err)
+	}
+
 	inv, err := s.updateStatusInTx(ctx, tx, id, status)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
 	if reverseFn != nil {
-		if err := reverseFn(tx); err != nil {
+		if err := reverseFn(tx, domain.InvoiceStatus(prior)); err != nil {
 			return domain.Invoice{}, err
 		}
 	}

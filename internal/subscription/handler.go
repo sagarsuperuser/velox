@@ -544,38 +544,14 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditLogger != nil {
-		planIDs := planIDsFromItems(sub.Items)
-		meta := map[string]any{
-			"customer_id": sub.CustomerID,
-			"plan_ids":    planIDs,
-			// Tag the actor on the audit row so the activity timeline
-			// renders "Subscription canceled by operator" — matching
-			// the customer-portal and engine auto-fire paths' shape.
-			// Without this label the operator cancel showed up as just
-			// "Subscription canceled" with no by-line, while portal
-			// cancels showed "by customer". Consistent vocabulary
-			// across the three paths.
-			"canceled_by": "operator",
-		}
-		// Surface the cancel-proration credit on the timeline so
-		// operators see "Subscription canceled · Prorated credit
-		// $X.XX" instead of having to cross-reference the customer's
-		// credit ledger. Industry standard — Stripe / Lago /
-		// Chargebee / Orb all link the credit to the cancel event
-		// on the subscription timeline.
-		if prorationCreditCents > 0 {
-			meta["prorated_credit_cents"] = prorationCreditCents
-			// Currency rides along so the timeline doesn't hardcode "$"
-			// for non-USD tenants (best-effort: first item's plan).
-			if h.plans != nil && len(sub.Items) > 0 {
-				if pl, err := h.plans.GetPlan(r.Context(), tenantID, sub.Items[0].PlanID); err == nil {
-					meta["currency"] = pl.Currency
-				}
-			}
-		}
-		_ = h.auditLogger.Log(r.Context(), tenantID, domain.AuditActionCancel, "subscription", sub.ID, sub.Code, auditMetaForSub(sub, meta))
-	}
+	// The cancel audit row rides the cancel transaction itself now
+	// (ADR-090, Service.Cancel emission) — same row content, plus dunning-
+	// driven cancels record identically instead of being invisible. The
+	// fallback-path proration credit lands post-commit as its own audited
+	// grant row rather than a field here. Mark handled so the middleware
+	// catch-all doesn't add a generic duplicate.
+	_ = prorationCreditCents
+	audit.MarkHandled(r.Context())
 
 	// subscription.canceled is enqueued IN the cancel tx (store-level
 	// DispatchTx subset) — do not also fire it here.

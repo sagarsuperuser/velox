@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/tax"
@@ -198,6 +199,20 @@ func (m *memStore) UpdateStatus(_ context.Context, tenantID, id string, status d
 	inv.UpdatedAt = time.Now().UTC()
 	m.invoices[id] = inv
 	return inv, nil
+}
+
+// Prior variant: the fake's "prior" is the current in-memory status —
+// exact, since the fake is single-threaded.
+func (m *memStore) UpdateStatusWithReversalPrior(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx, prior domain.InvoiceStatus) error) (domain.Invoice, error) {
+	prior := domain.InvoiceStatus("")
+	if inv, ok := m.invoices[id]; ok {
+		prior = inv.Status
+	}
+	var fn func(tx *sql.Tx) error
+	if reverseFn != nil {
+		fn = func(tx *sql.Tx) error { return reverseFn(tx, prior) }
+	}
+	return m.UpdateStatusWithReversal(ctx, tenantID, id, status, fn)
 }
 
 func (m *memStore) UpdateStatusWithReversal(ctx context.Context, tenantID, id string, status domain.InvoiceStatus, reverseFn func(tx *sql.Tx) error) (domain.Invoice, error) {
@@ -1062,6 +1077,15 @@ func TestRecordPayment(t *testing.T) {
 // layer audit + webhook emit fire on state transitions.
 type captureAuditInvoice struct {
 	entries []capturedAuditEntryInvoice
+}
+
+// LogInTx captures like Log — a nil tx is fine for content-level tests;
+// shared-fate semantics are pinned by the real-Postgres integration tests.
+func (c *captureAuditInvoice) LogInTx(_ context.Context, _ *sql.Tx, e audit.Entry) error {
+	c.entries = append(c.entries, capturedAuditEntryInvoice{
+		action: e.Action, resourceID: e.ResourceID, resourceType: e.ResourceType, metadata: e.Metadata,
+	})
+	return nil
 }
 
 type capturedAuditEntryInvoice struct {
