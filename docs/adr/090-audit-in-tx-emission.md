@@ -209,6 +209,60 @@ appends). The privilege system and the triggers now fail independently:
 `velox_app` is refused at the permission check (42501) before a trigger runs; the
 owner/superuser is still refused by the trigger (P0001). Retention purges are
 unaffected — they remain an owner-role operation, as 0011 documented.
+### 7. Read egress: bulk exports are audited, fail-closed, emit-before-stream
+
+RC1 named it and this closes it: a full-tenant EXPORT produced zero audit rows.
+The catch-all only ever considered mutating methods, and the export handlers
+emitted nothing — so copying every customer's PII, every invoice, every
+subscription, or a year of usage events left the log silent. A tamper-evidence
+system that cannot show who copied the evidence has a hole in its chain of
+custody; Stripe and AWS CloudTrail both log data-export/read events.
+
+- **`action=export`** (`domain.AuditActionExport`) is a NEW top-level wire string
+  — the first in the vocabulary that records a READ. `resource_type` is the
+  exported resource; `resource_id` is EMPTY (a bulk export has no single
+  subject); metadata carries the filters and the exact filename delivered.
+- **Emit BEFORE the first byte, fail closed.** The row is written before the
+  stream opens, and a failed write means 500 with nothing streamed. The ordering
+  is the decision: a row written at stream COMPLETION is defeated by killing the
+  connection mid-stream, so pages of PII would egress with nothing recorded.
+  Emit-then-stream can only OVER-record (a row for a file that later aborted —
+  reconcilable against the EXPORT_INCOMPLETE marker); stream-then-emit
+  UNDER-records, and in an append-only log that is unrecoverable.
+- **Own-tx, detached.** An export is a read: there is no business transaction for
+  LogInTx to ride. It uses `Logger.Log` (own tx, `context.WithoutCancel`), so a
+  client that hangs up the moment the export starts still leaves the row.
+- **No row count on the row.** It is unknowable before the stream starts, and a
+  count we cannot honour is a lie in a permanent record.
+- **The audit log exports itself** (`GET /v1/exports/audit-log.csv`, same
+  permission as the read route). It replaces a dashboard Export button that paged
+  the API in the browser and stopped at 50,000 rows — a silent truncation of the
+  compliance evidence itself. `Logger.Stream` applies no cap. Because the row is
+  written first, the exported file CONTAINS the record of its own export.
+- **Declared, not inferred** — a small read-egress registry
+  (`auditEgressRegistry`) with its own two-way-diff arch test over the live GET
+  routes under `/v1/exports`. Deliberately NOT a general GET axis in the mutating
+  registry: five routes do not justify declaring an audit story for every read
+  endpoint, and a registry nobody can keep current is a registry that lies. The
+  runtime detector is unchanged (it observes mutations only).
+- **ACCEPTED LOSS, written down:** ordinary paginated list reads are NOT audited.
+  An operator can still copy the tenant by walking `GET /v1/customers?limit=…`,
+  and `audit_log` will not show it. What it CAN answer is "did anyone take the
+  one-click bulk export, and when" — the question an auditor asks and the action a
+  departing employee takes. A row per list call would put audit_log on the
+  dashboard's hottest read path, and that noise is what makes an audit log
+  unreadable (same volume argument as the ingest exemption). CLOSURE TRIGGER: a DP
+  or auditor asking for PII-read evidence (SOC 2 CC6.x) → an access-log-derived
+  read trail, aggregated per session/actor, not one row per GET.
+
+Adjacent hardening shipped with it: **CSV formula injection**. A cell beginning
+with `= + - @` (or TAB/CR) executes as a formula in Excel/Sheets/LibreOffice, and
+customer display names flow into these files — including the audit log's own
+`resource_label`. Both builders neutralize (Go free-text columns; the browser-side
+builder), because the CSV is the artifact an operator hands an AUDITOR, and a file
+that runs code when opened is not evidence. The client-side neutralizer exempts
+cells that ARE numbers, or every negative amount in a finance export becomes text
+and `SUM()` breaks.
 
 ## Consequences
 

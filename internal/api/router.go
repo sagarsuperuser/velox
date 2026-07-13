@@ -1380,16 +1380,24 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// — on the one route block given five minutes precisely BECAUSE it streams.
 	// The catch-all is gone (ADR-090); nothing between the handler and the
 	// socket buffers anything now.
+	//
+	// Every export EMITS an action=export audit row before it streams, and
+	// refuses to stream if that row can't be written (ADR-090 §6, read egress):
+	// a tamper-evidence system that cannot show who copied the evidence has a
+	// hole in its chain of custody. audit-log.csv is here too — the compliance
+	// export is itself an audited event, and it rides the same permission as the
+	// audit-log read route below.
 	r.Route("/v1/exports", func(r chi.Router) {
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(5 * time.Minute))
-		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore)
+		exportsH := newExportsHandler(customerStore, invoiceStore, subStore, usageStore, auditLogger, auditLogger)
 		r.Mount("/", exportsH.Routes(
 			auth.Require(auth.PermCustomerRead),
 			auth.Require(auth.PermInvoiceRead),
 			auth.Require(auth.PermSubscriptionRead),
 			auth.Require(auth.PermUsageRead),
+			auth.Require(auth.PermAPIKeyRead),
 		))
 	})
 

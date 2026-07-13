@@ -56,6 +56,22 @@ const (
 	// catch-all has recorded for this route since day one, now given a
 	// constant and an explicit emitter (ADR-090 frozen vocabulary).
 	AuditActionRun = "run"
+	// AuditActionExport covers BULK DATA EGRESS — the /v1/exports/*.csv
+	// streams that hand an operator a whole table in one request (customers
+	// and their PII, every invoice, every subscription, a year of usage
+	// events, and the audit log itself).
+	//
+	// The first action in this vocabulary that records a READ: every other
+	// value marks a state change. A tamper-evidence system that cannot show
+	// who COPIED the evidence has a hole in its chain of custody — Stripe and
+	// AWS CloudTrail both log data-export/read events. Emitted BEFORE the
+	// first byte streams, and fail-closed (exportsHandler.auditExport,
+	// ADR-090 §6).
+	//
+	// resource_type is the exported resource (customer / invoice /
+	// subscription / usage_event / audit_log); resource_id is EMPTY — a bulk
+	// export has no single subject.
+	AuditActionExport = "export"
 )
 
 type TenantSettings struct {

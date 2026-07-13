@@ -19,6 +19,18 @@ import type { AuditEntry } from '@/lib/api'
  * describeAction renders one audit row's headline. The actor is rendered
  * separately by the page, so these strings describe the ACTION, not who did it.
  */
+// Bulk data egress (action=export, ADR-090) names the resource that LEFT, so the
+// row reads "Exported customers (CSV)" rather than a raw wire string. The row
+// carries no resource_id — a bulk export has no single subject — so the
+// resource_type is the whole story.
+const EXPORTED_RESOURCE_LABELS: Record<string, string> = {
+  customer: 'customers',
+  invoice: 'invoices',
+  subscription: 'subscriptions',
+  usage_event: 'usage events',
+  audit_log: 'the audit log',
+}
+
 export function describeAction(entry: AuditEntry): string {
   const label = entry.resource_label || ''
   // Item-level audit rows carry the meaningful discriminator in
@@ -26,6 +38,8 @@ export function describeAction(entry: AuditEntry): string {
   // surface it cleanly instead of dumping the raw dotted action.
   const metaAction = (entry.metadata?.action as string) || ''
   switch (entry.action) {
+    case 'export':
+      return `Exported ${EXPORTED_RESOURCE_LABELS[entry.resource_type] ?? entry.resource_type} (CSV)`
     case 'create':
       if (entry.resource_type === 'payment_method') return `Added ${label || 'card'}`
       if (entry.resource_type === 'api_key') return `Created API key${label ? ` "${label}"` : ''}`
@@ -188,11 +202,16 @@ export const DEFAULT_RESOURCE_TYPES = [
   // 'setting' — tenant settings saves (tenant/settings.go).
   // 'usage_event' — operator usage backfill (usage/service.go).
   'setting', 'usage_event',
+  // Only ever appears on export rows.
+  'audit_log',
 ]
 
 export const DEFAULT_ACTIONS = [
   'create', 'update', 'delete', 'activate', 'cancel', 'pause', 'resume',
   'finalize', 'void', 'run', 'grant', 'revoke',
+  // Read egress — the CSV exports. The only action that records a READ, and the
+  // one an auditor asks for by name.
+  'export',
   // The rest of the emitted vocabulary. The old list stopped at 'revoke', so a
   // fresh tenant's dropdown silently omitted every invoice money action, the
   // credit ledger, membership and auth.

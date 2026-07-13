@@ -35,6 +35,11 @@ func TestLogInTx_TotalityAndVocabulary(t *testing.T) {
 		domain.AuditActionRevoke, domain.AuditActionGrant, domain.AuditActionRefund,
 		domain.AuditActionCollect, domain.AuditActionSend, domain.AuditActionRetryTax,
 		domain.AuditActionRotate, domain.AuditActionRun,
+		// The read-egress action (ADR-090 §7): action=export on the bulk CSV
+		// streams. A new TOP-LEVEL wire string, so it must survive the same
+		// INSERT path every mutating action does — this is the gate that would
+		// have caught it if audit_log had ever grown an action CHECK.
+		domain.AuditActionExport,
 		// Dotted + auth service vocabulary in live use (frozen wire strings —
 		// swept from every .Log call site; the totality gate must cover the
 		// FULL vocabulary or a schema rejection ships to a money tx).

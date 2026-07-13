@@ -32,8 +32,39 @@ export async function downloadServerCSV(path: string, defaultFilename: string): 
   URL.revokeObjectURL(blobUrl)
 }
 
+// csvSafeCell neutralizes spreadsheet formula injection. Excel, Google Sheets and
+// LibreOffice EXECUTE a cell whose first character is = + - @ (or a leading TAB /
+// CR), so a customer-controlled value like `=HYPERLINK("http://evil","click")` or
+// `@SUM(...)` runs when the operator opens the export. CSV quoting does not save
+// you — the parser strips the quotes before the formula engine sees the cell.
+// Prefixing with a single quote forces the value to render as literal text.
+//
+// The property being protected: the CSV is the artifact an operator hands an
+// AUDITOR. A file that executes code when opened is not evidence. Customer
+// display names flow into these exports, so the payload is one API call away.
+//
+// The numeric escape hatch is deliberate: a cell that IS a number ("-1250",
+// "+3.5", "1e3") is not a formula in any sense that matters — Excel renders it as
+// that number either way — and blanket-prefixing would turn every negative amount
+// in a finance export into TEXT, silently breaking SUM() on the columns operators
+// reconcile with. Leading TAB/CR are excluded from that escape hatch because
+// Number() TRIMS whitespace — Number("\t5") is 5 — so a tab-prefixed cell would
+// otherwise slip through un-neutralized.
+// (The Go exporter is stricter — it prefixes any leading formula char — because
+// it applies csvSafe only to columns it KNOWS are free text, so it never sees a
+// number. Here the builder is generic over string cells and has no such type.)
+const CSV_FORMULA_PREFIXES = ['=', '+', '-', '@', '\t', '\r']
+
+export function csvSafeCell(value: string): string {
+  if (!value) return value
+  const first = value[0]
+  if (!CSV_FORMULA_PREFIXES.includes(first)) return value
+  if (first !== '\t' && first !== '\r' && value.trim() !== '' && Number.isFinite(Number(value))) return value
+  return `'${value}`
+}
+
 export function downloadCSV(filename: string, headers: string[], rows: string[][]) {
-  const csv = [headers.join(','), ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n')
+  const csv = [headers.join(','), ...rows.map(r => r.map(cell => `"${csvSafeCell(String(cell)).replace(/"/g, '""')}"`).join(','))].join('\n')
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

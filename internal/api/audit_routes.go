@@ -119,8 +119,9 @@ func canonicalRoute(p string) string {
 	return p
 }
 
-// isMutatingMethod reports whether a method can change state. GET/HEAD/OPTIONS
-// egress is a separate concern (ADR-090 read-egress auditing), not this gate's.
+// isMutatingMethod reports whether a method can change state. Bulk read egress
+// (the GET /v1/exports/*.csv streams) is declared separately, in
+// auditEgressRegistry below — see the scope note there.
 func isMutatingMethod(m string) bool {
 	switch m {
 	case "POST", "PUT", "PATCH", "DELETE":
@@ -304,4 +305,56 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/checkout/setup"}:                          explicit("payment.CheckoutHandler.createSetupSession → LogInTx on the session-claim tx."),
 	{"POST", "/v1/public/invoices/{token}/checkout"}:        explicit("hostedInvoiceStripeAdapter (api/adapters.go) → LogInTx on the checkout-claim tx; actor is the CUSTOMER (auth.WithCustomerActor). Outside the old catch-all entirely."),
 	{"POST", "/v1/public/payment-updates/{token}/checkout"}: explicit("payment.PublicPaymentHandler.createCheckoutSession → LogInTx on the token consume/restore txs; customer actor."),
+}
+
+// ---------------------------------------------------------------------------
+// The read-egress registry (ADR-090 §7).
+//
+// Mutations are only half of a chain of custody. A full-tenant EXPORT — every
+// customer and their PII, every invoice, every subscription, a year of usage
+// events, or the audit log itself — used to produce ZERO audit rows: the deleted
+// catch-all only ever considered mutating methods, and the export handlers wrote
+// nothing. A tamper-evidence system that cannot show who COPIED the evidence has
+// a hole in its chain of custody. Stripe and AWS CloudTrail both log data-export
+// / read events; so does this now.
+//
+// These five GET routes emit action=export BEFORE the first byte streams, and
+// FAIL CLOSED if the row cannot be written (exportsHandler.auditExport).
+//
+// SCOPE — and the loss this deliberately does NOT close (written down, because a
+// note that implies coverage it doesn't have is worse than no note):
+//
+//   - This covers the BULK EXPORT surface: /v1/exports/*.csv, the one-request
+//     "hand me the whole table" endpoints.
+//   - It does NOT audit ordinary paginated list reads (GET /v1/customers?limit=
+//     100&offset=…). An operator who walks those pages copies the same data and
+//     audit_log will not show it. What audit_log CAN answer is "did anyone take
+//     the one-click bulk export, and when" — the question an auditor actually
+//     asks, and the action a departing employee actually takes.
+//   - The reason is not laziness: a row per list call puts audit_log on the
+//     hottest read path in the dashboard (every page load of every table), and
+//     the resulting noise is what makes an audit log unreadable — the same
+//     volume argument that keeps usage ingest exempt above.
+//   - CLOSURE TRIGGER: a DP or auditor asking for PII-read evidence (SOC 2
+//     CC6.x-style "who accessed customer records"). The answer then is an
+//     access-log-derived read trail (aggregated per session/actor), not one
+//     audit_log row per GET.
+//
+// The arch test (audit_egress_routes_test.go) two-way-diffs this table against
+// the live GET routes under /v1/exports, so a NEW export route fails CI until it
+// declares its emission. It is deliberately NOT a general GET axis in the
+// mutating registry: five routes do not justify declaring an audit story for
+// every read endpoint in the product, and a registry nobody can keep current is
+// a registry that lies.
+// ---------------------------------------------------------------------------
+
+// auditEgressPrefix is the mounted subtree the egress gate walks.
+const auditEgressPrefix = "/v1/exports"
+
+var auditEgressRegistry = map[routeKey]auditDecl{
+	{"GET", "/v1/exports/customers.csv"}:     explicit("exportsHandler.exportCustomers → auditExport(action=export, resource_type=customer) BEFORE the stream; a failed row means 500 and NO bytes. Metadata carries the date scope + filename; no row count (unknowable pre-stream)."),
+	{"GET", "/v1/exports/invoices.csv"}:      explicit("exportsHandler.exportInvoices → auditExport(action=export, resource_type=invoice) BEFORE the stream, fail-closed."),
+	{"GET", "/v1/exports/subscriptions.csv"}: explicit("exportsHandler.exportSubscriptions → auditExport(action=export, resource_type=subscription) BEFORE the stream, fail-closed."),
+	{"GET", "/v1/exports/usage-events.csv"}:  explicit("exportsHandler.exportUsageEvents → auditExport(action=export, resource_type=usage_event) BEFORE the stream, fail-closed. The from/to range is required by the route and lands in the row's metadata."),
+	{"GET", "/v1/exports/audit-log.csv"}:     explicit("exportsHandler.exportAuditLog → auditExport(action=export, resource_type=audit_log) BEFORE the stream, fail-closed. Exporting the audit log is itself an audited event, and because the row is written first, the exported file CONTAINS it."),
 }
