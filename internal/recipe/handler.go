@@ -130,6 +130,12 @@ func (h *Handler) instantiate(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "recipe")
 		return
 	}
+	// The service emitted the apply's audit row inside its own coordinator tx
+	// (ADR-090), so the middleware catch-all must not add its heuristic
+	// duplicate. On the idempotent re-apply path the service installs nothing
+	// and emits nothing — and MarkHandled is still correct there: a no-op
+	// deserves no record either (today the catch-all fabricates one).
+	audit.MarkHandled(r.Context())
 	respond.JSON(w, r, http.StatusCreated, inst)
 }
 

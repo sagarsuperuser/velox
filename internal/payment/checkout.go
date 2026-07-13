@@ -14,6 +14,7 @@ import (
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 )
@@ -41,6 +42,7 @@ type PaymentSetupStore interface {
 type CheckoutHandler struct {
 	clients *StripeClients
 	store   PaymentSetupStore
+	audit   AuditEmitter // optional; ADR-090 in-tx emission on the mapping write
 }
 
 func NewCheckoutHandler(clients *StripeClients, store PaymentSetupStore) *CheckoutHandler {
@@ -49,6 +51,14 @@ func NewCheckoutHandler(clients *StripeClients, store PaymentSetupStore) *Checko
 	}
 	return &CheckoutHandler{clients: clients, store: store}
 }
+
+// SetAuditLogger wires ADR-090 in-tx audit emission for POST /v1/checkout/setup.
+// The route has no service and owns no transaction: its one durable local
+// mutation is the customer↔Stripe-Customer mapping write, so the emission rides
+// THAT write's tx (shared fate). Optional — nil skips emission, which keeps the
+// handler fake-friendly in tests; production wires it and audit.MustWired fails
+// the boot if it is forgotten.
+func (h *CheckoutHandler) SetAuditLogger(a AuditEmitter) { h.audit = a }
 
 func (h *CheckoutHandler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -152,15 +162,26 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		_, _ = sc.V1Customers.Update(r.Context(), stripeCustomerID, updateParams)
 	}
 
-	// Save Stripe customer ID immediately (status: pending until checkout completes)
-	now := time.Now().UTC()
-	_, _ = h.store.UpsertPaymentSetup(r.Context(), tenantID, domain.CustomerPaymentSetup{
-		CustomerID:       req.CustomerID,
-		TenantID:         tenantID,
-		SetupStatus:      domain.PaymentSetupPending,
-		StripeCustomerID: stripeCustomerID,
-		UpdatedAt:        now,
-	})
+	// Save the Stripe customer ID immediately (status: pending until checkout
+	// completes) WITH its audit row on the same tx (ADR-090).
+	//
+	// The error used to be discarded (`_, _ =`). It is propagated now for two
+	// reasons: (1) shared fate is meaningless if the caller ignores the result
+	// — a failed emission must not leave the operator with a session whose
+	// mapping silently rolled back; (2) a dropped mapping write was already a
+	// real bug on its own — Velox forgets the Stripe Customer it just created,
+	// and the next setup call mints a SECOND one for the same customer.
+	if err := h.persistStripeMapping(r.Context(), tenantID, req, stripeCustomerID); err != nil {
+		slog.ErrorContext(r.Context(), "checkout setup: persist stripe customer mapping",
+			"customer_id", req.CustomerID, "stripe_customer_id", stripeCustomerID, "error", err)
+		respond.FromError(w, r, err, "customer")
+		return
+	}
+	// This route's audit row is written explicitly above, so the middleware
+	// catch-all must stand down rather than add its heuristic duplicate
+	// (ADR-090 §4 — suppression is the owning handler's request-scoped call,
+	// made only after the mutation + emission actually committed).
+	audit.MarkHandled(r.Context())
 
 	// Build contextual return URLs. If the caller passed return_url
 	// (the page they came from), use it; otherwise default to the
@@ -214,6 +235,50 @@ func (h *CheckoutHandler) createSetupSession(w http.ResponseWriter, r *http.Requ
 		URL:              sess.URL,
 		StripeCustomerID: stripeCustomerID,
 	})
+}
+
+// persistStripeMapping writes the customer↔Stripe-Customer mapping — the only
+// durable LOCAL mutation POST /v1/checkout/setup makes — and rides the ADR-090
+// audit emission on that write's transaction.
+//
+// The composite store's Audited hook (api/adapters.go →
+// customer.SetStripeCustomerIDAudited) emits ONLY when the UPDATE actually
+// touched a row: a setup started against a customer id that doesn't exist on
+// this tenant/livemode plane writes nothing and therefore fabricates no
+// "checkout_setup_started" evidence. A re-setup for a customer that already has
+// the mapping DOES emit — the operator really did start a new setup flow, which
+// is the fact this row records.
+func (h *CheckoutHandler) persistStripeMapping(ctx context.Context, tenantID string, req setupRequest, stripeCustomerID string) error {
+	var emit func(tx *sql.Tx) error
+	if h.audit != nil {
+		emit = func(tx *sql.Tx) error {
+			return h.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:       domain.AuditActionUpdate,
+				ResourceType: "customer",
+				ResourceID:   req.CustomerID,
+				// Deliberately NO label: req.CustomerName is the REQUEST's
+				// claim, not the system's record of who this customer is, and
+				// audit_log is append-only — a caller sending a name that
+				// doesn't match the stored customer would permanently label
+				// the row with a value nothing verified. The dashboard falls
+				// back to the resource type and deep-links resource_id, so
+				// the operator still resolves the real customer.
+				ResourceLabel: "",
+				Metadata: map[string]any{
+					"action":             "checkout_setup_started",
+					"stripe_customer_id": stripeCustomerID,
+				},
+			})
+		}
+	}
+	_, err := h.store.UpsertPaymentSetupAudited(ctx, tenantID, domain.CustomerPaymentSetup{
+		CustomerID:       req.CustomerID,
+		TenantID:         tenantID,
+		SetupStatus:      domain.PaymentSetupPending,
+		StripeCustomerID: stripeCustomerID,
+		UpdatedAt:        time.Now().UTC(),
+	}, emit)
+	return err
 }
 
 func (h *CheckoutHandler) getPaymentStatus(w http.ResponseWriter, r *http.Request) {

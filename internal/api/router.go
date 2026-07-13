@@ -611,6 +611,13 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	dunningH.SetAuditLogger(auditLogger)
 	pricingH.SetAuditLogger(auditLogger)
 	tenantStripeH.SetAuditLogger(auditLogger)
+	// ADR-090 in-tx emitters for the routes whose ONLY audit coverage used to
+	// be the URL-guessing catch-all (which the next PR deletes). These are
+	// SERVICE-side seams, distinct from the post-hoc handler seams above.
+	customerSvc.SetAuditLogger(auditLogger)
+	pricingSvc.SetAuditLogger(auditLogger)
+	recipeSvc.SetAuditLogger(auditLogger)
+	providerCostH.SetAuditLogger(auditLogger)
 	webhookOutH.SetAuditLogger(auditLogger)
 	// Service-level audit logger so state-changing service calls reachable
 	// from multiple entry points (operator handler + dunning adapter + any
@@ -876,11 +883,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// (publicPaymentH is exempt: its constructor legitimately returns nil
 	// when Stripe isn't configured, so its wiring is guarded above.)
 	audit.MustWired(creditSvc, tenantSvc, subSvc, invoiceSvc, creditNoteSvc,
-		stripeAdapter, paymentMethodsSvc, engine, hostedInvoiceStripe)
+		stripeAdapter, paymentMethodsSvc, engine, hostedInvoiceStripe,
+		customerSvc, pricingSvc, recipeSvc, providerCostH)
 	if publicPaymentH != nil {
 		// Guarded: the constructor legitimately returns nil without Stripe
 		// keys; when it exists, its emitter must be wired.
 		audit.MustWired(publicPaymentH)
+	}
+	if checkoutH != nil {
+		// Same guard: nil when Stripe isn't configured.
+		checkoutH.SetAuditLogger(auditLogger)
+		audit.MustWired(checkoutH)
 	}
 
 	// Invoice finalize commits the upstream Stripe Tax calculation into a

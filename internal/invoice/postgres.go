@@ -262,6 +262,19 @@ func splitTopLevelCommas(s string) []string {
 }
 
 func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
+	return s.CreateAudited(ctx, tenantID, inv, nil)
+}
+
+// CreateAudited is Create with an in-tx audit emission (ADR-090): emit runs on
+// the SAME transaction as the header INSERT, after the row exists (so it can
+// reference the store-assigned id / invoice number) and BEFORE commit — the
+// invoice and its audit row share one fate. An emission error aborts the
+// create. nil emit = unaudited write (engine/cycle paths, whose canonical
+// evidence is the finalize row).
+func (s *PostgresStore) CreateAudited(
+	ctx context.Context, tenantID string, inv domain.Invoice,
+	emit func(tx *sql.Tx, out domain.Invoice) error,
+) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -331,6 +344,13 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, inv domain.
 			return domain.Invoice{}, mapped
 		}
 		return domain.Invoice{}, err
+	}
+	// Emit only after the INSERT actually landed a row (the Scan above
+	// succeeded) — never on a failed/duplicate create.
+	if emit != nil {
+		if err := emit(tx, inv); err != nil {
+			return domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err
@@ -1380,6 +1400,20 @@ func (s *PostgresStore) GetOutstandingBalance(ctx context.Context, tenantID, cus
 func (s *PostgresStore) AddLineItemAtomic(
 	ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem,
 ) (domain.InvoiceLineItem, domain.Invoice, error) {
+	return s.AddLineItemAtomicAudited(ctx, tenantID, invoiceID, item, nil)
+}
+
+// AddLineItemAtomicAudited is AddLineItemAtomic with an in-tx audit emission
+// (ADR-090): emit runs on the SAME transaction, after the line INSERT and the
+// totals recompute have both landed and BEFORE commit. It receives the
+// persisted line AND the rewritten invoice (for the invoice number the audit
+// row is labelled with — read inside the tx, not from a pre-tx snapshot). An
+// emission error rolls the line item and the totals back together. nil emit =
+// unaudited write.
+func (s *PostgresStore) AddLineItemAtomicAudited(
+	ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem,
+	emit func(tx *sql.Tx, item domain.InvoiceLineItem, inv domain.Invoice) error,
+) (domain.InvoiceLineItem, domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
@@ -1497,6 +1531,15 @@ func (s *PostgresStore) AddLineItemAtomic(
 	).Scan(s.scanInvDest(&inv)...)
 	if err != nil {
 		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+
+	// Both writes landed (the RETURNING scans above would have errored
+	// otherwise) — this is a genuinely mutated path, so the row is evidence
+	// of a mutation that actually happened.
+	if emit != nil {
+		if err := emit(tx, item, inv); err != nil {
+			return domain.InvoiceLineItem{}, domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1624,6 +1667,20 @@ func (s *PostgresStore) UpdateTaxAtomic(
 // The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
 // provides idempotency — duplicate calls return an error.
 func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return s.CreateWithLineItemsAudited(ctx, tenantID, inv, items, nil)
+}
+
+// CreateWithLineItemsAudited is CreateWithLineItems with an in-tx audit
+// emission (ADR-090): emit runs on the SAME transaction as the header + line
+// INSERTs, after they all land and BEFORE commit, so an emission error rolls
+// the whole composed invoice back. The two manual-create shapes (bare header
+// vs create-with-lines) therefore audit identically — a draft created either
+// way leaves exactly one 'create' row. nil emit = unaudited write (engine
+// cycle/threshold invoices).
+func (s *PostgresStore) CreateWithLineItemsAudited(
+	ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem,
+	emit func(tx *sql.Tx, out domain.Invoice) error,
+) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.Invoice{}, err
@@ -1632,6 +1689,11 @@ func (s *PostgresStore) CreateWithLineItems(ctx context.Context, tenantID string
 	out, err := s.createWithLineItemsInTx(ctx, tx, tenantID, inv, items)
 	if err != nil {
 		return domain.Invoice{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, out); err != nil {
+			return domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Invoice{}, err

@@ -17,11 +17,19 @@ type Store interface {
 	// TOCTOU on concurrent Create, and guaranteeing a header can never commit
 	// without its lines (no orphan credit notes on partial failure).
 	CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// CreateUnderInvoiceLockAudited is CreateUnderInvoiceLock with the ADR-090
+	// in-tx emission: emit runs on the insert's own tx with the CREATED row, so
+	// the credit note and its `create` evidence commit or roll back together.
+	CreateUnderInvoiceLockAudited(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error)
 	// CreateUnderInvoiceLockTx is CreateUnderInvoiceLock on the CALLER's tx
 	// (coordinator-owned, ADR-056) so the credit note commits atomically with
 	// the caller's other writes (e.g. a subscription item delete) — the caller
 	// owns Begin/Commit/Rollback.
 	CreateUnderInvoiceLockTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error)
+	// CreateUnderInvoiceLockTxAudited is the caller-tx create with the same
+	// in-tx emission — the create row rides the caller's coordinator tx, so
+	// both create paths carry identical evidence (ADR-090 §3).
+	CreateUnderInvoiceLockTxAudited(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error)
 	// CreateUnderInvoiceLockDynamicTx: build returns the header AND lines —
 	// for callers whose line amounts derive from state read under locks
 	// taken inside build (ADR-080 commit relief).
@@ -42,7 +50,10 @@ type Store interface {
 	BeginTx(ctx context.Context, tenantID string) (*sql.Tx, error)
 	Get(ctx context.Context, tenantID, id string) (domain.CreditNote, error)
 	List(ctx context.Context, filter ListFilter) ([]domain.CreditNote, error)
-	UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error)
+	// NOTE: there is deliberately NO unguarded UpdateStatus on this interface.
+	// Every status write is a CAS (TransitionStatus*) so an audit row can only
+	// evidence a flip that provably happened (ADR-090).
+	//
 	// TransitionStatus is a compare-and-swap status flip: it succeeds (won=true)
 	// only if the credit note is currently in `from`. Used to serialize the
 	// draft→issued transition against concurrent/retried Issue() calls.
@@ -55,6 +66,12 @@ type Store interface {
 	// the CAS commits atomically with Issue()'s internal money effect.
 	TransitionStatusTx(ctx context.Context, tx *sql.Tx, tenantID, id string, from, to domain.CreditNoteStatus) (bool, error)
 	UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error
+	// UpdateRefundStatusAudited is UpdateRefundStatus with the ADR-090 in-tx
+	// emission for the operator refund RETRY: `prior` is read under the row
+	// lock in the write's own tx, and emit fires ONLY when the persisted refund
+	// state actually moves — an idempotent retry that gets the same 'pending'
+	// back from Stripe records nothing.
+	UpdateRefundStatusAudited(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error) error
 	// ApplyRefundWebhookStatus monotonically applies an async refund-webhook
 	// status to the credit note carrying stripeRefundID: terminal
 	// (succeeded/failed) always wins; a stale out-of-order 'pending' never

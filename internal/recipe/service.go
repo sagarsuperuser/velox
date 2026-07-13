@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
@@ -49,6 +50,14 @@ type WebhookWriter interface {
 	CreateEndpointTx(ctx context.Context, tx *sql.Tx, tenantID string, ep domain.WebhookEndpoint) (domain.WebhookEndpoint, error)
 }
 
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). Instantiate owns the
+// coordinator transaction that spans every cross-domain write, so it emits the
+// audit row on that same tx: the installed object graph and the record of what
+// was installed commit or roll back together.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
+
 // Service is the orchestrator for the recipes feature: it answers
 // "list recipes", "preview", and "instantiate" (idempotent apply). The
 // canonical entities a recipe creates (meters, rating rules, plans,
@@ -56,12 +65,13 @@ type WebhookWriter interface {
 // this service threads a single transaction across the cross-domain
 // writes so a recipe is either fully applied or not applied at all.
 type Service struct {
-	db       *postgres.DB
-	store    Store
-	registry *Registry
-	pricing  PricingWriter
-	dunning  DunningWriter
-	webhook  WebhookWriter
+	db          *postgres.DB
+	store       Store
+	registry    *Registry
+	pricing     PricingWriter
+	dunning     DunningWriter
+	webhook     WebhookWriter
+	auditLogger AuditEmitter
 }
 
 // NewService wires the recipe service. registry must already be loaded
@@ -83,6 +93,12 @@ func NewService(
 		webhook:  webhook,
 	}
 }
+
+// SetAuditLogger wires in-tx audit emission for recipe apply (ADR-090). A nil
+// emitter skips emission so unit tests can drive the service with fakes; the
+// composition root's audit.MustWired check turns a forgotten wiring line into
+// a boot-time panic rather than a silently un-audited install.
+func (s *Service) SetAuditLogger(a AuditEmitter) { s.auditLogger = a }
 
 // RecipeListItem is one entry in the GET /v1/recipes response — the
 // canonical recipe metadata plus per-tenant installation state and a
@@ -294,7 +310,11 @@ func (s *Service) Instantiate(
 
 	// Idempotency — a recipe is an instantiation EVENT, applied once. If the
 	// badge already exists, apply is a no-op: return the existing instance
-	// unchanged. Everything the badge recorded is still present (plans are
+	// unchanged — and, deliberately, emit NO audit row. Nothing was installed
+	// on this call; a row here would be evidence of a mutation that never
+	// happened (the fabricated-record class ADR-090 exists to kill). The
+	// original apply's row is the truthful record. Everything the badge
+	// recorded is still present (plans are
 	// ON DELETE RESTRICT with no hard-delete; the catalog is shared reference
 	// data), so there is nothing to re-create and never a second plan to mint
 	// on a double-submit — the badge IS the idempotency gate. Additive re-apply
@@ -483,10 +503,72 @@ func (s *Service) Instantiate(
 		return domain.RecipeInstance{}, err
 	}
 
+	// Audit rides the coordinator tx (ADR-090): the whole installed graph and
+	// the record of what was installed share fate. Emitted only on the path
+	// that actually installed something — the idempotent no-op above returns
+	// before here.
+	if err := s.emitInstantiated(ctx, tx, rendered, inst); err != nil {
+		return domain.RecipeInstance{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return domain.RecipeInstance{}, err
 	}
 	return inst, nil
+}
+
+// emitInstantiated writes the recipe-apply audit row on the coordinator tx.
+//
+// Wire strings are FROZEN vocabulary: action "create" (an apply is the
+// creation of an install), resource_type "recipe". resource_id is the recipe
+// KEY, not the instance id — the key is what the operator surface addresses
+// (GET /v1/recipes/{key}, the dashboard's install badge), so it is the id that
+// resolves to something a human can open; the instance id rides in metadata.
+//
+// Metadata is the answer to "what did this recipe install?", which nothing
+// else can answer once the operator starts editing the objects: it mirrors the
+// instance row's created-object ids. Per ADR-085 those ids include ADOPTED
+// meters/rating rules (apply reconnects to an existing catalog rather than
+// duplicating it) — i.e. the graph this apply wired, which is exactly the
+// question an auditor asks.
+func (s *Service) emitInstantiated(ctx context.Context, tx *sql.Tx, rendered domain.Recipe, inst domain.RecipeInstance) error {
+	if s.auditLogger == nil {
+		return nil
+	}
+	objs := inst.CreatedObjects
+	meta := map[string]any{
+		"instance_id":    inst.ID,
+		"recipe_key":     inst.RecipeKey,
+		"recipe_version": inst.RecipeVersion,
+	}
+	if len(objs.PlanIDs) > 0 {
+		meta["plan_ids"] = objs.PlanIDs
+	}
+	if len(objs.MeterIDs) > 0 {
+		meta["meter_ids"] = objs.MeterIDs
+	}
+	if len(objs.RatingRuleIDs) > 0 {
+		meta["rating_rule_ids"] = objs.RatingRuleIDs
+	}
+	if len(objs.PricingRuleIDs) > 0 {
+		meta["pricing_rule_ids"] = objs.PricingRuleIDs
+	}
+	if objs.DunningPolicyID != "" {
+		meta["dunning_policy_id"] = objs.DunningPolicyID
+	}
+	if objs.WebhookEndpointID != "" {
+		meta["webhook_endpoint_id"] = objs.WebhookEndpointID
+	}
+	if err := s.auditLogger.LogInTx(ctx, tx, audit.Entry{
+		Action:        domain.AuditActionCreate,
+		ResourceType:  "recipe",
+		ResourceID:    inst.RecipeKey,
+		ResourceLabel: rendered.Name,
+		Metadata:      meta,
+	}); err != nil {
+		return fmt.Errorf("audit emission: %w", err)
+	}
+	return nil
 }
 
 // ratingRuleFromRecipe maps the recipe's rating-rule shape to the

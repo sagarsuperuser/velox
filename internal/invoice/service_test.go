@@ -39,6 +39,24 @@ func (m *memStore) Create(_ context.Context, tenantID string, inv domain.Invoice
 	return inv, nil
 }
 
+// CreateAudited mirrors the store contract (ADR-090): emit runs after the row
+// exists and before "commit"; an emit error rolls the write back and surfaces.
+// The fake has no tx, so the closure gets a nil *sql.Tx — enough to prove the
+// service passes an emission and propagates its error.
+func (m *memStore) CreateAudited(ctx context.Context, tenantID string, inv domain.Invoice, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error) {
+	out, err := m.Create(ctx, tenantID, inv)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			delete(m.invoices, out.ID) // shared fate: roll the write back
+			return domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) Get(_ context.Context, tenantID, id string) (domain.Invoice, error) {
 	inv, ok := m.invoices[id]
 	if !ok || inv.TenantID != tenantID {
@@ -716,6 +734,39 @@ func (m *memStore) CreateWithLineItems(_ context.Context, tenantID string, inv d
 	return inv, nil
 }
 
+func (m *memStore) CreateWithLineItemsAudited(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error) {
+	out, err := m.CreateWithLineItems(ctx, tenantID, inv, items)
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			delete(m.invoices, out.ID) // shared fate: roll the write back
+			delete(m.lineItems, out.ID)
+			return domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) AddLineItemAtomicAudited(ctx context.Context, tenantID, invoiceID string, item domain.InvoiceLineItem, emit func(tx *sql.Tx, item domain.InvoiceLineItem, inv domain.Invoice) error) (domain.InvoiceLineItem, domain.Invoice, error) {
+	before := m.invoices[invoiceID]
+	beforeItems := len(m.lineItems[invoiceID])
+	out, inv, err := m.AddLineItemAtomic(ctx, tenantID, invoiceID, item)
+	if err != nil {
+		return domain.InvoiceLineItem{}, domain.Invoice{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, out, inv); err != nil {
+			// shared fate: undo the line insert AND the totals rewrite
+			m.lineItems[invoiceID] = m.lineItems[invoiceID][:beforeItems]
+			m.invoices[invoiceID] = before
+			return domain.InvoiceLineItem{}, domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, inv, nil
+}
+
 func (m *memStore) ClaimAutoCharge(_ context.Context, _, id string) (bool, error) {
 	inv, ok := m.invoices[id]
 	if !ok {
@@ -1329,15 +1380,20 @@ func TestMarkUncollectible_WritesAuditAndDispatchesEvent(t *testing.T) {
 	if out.Status != domain.InvoiceUncollectible {
 		t.Errorf("status: got %q, want uncollectible", out.Status)
 	}
-	// Two rows: service.Finalize writes the canonical finalize row (the
-	// fixture finalizes through the service), then MarkUncollectible its own.
-	if len(audit.entries) != 2 {
-		t.Fatalf("audit entries: got %d, want 2 (finalize + marked_uncollectible)", len(audit.entries))
+	// Three rows — the fixture builds the invoice THROUGH the service, and
+	// both of its steps are audited paths in their own right: Create emits the
+	// manual-create row (ADR-090, replacing the middleware catch-all's guess),
+	// Finalize the canonical finalize row. MarkUncollectible's row is the LAST.
+	if len(audit.entries) != 3 {
+		t.Fatalf("audit entries: got %d, want 3 (create + finalize + marked_uncollectible)", len(audit.entries))
 	}
-	if a := audit.entries[0]; a.action != string(domain.AuditActionFinalize) {
-		t.Errorf("first audit action: got %v, want finalize", a.action)
+	if a := audit.entries[0]; a.action != string(domain.AuditActionCreate) {
+		t.Errorf("first audit action: got %v, want create", a.action)
 	}
-	if a := audit.entries[1]; a.metadata["action"] != "marked_uncollectible" {
+	if a := audit.entries[1]; a.action != string(domain.AuditActionFinalize) {
+		t.Errorf("second audit action: got %v, want finalize", a.action)
+	}
+	if a := audit.entries[2]; a.metadata["action"] != "marked_uncollectible" {
 		t.Errorf("audit metadata.action: got %v, want marked_uncollectible", a.metadata["action"])
 	}
 	// The fixture finalizes through the service, which (correctly) now
@@ -1384,16 +1440,17 @@ func TestRecordOfflinePayment(t *testing.T) {
 		if out.PaidAt == nil {
 			t.Error("paid_at should be set")
 		}
-		// entries[0] is service.Finalize's canonical finalize row (the fixture
-		// finalizes through the service); entries[1] is the payment_recorded row.
-		if len(audit.entries) != 2 || audit.entries[1].metadata["action"] != "payment_recorded" {
-			t.Errorf("audit: got %+v, want finalize + payment_recorded", audit.entries)
+		// The fixture builds the invoice through the service, so entries[0] is
+		// the manual-create row (ADR-090) and entries[1] the canonical finalize
+		// row; entries[2] is the payment_recorded row under test.
+		if len(audit.entries) != 3 || audit.entries[2].metadata["action"] != "payment_recorded" {
+			t.Fatalf("audit: got %+v, want create + finalize + payment_recorded", audit.entries)
 		}
-		if audit.entries[1].metadata["recovered_from_status"] != string(domain.InvoiceFinalized) {
-			t.Errorf("audit recovered_from_status: got %v, want finalized", audit.entries[1].metadata["recovered_from_status"])
+		if audit.entries[2].metadata["recovered_from_status"] != string(domain.InvoiceFinalized) {
+			t.Errorf("audit recovered_from_status: got %v, want finalized", audit.entries[2].metadata["recovered_from_status"])
 		}
-		if audit.entries[1].metadata["note"] != "Cheque #1234" {
-			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[1].metadata["note"])
+		if audit.entries[2].metadata["note"] != "Cheque #1234" {
+			t.Errorf("audit note: got %v, want Cheque #1234", audit.entries[2].metadata["note"])
 		}
 		if len(events.events) != 2 || events.events[1].eventType != domain.EventInvoicePaymentRecorded {
 			t.Errorf("events: got %+v, want [invoice.finalized, invoice.payment_recorded]", events.events)

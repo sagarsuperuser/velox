@@ -7,7 +7,9 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -17,11 +19,20 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/sagarsuperuser/velox/internal/api/respond"
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
+
+// AuditEmitter is the narrow in-tx audit seam (ADR-090). Provider-cost rate
+// CRUD has no service layer — the handler is the layer that knows intent, so
+// it builds the audit.Entry and the store threads the closure onto its own
+// transaction: rate write and audit row commit or roll back together.
+type AuditEmitter interface {
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
+}
 
 // --- store ---
 
@@ -61,6 +72,25 @@ func (s *PostgresStore) ListProviderCostRates(ctx context.Context, tenantID stri
 // (current-rate semantics, ADR-079 D1: the per-event stamp is the history;
 // editing a rate only affects FUTURE events).
 func (s *PostgresStore) UpsertProviderCostRate(ctx context.Context, tenantID string, r domain.ProviderCostRate) (domain.ProviderCostRate, error) {
+	return s.UpsertProviderCostRateAudited(ctx, tenantID, r, nil)
+}
+
+// UpsertProviderCostRateAudited is UpsertProviderCostRate with an in-tx audit
+// emission hook: the rate write and its audit row commit or roll back together
+// (ADR-090 shared fate). The store owns the transaction and exposes it to the
+// closure; the caller (the handler — this surface has no service) owns row
+// content. emit sees the PERSISTED rate, so the audit row carries the
+// store-assigned id and the values as they actually landed. nil emit =
+// unaudited upsert (unit-test / non-request callers).
+//
+// The emission is unconditional on success by construction: an
+// INSERT … ON CONFLICT DO UPDATE … RETURNING that scans a row always wrote
+// one (a same-values re-PUT still bumps updated_at — a real mutation), so
+// there is no zero-row arm to fabricate evidence for.
+func (s *PostgresStore) UpsertProviderCostRateAudited(
+	ctx context.Context, tenantID string, r domain.ProviderCostRate,
+	emit func(tx *sql.Tx, out domain.ProviderCostRate) error,
+) (domain.ProviderCostRate, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.ProviderCostRate{}, err
@@ -81,6 +111,11 @@ func (s *PostgresStore) UpsertProviderCostRate(ctx context.Context, tenantID str
 	if err != nil {
 		return domain.ProviderCostRate{}, err
 	}
+	if emit != nil {
+		if err := emit(tx, r); err != nil {
+			return domain.ProviderCostRate{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.ProviderCostRate{}, err
 	}
@@ -90,18 +125,46 @@ func (s *PostgresStore) UpsertProviderCostRate(ctx context.Context, tenantID str
 // DeleteProviderCostRate removes a rate row. Stamped events keep their
 // snapshot (documented — deletion never rewrites history).
 func (s *PostgresStore) DeleteProviderCostRate(ctx context.Context, tenantID, id string) error {
+	return s.DeleteProviderCostRateAudited(ctx, tenantID, id, nil)
+}
+
+// DeleteProviderCostRateAudited is DeleteProviderCostRate with an in-tx audit
+// emission hook (ADR-090 shared fate). Two properties matter here:
+//
+//   - emit runs ONLY on a row that actually vanished. DELETE … RETURNING
+//     yields a row iff exactly one was removed; a miss is sql.ErrNoRows →
+//     errs.ErrNotFound with no emission, so deleting a nonexistent rate can
+//     never fabricate a "deleted" record.
+//   - emit receives the DELETED row, read inside the tx. The row is gone
+//     afterwards, so the audit entry is the only surviving description of what
+//     the operator removed — an id alone would be unresolvable forever.
+func (s *PostgresStore) DeleteProviderCostRateAudited(
+	ctx context.Context, tenantID, id string,
+	emit func(tx *sql.Tx, deleted domain.ProviderCostRate) error,
+) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
 	}
 	defer postgres.Rollback(tx)
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM provider_cost_rates WHERE tenant_id = $1 AND id = $2`, tenantID, id)
+	var deleted domain.ProviderCostRate
+	err = tx.QueryRowContext(ctx, `
+		DELETE FROM provider_cost_rates
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING id, tenant_id, provider, model, token_type, cost_per_token, currency, created_at, updated_at
+	`, tenantID, id).Scan(&deleted.ID, &deleted.TenantID, &deleted.Provider, &deleted.Model,
+		&deleted.TokenType, &deleted.CostPerToken, &deleted.Currency, &deleted.CreatedAt, &deleted.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errs.ErrNotFound
+	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errs.ErrNotFound
+	if emit != nil {
+		if err := emit(tx, deleted); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	return tx.Commit()
 }
@@ -266,13 +329,23 @@ func (a *MarginAssembler) Get(ctx context.Context, tenantID, customerID string, 
 // ProviderCostHandler is the operator surface: rate CRUD + margin report.
 // Operator-auth only — COGS never renders on customer-facing pages.
 type ProviderCostHandler struct {
-	store  *PostgresStore
-	margin *MarginAssembler
+	store       *PostgresStore
+	margin      *MarginAssembler
+	auditLogger AuditEmitter
 }
 
 func NewProviderCostHandler(store *PostgresStore, margin *MarginAssembler) *ProviderCostHandler {
 	return &ProviderCostHandler{store: store, margin: margin}
 }
+
+// SetAuditLogger wires in-tx audit emission for the rate mutations (ADR-090).
+// There is no provider-cost service, so the handler builds the entry — it is
+// the layer that knows the operator's intent — and hands it to the store's
+// …Audited variants, which run it on the write's own transaction. A nil
+// emitter skips emission (keeps handler unit tests fake-friendly); the
+// composition root's audit.MustWired check is what makes a forgotten wiring
+// line fail loudly at boot instead of silently un-auditing the routes.
+func (h *ProviderCostHandler) SetAuditLogger(a AuditEmitter) { h.auditLogger = a }
 
 func (h *ProviderCostHandler) Routes() chi.Router {
 	r := chi.NewRouter()
@@ -317,21 +390,82 @@ func (h *ProviderCostHandler) upsert(w http.ResponseWriter, r *http.Request) {
 		in.Currency = "USD"
 	}
 	in.Currency = strings.ToUpper(in.Currency)
-	out, err := h.store.UpsertProviderCostRate(r.Context(), tenantID, in)
+	out, err := h.store.UpsertProviderCostRateAudited(r.Context(), tenantID, in, h.upsertEmission(r.Context()))
 	if err != nil {
 		respond.FromError(w, r, err, "provider_cost_rate")
 		return
 	}
+	audit.MarkHandled(r.Context())
 	respond.JSON(w, r, http.StatusOK, out)
+}
+
+// upsertEmission builds the in-tx audit row for PUT /v1/provider-costs. Wire
+// strings are FROZEN vocabulary: action "update" (the route is an upsert —
+// the operator is setting the current rate for a key; ADR-079 D1 gives the
+// row edit-in-place semantics) and resource_type "provider_cost". Metadata
+// carries the full rate so a post-mortem can answer "what did this cost
+// become, and what was it billed against?" without the row still existing.
+func (h *ProviderCostHandler) upsertEmission(ctx context.Context) func(tx *sql.Tx, out domain.ProviderCostRate) error {
+	if h.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, out domain.ProviderCostRate) error {
+		return h.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionUpdate,
+			ResourceType:  "provider_cost",
+			ResourceID:    out.ID,
+			ResourceLabel: providerCostLabel(out),
+			Metadata: map[string]any{
+				"provider":       out.Provider,
+				"model":          out.Model,
+				"token_type":     out.TokenType,
+				"cost_per_token": out.CostPerToken.String(),
+				"currency":       out.Currency,
+			},
+		})
+	}
 }
 
 func (h *ProviderCostHandler) delete(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
-	if err := h.store.DeleteProviderCostRate(r.Context(), tenantID, chi.URLParam(r, "id")); err != nil {
+	if err := h.store.DeleteProviderCostRateAudited(r.Context(), tenantID, chi.URLParam(r, "id"), h.deleteEmission(r.Context())); err != nil {
 		respond.FromError(w, r, err, "provider_cost_rate")
 		return
 	}
+	audit.MarkHandled(r.Context())
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteEmission builds the in-tx audit row for DELETE
+// /v1/provider-costs/{id}. It only ever runs when a row was actually removed
+// (the store's DELETE … RETURNING gate), and it describes the row that was
+// removed — the deleted rate is unrecoverable, so the metadata IS the record.
+func (h *ProviderCostHandler) deleteEmission(ctx context.Context) func(tx *sql.Tx, deleted domain.ProviderCostRate) error {
+	if h.auditLogger == nil {
+		return nil
+	}
+	return func(tx *sql.Tx, deleted domain.ProviderCostRate) error {
+		return h.auditLogger.LogInTx(ctx, tx, audit.Entry{
+			Action:        domain.AuditActionDelete,
+			ResourceType:  "provider_cost",
+			ResourceID:    deleted.ID,
+			ResourceLabel: providerCostLabel(deleted),
+			Metadata: map[string]any{
+				"provider":       deleted.Provider,
+				"model":          deleted.Model,
+				"token_type":     deleted.TokenType,
+				"cost_per_token": deleted.CostPerToken.String(),
+				"currency":       deleted.Currency,
+			},
+		})
+	}
+}
+
+// providerCostLabel is the human-readable identity of a rate in the audit
+// list ("anthropic / claude-sonnet-4 (input)") — the rate's natural key, since
+// its id means nothing to an operator reading the log.
+func providerCostLabel(r domain.ProviderCostRate) string {
+	return fmt.Sprintf("%s / %s (%s)", r.Provider, r.Model, r.TokenType)
 }
 
 // Margin serves GET /v1/customers/{id}/margin?from&to (operator auth;

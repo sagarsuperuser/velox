@@ -79,6 +79,17 @@ func (s *PostgresStore) Create(ctx context.Context, tenantID string, cn domain.C
 // or failure between them left an orphan credit note with a non-zero total
 // and zero lines, which Issue() would still act on.
 func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
+	return s.CreateUnderInvoiceLockAudited(ctx, tenantID, invoiceID, lines, build, nil)
+}
+
+// CreateUnderInvoiceLockAudited is CreateUnderInvoiceLock with an in-tx audit
+// emission (ADR-090): emit runs on the SAME transaction as the header+lines
+// insert and receives the CREATED row (so it can stamp the generated id and
+// number). An emission failure aborts the create — a credit note never commits
+// without its evidence, and evidence never commits without the note. It fires
+// exactly once, and only on the path that actually inserted a row (a build
+// rejection returns before it).
+func (s *PostgresStore) CreateUnderInvoiceLockAudited(ctx context.Context, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return domain.CreditNote{}, err
@@ -88,6 +99,11 @@ func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, in
 	created, err := s.createUnderInvoiceLockInTx(ctx, tx, tenantID, invoiceID, lines, build)
 	if err != nil {
 		return domain.CreditNote{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, created); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.CreditNote{}, err
@@ -104,7 +120,25 @@ func (s *PostgresStore) CreateUnderInvoiceLock(ctx context.Context, tenantID, in
 // un-credited. The per-invoice advisory lock is taken on the caller's tx and
 // releases when it commits. The caller owns Begin/Commit/Rollback.
 func (s *PostgresStore) CreateUnderInvoiceLockTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
-	return s.createUnderInvoiceLockInTx(ctx, tx, tenantID, invoiceID, lines, build)
+	return s.CreateUnderInvoiceLockTxAudited(ctx, tx, tenantID, invoiceID, lines, build, nil)
+}
+
+// CreateUnderInvoiceLockTxAudited is CreateUnderInvoiceLockTx with the ADR-090
+// in-tx emission: the create row rides the CALLER's coordinator tx, exactly as
+// the credit note itself does — so the own-tx and caller-tx create paths carry
+// the same evidence (the own-tx/caller-tx divergence ADR-090 §3 closed for
+// grants), and an emission failure rolls the caller's whole change back.
+func (s *PostgresStore) CreateUnderInvoiceLockTxAudited(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error), emit func(tx *sql.Tx, created domain.CreditNote) error) (domain.CreditNote, error) {
+	created, err := s.createUnderInvoiceLockInTx(ctx, tx, tenantID, invoiceID, lines, build)
+	if err != nil {
+		return domain.CreditNote{}, err
+	}
+	if emit != nil {
+		if err := emit(tx, created); err != nil {
+			return domain.CreditNote{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return created, nil
 }
 
 func (s *PostgresStore) createUnderInvoiceLockInTx(ctx context.Context, tx *sql.Tx, tenantID, invoiceID string, lines []domain.CreditNoteLineItem, build func(existing []domain.CreditNote) (domain.CreditNote, error)) (domain.CreditNote, error) {
@@ -513,35 +547,13 @@ func (s *PostgresStore) TransitionStatusTx(ctx context.Context, tx *sql.Tx, tena
 	return n == 1, nil
 }
 
-func (s *PostgresStore) UpdateStatus(ctx context.Context, tenantID, id string, status domain.CreditNoteStatus) (domain.CreditNote, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.CreditNote{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	now := clock.Now(ctx)
-	var issuedAt, voidedAt *time.Time
-	if status == domain.CreditNoteIssued {
-		issuedAt = &now
-	}
-	if status == domain.CreditNoteVoided {
-		voidedAt = &now
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		UPDATE credit_notes SET status=$1, issued_at=COALESCE($2, issued_at),
-			voided_at=COALESCE($3, voided_at), updated_at=$4
-		WHERE id=$5`,
-		status, postgres.NullableTime(issuedAt), postgres.NullableTime(voidedAt), now, id)
-	if err != nil {
-		return domain.CreditNote{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.CreditNote{}, err
-	}
-	return s.Get(ctx, tenantID, id)
-}
+// UpdateStatus (an UNGUARDED status write: `UPDATE … WHERE id=$1`, no
+// from-status predicate) was DELETED with the ADR-090 void emission. It was
+// the second status writer alongside TransitionStatus's CAS, and its only
+// caller (Service.Void) now goes through TransitionStatusAudited: an audit row
+// may only evidence a flip that provably happened, which a blind write cannot
+// prove. Re-adding an unguarded writer here re-opens both the fabricated-row
+// class and the read-then-blind-write race Void carried (see Service.Void).
 
 // SetTaxTransaction persists the upstream reversal transaction id (Stripe:
 // tx_xxx) returned by the tax provider at Issue time. Idempotency guard:
@@ -564,19 +576,68 @@ func (s *PostgresStore) SetTaxTransaction(ctx context.Context, tenantID, id stri
 }
 
 func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string) error {
+	return s.UpdateRefundStatusAudited(ctx, tenantID, id, status, stripeRefundID, nil)
+}
+
+// UpdateRefundStatusAudited is UpdateRefundStatus with an in-tx audit emission
+// (ADR-090), used by the operator refund RETRY (POST /credit-notes/{id}/retry-refund).
+//
+// The prior refund state is read UNDER THE ROW LOCK inside this transaction —
+// not from a pre-tx snapshot — so `prior` is the state the write actually
+// replaced. emit fires ONLY when the persisted refund state genuinely MOVES
+// (refund_status changed, or a new stripe_refund_id landed): a retry that
+// re-drives an idempotent Stripe refund and gets the same `pending` back
+// persists nothing new and must record nothing, or the log would claim a
+// transition that never happened. The row is still touched (updated_at) on the
+// no-op so the "stuck pending >72h" attention window keeps its existing
+// semantics.
+//
+// An emission failure aborts the write (shared fate) — the refund state and its
+// evidence commit together or not at all.
+func (s *PostgresStore) UpdateRefundStatusAudited(ctx context.Context, tenantID, id string, status domain.RefundStatus, stripeRefundID string, emit func(tx *sql.Tx, updated domain.CreditNote, prior domain.RefundStatus, changed bool) error) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
 	}
 	defer postgres.Rollback(tx)
 
-	_, err = tx.ExecContext(ctx, `
+	var cur domain.CreditNote
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, credit_note_number, customer_id, invoice_id, refund_status, COALESCE(stripe_refund_id,'')
+		FROM credit_notes WHERE id=$1 FOR UPDATE`, id).
+		Scan(&cur.ID, &cur.CreditNoteNumber, &cur.CustomerID, &cur.InvoiceID, &cur.RefundStatus, &cur.StripeRefundID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errs.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE credit_notes SET refund_status=$1, stripe_refund_id=COALESCE(NULLIF($2,''), stripe_refund_id),
 			updated_at=$3
 		WHERE id=$4`,
-		status, stripeRefundID, clock.Now(ctx), id)
-	if err != nil {
+		status, stripeRefundID, clock.Now(ctx), id); err != nil {
 		return err
+	}
+
+	// The persisted result of the COALESCE above: an empty stripeRefundID
+	// leaves the stored id untouched.
+	updated := cur
+	updated.RefundStatus = status
+	if stripeRefundID != "" {
+		updated.StripeRefundID = stripeRefundID
+	}
+	// The store REPORTS whether the persisted state moved; it does not decide
+	// whether that is audit-worthy. The two callers want opposite semantics:
+	// a webhook no-op is a non-event (no row), while an operator's retry hit
+	// Stripe and IS the event whether or not the status moved. Handing
+	// `changed` to the closure keeps that judgement where the intent lives.
+	changed := updated.RefundStatus != cur.RefundStatus || updated.StripeRefundID != cur.StripeRefundID
+	if emit != nil {
+		if err := emit(tx, updated, cur.RefundStatus, changed); err != nil {
+			return fmt.Errorf("audit emission: %w", err)
+		}
 	}
 	return tx.Commit()
 }

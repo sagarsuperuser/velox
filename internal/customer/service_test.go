@@ -2,6 +2,7 @@ package customer
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -34,6 +35,25 @@ func (m *memoryStore) Create(_ context.Context, tenantID string, c domain.Custom
 	c.Status = domain.CustomerStatusActive
 	m.customers[c.ID] = c
 	return c, nil
+}
+
+// CreateAudited: the memory fake has no real tx, so the emission runs with a
+// nil *sql.Tx — and to keep SHARED-FATE semantics faithful to the Postgres
+// store, an emission error rolls the in-memory write back exactly as the
+// aborted tx would. The real rollback coupling is pinned against Postgres in
+// create_audit_integration_test.go.
+func (m *memoryStore) CreateAudited(ctx context.Context, tenantID string, c domain.Customer, emit func(tx *sql.Tx, out domain.Customer) error) (domain.Customer, error) {
+	out, err := m.Create(ctx, tenantID, c)
+	if err != nil {
+		return domain.Customer{}, err
+	}
+	if emit != nil {
+		if err := emit(nil, out); err != nil {
+			delete(m.customers, out.ID) // shared fate: roll the write back
+			return domain.Customer{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
+	return out, nil
 }
 
 func (m *memoryStore) Get(_ context.Context, tenantID, id string) (domain.Customer, error) {

@@ -195,6 +195,11 @@ const DEFAULT_RESOURCE_TYPES = [
   'payment_method', 'dunning_policy', 'dunning_run', 'test_clock',
   'webhook_endpoint', 'webhook_event', 'stripe_credentials',
   'price_override', 'rating_rule', 'meter_pricing_rule',
+  // Emitted by the ADR-090 in-tx writers. (The dropdown normally comes from
+  // /filters — these only matter as the empty-log fallback.) Historical rows
+  // from the retired catch-all used the hyphenated 'provider-cost'; the
+  // snake_case form is the one every writer emits now.
+  'provider_cost', 'recipe', 'tenant', 'user',
 ]
 const DEFAULT_ACTIONS = [
   'create', 'update', 'delete', 'activate', 'cancel', 'pause', 'resume',
