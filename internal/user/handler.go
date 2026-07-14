@@ -19,6 +19,23 @@ import (
 	"github.com/sagarsuperuser/velox/internal/session"
 )
 
+// SessionService is the narrow seam the handler needs from *session.Service.
+//
+// It exists so the FAILURE paths can be tested. logout used to write its audit row
+// BEFORE revoking, log a revoke error to stderr, and return 204 regardless — a
+// permanent append-only row asserting a logout that never happened, and a live
+// session behind a browser told it was signed out. That survived an end-to-end
+// audit because nothing could inject a failing Revoke: the dependency was a
+// concrete *session.Service. A guarantee you cannot write a failing test for is a
+// guarantee you do not have.
+type SessionService interface {
+	Issue(ctx context.Context, in session.IssueInput) (string, session.Session, error)
+	Resolve(ctx context.Context, rawID string) (session.Session, error)
+	Revoke(ctx context.Context, rawID string) error
+	RevokeAllForUser(ctx context.Context, userID string) error
+	SetLivemode(ctx context.Context, rawID string, livemode bool) error
+}
+
 // Handler wires the dashboard auth endpoints. ADR-011.
 //
 // Routes (mounted under /v1/auth):
@@ -29,7 +46,7 @@ import (
 //	POST /password-reset/confirm    — token + new password → set
 type Handler struct {
 	users            *Service
-	sessions         *session.Service
+	sessions         SessionService
 	cookie           session.CookieConfig
 	email            EmailSender // required — production always wires the adapter
 	dashboardBaseURL string      // canonical dashboard origin for reset links; never from request headers. empty => reset emails disabled
@@ -141,7 +158,7 @@ type EmailSender interface {
 // poisoning / token theft. When empty, password-reset emails are not sent
 // (requestPasswordReset fails safe). Set it to your dashboard URL — in
 // split-origin dev (Vite on :5173 vs API on :8080) that's the SPA URL.
-func NewHandler(users *Service, sessions *session.Service, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string, smtpConfigured bool) *Handler {
+func NewHandler(users *Service, sessions SessionService, cookie session.CookieConfig, emailSender EmailSender, dashboardBaseURL string, smtpConfigured bool) *Handler {
 	return &Handler{
 		users:            users,
 		sessions:         sessions,
@@ -319,30 +336,56 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 
 // logout revokes the session row matching the cookie and clears the
 // cookie on the response. Idempotent — missing cookie is a no-op.
+// logout revokes the session, THEN records it.
+//
+// The order is the whole point. This used to write the audit row first, revoke
+// second, log a revoke failure to stderr, and return 204 either way. So a failed
+// revoke produced: a browser told it was logged out, a session still LIVE on the
+// server, and a permanent append-only row asserting a logout that never happened.
+// Two bugs wearing one coat — a false compliance record, and a silent
+// security-relevant failure on the one action a user takes when they no longer
+// trust the machine they are on.
+//
+// Now: resolve (identity is unreadable after revoke), revoke, and emit ONLY if the
+// revoke actually succeeded. A revoke that fails is a 500 — the caller must not be
+// told they are logged out when they are not.
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	audited := false
 	c, err := r.Cookie(session.CookieName)
-	if err == nil && c.Value != "" {
-		// Resolve before revoke so the audit row carries the operator identity;
-		// a stale/expired cookie just yields no row.
-		if sess, rerr := h.sessions.Resolve(r.Context(), c.Value); rerr == nil {
-			h.auditAuthEvent(r.Context(), r, sess.Livemode, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
-			audited = true
-		}
-		if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
-			slog.Error("session: revoke failed", "err", revokeErr)
-		}
-	}
-	if !audited {
-		// No cookie, or one that resolves to nothing: this logout revoked no
-		// session — it mutated nothing, so there is nothing to audit. Say so
-		// explicitly. To an observer at the transport a 204 with no audit row is
-		// otherwise indistinguishable from a real logout that LOST its row, and
-		// the audit-coverage detector would (correctly, on the evidence
-		// available to it) report every stale-cookie logout as an uncovered
-		// mutation.
+	if err != nil || c.Value == "" {
+		// No cookie: this logout revoked no session — it mutated nothing, so there
+		// is nothing to audit. Say so explicitly. To an observer at the transport a
+		// 204 with no audit row is otherwise indistinguishable from a real logout
+		// that LOST its row, and the audit-coverage detector would (correctly, on
+		// the evidence available to it) report it as an uncovered mutation.
 		audit.MarkSkip(r.Context())
+		h.cookie.ClearCookie(w)
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
+
+	// Resolve BEFORE revoke: after it, the token no longer names anyone, and an
+	// audit row with no actor is barely a row at all.
+	sess, rerr := h.sessions.Resolve(r.Context(), c.Value)
+
+	if revokeErr := h.sessions.Revoke(r.Context(), c.Value); revokeErr != nil {
+		// The session is still live. Clearing the cookie here would hand the user a
+		// 204 and a cleared browser while the token they were trying to kill keeps
+		// working server-side — the exact failure the user was defending against.
+		slog.ErrorContext(r.Context(), "session revoke failed; logout NOT performed",
+			"error", revokeErr)
+		respond.InternalError(w, r)
+		return
+	}
+
+	if rerr != nil {
+		// A stale or already-expired cookie: the revoke was a no-op on a session
+		// that was not there. Nothing mutated, nothing to record.
+		audit.MarkSkip(r.Context())
+	} else {
+		// The row is written only now, on the far side of a revoke that WORKED.
+		h.auditAuthEvent(r.Context(), r, sess.Livemode, sess.UserID, sess.TenantID, "logout", sess.UserID, "", nil)
+	}
+
 	h.cookie.ClearCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
