@@ -47,8 +47,10 @@ const (
 	// AuditActionCollect covers an operator manually charging a finalized
 	// invoice's saved card (POST /invoices/{id}/collect). AuditActionSend
 	// covers operator-initiated invoice emails (POST /invoices/{id}/send).
-	// Both write an explicit audit row so they aren't recorded as a generic
-	// "create" by the middleware catch-all.
+	// Both write an explicit audit row naming the money action they performed.
+	// (Historically this also kept the catch-all middleware from recording them
+	// as a generic "create"; that middleware is deleted — ADR-090 — and these
+	// rows are now the only record either way.)
 	AuditActionCollect = "collect"
 	AuditActionSend    = "send"
 	// AuditActionRetryTax covers operator-initiated tax recompute on a
@@ -78,7 +80,7 @@ const (
 	// who COPIED the evidence has a hole in its chain of custody — Stripe and
 	// AWS CloudTrail both log data-export/read events. Emitted BEFORE the
 	// first byte streams, and fail-closed (exportsHandler.auditExport,
-	// ADR-090 §6).
+	// ADR-090 §7).
 	//
 	// resource_type is the exported resource (customer / invoice /
 	// subscription / usage_event / audit_log); resource_id is EMPTY — a bulk

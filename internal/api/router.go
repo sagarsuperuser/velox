@@ -299,6 +299,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the sub.
 	subSvc.SetEventDispatcher(eventDispatcher)
 	auditLogger := audit.NewLogger(db)
+	// actor_name is resolved by LEFT JOIN at read time, and customers.display_name
+	// is encrypted at rest — so without this, every customer-actor row (a
+	// hosted-invoice Pay click, a payment-update link) rendered its Actor as
+	// CIPHERTEXT in production: on the dashboard and in the CSV handed to an
+	// auditor. Nil-safe; a no-op when VELOX_ENCRYPTION_KEY is unset.
+	auditLogger.SetEncryptor(sharedEnc)
 	auditH := audit.NewHandler(auditLogger)
 	// Wire audit logging on the customer handler — currently used to
 	// record cost-dashboard token rotations without leaking the
@@ -315,8 +321,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		customerH.SetAPIBaseURL(base)
 	}
 	settingsH := tenant.NewSettingsHandler(settingsStore)
-	// Field-level settings-change audit (which fields, before/after) — the
-	// middleware catch-all alone records only that a PUT happened.
+	// Field-level settings-change audit (which fields, before/after). This is the
+	// ONLY record of a settings change — the catch-all that used to log "a PUT
+	// happened" is gone (ADR-090); the boot gate below is what guarantees this
+	// wiring is never dropped.
 	settingsH.SetAuditLogger(auditLogger)
 	stripeClient := payment.NewLiveStripeClient(stripeClients)
 	dunningStore := dunning.NewPostgresStore(db)

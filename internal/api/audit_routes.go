@@ -273,7 +273,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 
 	// --- credits ----------------------------------------------------------
 	{"POST", "/v1/credits/grant"}:  explicit("credit.Service.Grant → LogInTx(grant, credit) on the ledger tx (ADR-090's first domain)."),
-	{"POST", "/v1/credits/adjust"}: explicit("credit.Service.Adjust → LogInTx(action=credit.adjustment, resource=credit) on the ledger tx. NOT an 'adjust' action — no such action exists in the vocabulary."),
+	{"POST", "/v1/credits/adjust"}: explicit("credit.Service.Adjust → LogInTx(resource=credit) on the ledger tx. Action is credit.adjustment for a positive amount and credit.deduction for a negative one (the split the dashboard's severity styling keys on). There is no 'adjust' action in the vocabulary."),
 
 	// --- billing ----------------------------------------------------------
 	{"POST", "/v1/billing/run"}: explicit("billing.Handler.run → Log(run, billing: cycle_run_triggered) — the operator's TRIGGER row (the per-invoice finalize rows can't say who started the run). Residual own-tx by design: the route owns no tx. A failed emission is surfaced in the response and left unmarked, so the detector reports it."),
@@ -307,8 +307,8 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	// "advanced to 2027-03-01", and no "deleted", which is the row that explains
 	// why every other trace of the simulation is gone.
 	{"POST", "/v1/test-clocks"}:                    explicit("testclock.Handler.create → Log(create, test_clock)."),
-	{"POST", "/v1/test-clocks/{id}/advance"}:       explicit("testclock.Handler.advance → Log(update, test_clock: advance_requested)."),
-	{"POST", "/v1/test-clocks/{id}/retry-advance"}: explicit("testclock.Handler.retryAdvance → Log(update, test_clock: advance_retried)."),
+	{"POST", "/v1/test-clocks/{id}/advance"}:       explicit("testclock.Handler.advance → Log(update, test_clock; metadata action=advanced)."),
+	{"POST", "/v1/test-clocks/{id}/retry-advance"}: explicit("testclock.Handler.retryAdvance → Log(update, test_clock; metadata action=retry_advance)."),
 	{"DELETE", "/v1/test-clocks/{id}"}:             explicit("testclock.Handler.delete → Log(delete, test_clock: teardown), reading the clock BEFORE the teardown so the row carries its name + final frozen instant. ADR-086: the audit row is the simulation's ONLY surviving record after teardown."),
 
 	// --- checkout / public payment surfaces --------------------------------

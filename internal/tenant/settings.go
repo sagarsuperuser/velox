@@ -338,8 +338,12 @@ type SettingsHandler struct {
 // SettingsAuditRecorder is the narrow audit surface the settings handler
 // needs — declared here so internal/tenant stays decoupled from
 // internal/audit. Production wires *audit.Logger via SetAuditLogger in
-// router.go. Optional: nil = no field-level audit row (the generic
-// middleware catch-all still records that a PUT happened).
+// router.go. Optional: nil = NO audit row at all. There is no longer a fallback:
+// the generic middleware catch-all that used to record "a PUT happened" was
+// deleted (ADR-090), and its replacement is a PURE OBSERVER that reports an
+// uncovered mutation rather than writing one. A nil recorder here means the
+// settings change is simply not audited — which is why the boot gate
+// (audit.MustWired) exists to make sure it is never nil in production.
 type SettingsAuditRecorder interface {
 	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
 }

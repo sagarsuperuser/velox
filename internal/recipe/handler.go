@@ -85,9 +85,12 @@ type previewRequest struct {
 }
 
 func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
-	// Read-only: renders the recipe with overrides and writes nothing. Opt
-	// out of the audit middleware's catch-all so it doesn't record a
-	// spurious "Created recipe" row for what is a dry-run inspection.
+	// Read-only: renders the recipe with overrides and writes nothing. MarkSkip
+	// DECLARES that — "this 2xx mutated nothing" — so the coverage detector does
+	// not report a preview as an uncovered mutation. (It used to opt out of a
+	// catch-all middleware that would have invented a "Created recipe" row; that
+	// middleware is gone (ADR-090), but the declaration is still required: the
+	// route is `explicit` in the registry, so the detector does inspect it.)
 	audit.MarkSkip(r.Context())
 
 	key := chi.URLParam(r, "key")

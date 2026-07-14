@@ -73,11 +73,14 @@ type createPreviewWirePeriod struct {
 //   - Customer not found / subscription not found → 404.
 //   - customer_has_no_subscription → 422 with code (no active sub).
 func (h *CreatePreviewHandler) create(w http.ResponseWriter, r *http.Request) {
-	// Read-only: this POST computes a dry-run preview and writes nothing.
-	// Opt out of the audit middleware's catch-all so it doesn't record a
-	// spurious "Created invoice" row (resource_id="create_preview") whose
-	// "View" link 405s on this POST-only route. Fired automatically by the
-	// dashboard's upcoming-invoice card on every customer page-open.
+	// Read-only: this POST computes a dry-run preview and writes nothing. MarkSkip
+	// DECLARES that — "this 2xx mutated nothing" — so the coverage detector does
+	// not report it as an uncovered mutation. (It used to opt out of a catch-all
+	// middleware that would have invented a "Created invoice" row with
+	// resource_id="create_preview"; that middleware is gone (ADR-090), but the
+	// declaration is still required — the route is `explicit` in the registry, so
+	// the detector inspects it.) Fired automatically by the dashboard's
+	// upcoming-invoice card on every customer page-open.
 	audit.MarkSkip(r.Context())
 
 	tenantID := auth.TenantID(r.Context())

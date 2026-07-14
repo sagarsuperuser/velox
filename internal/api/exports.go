@@ -719,14 +719,21 @@ func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) 
 		// APPEND-ONLY, so every row written before that change still carries
 		// whatever string its caller chose, including a live formula. The
 		// column cannot be cleaned retroactively; it can only be rendered
-		// safely. ip_address needs no escaping by contrast: TrustedRealIP only
-		// ever yields a net.ParseIP-validated value.
+		// safely.
+		//
+		// ip_address gets the SAME treatment, for the SAME reason — an earlier
+		// version of this comment exempted it ("TrustedRealIP only ever yields a
+		// net.ParseIP-validated value"), which is an argument about what the code
+		// writes TODAY and therefore exactly the argument the append-only rule
+		// defeats. The log outlives its writers. csvSafe on a well-formed IP is a
+		// no-op (no address begins with = + - @), so the exemption bought nothing
+		// and cost the one guarantee that has to hold for a permanent record.
 		if err := cw.Write([]string{
 			e.ID,
 			e.CreatedAt.UTC().Format(time.RFC3339),
 			e.ActorType, e.ActorID, csvSafe(e.ActorName),
 			e.Action, e.ResourceType, e.ResourceID, csvSafe(e.ResourceLabel),
-			e.IPAddress, csvSafe(e.RequestID),
+			csvSafe(e.IPAddress), csvSafe(e.RequestID),
 			simAt, e.TestClockID,
 			csvSafe(metaJSON),
 		}); err != nil {

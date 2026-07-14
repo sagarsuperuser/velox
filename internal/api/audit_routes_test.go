@@ -73,7 +73,7 @@ internal/api/audit_routes.go (auditRouteRegistry):
 
   • exempt(reason, note) — the route deliberately writes no audit row. reason must
     be one of the closed enum (non_mutating_preview, machine_ingest,
-    system_endpoint, webhook_owned, bootstrap), and the note must say WHY and
+    system_endpoint, webhook_owned), and the note must say WHY and
     record any accepted loss.
 
 An exempt() you don't mean un-audits a live route FOREVER — in an append-only
