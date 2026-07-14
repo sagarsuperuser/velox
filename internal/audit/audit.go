@@ -542,12 +542,21 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 
 	whereClause, args, idx, useCursor := buildListWhere(tenantID, postgres.Livemode(ctx), filter)
 
-	// Cursor path skips COUNT — handler derives hasMore from
-	// limit+1 over-fetch. Offset path keeps the count for the
-	// legacy "Page X of N" UX in the dashboard.
+	// Cursor path skips COUNT — the handler derives hasMore from a limit+1
+	// over-fetch. The offset path (page 1, and every filter change) keeps a count
+	// for the dashboard's "Page N · M total".
+	//
+	// It is BOUNDED. An unbounded COUNT(*) has to visit every matching row, and
+	// audit_log is append-only — 0150 revoked DELETE from the runtime role, so the
+	// set it walks grows forever and can never be reclaimed. The page that renders
+	// 50 rows was paying an O(history) scan to print a number nobody acts on.
+	//
+	// Stop at CountCap+1 rows: below the cap the total is exact; at or above it the
+	// caller is told "at least this many" and the UI says "10,000+".
 	var total int
 	if !useCursor {
-		countQuery := `SELECT COUNT(*) FROM audit_log al` + whereClause
+		countQuery := `SELECT COUNT(*) FROM (SELECT 1 FROM audit_log al` + whereClause +
+			fmt.Sprintf(" LIMIT %d) capped", CountCap+1)
 		if err := tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 			return nil, 0, err
 		}
@@ -643,6 +652,52 @@ const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
 // keys on.
 const auditListOrder = " ORDER BY al.created_at DESC, al.id DESC"
 
+// distinctByLooseIndexScan returns the distinct values of one indexed column for a
+// tenant/mode, in O(distinct · log n) instead of O(rows).
+//
+// These two lists populate the audit page's filter dropdowns, and they ran as plain
+// `SELECT DISTINCT` on EVERY page open — reading the tenant's ENTIRE audit history
+// to produce a few dozen values. Postgres 16 has no btree skip scan, so no index
+// could rescue that shape; and audit_log is append-only (0150 revoked DELETE from
+// the runtime role), so the history it walks grows forever and can never be
+// reclaimed. The cost had no ceiling.
+//
+// This is the standard loose-index-scan idiom: seek the smallest value, then
+// repeatedly seek the smallest value STRICTLY GREATER than the last. Each step is
+// one index descent, so the work is proportional to the number of DISTINCT values —
+// which is what the dropdown actually wants — not to the number of rows.
+//
+// col is interpolated, never user input: the only two call sites pass the literals
+// below, and both are indexed by 0151.
+func distinctByLooseIndexScan(ctx context.Context, tx *sql.Tx, col, tenantID string, livemode bool, limit int) ([]string, error) {
+	q := fmt.Sprintf(`
+		WITH RECURSIVE t AS (
+			SELECT (SELECT MIN(%[1]s) FROM audit_log
+			         WHERE tenant_id = $1 AND livemode = $2) AS v
+			UNION ALL
+			SELECT (SELECT MIN(a.%[1]s) FROM audit_log a
+			         WHERE a.tenant_id = $1 AND a.livemode = $2 AND a.%[1]s > t.v)
+			FROM t WHERE t.v IS NOT NULL
+		)
+		SELECT v FROM t WHERE v IS NOT NULL ORDER BY v LIMIT $3`, col)
+
+	rows, err := tx.QueryContext(ctx, q, tenantID, livemode, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func scanAuditEntry(rows *sql.Rows) (domain.AuditEntry, error) {
 	var e domain.AuditEntry
 	var metaJSON []byte
@@ -723,45 +778,24 @@ func (l *Logger) FilterOptions(ctx context.Context, tenantID string) (actions, r
 	}
 	defer postgres.Rollback(tx)
 
-	// Cap at 500 to bound payload — a tenant shouldn't organically produce
-	// more distinct actions than that; if they do, the cap drops the values
-	// sorting LAST alphabetically (ORDER BY action), not the oldest ones.
-	// Explicit tenant+livemode predicates for the same reason as Query: the
-	// RLS policy's column-free bypass OR-arm blocks index quals, and these
-	// two DISTINCTs run on every dashboard audit-page load.
-	rows, err := tx.QueryContext(ctx,
-		`SELECT DISTINCT action FROM audit_log
-		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY action LIMIT 500`,
-		tenantID, postgres.Livemode(ctx))
+	// Both lists come from a LOOSE INDEX SCAN, not a plain DISTINCT — see
+	// distinctByLooseIndexScan. They populate the filter dropdowns on every audit
+	// page open, and a plain DISTINCT read the tenant's entire (unprunable) history
+	// to produce a few dozen values.
+	//
+	// Cap at 500 to bound the payload: a tenant should not organically produce more
+	// distinct actions than that, and if they do the cap drops the values sorting
+	// LAST alphabetically, not the oldest ones.
+	actions, err = distinctByLooseIndexScan(ctx, tx, "action", tenantID, postgres.Livemode(ctx), 500)
 	if err != nil {
 		return nil, nil, err
 	}
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			_ = rows.Close()
-			return nil, nil, err
-		}
-		actions = append(actions, s)
-	}
-	_ = rows.Close()
 
-	rows, err = tx.QueryContext(ctx,
-		`SELECT DISTINCT resource_type FROM audit_log
-		 WHERE tenant_id = $1 AND livemode = $2 ORDER BY resource_type LIMIT 500`,
-		tenantID, postgres.Livemode(ctx))
+	resourceTypes, err = distinctByLooseIndexScan(ctx, tx, "resource_type", tenantID, postgres.Livemode(ctx), 500)
 	if err != nil {
 		return nil, nil, err
 	}
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			_ = rows.Close()
-			return nil, nil, err
-		}
-		resourceTypes = append(resourceTypes, s)
-	}
-	_ = rows.Close()
+
 	return actions, resourceTypes, nil
 }
 
@@ -826,6 +860,14 @@ func (l *Logger) SimClocks(ctx context.Context, tenantID string) ([]SimClock, er
 	}
 	return out, rows.Err()
 }
+
+// CountCap bounds the "M total" the audit page shows.
+//
+// audit_log can never be pruned (0150), so an exact COUNT is an O(history) scan
+// that grows without bound — paid on page 1 and on every filter change, to print a
+// number the operator does not act on. At or above the cap the API reports CountCap
+// and the dashboard renders "10,000+": the honest answer, at constant cost.
+const CountCap = 10000
 
 type QueryFilter struct {
 	ResourceType string

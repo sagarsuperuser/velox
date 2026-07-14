@@ -126,6 +126,14 @@ const SIM_CONTEXT_KEYS = new Set(['sim_effective_at', 'test_clock_id'])
 // The cost is confined to dev databases (Velox is pre-launch; no production log
 // predates 0148). The subscription Activity timeline still reads the metadata
 // mirror — it offers no clock filter, so it has no promise to break.
+// The backend bounds its COUNT at COUNT_CAP: audit_log can never be pruned, so an
+// exact total is an O(history) scan that grows forever, paid on every page-1 load
+// to print a number nobody acts on. At or above the cap it reports the cap, and we
+// say "10,000+" rather than stating a precise figure we know to be wrong.
+const COUNT_CAP = 10000
+const formatTotal = (n: number) =>
+  n >= COUNT_CAP ? `${COUNT_CAP.toLocaleString()}+` : n.toLocaleString()
+
 function simContext(entry: AuditEntry): { simEffectiveAt?: string; testClockID?: string } {
   return { simEffectiveAt: entry.sim_effective_at, testClockID: entry.test_clock_id }
 }
@@ -341,7 +349,7 @@ export default function AuditLogPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Audit Log</h1>
-          <p className="text-sm text-muted-foreground mt-1">Review all changes and actions{total > 0 ? ` · ${total} total` : ''}</p>
+          <p className="text-sm text-muted-foreground mt-1">Review all changes and actions{total > 0 ? ` · ${formatTotal(total)} total` : ''}</p>
         </div>
         {entries.length > 0 && (
           <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
@@ -575,7 +583,7 @@ export default function AuditLogPage() {
               {(page > 1 || hasNext) && (
                 <div className="border-t border-border px-4 py-3 flex items-center justify-between">
                   <p className="text-xs text-muted-foreground">
-                    Page {page}{total > 0 ? ` · ${total} total` : ''}
+                    Page {page}{total > 0 ? ` · ${formatTotal(total)} total` : ''}
                   </p>
                   <Pagination>
                     <PaginationContent>
