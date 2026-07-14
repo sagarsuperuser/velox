@@ -2429,7 +2429,8 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			// billing_time-aware helper so calendar+monthly subs show
 			// the calendar-aligned next period on the line item, not
 			// the day-of-month-preserved drifted period.
-			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay)
+			billingLoc := e.tenantLocation(ctx, sub.TenantID)
+			baseEnd := domain.NextBillingPeriodEnd(periodEnd, sub.BillingTime, plan.BillingInterval, billingLoc, sub.BillingAnchorDay)
 			baseFee := plan.BaseAmountCents * it.Quantity
 			description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, it.Quantity)
 			// Prorate when the upcoming period is shorter than a full
@@ -2440,7 +2441,35 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			// Same shape as BillOnCreate's proration and
 			// emitBaseSegmentLine's segDays/fullCycleDays gate.
 			advanceDays := roundDays(baseEnd.Sub(baseStart))
-			fullCycleDays := roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay).Sub(baseStart))
+			// Absorb a sub-day upcoming period (ADR-091): an org-timezone
+			// change (ADR-077, resolved live each roll) can re-time the next
+			// boundary onto a sub-day "seam" a few hours past periodEnd. An
+			// in_advance base fee is length-insensitive, so billing one for a
+			// <1-day window overcharges a full cycle — and roundDays makes the
+			// window 0 days, so the proration below silently no-ops and bills
+			// full. Skip the line so a cosmetically-motivated org-timezone change
+			// never bills a phantom period; the sub re-aligns to clean boundaries
+			// on the next full cycle. Mirrors emitBaseSegmentLine's `segDays <= 0`
+			// in_arrears absorb (that path was already seam-safe).
+			if advanceDays <= 0 {
+				continue
+			}
+			fullCycleDays := roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval, billingLoc, sub.BillingAnchorDay).Sub(baseStart))
+			// An org-timezone change (ADR-077, resolved live each roll) re-resolves
+			// the stored boundary in the new zone, leaving baseStart OFF the anchor
+			// grid.
+			// For anniversary/yearly, advanceBillingPeriod re-anchors to the next
+			// anchor DAY, so fullCycleDays collapses to the seam width (==
+			// advanceDays) and the gate below dies — a ~24h seam would then bill a
+			// FULL base fee (the anniversary/yearly analogue of the calendar seam,
+			// ADR-091). When baseStart is off-anchor, measure the full cycle
+			// NOMINALLY (one calendar interval from baseStart, anchorDay 0) so the
+			// short seam prorates instead of overbilling. Calendar billing
+			// (anchorDay 0) is reported on-anchor and untouched — its denominator
+			// already never collapses (it snaps to the fixed 1st-of-month grid).
+			if !domain.IsPeriodStartOnAnchor(baseStart, sub.BillingAnchorDay, billingLoc) {
+				fullCycleDays = roundDays(advanceBillingPeriod(baseStart, plan.BillingInterval, billingLoc, 0).Sub(baseStart))
+			}
 			if advanceDays > 0 && fullCycleDays > 0 && advanceDays < fullCycleDays {
 				baseFee = money.RoundHalfToEven(plan.BaseAmountCents*it.Quantity*int64(advanceDays), int64(fullCycleDays))
 				description = fmt.Sprintf("%s - base fee (qty %d, prorated %d/%d days)", plan.Name, it.Quantity, advanceDays, fullCycleDays)
@@ -5598,10 +5627,11 @@ func (e *Engine) NetPaymentTermDays(ctx context.Context, tenantID string) int {
 	return 30
 }
 
-// tenantLocation resolves the tenant's billing timezone. It anchors every
-// month/year calendar advance (period boundaries AND proration denominators,
-// ADR-058) so billing date-math is independent of the host time.Local and the
-// value's ambient Location. Failures collapse to UTC.
+// tenantLocation resolves the tenant's billing timezone (the one org-level
+// timezone, ADR-077). It anchors every month/year calendar advance (period
+// boundaries AND proration denominators, ADR-058) so billing date-math is
+// independent of the host time.Local and the value's ambient Location. Failures
+// collapse to UTC.
 func (e *Engine) tenantLocation(ctx context.Context, tenantID string) *time.Location {
 	if e.settings == nil {
 		return time.UTC
