@@ -58,4 +58,21 @@ func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 			t.Errorf("%s.SetAuditLogger is wired in router.go but %s is missing from audit.MustWired(...) — add it, so that DROPPING that wiring line fails loudly at boot instead of silently un-auditing %s's routes", recv, recv, recv)
 		}
 	}
+
+	// STRUCT-LITERAL wiring escapes the grep above, and that is not hypothetical:
+	// bootstrapDeps (`Audit: auditLogger`) and noPMNotifier (`auditLogger:
+	// auditLogger`) were BOTH wired this way, BOTH nil-guarded, and therefore in
+	// neither the grep nor MustWired — while POST /v1/bootstrap is declared
+	// `explicit` (it mints a LIVE secret key) and noPMNotifier is the only writer
+	// of the setup_link_sent row. A gate that only sees one wiring STYLE is a gate
+	// with a hole shaped like the other style.
+	//
+	// So: any composite-literal field that hands auditLogger to something must
+	// appear in a MustWired call somewhere in this file. The check is coarse (it
+	// asserts the count of such literals is covered, not which), so it fails loudly
+	// when a NEW style of wiring appears and forces a decision.
+	literals := regexp.MustCompile(`(?m)^\s*[Aa]udit\w*:\s+auditLogger,`).FindAllString(text, -1)
+	if len(literals) > 0 && len(mws) < 2 {
+		t.Errorf("router.go hands auditLogger to %d component(s) by STRUCT LITERAL, but there are only %d audit.MustWired call(s) — a struct-literal emitter that is not in MustWired is un-gated and, being nil-guarded, will silently un-audit its routes", len(literals), len(mws))
+	}
 }

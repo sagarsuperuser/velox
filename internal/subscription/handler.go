@@ -3104,9 +3104,11 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	// Audit rows on clock-pinned subs stamp audit_log.created_at via
-	// clock.Now(boundCtx) (PR-11/12 + b46bdee), so each row's
-	// timestamp IS sim-time. Marking every audit-sourced row
+	// audit_log.created_at is WALL-CLOCK on every row, including clock-pinned subs
+	// (ADR-030: it answers "when did the operator click"). It is NOT sim-time — an
+	// earlier version of this comment said it was. The SIMULATED instant is the
+	// SECOND axis (sim_effective_at), which is what the per-row values below read.
+	// Marking every audit-sourced row
 	// IsSimulated + SimEffectiveAt are computed PER ROW from
 	// metadata.sim_effective_at — the authoritative signal mirrored by
 	// the audit writer from the ctx clock binding (ADR-090 §5) at write

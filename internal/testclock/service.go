@@ -686,7 +686,9 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 
 		// Phases 4 and 5 both need frozen_time — already read once at
 		// the top of the catchup block and bound to ctx via
-		// clock.WithEffectiveNow above; `frozen` is the same value
+		// clock.WithSim above (NOT WithEffectiveNow — that binds the instant
+		// only, and the catchup deliberately binds the CLOCK too so every audit
+		// row below lands on the sim axis); `frozen` is the same value
 		// for the whole job, so we reuse it here rather than re-reading.
 		needFrozen := (s.creditExpirer != nil || s.dunning != nil) && !frozen.IsZero()
 
