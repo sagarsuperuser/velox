@@ -221,6 +221,32 @@ func AnchorDayFor(periodStart time.Time, billingTime SubscriptionBillingTime, in
 	return periodStart.In(loc).Day()
 }
 
+// IsPeriodStartOnAnchor reports whether t falls on the subscription's billing
+// anchor day-of-month in loc, with month-end clamping (ADR-055: a day-31 anchor
+// is on-anchor at Feb 28). It is the "is this a clean anniversary boundary?"
+// test the in_advance base-fee proration uses to tell a FULL upcoming cycle
+// (on-anchor start) apart from a re-anchor SEAM (off-anchor start) — the latter
+// produced when the org timezone changes (ADR-077, resolved live each roll) and
+// the stored boundary is re-resolved in the new zone a few hours off the anchor.
+//
+// anchorDay <= 0 is calendar billing, which snaps to a fixed grid (the 1st) and
+// whose proration denominator never collapses; it is reported on-anchor so the
+// caller's calendar path is untouched.
+func IsPeriodStartOnAnchor(t time.Time, anchorDay int, loc *time.Location) bool {
+	if anchorDay <= 0 {
+		return true
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := t.In(loc)
+	clamped := anchorDay
+	if last := lastDayOfMonthIn(local.Year(), local.Month(), loc); clamped > last {
+		clamped = last
+	}
+	return local.Day() == clamped
+}
+
 // addIntervalIn advances `t` by one billing interval (+1 month, or +1 year for
 // yearly), performing the calendar add in `loc` so the result is anchored to
 // the tenant's timezone rather than `t`'s ambient Location or the host
