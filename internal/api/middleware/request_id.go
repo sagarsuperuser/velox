@@ -34,7 +34,12 @@ const requestIDPrefix = "req_"
 // Why we drop the inbound value entirely instead of keeping it for log
 // correlation under a second key:
 //
-//   - Nothing consumes it. Grep for X-Request-Id across the repo, web-v2 and
+//   - Nothing consumes it as INPUT. (The name still appears in the repo — in
+//     tests that forge the header to prove it is ignored, and in the docs that
+//     record this decision. An earlier version of this comment told you to grep
+//     and promised zero hits, which stopped being true the moment the regression
+//     test landed. Do not re-add a claim about grep output; state the property.)
+//     Historically the reason was: grep across the repo, web-v2 and
 //     docs: there are no hits. Velox's published contract is the Velox-Request-Id
 //     RESPONSE header (respond.go), which the dashboard captures (web-v2
 //     lib/api.ts) and the docs point support at. That contract is unchanged.

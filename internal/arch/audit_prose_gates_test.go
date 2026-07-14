@@ -66,16 +66,30 @@ func sourceFiles(t *testing.T) map[string]string {
 // successful mutating request legitimately wrote no audit row. If you add one,
 // add it here and say why. If this list is longer than you expected, that is the
 // point — a silent MarkSkip is a route quietly opting out of audit coverage.
-var markSkipCallers = map[string]string{
-	"internal/billing/create_preview_handler.go": "invoice create_preview — read-only dry run",
-	"internal/recipe/handler.go":                 "recipe preview — read-only render",
-	"internal/recipe/service.go":                 "recipe re-apply that installs nothing",
-	"internal/tenant/settings.go":                "settings save that changed no field",
-	"internal/usage/handler.go":                  "duplicate usage ingest — idempotency key already exists, no event row written",
-	"internal/user/handler.go":                   "stale-cookie logout; unknown-email password reset; THROTTLED password reset (all fixed-200 enumeration defences)",
-	"internal/api/adapters.go":                   "hosted-invoice payment-session reuse — a second Pay click returns the same Stripe session, no new claim row",
-	"internal/api/middleware/idempotency.go":     "idempotency replay — the cached response of a request whose original DID emit",
-	"internal/creditnote/handler.go":             "credit-note issue that defers",
+// markSkipCaller is a declared opt-out of audit coverage: n calls in one file,
+// and the reason they are legitimate.
+//
+// The COUNT is load-bearing. The first version of this gate keyed on the FILE
+// alone — so adding a tenth MarkSkip to a file that already declared nine passed
+// CI silently, while this very comment claimed "add a MarkSkip call without
+// declaring it and CI fails". A gate that under-enforces its own stated contract
+// is the failure class this whole arc is about, reproduced inside the fix for it.
+// Pinning n means a NEW opt-out in an existing file breaks the build.
+type markSkipCaller struct {
+	n   int
+	why string
+}
+
+var markSkipCallers = map[string]markSkipCaller{
+	"internal/billing/create_preview_handler.go": {1, "invoice create_preview — read-only dry run"},
+	"internal/recipe/handler.go":                 {1, "recipe preview — read-only render"},
+	"internal/recipe/service.go":                 {1, "recipe re-apply that installs nothing"},
+	"internal/tenant/settings.go":                {1, "settings save that changed no field"},
+	"internal/usage/handler.go":                  {1, "duplicate usage ingest — idempotency key already exists, no event row written"},
+	"internal/user/handler.go":                   {3, "stale-cookie logout; unknown-email password reset; THROTTLED password reset (all fixed-200 enumeration defences)"},
+	"internal/api/adapters.go":                   {2, "hosted-invoice payment-session reuse — a second Pay click returns the same Stripe session, no new claim row"},
+	"internal/api/middleware/idempotency.go":     {1, "idempotency replay — the cached response of a request whose original DID emit"},
+	"internal/creditnote/handler.go":             {1, "credit-note issue that defers"},
 }
 
 // TestMarkSkipCallers_MatchTheCode is the gate on the class that drifted in all
@@ -95,10 +109,15 @@ func TestMarkSkipCallers_MatchTheCode(t *testing.T) {
 		}
 	}
 
-	var undeclared, stale []string
-	for path := range found {
-		if _, ok := markSkipCallers[path]; !ok {
-			undeclared = append(undeclared, path)
+	var undeclared, stale, miscounted []string
+	for path, n := range found {
+		d, ok := markSkipCallers[path]
+		if !ok {
+			undeclared = append(undeclared, fmt.Sprintf("%s (%d call(s))", path, n))
+			continue
+		}
+		if d.n != n {
+			miscounted = append(miscounted, fmt.Sprintf("%s: %d call(s) in the code, %d declared — %s", path, n, d.n, d.why))
 		}
 	}
 	for path := range markSkipCallers {
@@ -108,6 +127,7 @@ func TestMarkSkipCallers_MatchTheCode(t *testing.T) {
 	}
 	sort.Strings(undeclared)
 	sort.Strings(stale)
+	sort.Strings(miscounted)
 
 	if len(undeclared) > 0 {
 		t.Errorf(`%d file(s) call audit.MarkSkip but are NOT declared in markSkipCallers:
@@ -117,8 +137,17 @@ func TestMarkSkipCallers_MatchTheCode(t *testing.T) {
 MarkSkip tells the coverage detector that a successful MUTATING request legitimately
 wrote no audit row. That is a route opting out of audit coverage, and it must be a
 decision someone made on purpose — not a line that appeared. Add the file to
-markSkipCallers (in this test) with a one-line reason.`,
+markSkipCallers with its call COUNT and a one-line reason.`,
 			len(undeclared), strings.Join(undeclared, "\n  "))
+	}
+	if len(miscounted) > 0 {
+		t.Errorf(`%d file(s) have a DIFFERENT number of MarkSkip calls than declared:
+
+  %s
+
+A NEW MarkSkip in a file that already had one is a NEW route opting out of audit
+coverage — the count is what makes that visible. If the new call is intended, bump
+the count and extend the reason to cover it.`, len(miscounted), strings.Join(miscounted, "\n  "))
 	}
 	if len(stale) > 0 {
 		t.Errorf(`%d entr(y/ies) in markSkipCallers call MarkSkip nowhere:
@@ -146,29 +175,38 @@ var forbiddenPresentTense = []struct {
 	why     string
 }{
 	{
-		regexp.MustCompile(`(?i)(the|a) (audit )?middleware'?s? catch-all (still|records|writes|would|so it|alone)`),
-		"the catch-all audit middleware was DELETED (ADR-090, #471). It does not record, write, or fall back to anything. If you are describing history, say so explicitly (\"used to\", \"was deleted\").",
+		// The first version required the exact word order "middleware['s] catch-all
+		// <verb>", so it sailed past the phrasing the codebase actually uses ("the
+		// catch-all middleware writes a row for any mutating request"). A gate that
+		// only matches the phrasing you happened to have written is not a gate.
+		regexp.MustCompile(`(?i)catch-all[^.\n]{0,40}\b(records|writes|logs|invents|fires|still|would|falls back|alone)\b|\b(records|writes|logs|invents)\b[^.\n]{0,30}\bcatch-all\b`),
+		"the catch-all audit middleware was DELETED (ADR-090, #471). It does not record, write, invent or fall back to anything. Describing history is fine — say \"used to\", \"was deleted\".",
 	},
 	{
 		regexp.MustCompile(`which the next PR deletes`),
-		"the catch-all was deleted in #471; there is no 'next PR'. A comment that describes a completed deletion as pending tells the reader the opposite of the truth.",
+		"the catch-all was deleted in #471; there is no 'next PR'. A comment describing a completed deletion as pending tells the reader the opposite of the truth.",
 	},
 	{
-		regexp.MustCompile(`(?i)(Logger\.Log and the AuditLog middleware|both audit write paths \(Logger\.Log and)`),
-		"the AuditLog middleware was DELETED (ADR-090, #471). There is exactly ONE post-hoc write path (Logger.Log) plus the in-tx LogInTx.",
+		regexp.MustCompile(`(?i)AuditLog middleware\b|middleware\.AuditLog\b|\bMarkHandled\b`),
+		"the AuditLog middleware and MarkHandled were DELETED (ADR-090, #471). There is ONE post-hoc write path (Logger.Log) plus the in-tx LogInTx, and MarkSkip (not MarkHandled) is the only declaration a handler may make.",
 	},
 	{
-		regexp.MustCompile(`order=sim_effective_at|order by simulated time`),
-		"there is deliberately NO 'order by simulated time' control (ADR-090 §5): within one clock it is the same order as created_at, and across clocks it interleaves unrelated simulations. It was removed in #474 along with its cursor axis.",
+		regexp.MustCompile(`order=sim_effective_at|order by simulated time|OrderBySim`),
+		"there is deliberately NO 'order by simulated time' control (ADR-090 §5): within one clock it is the same order as created_at, and across clocks it interleaves unrelated simulations. Removed in #474 with its cursor axis.",
 	},
 }
 
 // negated marks a sentence that DENIES the deleted thing exists ("there is
-// deliberately NO order by simulated time", "the catch-all was deleted"). Those
+// deliberately NO order by simulated time", "the catch-all WAS DELETED"). Those
 // are the sentences we WANT — describing history, or the absence of a mechanism,
 // is how you stop the next reader re-deriving a wrong conclusion. A gate that
 // fires on the correct sentence is a gate somebody deletes, so it must not.
-var negated = regexp.MustCompile(`(?i)\b(no|not|never|deleted|removed|gone|used to|no longer|does not|cannot|was the|deliberately|retired|superseded|instead of|rather than)\b`)
+//
+// But it must not be a blanket escape either. The first version exempted any line
+// containing a bare "no" or "not" ANYWHERE — words so common in this codebase's
+// comments that the exemption swallowed most of the class it was guarding. It is
+// now restricted to markers that actually signal past tense or absence.
+var negated = regexp.MustCompile(`(?i)\b(deleted|delete|removed|retired|superseded|gone|used to|no longer|gone away|gets rid of|gets deleted|gets removed|gets retired|deliberately (no|not)|there is no|gates? that)\b|\bwas\b|\bwere\b|\bhistoric`)
 
 // TestNoPresentTenseReferencesToDeletedThings gates the other class that survived
 // every round: a comment that still describes machinery the arc removed. An
@@ -183,10 +221,20 @@ func TestNoPresentTenseReferencesToDeletedThings(t *testing.T) {
 		if strings.HasSuffix(path, "audit_prose_gates_test.go") {
 			continue
 		}
-		for i, line := range strings.Split(src, "\n") {
+		lines := strings.Split(src, "\n")
+		for i, line := range lines {
 			for _, f := range forbiddenPresentTense {
 				m := f.pattern.FindString(line)
-				if m == "" || negated.MatchString(line) {
+				if m == "" {
+					continue
+				}
+				// Comments WRAP. A sentence that says "(It used to opt out of a /
+				// catch-all middleware that would have invented …)" puts the
+				// past-tense marker on a DIFFERENT line from the match, so a
+				// line-scoped negation check would fail the very sentence it is
+				// meant to bless. Look at the surrounding window instead.
+				lo, hi := max(0, i-3), min(len(lines), i+4)
+				if negated.MatchString(strings.Join(lines[lo:hi], " ")) {
 					continue
 				}
 				t.Errorf("%s:%d: %q\n\n  %s\n", path, i+1, m, f.why)
@@ -216,4 +264,50 @@ func TestAuditProseGates_AreThemselvesWired(t *testing.T) {
 		t.Fatal("markSkipCallers is empty")
 	}
 	fmt.Printf("audit prose gates: %d MarkSkip call sites across %d declared files\n", total, len(markSkipCallers))
+}
+
+// TestAuditProseGates_CatchTheRealPhrasings is the gate ON the gate.
+//
+// The first version of forbiddenPresentTense matched only the exact word order it
+// happened to have been written against, and sailed past the phrasing the
+// codebase's own docs use ("the catch-all middleware writes a row for any mutating
+// request"). A gate that only catches the sentence you already fixed is theatre.
+//
+// These are real re-introductions of each deleted mechanism. If one stops failing,
+// the gate has regressed and the class it guards is open again. The mirror half
+// matters just as much: a gate that fires on the CORRECT sentence ("the catch-all
+// was deleted") is a gate the next person deletes.
+func TestAuditProseGates_CatchTheRealPhrasings(t *testing.T) {
+	fires := func(line string) bool {
+		for _, f := range forbiddenPresentTense {
+			if f.pattern.MatchString(line) && !negated.MatchString(line) {
+				return true
+			}
+		}
+		return false
+	}
+
+	mustFail := []string{
+		"// the catch-all middleware writes a row for any mutating /v1 request",
+		"// The audit catch-all still records a row here",
+		"// AuditLog middleware writes the fallback row",
+		"// the handler calls MarkHandled so the catch-all stays quiet",
+		"// pass ?order=sim_effective_at to sort by simulated time",
+	}
+	mustPass := []string{
+		"// the catch-all was deleted (ADR-090); it no longer records anything",
+		"// It used to opt out of a catch-all middleware that would have invented a row; that middleware is gone",
+		"// there is deliberately no order by simulated time",
+	}
+
+	for _, l := range mustFail {
+		if !fires(l) {
+			t.Errorf("the gate MISSES a real re-introduction — the class is open again:\n  %s", l)
+		}
+	}
+	for _, l := range mustPass {
+		if fires(l) {
+			t.Errorf("the gate FIRES on a CORRECT sentence — it will be deleted by the next person it annoys:\n  %s", l)
+		}
+	}
 }

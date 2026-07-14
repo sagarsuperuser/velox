@@ -220,8 +220,12 @@ timeline of a simulation is reading an incomplete one. Instead:
   draft of this list said otherwise, which credited a row that does not exist.)
 - **BOTH writers stamp**: `LogInTx` and the residual own-tx `Log`. The
   own-tx callers are not a lesser class of evidence — `invoice.Service.
-  Finalize`, the canonical row for every invoice a clock advance generates,
-  still writes through `Log`.
+  Finalize` and `billing.Engine.auditInvoiceFinalized` — the TWO writers of the
+  finalize row, the heaviest evidence in the log — both write through `Log`.
+  (Engine invoices are born finalized and never pass through
+  `invoice.Service.Finalize`; earlier prose here named it as the writer for
+  "every invoice a clock advance generates", the opposite of what
+  `billing/engine.go` says.)
 - Handler-level emitters (which emit on `r.Context()`, a ctx the service's
   internal bind never reaches) bind explicitly before emitting:
   `invoice` (gated on `inv.IsSimulated` — exact and free on the wall-clock

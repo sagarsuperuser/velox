@@ -862,6 +862,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		tokenSvc:         tokenSvc,
 		auditLogger:      auditLogger,
 	}
+	// Struct-literal wiring again — invisible to the SetAuditLogger grep. This
+	// adapter is the ONLY writer of the finalize-time setup_link_sent row, and its
+	// emitter is nil-guarded, so a dropped wiring here loses that row in silence.
+	audit.MustWired(noPMNotifier)
 	engine.SetNoPaymentMethodNotifier(noPMNotifier)
 	// Same adapter feeds the manual-invoice finalize path so an
 	// operator-composed one-off invoice notifies the customer + queues for
@@ -1304,13 +1308,20 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// Bootstrap — one-time setup (no auth, only works when no tenants
 	// exist). The deps wire the peer user package into
 	// tenant.RunBootstrap's single-tx owner-user creation (ADR-073).
-	bootstrapH := tenant.NewBootstrapHandler(db, tenant.BootstrapDeps{
+	// Named (not an inline literal) so the boot gate below can see the Audit field
+	// it carries. Wired by STRUCT LITERAL rather than SetAuditLogger, which is
+	// exactly how it escaped the gate: the pin test greps for SetAuditLogger
+	// receivers, and MustWired only sees what it is handed. Bootstrap mints a LIVE
+	// secret key and the owner account, its route is `explicit` in the registry,
+	// and deps.Audit is NIL-GUARDED (bootstrap_run.go) — so a dropped wiring here
+	// would have silently un-audited the birth of a money-moving credential.
+	bootstrapDeps := tenant.BootstrapDeps{
 		HashPassword: user.HashPassword,
 		CreateUserTx: user.NewPostgresStore(db).CreateInTx,
-		// Bootstrap mints a LIVE secret key and the owner account; the rows
-		// ride its own tx into the new tenant's log (ADR-090).
-		Audit: auditLogger,
-	})
+		Audit:        auditLogger,
+	}
+	audit.MustWired(&bootstrapDeps)
+	bootstrapH := tenant.NewBootstrapHandler(db, bootstrapDeps)
 	r.Group(func(r chi.Router) {
 		r.Use(rateLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
@@ -1402,8 +1413,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// killed it mid-file — which, pre-P12, produced a silently
 	// truncated CSV (see exportAbort). Same auth chain as /v1;
 	// idempotency skipped (GET-only). Each endpoint requires the
-	// corresponding *Read permission, so a publishable key restricted
-	// to one resource can only export what it can list.
+	// corresponding *Read permission. A publishable key holds the EMPTY
+	// permission set (auth/permission.go: KeyTypePublishable: {}), so it can
+	// export NOTHING — not "only what it can list". MANUAL_TEST asserts the 403.
 	//
 	// The audit catch-all used to be mounted here too — and it BUFFERED the
 	// whole response to sniff a label out of it. Its buffer implemented no
@@ -1491,9 +1503,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		// /customers subtree mixes reads (GET list/get/billing-profile) and
 		// writes (POST create, PATCH update, PUT billing-profile, GDPR
 		// delete-data). RequireMethod splits the gate by HTTP method so a
-		// publishable key (customer:read only) can list/get but cannot
-		// create/update/delete. Pre-fix the entire subtree was gated on
-		// PermCustomerRead, letting any read-tier key write.
+		// read-tier key can list/get but cannot create/update/delete. (NOT a
+		// publishable key: those hold the EMPTY permission set and cannot read
+		// customers at all — auth/permission.go. Pre-fix the entire subtree was
+		// gated on PermCustomerRead, letting any read-tier key write.)
 		r.With(auth.RequireMethod(auth.PermCustomerRead, auth.PermCustomerWrite)).Mount("/customers", customerH.Routes())
 		// Customer-scoped usage view — composes usage aggregation with
 		// customer / subscription / pricing reads. PermUsageRead so the
