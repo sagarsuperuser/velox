@@ -50,8 +50,13 @@ Alternatives considered by the adversarial design panel:
 1. **Delete the response swap.** On audit write failure the middleware serves
    the handler's response untouched and records the failure
    (`velox_audit_write_errors_total{tenant_id}` + ERROR log). The middleware
-   never mutates a response — banned as a class; a regression test pins it
-   (`TestAudit_WriteFailure_ServesResponseUntouchedAndEmitsMetric`).
+   never mutates a response — banned as a class. The middleware this named has
+   since been DELETED (ADR-090: the catch-all is gone, replaced by a route
+   registry and a pure-observer detector), and so was its regression test. The
+   invariant survived the replacement and is pinned on the detector that took its
+   place: `TestAuditCoverage_NeverMutatesTheResponse` (plus
+   `TestAuditCoverage_PreservesStreaming`) in
+   internal/api/middleware/audit_detector_test.go.
 2. **Retire `audit_fail_closed` end-to-end**: the middleware branch, the
    `AuditSettingsLookup` interface, the store's single-column lookup, and the
    `TenantSettings` field are removed. The DB column stays (harmless,

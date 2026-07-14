@@ -298,7 +298,7 @@ export default function AuditLogPage() {
   // looked complete and nothing in it said otherwise. The server-side export has
   // no cap (audit.Logger.Stream), streams rather than materializing, and — being
   // bulk egress of the audit log — writes its own `export` audit row before the
-  // first byte leaves (ADR-090 §6). Exporting the evidence is itself evidence.
+  // first byte leaves (ADR-090 §7). Exporting the evidence is itself evidence.
   const handleExport = async () => {
     setExporting(true)
     try {

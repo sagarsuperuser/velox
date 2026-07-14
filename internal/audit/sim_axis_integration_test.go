@@ -49,17 +49,20 @@ func emit(t *testing.T, db *postgres.DB, ctx context.Context, tenantID string, l
 	}
 }
 
-// TestSimAxis_FilterAndOrdering covers the read path the sim axis exists for:
-// scope to one clock, window in simulated time, and order by simulated time
-// across an advance that collapses months of simulated events into ONE
-// wall-clock instant.
+// TestSimAxis_FilterAndWindow covers the read path the sim axis exists for:
+// scope to one clock, and window in SIMULATED time.
+//
+// There is deliberately no "order by simulated time" — see QueryFilter. Within a
+// clock it would produce the same order as created_at (advances are monotonic,
+// and every row of ONE advance shares that advance's instant), and across clocks
+// it would interleave unrelated simulations into a timeline that never happened.
 //
 // The collapse is the whole problem. A clock advance replays months of billing
 // in a few hundred milliseconds, so created_at (wall-clock, ADR-030, and
 // correctly so — it answers "when did the operator click Advance") orders those
 // rows by nothing meaningful and windows them into a single day. Only
 // sim_effective_at can say which simulated month a row belongs to.
-func TestSimAxis_FilterAndOrdering(t *testing.T) {
+func TestSimAxis_FilterAndWindow(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	ctx := postgres.WithLivemode(context.Background(), false)
 	tenantID := testutil.CreateTestTenant(t, db, "Sim Axis Read")

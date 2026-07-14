@@ -354,7 +354,12 @@ custody; Stripe and AWS CloudTrail both log data-export/read events.
   permission as the read route). It replaces a dashboard Export button that paged
   the API in the browser and stopped at 50,000 rows — a silent truncation of the
   compliance evidence itself. `Logger.Stream` applies no cap. Because the row is
-  written first, the exported file CONTAINS the record of its own export.
+  written first, it is always in the LOG — and an UNFILTERED export therefore
+  also carries the record of its own export in the FILE. A filtered export need
+  not: any filter that excludes the row excludes it, and a clock-scoped export
+  (`?test_clock_id=`) never contains it, because the export row is a wall-clock
+  row with NULL sim columns. The row is in the log either way; the FILE is not
+  self-certifying in general.
 - **Declared, not inferred** — a small read-egress registry
   (`auditEgressRegistry`) with its own two-way-diff arch test over the live GET
   routes under `/v1/exports`. Deliberately NOT a general GET axis in the mutating

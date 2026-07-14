@@ -125,9 +125,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	// which a CSV page-walk read as "export complete" (silent truncation
 	// / duplication with zero error signal).
 	// Cursor encode/decode inlined here rather than imported from
-	// internal/api/middleware because middleware/audit.go imports
-	// this package (audit_log row-writer middleware) — circular dep
-	// otherwise. The wire format is identical to middleware's
+	// internal/api/middleware, because middleware imports THIS package — a
+	// circular dep otherwise. (The importer used to be middleware/audit.go, the
+	// catch-all row-writer; that file is gone, but the cycle is not: the
+	// pure-observer detector and the idempotency middleware both still import
+	// internal/audit.) The wire format is identical to middleware's
 	// Cursor (base64(json{id, created_at})) so SPA clients can pass
 	// audit cursors interchangeably with cursors from other endpoints.
 	if c := r.URL.Query().Get("after"); c != "" {

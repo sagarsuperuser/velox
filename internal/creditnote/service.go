@@ -1580,10 +1580,21 @@ func (s *Service) RetryRefund(ctx context.Context, tenantID, id string) (domain.
 	if refundErr != nil {
 		// Persist the still-failed state so the next retry has the latest error
 		// context and the dashboard surfaces accurate status. It rides the same
-		// audited write: a real pending→failed move records its row (this is the
-		// operator-visible money fact the retry produced); a failed→failed
-		// re-drive moves nothing and records nothing. The persist error is
-		// LOGGED, never discarded, and the Stripe error stays primary.
+		// audited write, and that emission is UNCONDITIONAL — a failed→failed
+		// re-drive still records a row, carrying status_changed=false.
+		//
+		// That is deliberate, and it is the one place the "emit only on a
+		// genuinely-mutated path" rule is inverted on purpose: the operator's
+		// retry IS the fact. It hit Stripe. A row saying "the operator retried
+		// this refund and it failed again" is exactly the money-path evidence an
+		// auditor needs, and suppressing it because the STATUS did not move would
+		// erase a real operator action. (The opposite of a webhook no-op
+		// redelivery, which mutates nothing and must NOT emit.) The store REPORTS
+		// whether state moved; this caller DECIDES that the action is the fact —
+		// see the registry note on POST /v1/credit-notes/{id}/retry-refund.
+		//
+		// The persist error is LOGGED, never discarded, and the Stripe error stays
+		// primary.
 		if perr := s.store.UpdateRefundStatusAudited(ctx, tenantID, id, domain.RefundFailed, cn.StripeRefundID, emit); perr != nil {
 			slog.ErrorContext(ctx, "persist failed refund status after retry",
 				"credit_note_id", id, "error", perr)

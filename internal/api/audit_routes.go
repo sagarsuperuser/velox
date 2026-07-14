@@ -61,11 +61,15 @@ const (
 	// by the in-tx emissions its handlers make; the delivery itself is recorded
 	// in stripe_webhook_events.
 	reasonWebhookOwned exemptReason = "webhook_owned"
-
-	// reasonBootstrap: one-time, pre-tenant setup. There is no tenant (and no
-	// actor) to attribute a row to until it succeeds.
-	reasonBootstrap exemptReason = "bootstrap"
 )
+
+// There is deliberately NO `bootstrap` reason. One existed, justified as
+// "one-time, pre-tenant setup — there is no tenant (and no actor) to attribute a
+// row to until it succeeds." Both clauses were false: bootstrap mints a LIVE
+// secret key and the owner account, and by the time it can emit, the tenant it
+// just created exists to attribute to. POST /v1/bootstrap is `explicit` and
+// writes its provisioning rows into the new tenant's own log. Re-adding this
+// reason would un-audit the birth of a money-moving credential.
 
 // routeKey is (HTTP method, canonical chi route pattern).
 type routeKey struct {
@@ -234,9 +238,9 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/subscriptions/{id}/activate"}:                        explicit("subscription.Handler.activate → Log(activate, subscription)."),
 	{"POST", "/v1/subscriptions/{id}/cancel"}:                          explicit("subscription.Service.Cancel → LogInTx(cancel, subscription) on the cancel tx (single writer: operator route AND dunning's terminal cancel)."),
 	{"POST", "/v1/subscriptions/{id}/schedule-cancel"}:                 explicit("subscription.Handler.scheduleCancel → Log(update, subscription: cancel_scheduled)."),
-	{"DELETE", "/v1/subscriptions/{id}/scheduled-cancel"}:              explicit("subscription.Handler.clearScheduledCancel → Log(update, subscription: cancel_unscheduled)."),
-	{"PUT", "/v1/subscriptions/{id}/pause-collection"}:                 explicit("subscription.Handler.pauseCollection → Log(update, subscription)."),
-	{"DELETE", "/v1/subscriptions/{id}/pause-collection"}:              explicit("subscription.Handler.resumeCollection → Log(update, subscription)."),
+	{"DELETE", "/v1/subscriptions/{id}/scheduled-cancel"}:              explicit("subscription.Handler.clearScheduledCancel → Log(update, subscription; metadata action=cancel_cleared)."),
+	{"PUT", "/v1/subscriptions/{id}/pause-collection"}:                 explicit("subscription.Service.PauseCollection → Log(update, subscription; metadata action=collection_paused). The HANDLER emits nothing — the row is the service's."),
+	{"DELETE", "/v1/subscriptions/{id}/pause-collection"}:              explicit("subscription.Service.ResumeCollection → Log(update, subscription; metadata action=collection_resumed). The HANDLER emits nothing — the row is the service's."),
 	{"POST", "/v1/subscriptions/{id}/end-trial"}:                       explicit("subscription.Handler.endTrial → Log(update, subscription: trial_ended)."),
 	{"POST", "/v1/subscriptions/{id}/extend-trial"}:                    explicit("subscription.Handler.extendTrial → Log(update, subscription: trial_extended)."),
 	{"PUT", "/v1/subscriptions/{id}/billing-thresholds"}:               explicit("subscription.Handler.setBillingThresholds → Log(update, subscription)."),
@@ -244,7 +248,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/subscriptions/{id}/items"}:                           explicit("subscription.Handler.addItem → Log(update, subscription) + a proration_failed row on the fallback path."),
 	{"PATCH", "/v1/subscriptions/{id}/items/{itemID}"}:                 explicit("subscription.Handler.updateItem → Log(subscription.item_updated)."),
 	{"DELETE", "/v1/subscriptions/{id}/items/{itemID}"}:                explicit("subscription.Handler.removeItem → Log(update, subscription)."),
-	{"DELETE", "/v1/subscriptions/{id}/items/{itemID}/pending-change"}: explicit("subscription.Handler.cancelPendingItemChange → Log(update, subscription: pending_change_canceled)."),
+	{"DELETE", "/v1/subscriptions/{id}/items/{itemID}/pending-change"}: explicit("subscription.Handler.cancelPendingItemChange → Log(update, subscription; metadata action=cancel_pending_item_plan_change)."),
 
 	// --- invoices --------------------------------------------------------
 	{"POST", "/v1/invoices"}:                          explicit("invoice.Service.Create → LogInTx(create, invoice) on the invoice's own tx."),
@@ -269,7 +273,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 
 	// --- credits ----------------------------------------------------------
 	{"POST", "/v1/credits/grant"}:  explicit("credit.Service.Grant → LogInTx(grant, credit) on the ledger tx (ADR-090's first domain)."),
-	{"POST", "/v1/credits/adjust"}: explicit("credit.Service.Adjust → LogInTx(adjust, credit) on the ledger tx."),
+	{"POST", "/v1/credits/adjust"}: explicit("credit.Service.Adjust → LogInTx(action=credit.adjustment, resource=credit) on the ledger tx. NOT an 'adjust' action — no such action exists in the vocabulary."),
 
 	// --- billing ----------------------------------------------------------
 	{"POST", "/v1/billing/run"}: explicit("billing.Handler.run → Log(run, billing: cycle_run_triggered) — the operator's TRIGGER row (the per-invoice finalize rows can't say who started the run). Residual own-tx by design: the route owns no tx. A failed emission is surfaced in the response and left unmarked, so the detector reports it."),
@@ -308,7 +312,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"DELETE", "/v1/test-clocks/{id}"}:             explicit("testclock.Handler.delete → Log(delete, test_clock: teardown), reading the clock BEFORE the teardown so the row carries its name + final frozen instant. ADR-086: the audit row is the simulation's ONLY surviving record after teardown."),
 
 	// --- checkout / public payment surfaces --------------------------------
-	{"POST", "/v1/checkout/setup"}:                          explicit("payment.CheckoutHandler.createSetupSession → LogInTx on the session-claim tx."),
+	{"POST", "/v1/checkout/setup"}:                          explicit("payment.CheckoutHandler.createSetupSession → persistStripeMapping → LogInTx(update, customer; metadata action=checkout_setup_started) on the STRIPE-CUSTOMER-MAPPING write. There is no 'session-claim' tx. Emits only when the UPDATE touched a row, so a setup against a customer that is not on this tenant/livemode plane fabricates nothing."),
 	{"POST", "/v1/public/invoices/{token}/checkout"}:        explicit("hostedInvoiceStripeAdapter (api/adapters.go) → LogInTx on the checkout-claim tx; actor is the CUSTOMER (auth.WithCustomerActor). Outside the old catch-all entirely."),
 	{"POST", "/v1/public/payment-updates/{token}/checkout"}: explicit("payment.PublicPaymentHandler.createCheckoutSession → LogInTx on the token consume/restore txs; customer actor."),
 }
@@ -362,5 +366,5 @@ var auditEgressRegistry = map[routeKey]auditDecl{
 	{"GET", "/v1/exports/invoices.csv"}:      explicit("exportsHandler.exportInvoices → auditExport(action=export, resource_type=invoice) BEFORE the stream, fail-closed."),
 	{"GET", "/v1/exports/subscriptions.csv"}: explicit("exportsHandler.exportSubscriptions → auditExport(action=export, resource_type=subscription) BEFORE the stream, fail-closed."),
 	{"GET", "/v1/exports/usage-events.csv"}:  explicit("exportsHandler.exportUsageEvents → auditExport(action=export, resource_type=usage_event) BEFORE the stream, fail-closed. The from/to range is required by the route and lands in the row's metadata."),
-	{"GET", "/v1/exports/audit-log.csv"}:     explicit("exportsHandler.exportAuditLog → auditExport(action=export, resource_type=audit_log) BEFORE the stream, fail-closed. Exporting the audit log is itself an audited event, and because the row is written first, the exported file CONTAINS it."),
+	{"GET", "/v1/exports/audit-log.csv"}:     explicit("exportsHandler.exportAuditLog → auditExport(action=export, resource_type=audit_log) BEFORE the stream, fail-closed. Exporting the audit log is itself an audited event. The row is written first, so it is always in the LOG; an UNFILTERED export therefore also contains it in the FILE, but a filtered one need not (a clock-scoped export never does — the export row has NULL sim columns)."),
 }

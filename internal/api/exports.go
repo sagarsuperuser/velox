@@ -25,8 +25,13 @@ import (
 
 // Sprint 2 — data export. Streaming CSV endpoints so a tenant can
 // take their data out, clearing the "I take my data" review during
-// procurement. RLS-scoped via the standard Bearer-key auth chain;
-// each endpoint reuses the existing List method on its store.
+// procurement. RLS-scoped via the standard Bearer-key auth chain.
+//
+// Each endpoint issues its OWN query (StreamForExport on its store), NOT the
+// store's List method. Borrowing List is what this code used to do, and it is
+// how two columns the CSVs promised — customers.email_status and
+// usage_events.origin — came to be blank in every export ever taken: List's
+// SELECT does not carry them. An export's columns are its own contract.
 //
 // Streaming: ONE snapshot transaction per export, one query, rows handed to the
 // csv.Writer as they are scanned and flushed every exportPageSize rows — so the
@@ -43,9 +48,15 @@ import (
 // guaranteed; a duplicated usage row in a finance CSV reads as usage that did
 // not happen. Under a single MVCC snapshot the question cannot arise. (#475)
 //
-// Date filters: every endpoint accepts ?from=<RFC3339>&to=<RFC3339>;
-// usage_events REQUIRES both (the table is unbounded — without a
-// range, an export would walk the entire history).
+// Date filters: the four DATA exports accept ?from=<RFC3339>&to=<RFC3339>, and
+// usage_events REQUIRES both (the table is unbounded — without a range, an
+// export would walk the entire history).
+//
+// The audit-log export is the exception: it takes ?date_from / ?date_to, because
+// its params mirror the audit-log READ route so the dashboard's on-screen filters
+// and its Export produce the same set. Passing ?from/?to there is silently
+// ignored and you get the whole log — a footgun worth knowing about rather than
+// papering over, since the two routes sit side by side in the same handler.
 //
 // AUDIT (ADR-090 §7): every export here emits an action=export audit row
 // BEFORE the first byte streams, and fails closed if it cannot. This is the
@@ -121,13 +132,14 @@ func (h *exportsHandler) Routes(customerRead, invoiceRead, subscriptionRead, usa
 	return r
 }
 
-// parseDateRange reads ?from / ?to off the request. Thin wrapper
-// around timefilter.ParseRange so exports share the same date-filter
-// contract as audit-log queries + usage queries — RFC3339 OR
-// YYYY-MM-DD, both accepted everywhere. Returns zero time.Time when
-// missing; callers branch on IsZero to decide whether to apply the
-// filter post-load (for stores that don't have native created_at
-// filtering on their ListFilter).
+// parseDateRange reads ?from / ?to off the request. Thin wrapper around
+// timefilter.ParseRange so exports share the same date-filter contract as
+// audit-log queries + usage queries — RFC3339 OR YYYY-MM-DD, both accepted
+// everywhere. Returns zero time.Time when missing.
+//
+// The range is applied in SQL, by each store's StreamForExport. It used to be
+// applied in Go AFTER the page was fetched, which meant a filtered export still
+// walked every row in the tenant; nothing filters post-load any more.
 func parseDateRange(r *http.Request) (from, to time.Time, err error) {
 	return timefilter.ParseRange(r, "from", "to")
 }
@@ -590,10 +602,18 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 // audit.Logger.Stream applies no cap — the export is bounded by its filters and
 // nothing else.
 //
-// The export audits itself: the row is written before the stream begins, and the
-// stream's snapshot therefore CONTAINS it (newest-first, so it is the first data
-// row). "Who took a copy of the audit log" is the one question a tamper-evidence
-// system must never be unable to answer about itself.
+// The export audits itself: the row is written BEFORE the stream begins, so it is
+// always in the LOG. "Who took a copy of the audit log" is the one question a
+// tamper-evidence system must never be unable to answer about itself.
+//
+// Whether it is in the FILE is a different claim, and a weaker one: an UNFILTERED
+// export contains its own row (the snapshot is taken after the write, newest
+// first, so it is the first data row) — but any filter that does not match it
+// excludes it, exactly as it would exclude any other row. A clock-scoped export
+// (?test_clock_id=) NEVER contains it: the export row is a wall-clock row with
+// NULL sim columns. That is correct behavior, not a hole — the row is in the log
+// either way — but the file is not self-certifying in general, and three places
+// used to say it was.
 func (h *exportsHandler) exportAuditLog(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	if tenantID == "" {
