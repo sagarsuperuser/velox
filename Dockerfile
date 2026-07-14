@@ -2,7 +2,14 @@
 # Pin the exact patch (not the floating 1.25 tag) so the shipped binary always
 # carries the patched stdlib — the build cache otherwise reuses an older 1.25.x
 # layer and the image ships CVEs the Grype gate (critical) then rejects.
-FROM golang:1.25.11-alpine AS builder
+#
+# This pin MUST be >= go.mod's `go` directive. The image runs GOTOOLCHAIN=local,
+# so an older builder does not silently download a newer toolchain — it refuses:
+# "go.mod requires go >= 1.25.12 (running go 1.25.11)". CI enforces the ordering
+# (the go-version-consistency step in .github/workflows/ci.yml), because the
+# docker job only runs on main: bumping go.mod in a PR used to leave main's
+# image build broken with nothing failing until after the merge.
+FROM golang:1.25.12-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 

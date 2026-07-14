@@ -159,6 +159,30 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v7
 
+      # The Dockerfile's builder image must be at least go.mod's `go` directive.
+      # It runs GOTOOLCHAIN=local, so an older builder does not quietly fetch a
+      # newer toolchain — `go mod download` just fails.
+      #
+      # This is checked HERE, in a job that runs on pull requests, because the
+      # docker job only runs on main. Bumping go.mod's directive in a PR left
+      # every subsequent main build broken with nothing failing on the PR itself;
+      # main sat red for days behind a job nobody was watching.
+      - name: Go version consistency (go.mod vs Dockerfile builder)
+        run: |
+          set -euo pipefail
+          MOD=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)
+          IMG=$(sed -n 's/^FROM golang:\([0-9.]*\)-alpine AS builder$/\1/p' Dockerfile)
+          if [ -z "$MOD" ] || [ -z "$IMG" ]; then
+            echo "could not parse versions (go.mod='$MOD' Dockerfile='$IMG')" >&2
+            exit 1
+          fi
+          echo "go.mod requires go $MOD; Dockerfile builds on golang:$IMG-alpine"
+          # Lowest of the two must be the go.mod one, i.e. IMG >= MOD.
+          if [ "$(printf '%s\n%s\n' "$MOD" "$IMG" | sort -V | head -1)" != "$MOD" ]; then
+            echo "::error::Dockerfile builder golang:$IMG is OLDER than go.mod's 'go $MOD'. The image build runs GOTOOLCHAIN=local and will fail with 'go.mod requires go >= $MOD'. Bump the FROM line in Dockerfile." >&2
+            exit 1
+          fi
+
       # ADR-030 guard: bare `time.Now()` in service / store / engine
       # code on clock-pinned-entity domains leaks wall-clock into
       # rows that catchup queries read against frozen_time. Run as
