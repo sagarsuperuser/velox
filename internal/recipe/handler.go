@@ -90,7 +90,10 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) {
 	// not report a preview as an uncovered mutation. (It used to opt out of a
 	// catch-all middleware that would have invented a "Created recipe" row; that
 	// middleware is gone (ADR-090), but the declaration is still required: the
-	// route is `explicit` in the registry, so the detector does inspect it.)
+	// route is exempt(non_mutating_preview) in the registry, so the detector
+	// already skips it. MarkSkip is kept as the LOCAL declaration the registry
+	// note cites — the two agree, and if the exemption is ever lifted this call is
+	// what keeps the route from reporting as an uncovered mutation.)
 	audit.MarkSkip(r.Context())
 
 	key := chi.URLParam(r, "key")

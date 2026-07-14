@@ -230,8 +230,8 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/recipes/{key}/instantiate"}: explicit("recipe.Service.Instantiate → LogInTx(create, recipe) on the generate-plan tx (ADR-085 born-unique install). An idempotent re-apply installs nothing, emits nothing, and declares audit.MarkSkip on the badge-exists branch — a no-op deserves no record (the catch-all fabricated a 'created recipe' row for it)."),
 
 	// --- provider costs (COGS) ------------------------------------------
-	{"PUT", "/v1/provider-costs"}:         explicit("usage.ProviderCostHandler.upsert → LogInTx(update, provider_cost_rate) on the upsert tx."),
-	{"DELETE", "/v1/provider-costs/{id}"}: explicit("usage.ProviderCostHandler.delete → LogInTx(delete, provider_cost_rate) on the delete tx."),
+	{"PUT", "/v1/provider-costs"}:         explicit("usage.ProviderCostHandler.upsert → LogInTx(update, provider_cost) on the upsert tx."),
+	{"DELETE", "/v1/provider-costs/{id}"}: explicit("usage.ProviderCostHandler.delete → LogInTx(delete, provider_cost) on the delete tx."),
 
 	// --- subscriptions ---------------------------------------------------
 	{"POST", "/v1/subscriptions"}:                                      explicit("subscription.Handler.create → Log(create, subscription)."),
@@ -261,7 +261,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/invoices/{id}/refund"}:              explicit("invoice.Handler.refund → Log(refund, invoice); the credit note carries its own issued row."),
 	{"POST", "/v1/invoices/{id}/retry-tax"}:           explicit("invoice.Handler.retryTax → Log(retry_tax, invoice)."),
 	{"POST", "/v1/invoices/{id}/send"}:                explicit("invoice.Handler.sendEmail → Log(send, invoice)."),
-	{"POST", "/v1/invoices/{id}/resend-setup-link"}:   explicit("invoice.Handler.resendSetupLink → Log(send, invoice: setup_link)."),
+	{"POST", "/v1/invoices/{id}/resend-setup-link"}:   explicit("invoice.Handler.resendSetupLink → Log(send, invoice; metadata action=resend_setup_link)."),
 	{"POST", "/v1/invoices/{id}/rotate-public-token"}: explicit("invoice.Handler.rotatePublicToken → Log(rotate, invoice) — never records the token."),
 
 	// --- credit notes -----------------------------------------------------

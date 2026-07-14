@@ -102,10 +102,11 @@ function prettyLabel(value: string): string {
 
 // Test-clock sim-context keys. Since ADR-090 §5 these are real COLUMNS
 // (sim_effective_at / test_clock_id, migration 0148) stamped by the audit
-// writer from the ctx's clock binding; the writer also mirrors them into
-// metadata, which is where rows written before 0148 carry them. Read the
-// columns first, fall back to metadata — an append-only log never rewrites its
-// history, so both eras are on screen forever.
+// writer from the ctx's clock binding. The writer also mirrors them into metadata
+// (which is where rows written before 0148 carry them), but this page reads the
+// COLUMNS ONLY and deliberately does not fall back — see simContext() below for
+// why: the clock FILTER reads the columns, so lighting the chip off metadata
+// would show a chip on a row the filter then cannot find.
 //
 // Excluded from generic metadata rendering — surfaced as a dedicated subline +
 // chip so the operator reads "wall-clock click + simulated effect-time"
@@ -199,9 +200,11 @@ export default function AuditLogPage() {
     resource_id: '',
     date_from: '',
     date_to: '',
-    // Sim axis (ADR-090 §5): scope to one simulation, and order by SIMULATED
-    // time. Both live in the URL so a forensic view of a torn-down clock is a
-    // shareable link.
+    // Sim axis (ADR-090 §5): scope to one simulation. It lives in the URL so a
+    // forensic view of a torn-down clock is a shareable link. There is
+    // deliberately no "order by simulated time" control — within one clock it is
+    // the same order as wall-clock, and across clocks it interleaves unrelated
+    // simulations into a timeline that never happened.
     test_clock: '',
   })
   const {

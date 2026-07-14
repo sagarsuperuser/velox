@@ -76,21 +76,15 @@ func markEmitted(ctx context.Context) {
 // claim about REALITY — "this 2xx changed nothing" — and it is wrong to call it
 // on any path that mutated state.
 //
-// Live callers — keep this list in step with the code, or it becomes the same
-// kind of lie the registry exists to catch:
-//   - the read-only POST previews (invoice create_preview, recipe preview)
-//   - the idempotency replay (the cached response of a request whose original
-//     DID emit)
-//   - the stale-cookie logout
-//   - the unknown-email password reset (the fixed 200 is the enumeration defence)
-//   - a settings save that changed no field
-//   - a recipe re-apply that installs nothing
-//   - a credit-note issue that defers
-//   - a DUPLICATE usage ingest (usage.Handler.respondIngestError): the
-//     idempotency key already exists, so no event row is written
-//   - a hosted-invoice payment-session REUSE (hostedInvoiceStripeAdapter.
-//     CreateInvoicePaymentSession): the customer clicked Pay twice and got the
-//     same Stripe session back; no new claim row, so nothing to audit
+// The live callers are NOT enumerated here. That list drifted in three
+// consecutive completeness audits — a caller was added, the prose was not, and a
+// paragraph that reads as exhaustive quietly stopped being so.
+//
+// It is now DERIVED FROM THE CODE and pinned by
+// internal/arch/audit_prose_gates_test.go (markSkipCallers): add a MarkSkip call
+// without declaring it there and CI fails, naming the file. Read that table for
+// the current set and the reason each one is legitimate. Prose that makes a
+// precise, checkable claim and is never checked will drift; this one is checked.
 func MarkSkip(ctx context.Context) {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
 		s.accounted.Store(true)

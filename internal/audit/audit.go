@@ -236,9 +236,17 @@ type Entry struct {
 //     the only surviving evidence the override ever existed. Closure: give
 //     pricing a clock.Resolver and bind at the handler — the axis then follows
 //     from ctx with no change here.
-//   - PAYMENT-METHOD routes. Stripe PM state is a real-world effect with no
-//     simulated counterpart; paymentmethods is not in the clock domain. A
-//     clock-scoped view will not show "operator attached a card mid-simulation."
+//   - PAYMENT-METHOD routes. NOT because they are "outside the clock domain" — an
+//     earlier version of this note said that, and it is false by the very test the
+//     price-override bullet above applies: payment_methods IS torn down with the
+//     clock (testclock/postgres.go). The real reason is narrower and worth stating
+//     exactly: a payment method is a REAL Stripe object. Attaching one during a
+//     simulation attaches a real card at Stripe, so the row is a wall-clock fact
+//     about a real-world effect, and stamping it into simulated time would claim
+//     the card was attached at an instant that never happened. The accepted loss
+//     is real: a clock-scoped view will not show "operator attached a card
+//     mid-simulation." Closure trigger: the same one as the checkout rows below —
+//     auditing the settle path, at which point these breadcrumbs join it.
 //   - PUBLIC CHECKOUT rows (hosted-invoice Pay click, payment-update link,
 //     checkout setup). These paths never bind a pin — they stamp wall-clock and
 //     talk to real Stripe — so their rows are wall-clock rows about an entity
@@ -257,10 +265,13 @@ type Entry struct {
 // wall-clock path, which is the overwhelming majority of rows and the reason
 // the clock index (0148) is partial.
 //
-// It also mirrors the pair into the metadata bag under the legacy keys the
-// dashboard already renders, so the audit page's sim subline keeps working on
-// old and new rows alike. The mirror is a COPY — the caller's map is never
-// mutated, because emitters build their metadata once and reuse it.
+// It also mirrors the pair into the metadata bag under the legacy keys. The audit
+// PAGE no longer reads that mirror — it reads the columns only, deliberately, so
+// that what it renders is exactly what the clock filter can find. The mirror is
+// still what the SUBSCRIPTION timeline renders (it offers no clock filter, so it
+// has no promise to break), and it is where rows written before 0148 carry their
+// sim context. The mirror is a COPY — the caller's map is never mutated, because
+// emitters build their metadata once and reuse it.
 //
 // THE WRITER OWNS metadata["sim_effective_at"] AND metadata["test_clock_id"].
 // Emitters must not set them: this function overwrites both unconditionally,
@@ -384,8 +395,9 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 //   - api_key  — an SDK / curl caller on a Bearer vlx_… key (auth.WithKeyID)
 //   - system   — background workers / cron with no request identity
 //
-// Both audit write paths (Logger.Log and the AuditLog middleware) call this so
-// the actor resolves identically. Before this, both read only auth.KeyID — and
+// Every audit write path calls this, so the actor resolves identically on all of
+// them: the post-hoc Logger.Log and the in-tx LogInTx. (There used to be a third
+// — the catch-all AuditLog middleware — which ADR-090 deleted.) Before this, both read only auth.KeyID — and
 // session.applyToCtx sets WithUserID but never WithKeyID — so every dashboard
 // (session-cookie) operator action recorded actor_type='system'/'system', and
 // the log could not answer "who did this?" for the primary UI. The 'user'

@@ -577,9 +577,13 @@ func (s *Service) RunCatchup(ctx context.Context, job CatchupJob) (err error) {
 			frozen = clk.FrozenTime
 			// WithSim, not WithEffectiveNow: the catchup ctx carries the CLOCK
 			// as well as the instant, so every audit row every phase below emits
-			// (cycle finalize, threshold, tax retry, charge, dunning, credit
-			// expiry, clawback issue, scheduled cancel) lands on the sim axis
-			// without any of them knowing test clocks exist. This is the driver
+			// (cycle finalize, threshold, tax retry, charge, dunning, clawback
+			// issue) lands on the sim axis without any of them knowing test clocks
+			// exist. Credit expiry runs under this same binding but emits NO audit
+			// row at all — the event-sourced credit ledger IS its record — so it is
+			// not in that list. (It was, in three separate places; see
+			// internal/audit/audit.go's SIM-AXIS COVERAGE note, which is the one
+			// that governs.) This is the driver
 			// that makes the clock filter honest: after ADR-086 teardown these
 			// rows are the ONLY surviving record of the advance.
 			ctx = clock.WithSim(ctx, clock.Sim{At: frozen, TestClockID: job.ClockID})

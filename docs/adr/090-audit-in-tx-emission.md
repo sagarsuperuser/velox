@@ -142,16 +142,19 @@ Two amendments this forced, both deliberate:
   registry's static gate.
 - **`MarkSkip` survives, `MarkHandled` does not.** `MarkSkip` is now the
   detector's "this request mutated nothing" declaration, and it is load-bearing:
-  NINE live paths return 2xx having mutated nothing: a stale-cookie logout; a
-  password reset for an unknown email (the fixed 200 *is* the enumeration
-  defence); a settings save that changed no field; an idempotency replay; the two
-  read-only previews (invoice `create_preview`, recipe preview); a recipe
-  re-apply that installs nothing; a credit-note issue that defers; a DUPLICATE
-  usage ingest (the idempotency key already exists, so no event row is written);
-  and a hosted-invoice payment-session REUSE (a second Pay click returns the same
-  Stripe session, so there is no new claim row). `internal/audit/context.go`
-  holds the maintained list — keep the two in step, or this paragraph becomes the
-  same kind of lie the registry exists to catch. Without the declaration each would report as an
+  A set of live paths return 2xx having mutated nothing — read-only previews, an
+  idempotency replay, a stale-cookie logout, the fixed-200 password-reset defences,
+  a settings save that changed no field, a recipe re-apply that installs nothing, a
+  credit-note issue that defers, a duplicate usage ingest, a hosted-invoice
+  payment-session reuse.
+
+  That list is deliberately NOT enumerated exhaustively here. Every attempt to do
+  so went stale within one PR (three consecutive audits caught it), because a
+  paragraph cannot be re-derived when a caller is added. The authoritative set is
+  DERIVED FROM THE CODE and gated in CI —
+  `internal/arch/audit_prose_gates_test.go` (`markSkipCallers`) — which fails,
+  naming the file, when a MarkSkip call appears without a declared reason.
+  Without the declaration each would report as an
   uncovered mutation forever, and a detector that cries wolf on a normal client
   retry is a detector nobody keeps. `MarkHandled` is gone because it was the
   exported escape hatch that let a handler ASSERT coverage it did not have; the
@@ -292,9 +295,13 @@ not a rounding error; it is a row the clock filter cannot see):
   change.**
 - **Payment-method routes** and **public checkout rows** (hosted-invoice Pay
   click, payment-update link, checkout setup) emit no sim axis. Neither
-  path binds a pin: both stamp wall-clock and drive real Stripe, so their
-  rows are wall-clock facts about an entity that happens to be pinned. This
-  is consistent with the boundary the clock view already has — the
+  path binds a pin: both stamp wall-clock and drive REAL Stripe, so their rows are
+  wall-clock facts about a real-world effect. (Note what is NOT the reason:
+  "payment methods are outside the clock domain" is false — payment_methods is
+  torn down with the clock, exactly like price overrides. The reason is that the
+  CARD is real: attaching one mid-simulation attaches a real card at Stripe, and
+  stamping that into simulated time would claim it happened at an instant that
+  never existed.) This is consistent with the boundary the clock view already has — the
   SETTLEMENT those clicks lead to arrives as a Stripe webhook, which this
   same ADR already records as writing no audit row at all. Closure trigger
   for both: auditing the settle path (the registry's `reasonWebhookOwned`
