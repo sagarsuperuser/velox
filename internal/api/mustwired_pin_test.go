@@ -47,7 +47,10 @@ func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 	wired := map[string]bool{}
 	for _, mw := range mws {
 		for _, name := range strings.Split(mw[1], ",") {
-			wired[strings.TrimSpace(name)] = true
+			// audit.MustWired(&bootstrapDeps) — the arg carries an ampersand the
+			// declaration site does not. Strip it, or the gate reports a component
+			// as un-gated when it is right there in the call.
+			wired[strings.TrimPrefix(strings.TrimSpace(name), "&")] = true
 		}
 	}
 
@@ -63,16 +66,90 @@ func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 	// bootstrapDeps (`Audit: auditLogger`) and noPMNotifier (`auditLogger:
 	// auditLogger`) were BOTH wired this way, BOTH nil-guarded, and therefore in
 	// neither the grep nor MustWired — while POST /v1/bootstrap is declared
-	// `explicit` (it mints a LIVE secret key) and noPMNotifier is the only writer
-	// of the setup_link_sent row. A gate that only sees one wiring STYLE is a gate
-	// with a hole shaped like the other style.
+	// `explicit` (it mints a LIVE secret key) and noPMNotifier writes the
+	// ENGINE-driven setup_link_sent row at finalize (the operator-driven one is
+	// paymentmethods.Handler's — an earlier version of this comment called
+	// noPMNotifier "the only writer", which is one grep away from false). A gate that only sees one wiring STYLE has
+	// a hole shaped like the other style.
 	//
-	// So: any composite-literal field that hands auditLogger to something must
-	// appear in a MustWired call somewhere in this file. The check is coarse (it
-	// asserts the count of such literals is covered, not which), so it fails loudly
-	// when a NEW style of wiring appears and forces a decision.
-	literals := regexp.MustCompile(`(?m)^\s*[Aa]udit\w*:\s+auditLogger,`).FindAllString(text, -1)
-	if len(literals) > 0 && len(mws) < 2 {
-		t.Errorf("router.go hands auditLogger to %d component(s) by STRUCT LITERAL, but there are only %d audit.MustWired call(s) — a struct-literal emitter that is not in MustWired is un-gated and, being nil-guarded, will silently un-audit its routes", len(literals), len(mws))
+	// THE FIRST VERSION OF THIS CHECK WAS DEAD. It guarded on
+	// `len(literals) > 0 && len(mws) < 2` — and router.go has SIX MustWired calls,
+	// so the branch could never fire. Deleting BOTH gates it was supposed to
+	// protect left every test green (mutation-verified). A gate whose condition is
+	// unreachable, under a comment asserting it "fails loudly", is the arc's
+	// canonical failure reproduced inside the fix for it — for the third time. So
+	// this version names the component and checks THAT, and the mutation is pinned
+	// below as a test.
+	for _, m := range structLiteralAuditWirings(text) {
+		recv := enclosingVar(text, m[0])
+		if recv == "" {
+			t.Errorf("a struct literal at offset %d hands over auditLogger but this test cannot name the variable it is assigned to — teach enclosingVar the new shape rather than letting an un-gated emitter through", m[0])
+			continue
+		}
+		if !wired[recv] {
+			t.Errorf(`%s is handed auditLogger by STRUCT LITERAL but is missing from audit.MustWired(...).
+
+Its emitter is almost certainly nil-guarded (they all are), so DROPPING that wiring
+line would not fail to compile and would not fail a test — it would silently
+un-audit %s's routes. Pass it to audit.MustWired.`, recv, recv)
+		}
 	}
+}
+
+// structLiteralAuditWirings finds every place a struct literal hands the logger
+// over — on its own line (`Audit: auditLogger,`) OR inline in a one-line literal
+// (`&adapter{clients: x, audit: auditLogger}`). The first version only matched the
+// line-anchored form and so could not see hostedInvoiceStripe at all: a gate that
+// sees one FORM has a hole shaped like the other form, which is the same mistake
+// one level down.
+func structLiteralAuditWirings(text string) [][]int {
+	return regexp.MustCompile(`[Aa]udit\w*:\s+auditLogger[,}]`).FindAllStringIndex(text, -1)
+}
+
+// enclosingVar walks BACKWARD from a struct-literal field to the variable the
+// literal is assigned to: `noPMNotifier := &noPaymentMethodNotifierAdapter{` →
+// "noPMNotifier". Nil when it cannot tell, which the caller treats as a failure —
+// a gate that silently gives up is the thing being gated against.
+func enclosingVar(text string, at int) string {
+	// Same line first: `x := &T{a: 1, audit: auditLogger}`.
+	lineStart := strings.LastIndex(text[:at], "\n") + 1
+	if m := regexp.MustCompile(`^\s*(\w+)\s*:?=\s*&?[\w.]+\{`).FindStringSubmatch(text[lineStart:at]); m != nil {
+		return m[1]
+	}
+	// Otherwise the nearest multi-line literal opened above.
+	assign := regexp.MustCompile(`(?m)^\s*(\w+)\s*:?=\s*&?[\w.]+\{\s*$`)
+	best := ""
+	for _, m := range assign.FindAllStringSubmatchIndex(text, -1) {
+		if m[0] < at {
+			best = text[m[2]:m[3]]
+			continue
+		}
+		break
+	}
+	return best
+}
+
+// TestMustWired_StructLiteralGateIsNotDead is the mutation, pinned. The previous
+// version of the struct-literal check passed with BOTH of its subjects deleted;
+// this fails if that can ever be true again.
+func TestMustWired_StructLiteralGateIsNotDead(t *testing.T) {
+	src, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+	text := string(src)
+
+	literals := structLiteralAuditWirings(text)
+	if len(literals) == 0 {
+		t.Fatal("found ZERO struct-literal audit wirings — either the style is gone (delete this gate) or the pattern stopped matching (fix it). A gate that matches nothing is not a gate.")
+	}
+
+	// Every one of them must resolve to a NAME the gate can check. If this ever
+	// returns "", the check above degrades to a no-op for that component.
+	for _, m := range literals {
+		if enclosingVar(text, m[0]) == "" {
+			t.Errorf("struct-literal audit wiring at offset %d resolves to no variable — the gate cannot check it, so it is not gated", m[0])
+		}
+	}
+	t.Logf("struct-literal audit wirings gated: %d", len(literals))
 }
