@@ -316,7 +316,7 @@ func TestSweepNoPM_SetupEmailSentExactlyOnce(t *testing.T) {
 // skippingNoPMNotifier always reports the customer has no email on file.
 type skippingNoPMNotifier struct{ calls int }
 
-func (n *skippingNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+func (n *skippingNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	n.calls++
 	return domain.NotifySkippedNoEmail, nil
 }

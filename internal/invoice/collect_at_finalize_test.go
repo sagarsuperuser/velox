@@ -40,7 +40,7 @@ type fakeNoPMNotifier struct {
 	called bool
 }
 
-func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	f.called = true
 	return domain.NotifySent, nil
 }
@@ -261,7 +261,7 @@ type ctxProbeNotifier struct {
 	ctxErrAtCall error
 }
 
-func (n *ctxProbeNotifier) NotifyNoPaymentMethod(ctx context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+func (n *ctxProbeNotifier) NotifyNoPaymentMethod(ctx context.Context, _ string, _ domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	n.called = true
 	n.ctxErrAtCall = ctx.Err()
 	return domain.NotifySent, nil

@@ -56,7 +56,7 @@ type PaymentSetupGetter interface {
 // invoice package doesn't import the billing engine (zero cross-domain
 // imports). Optional; nil means no-PM finalize just queues for retry.
 type NoPaymentMethodNotifier interface {
-	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error)
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice, trigger string) (domain.NotifyOutcome, error)
 }
 
 // PaymentCanceler cancels a Stripe PaymentIntent when an invoice is voided.
@@ -607,7 +607,7 @@ func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv do
 			"invoice_id", inv.ID, "error", err)
 	}
 	if h.noPMNotifier != nil {
-		outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(ctx, tenantID, inv)
+		outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(ctx, tenantID, inv, "finalize_no_pm")
 		switch {
 		case err != nil:
 			slog.WarnContext(ctx, "no-payment-method notification failed",
@@ -704,7 +704,9 @@ func (h *Handler) resendSetupLink(w http.ResponseWriter, r *http.Request) {
 		respond.InternalError(w, r)
 		return
 	}
-	outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(r.Context(), tenantID, inv)
+	// The TRUE cause: an operator clicked Resend. The row used to say
+	// "finalize_no_pm" — a finalize that never ran.
+	outcome, err := h.noPMNotifier.NotifyNoPaymentMethod(r.Context(), tenantID, inv, "operator_resend")
 	if err != nil {
 		respond.FromError(w, r, err, "invoice")
 		return

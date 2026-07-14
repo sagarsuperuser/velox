@@ -122,12 +122,19 @@ func (h *Handler) SetAuditLogger(a AuditRecorder) { h.auditLogger = a }
 // Best-effort: a write failure is logged, never surfaced — auth must not fail
 // because the audit row didn't land.
 //
-// livemode stamps the row's RLS mode partition. These endpoints run
-// OUTSIDE session middleware, so the ctx carries no livemode and the
-// audit writer's TxTenant would refuse to open (every auth audit row
-// silently failed this way until 2026-07-06). Callers pass the session's
-// mode when they have one, false (the dashboard's default view) for the
-// pre-auth events.
+// livemode stamps the row's RLS mode partition. These endpoints run OUTSIDE session
+// middleware, so the ctx carries no livemode and the audit writer's TxTenant would
+// refuse to open (every auth audit row silently failed this way until 2026-07-06).
+//
+// Auth events are ACCOUNT-PLANE — a login is a login, not a "test-mode login" — so
+// they are ALL filed in the canonical (test) partition. They used to inherit the
+// session's mode, which meant the same event landed in a different partition
+// depending on which way the operator's Test/Live toggle happened to be pointing,
+// and "when did they last sign in?" had no reliable answer.
+//
+// Accepted loss, stated rather than glossed: an operator viewing the audit log in
+// LIVE mode does not see these rows. See the note in tenant/settings.go for why the
+// obvious fix (an OR arm on livemode) is the one thing we must not do.
 func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, livemode bool, actorUserID, tenantID, action, resourceID, label string, meta map[string]any) {
 	if h.auditLogger == nil || tenantID == "" {
 		return
@@ -136,7 +143,7 @@ func (h *Handler) auditAuthEvent(ctx context.Context, r *http.Request, livemode 
 		ctx = auth.WithUserID(ctx, actorUserID)
 	}
 	ctx = audit.WithClientIP(ctx, audit.ExtractClientIP(r))
-	ctx = postgres.WithLivemode(ctx, livemode)
+	ctx = postgres.WithLivemode(ctx, false) // account-plane: canonical partition
 	if err := h.auditLogger.Log(ctx, tenantID, action, "user", resourceID, label, meta); err != nil {
 		slog.ErrorContext(ctx, "audit: auth event write failed", "action", action, "tenant_id", tenantID, "error", err)
 	}

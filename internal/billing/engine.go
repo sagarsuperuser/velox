@@ -250,7 +250,7 @@ var _ clock.Resolver = (*Engine)(nil)
 // Optional — when nil, engine skips the notification (local dev,
 // integration tests). Wire in router.go via SetNoPaymentMethodNotifier.
 type NoPaymentMethodNotifier interface {
-	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error)
+	NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice, trigger string) (domain.NotifyOutcome, error)
 }
 
 // DunningStarter enrolls a stuck invoice into a dunning campaign.
@@ -1998,14 +1998,35 @@ func (e *Engine) applyDueScheduledPlanChanges(ctx context.Context, sub domain.Su
 				"items_changed", len(applied),
 			)
 
-			// Post-swap the plan swap is durable; fire one event per item that
-			// transitioned. Emitted only on successful swap so a half-applied
-			// state doesn't lie to webhook consumers.
-			if e.events != nil {
-				newPlanByItem := make(map[string]string, len(applied))
-				for _, it := range applied {
-					newPlanByItem[it.ID] = it.PlanID
+			// Post-swap the plan swap is durable. Two INDEPENDENT consequences
+			// follow, and they are deliberately no longer nested one inside the
+			// other: the outbound webhook, and the audit row.
+			//
+			// The audit emission used to live inside `if e.events != nil`, so a
+			// deployment with no event dispatcher wired wrote NO AUDIT ROW for a
+			// plan swap that really happened — audit coverage silently riding on
+			// webhook wiring, which is a completely different concern. Evidence
+			// that a mutation occurred must not depend on whether anyone is
+			// listening for it.
+			newPlanByItem := make(map[string]string, len(applied))
+			for _, it := range applied {
+				newPlanByItem[it.ID] = it.PlanID
+			}
+
+			// EVIDENCE: the swap happened; record it. Independent of the webhook.
+			if e.auditLogger != nil {
+				for _, was := range dueItems {
+					_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.pending_change_applied", "subscription", sub.ID, sub.Code, map[string]any{
+						"item_id":     was.ID,
+						"old_plan_id": was.PlanID,
+						"new_plan_id": newPlanByItem[was.ID],
+					})
 				}
+			}
+
+			// NOTIFICATION: one event per transitioned item, only on a successful
+			// swap so a half-applied state doesn't lie to webhook consumers.
+			if e.events != nil {
 				for _, was := range dueItems {
 					payload := map[string]any{
 						"subscription_id": sub.ID,
@@ -2022,18 +2043,6 @@ func (e *Engine) applyDueScheduledPlanChanges(ctx context.Context, sub domain.Su
 							"tenant_id", sub.TenantID,
 							"error", err,
 						)
-					}
-					// Audit row so the APPLICATION shows on the subscription
-					// activity feed — pre-fix only the scheduling showed
-					// (and the webhook fired), so the timeline never said
-					// the swap actually happened at the boundary.
-					if e.auditLogger != nil {
-						meta := map[string]any{
-							"item_id":     was.ID,
-							"old_plan_id": was.PlanID,
-							"new_plan_id": newPlanByItem[was.ID],
-						}
-						_ = e.auditLogger.Log(ctx, sub.TenantID, "subscription.pending_change_applied", "subscription", sub.ID, sub.Code, meta)
 					}
 				}
 			}
@@ -5310,7 +5319,7 @@ func (e *Engine) processAutoCharge(ctx context.Context, pending []domain.Invoice
 			// the customer gains an address. Runs inside the charge lease, so
 			// rival HA sweep leaders can't double-send within a tick.
 			if err == nil && inv.NoPMNotifiedAt == nil {
-				outcome, nerr := e.noPMNotifier.NotifyNoPaymentMethod(ctx, inv.TenantID, inv)
+				outcome, nerr := e.noPMNotifier.NotifyNoPaymentMethod(ctx, inv.TenantID, inv, "auto_charge_retry_no_pm")
 				switch {
 				case nerr != nil:
 					slog.Warn("auto-charge retry: no-PM notification failed", "invoice_id", inv.ID, "error", nerr)

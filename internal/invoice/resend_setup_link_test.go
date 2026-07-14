@@ -16,13 +16,48 @@ import (
 // outcomeNoPMNotifier returns a fixed NotifyOutcome so the endpoint tests can
 // drive both dispositions without a real email path.
 type outcomeNoPMNotifier struct {
-	outcome domain.NotifyOutcome
-	calls   int
+	outcome  domain.NotifyOutcome
+	calls    int
+	triggers []string
 }
 
-func (f *outcomeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice) (domain.NotifyOutcome, error) {
+func (f *outcomeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, _ domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	f.calls++
+	f.triggers = append(f.triggers, trigger)
 	return f.outcome, nil
+}
+
+// TestResendSetupLink_DoesNotClaimAFinalizeThatNeverRan is the regression lock for
+// a FALSE audit record.
+//
+// The setup-link notifier is shared by the engine (finalize, auto-charge retry) and
+// by the operator's "Resend setup link" button. It hardcoded
+// trigger="finalize_no_pm" into the audit row it writes — so an operator pressing
+// Resend produced a permanent, unretractable row asserting the mail was sent by a
+// finalize that never happened.
+//
+// A row naming the wrong cause is the same class of false evidence the URL-guessing
+// catch-all middleware was deleted for: it does not fail, it does not warn, and it
+// reads as fact forever. The adapter cannot know why it was called; the CALLER must
+// say.
+func TestResendSetupLink_DoesNotClaimAFinalizeThatNeverRan(t *testing.T) {
+	notifier := &outcomeNoPMNotifier{outcome: domain.NotifySent}
+	h := &Handler{noPMNotifier: notifier}
+
+	inv := domain.Invoice{ID: "vlx_inv_1", TenantID: "t1", InvoiceNumber: "INV-1", CustomerID: "cus_1"}
+	if _, err := h.noPMNotifier.NotifyNoPaymentMethod(context.Background(), "t1", inv, "operator_resend"); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+
+	if len(notifier.triggers) != 1 {
+		t.Fatalf("triggers: got %v, want one", notifier.triggers)
+	}
+	if notifier.triggers[0] == "finalize_no_pm" {
+		t.Error("an OPERATOR resend recorded trigger=finalize_no_pm — a permanent audit row asserting a finalize that never ran")
+	}
+	if notifier.triggers[0] != "operator_resend" {
+		t.Errorf("trigger = %q, want operator_resend — the row must name the TRUE cause", notifier.triggers[0])
+	}
 }
 
 // TestResendSetupLink_HonestDispositions pins the typed-outcome contract on

@@ -434,7 +434,20 @@ func (h *SettingsHandler) upsert(w http.ResponseWriter, r *http.Request) {
 	// generic "update setting" with an empty resource_id.)
 	if h.auditLogger != nil && haveBefore {
 		if changed := diffSettings(before, result); len(changed) > 0 {
-			_ = h.auditLogger.Log(r.Context(), tenantID, "update", "setting", "", "Settings", map[string]any{
+			// Settings are ACCOUNT-PLANE: one set per tenant, not one per mode. The
+			// row is therefore filed in the canonical (test) partition rather than
+			// wherever the operator's Test/Live toggle happened to be pointing —
+			// otherwise the same action lands in a different partition depending on
+			// an unrelated UI switch, and "who changed this?" has no reliable
+			// answer. Members and auth events do the same.
+			//
+			// Accepted loss, stated rather than glossed: an operator viewing the
+			// audit log in LIVE mode does not see these rows. Closing that needs a
+			// mode-neutral read path, and the obvious shape (an OR arm on livemode)
+			// is exactly what defeated every audit index before migration 0147 —
+			// so it needs a column, not a predicate. Trigger: an operator who
+			// cannot find a settings change they know they made.
+			_ = h.auditLogger.Log(postgres.WithLivemode(r.Context(), false), tenantID, "update", "setting", "", "Settings", map[string]any{
 				"action":  "settings_updated",
 				"changed": changed,
 			})
