@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -1116,4 +1117,72 @@ func join(parts []string, sep string) string {
 		result += p
 	}
 	return result
+}
+
+// StreamForExport walks EVERY customer in the date range in ONE snapshot
+// transaction, handing each row to fn as it is scanned.
+//
+// One transaction, one query, no pagination — because an export is an ARTIFACT,
+// and an artifact assembled from N independent transactions is not a picture of
+// the data at any single moment. The export used to page with LIMIT/OFFSET,
+// each page in its own tx, over a newest-first ordering: a customer created
+// while the export ran entered at the HEAD and shifted every later row down by
+// one, so the row on each page boundary was written to the CSV TWICE (and a
+// delete symmetrically SKIPPED one). That file is what an operator hands to an
+// auditor. Under a single MVCC snapshot the question cannot arise (issue #475).
+//
+// The SELECT is the EXPORT's, not List's. The export used to borrow List, whose
+// SELECT omits email_status — so the `email_status` column in customers.csv was
+// always empty: a field the artifact promised and never filled. An export's
+// columns are its own contract; borrowing a list query is how they go blank.
+//
+// The date range is applied in SQL. It used to be applied in Go, AFTER the page
+// was fetched, so a filtered export still walked every customer in the tenant.
+func (s *PostgresStore) StreamForExport(ctx context.Context, tenantID string, from, to time.Time, fn func(domain.Customer) error) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Tenant + livemode isolation is RLS's (TxTenant), exactly as in List — this
+	// query adds no scoping of its own so the two cannot diverge on WHO can see
+	// WHAT.
+	where := ""
+	var args []any
+	if !from.IsZero() {
+		args = append(args, from)
+		where += fmt.Sprintf(" AND created_at >= $%d", len(args))
+	}
+	if !to.IsZero() {
+		args = append(args, to)
+		where += fmt.Sprintf(" AND created_at <= $%d", len(args))
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, external_id, display_name, COALESCE(email, ''),
+			status, email_status, COALESCE(test_clock_id,''), created_at, updated_at
+		FROM customers
+		WHERE TRUE`+where+`
+		ORDER BY created_at DESC, id DESC`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var c domain.Customer
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.ExternalID, &c.DisplayName, &c.Email,
+			&c.Status, &c.EmailStatus, &c.TestClockID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return err
+		}
+		c, err = s.decryptCustomer(c)
+		if err != nil {
+			return err
+		}
+		if err := fn(c); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

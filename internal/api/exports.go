@@ -28,9 +28,20 @@ import (
 // procurement. RLS-scoped via the standard Bearer-key auth chain;
 // each endpoint reuses the existing List method on its store.
 //
-// Streaming: pages of exportPageSize rows, written to csv.Writer,
-// flushed each page so the HTTP buffer never holds the full result
-// set. Operators can export millions of rows without OOM.
+// Streaming: ONE snapshot transaction per export, one query, rows handed to the
+// csv.Writer as they are scanned and flushed every exportPageSize rows — so the
+// HTTP buffer never holds the full result set and operators can export millions
+// of rows without OOM.
+//
+// The snapshot is the correctness property, not an optimization. These exports
+// used to page each store with LIMIT/OFFSET, every page in its OWN transaction,
+// over a newest-first ordering. A row inserted while the export ran entered at
+// the HEAD and shifted every later row down by one — so the row on each page
+// boundary was written to the CSV TWICE, and a delete symmetrically SKIPPED one.
+// The usage export is given a five-minute timeout precisely BECAUSE it streams a
+// lot of rows, which is exactly the window in which concurrent ingest is
+// guaranteed; a duplicated usage row in a finance CSV reads as usage that did
+// not happen. Under a single MVCC snapshot the question cannot arise. (#475)
 //
 // Date filters: every endpoint accepts ?from=<RFC3339>&to=<RFC3339>;
 // usage_events REQUIRES both (the table is unbounded — without a
@@ -42,22 +53,11 @@ import (
 // the ordering is load-bearing.
 
 const (
-	// exportPageSize is the rows-per-store-query the export streams.
-	// Capped at 100 to match every list store's clamp ceiling (see
-	// invoice/postgres.go, customer/postgres.go, etc.). Pre-2026-05-28
-	// this was 1000, but stores silently truncated to 50 for
-	// over-cap asks — so the export was actually fetching first-page-
-	// only and the pagination loop's `len(rows) < exportPageSize` check
-	// always broke after one iteration. Aligning with the store cap
-	// (now an honest clamp) lets the loop iterate correctly.
-	//
-	// Usage events tolerate higher per-page (their store caps at 1000),
-	// but 100 is fine — they paginate through the same loop, just more
-	// iterations for the same total throughput.
-	//
-	// The audit-log export does not paginate at all (audit.Logger.Stream
-	// walks one snapshot cursor); it reuses this number only as its
-	// flush interval.
+	// exportPageSize is the FLUSH INTERVAL — rows written to the csv.Writer
+	// between flushes to the wire. It is no longer a page size: nothing
+	// paginates any more. Every export (including audit-log.csv) walks one
+	// snapshot cursor, so this number now only trades HTTP buffer size against
+	// syscalls, and no correctness depends on it.
 	exportPageSize = 100
 
 	// usageExportMaxSpanDays caps the date range for usage_events
@@ -314,46 +314,33 @@ func (h *exportsHandler) exportCustomers(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	offset := 0
-	for {
-		filter := customer.ListFilter{
-			TenantID: tenantID,
-			Limit:    exportPageSize,
-			Offset:   offset,
+	n := 0
+	err = h.customers.StreamForExport(r.Context(), tenantID, from, to, func(c domain.Customer) error {
+		if err := cw.Write([]string{
+			c.ID, csvSafe(c.ExternalID), csvSafe(c.DisplayName), csvSafe(c.Email),
+			string(c.Status),
+			string(c.EmailStatus),
+			c.CreatedAt.UTC().Format(time.RFC3339),
+			c.UpdatedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
 		}
-		rows, _, err := h.customers.List(r.Context(), filter)
-		if err != nil {
-			exportAbort(r.Context(), cw, "customers", err)
-			return
+		n++
+		if n%exportPageSize == 0 {
+			return flushAndContinue(cw, w)
 		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, c := range rows {
-			if !from.IsZero() && c.CreatedAt.Before(from) {
-				continue
-			}
-			if !to.IsZero() && c.CreatedAt.After(to) {
-				continue
-			}
-			if err := cw.Write([]string{
-				c.ID, csvSafe(c.ExternalID), csvSafe(c.DisplayName), csvSafe(c.Email),
-				string(c.Status),
-				string(c.EmailStatus),
-				c.CreatedAt.UTC().Format(time.RFC3339),
-				c.UpdatedAt.UTC().Format(time.RFC3339),
-			}); err != nil {
-				return
-			}
-		}
-		if err := flushAndContinue(cw, w); err != nil {
-			return
-		}
-		if len(rows) < exportPageSize {
-			break
-		}
-		offset += exportPageSize
+		return nil
+	})
+	if err != nil {
+		exportAbort(r.Context(), cw, "customers", err)
+		return
 	}
+	// Flush the final partial batch to the SOCKET. The periodic flush above only
+	// fires on an exportPageSize boundary, so without this an export smaller than
+	// one batch would never reach http.Flusher — and the deferred cw.Flush() only
+	// pushes the csv.Writer into the ResponseWriter, not the ResponseWriter onto
+	// the wire.
+	_ = flushAndContinue(cw, w)
 }
 
 // ---- Invoices ----
@@ -392,57 +379,44 @@ func (h *exportsHandler) exportInvoices(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	offset := 0
-	for {
-		filter := invoice.ListFilter{
-			TenantID: tenantID,
-			Limit:    exportPageSize,
-			Offset:   offset,
+	n := 0
+	err = h.invoices.StreamForExport(r.Context(), tenantID, from, to, func(inv domain.Invoice) error {
+		if err := cw.Write([]string{
+			inv.ID, csvSafe(inv.InvoiceNumber), inv.CustomerID, inv.SubscriptionID,
+			string(inv.Status), string(inv.PaymentStatus), inv.Currency,
+			strconv.FormatInt(inv.SubtotalCents, 10),
+			strconv.FormatInt(inv.TaxAmountCents, 10),
+			strconv.FormatInt(inv.DiscountCents, 10),
+			strconv.FormatInt(inv.TotalAmountCents, 10),
+			strconv.FormatInt(inv.AmountDueCents, 10),
+			strconv.FormatInt(inv.AmountPaidCents, 10),
+			strconv.FormatInt(inv.CreditsAppliedCents, 10),
+			inv.BillingPeriodStart.UTC().Format(time.RFC3339),
+			inv.BillingPeriodEnd.UTC().Format(time.RFC3339),
+			timePtrCSV(inv.IssuedAt),
+			timePtrCSV(inv.DueAt),
+			timePtrCSV(inv.PaidAt),
+			timePtrCSV(inv.VoidedAt),
+			inv.CreatedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
 		}
-		rows, _, err := h.invoices.List(r.Context(), filter)
-		if err != nil {
-			exportAbort(r.Context(), cw, "invoices", err)
-			return
+		n++
+		if n%exportPageSize == 0 {
+			return flushAndContinue(cw, w)
 		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, inv := range rows {
-			if !from.IsZero() && inv.CreatedAt.Before(from) {
-				continue
-			}
-			if !to.IsZero() && inv.CreatedAt.After(to) {
-				continue
-			}
-			if err := cw.Write([]string{
-				inv.ID, csvSafe(inv.InvoiceNumber), inv.CustomerID, inv.SubscriptionID,
-				string(inv.Status), string(inv.PaymentStatus), inv.Currency,
-				strconv.FormatInt(inv.SubtotalCents, 10),
-				strconv.FormatInt(inv.TaxAmountCents, 10),
-				strconv.FormatInt(inv.DiscountCents, 10),
-				strconv.FormatInt(inv.TotalAmountCents, 10),
-				strconv.FormatInt(inv.AmountDueCents, 10),
-				strconv.FormatInt(inv.AmountPaidCents, 10),
-				strconv.FormatInt(inv.CreditsAppliedCents, 10),
-				inv.BillingPeriodStart.UTC().Format(time.RFC3339),
-				inv.BillingPeriodEnd.UTC().Format(time.RFC3339),
-				timePtrCSV(inv.IssuedAt),
-				timePtrCSV(inv.DueAt),
-				timePtrCSV(inv.PaidAt),
-				timePtrCSV(inv.VoidedAt),
-				inv.CreatedAt.UTC().Format(time.RFC3339),
-			}); err != nil {
-				return
-			}
-		}
-		if err := flushAndContinue(cw, w); err != nil {
-			return
-		}
-		if len(rows) < exportPageSize {
-			break
-		}
-		offset += exportPageSize
+		return nil
+	})
+	if err != nil {
+		exportAbort(r.Context(), cw, "invoices", err)
+		return
 	}
+	// Flush the final partial batch to the SOCKET. The periodic flush above only
+	// fires on an exportPageSize boundary, so without this an export smaller than
+	// one batch would never reach http.Flusher — and the deferred cw.Flush() only
+	// pushes the csv.Writer into the ResponseWriter, not the ResponseWriter onto
+	// the wire.
+	_ = flushAndContinue(cw, w)
 }
 
 // ---- Subscriptions ----
@@ -481,58 +455,41 @@ func (h *exportsHandler) exportSubscriptions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	offset := 0
-	for {
-		filter := subscription.ListFilter{
-			TenantID: tenantID,
-			Limit:    exportPageSize,
-			Offset:   offset,
+	// planIDs arrives pipe-joined from the query's aggregate — the store no
+	// longer hydrates every subscription's items just so the export can join
+	// their plan ids into one string.
+	n := 0
+	err = h.subscriptions.StreamForExport(r.Context(), tenantID, from, to, func(sub domain.Subscription, planIDs string) error {
+		if err := cw.Write([]string{
+			sub.ID, csvSafe(sub.Code), csvSafe(sub.DisplayName), sub.CustomerID,
+			string(sub.Status), string(sub.BillingTime),
+			timePtrCSV(sub.TrialStartAt), timePtrCSV(sub.TrialEndAt),
+			timePtrCSV(sub.StartedAt), timePtrCSV(sub.ActivatedAt),
+			timePtrCSV(sub.CanceledAt),
+			timePtrCSV(sub.CurrentBillingPeriodStart),
+			timePtrCSV(sub.CurrentBillingPeriodEnd),
+			timePtrCSV(sub.NextBillingAt),
+			planIDs,
+			sub.CreatedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
 		}
-		rows, _, err := h.subscriptions.List(r.Context(), filter)
-		if err != nil {
-			exportAbort(r.Context(), cw, "subscriptions", err)
-			return
+		n++
+		if n%exportPageSize == 0 {
+			return flushAndContinue(cw, w)
 		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, sub := range rows {
-			if !from.IsZero() && sub.CreatedAt.Before(from) {
-				continue
-			}
-			if !to.IsZero() && sub.CreatedAt.After(to) {
-				continue
-			}
-			planIDs := ""
-			for i, item := range sub.Items {
-				if i > 0 {
-					planIDs += "|"
-				}
-				planIDs += item.PlanID
-			}
-			if err := cw.Write([]string{
-				sub.ID, csvSafe(sub.Code), csvSafe(sub.DisplayName), sub.CustomerID,
-				string(sub.Status), string(sub.BillingTime),
-				timePtrCSV(sub.TrialStartAt), timePtrCSV(sub.TrialEndAt),
-				timePtrCSV(sub.StartedAt), timePtrCSV(sub.ActivatedAt),
-				timePtrCSV(sub.CanceledAt),
-				timePtrCSV(sub.CurrentBillingPeriodStart),
-				timePtrCSV(sub.CurrentBillingPeriodEnd),
-				timePtrCSV(sub.NextBillingAt),
-				planIDs,
-				sub.CreatedAt.UTC().Format(time.RFC3339),
-			}); err != nil {
-				return
-			}
-		}
-		if err := flushAndContinue(cw, w); err != nil {
-			return
-		}
-		if len(rows) < exportPageSize {
-			break
-		}
-		offset += exportPageSize
+		return nil
+	})
+	if err != nil {
+		exportAbort(r.Context(), cw, "subscriptions", err)
+		return
 	}
+	// Flush the final partial batch to the SOCKET. The periodic flush above only
+	// fires on an exportPageSize boundary, so without this an export smaller than
+	// one batch would never reach http.Flusher — and the deferred cw.Flush() only
+	// pushes the csv.Writer into the ResponseWriter, not the ResponseWriter onto
+	// the wire.
+	_ = flushAndContinue(cw, w)
 }
 
 // ---- Usage events ----
@@ -581,54 +538,45 @@ func (h *exportsHandler) exportUsageEvents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	offset := 0
-	for {
-		filter := usage.ListFilter{
-			TenantID: tenantID,
-			From:     &from,
-			To:       &to,
-			Limit:    exportPageSize,
-			Offset:   offset,
-		}
-		rows, _, err := h.usage.List(r.Context(), filter)
-		if err != nil {
-			exportAbort(r.Context(), cw, "usage_events", err)
-			return
-		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, ev := range rows {
-			dimsJSON := ""
-			if len(ev.Dimensions) > 0 {
-				if b, err := json.Marshal(ev.Dimensions); err == nil {
-					dimsJSON = string(b)
-				}
-			}
-			costMicros := ""
-			if ev.ProviderCostMicros != nil {
-				costMicros = fmt.Sprintf("%d", *ev.ProviderCostMicros)
-			}
-			if err := cw.Write([]string{
-				ev.ID, ev.CustomerID, ev.MeterID,
-				ev.Quantity.String(),
-				ev.Timestamp.UTC().Format(time.RFC3339),
-				csvSafe(ev.IdempotencyKey),
-				string(ev.Origin),
-				dimsJSON,
-				costMicros, ev.ProviderCostSource,
-			}); err != nil {
-				return
+	n := 0
+	err = h.usage.StreamForExport(r.Context(), tenantID, from, to, func(ev domain.UsageEvent) error {
+		dimsJSON := ""
+		if len(ev.Dimensions) > 0 {
+			if b, err := json.Marshal(ev.Dimensions); err == nil {
+				dimsJSON = string(b)
 			}
 		}
-		if err := flushAndContinue(cw, w); err != nil {
-			return
+		costMicros := ""
+		if ev.ProviderCostMicros != nil {
+			costMicros = fmt.Sprintf("%d", *ev.ProviderCostMicros)
 		}
-		if len(rows) < exportPageSize {
-			break
+		if err := cw.Write([]string{
+			ev.ID, ev.CustomerID, ev.MeterID,
+			ev.Quantity.String(),
+			ev.Timestamp.UTC().Format(time.RFC3339),
+			csvSafe(ev.IdempotencyKey),
+			string(ev.Origin),
+			dimsJSON,
+			costMicros, ev.ProviderCostSource,
+		}); err != nil {
+			return err
 		}
-		offset += exportPageSize
+		n++
+		if n%exportPageSize == 0 {
+			return flushAndContinue(cw, w)
+		}
+		return nil
+	})
+	if err != nil {
+		exportAbort(r.Context(), cw, "usage_events", err)
+		return
 	}
+	// Flush the final partial batch to the SOCKET. The periodic flush above only
+	// fires on an exportPageSize boundary, so without this an export smaller than
+	// one batch would never reach http.Flusher — and the deferred cw.Flush() only
+	// pushes the csv.Writer into the ResponseWriter, not the ResponseWriter onto
+	// the wire.
+	_ = flushAndContinue(cw, w)
 }
 
 // ---- Audit log ----

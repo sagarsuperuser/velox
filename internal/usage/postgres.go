@@ -779,3 +779,53 @@ func (s propertiesScanner) Scan(src any) error {
 	*s.dst = m
 	return nil
 }
+
+// StreamForExport walks EVERY usage event in the [from,to] window in ONE
+// snapshot transaction. See customer.PostgresStore.StreamForExport for the
+// general reason (issue #475); usage is the case that made it urgent. This
+// table is the hottest write path in the product, and the export is given a
+// five-minute timeout PRECISELY because it streams a lot of rows — which is
+// exactly the window in which concurrent ingest is guaranteed. Under the old
+// LIMIT/OFFSET-per-transaction paging, every event ingested mid-export shifted
+// the newest-first window and duplicated the row on a page boundary. A
+// duplicated usage row in a finance CSV reads as usage that did not happen.
+//
+// The SELECT carries `origin`, which List's does not — so the `origin` column
+// in usage-events.csv was always empty, and an operator could not tell an
+// operator BACKFILL from a metered API event in the artifact they reconcile
+// with. The export's columns are its own contract.
+func (s *PostgresStore) StreamForExport(ctx context.Context, tenantID string, from, to time.Time, fn func(domain.UsageEvent) error) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Tenant + livemode isolation is RLS's (TxTenant), as in List. The window is
+	// REQUIRED by the caller (the table is unbounded), so both bounds always bind.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, tenant_id, customer_id, meter_id,
+			quantity, properties, COALESCE(idempotency_key,''), timestamp, origin,
+			provider_cost_micros, COALESCE(provider_cost_source,'')
+		FROM usage_events
+		WHERE timestamp >= $1 AND timestamp <= $2
+		ORDER BY timestamp DESC, id DESC`, from, to)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var e domain.UsageEvent
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.CustomerID, &e.MeterID,
+			&e.Quantity, propertiesScanner{&e.Dimensions},
+			&e.IdempotencyKey, &e.Timestamp, &e.Origin,
+			&e.ProviderCostMicros, &e.ProviderCostSource); err != nil {
+			return err
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
