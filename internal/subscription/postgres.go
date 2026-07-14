@@ -2625,3 +2625,72 @@ func (s *PostgresStore) CancelAtTrialEnd(ctx context.Context, tenantID, id strin
 	}
 	return sub, nil
 }
+
+// subRowWithExtra lets StreamForExport reuse scanSubRow unchanged while
+// scanning EXTRA trailing columns of its own. scanSubRow owns the subscription
+// column list and its dest order; duplicating that here to bolt one column on
+// the end is how the export's columns drift from the API's.
+type subRowWithExtra struct {
+	rows  *sql.Rows
+	extra []any
+}
+
+func (r subRowWithExtra) Scan(dest ...any) error {
+	return r.rows.Scan(append(dest, r.extra...)...)
+}
+
+// StreamForExport walks EVERY subscription in the date range in ONE snapshot
+// transaction. See customer.PostgresStore.StreamForExport for why an export
+// takes a single snapshot instead of paging a list method (issue #475).
+//
+// plan_ids is an AGGREGATE in the query, not a second lookup per row. List
+// hydrates each subscription's items with its own follow-up query, which the
+// export cannot do: a second query on the same transaction while the row cursor
+// is open blocks on the connection. Doing it as a correlated aggregate also
+// deletes the N+1 the export was paying for a single pipe-joined string.
+func (s *PostgresStore) StreamForExport(ctx context.Context, tenantID string, from, to time.Time, fn func(sub domain.Subscription, planIDs string) error) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Tenant + livemode isolation is RLS's (TxTenant), as in List.
+	where := ""
+	var args []any
+	if !from.IsZero() {
+		args = append(args, from)
+		where += fmt.Sprintf(" AND s.created_at >= $%d", len(args))
+	}
+	if !to.IsZero() {
+		args = append(args, to)
+		where += fmt.Sprintf(" AND s.created_at <= $%d", len(args))
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+qualifiedSubCols("s")+`,
+			COALESCE((
+				SELECT string_agg(si.plan_id, '|' ORDER BY si.created_at, si.id)
+				FROM subscription_items si
+				WHERE si.subscription_id = s.id
+			), '') AS plan_ids
+		FROM subscriptions s
+		WHERE TRUE`+where+`
+		ORDER BY s.created_at DESC, s.id DESC`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var sub domain.Subscription
+		var planIDs string
+		if err := scanSubRow(subRowWithExtra{rows: rows, extra: []any{&planIDs}}, &sub); err != nil {
+			return err
+		}
+		if err := fn(sub, planIDs); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}

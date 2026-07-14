@@ -3134,3 +3134,52 @@ func (s *PostgresStore) RecordPaymentAnomaly(ctx context.Context, tenantID, invo
 	}
 	return tx.Commit()
 }
+
+// StreamForExport walks EVERY invoice in the date range in ONE snapshot
+// transaction. See customer.PostgresStore.StreamForExport for why the export
+// gets its own single-snapshot query instead of paging a list method: under
+// LIMIT/OFFSET with a page-per-transaction, a row inserted mid-export shifts
+// the newest-first window and the CSV duplicates the row on each page boundary
+// (issue #475).
+//
+// invCols + scanInvDest are shared with Get/List on purpose — an invoice row in
+// the CSV must be the same invoice the API returns, field for field.
+func (s *PostgresStore) StreamForExport(ctx context.Context, tenantID string, from, to time.Time, fn func(domain.Invoice) error) error {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return err
+	}
+	defer postgres.Rollback(tx)
+
+	// Tenant + livemode isolation is RLS's (TxTenant), as in List.
+	where := ""
+	var args []any
+	if !from.IsZero() {
+		args = append(args, from)
+		where += fmt.Sprintf(" AND created_at >= $%d", len(args))
+	}
+	if !to.IsZero() {
+		args = append(args, to)
+		where += fmt.Sprintf(" AND created_at <= $%d", len(args))
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT `+invCols+`
+		FROM invoices
+		WHERE TRUE`+where+`
+		ORDER BY created_at DESC, id DESC`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var inv domain.Invoice
+		if err := rows.Scan(s.scanInvDest(&inv)...); err != nil {
+			return err
+		}
+		if err := fn(inv); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
