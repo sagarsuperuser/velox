@@ -175,6 +175,12 @@ export function resourceLink(entry: AuditEntry): string | null {
   // empty resource_id, and rendering "View" → /customers/ would land the
   // user on a broken page.
   if (!entry.resource_id) return null
+  // The subject outlived by the row. Tearing down a test clock hard-deletes its
+  // entire simulated graph (ADR-086) while the audit rows survive on purpose —
+  // so the row still names an invoice that no longer exists, and the link we used
+  // to render for it went straight to a 404. The backend resolves this at read
+  // time; we just have to stop offering the door.
+  if (entry.subject_deleted) return null
   switch (entry.resource_type) {
     case 'invoice': return `/invoices/${entry.resource_id}`
     case 'customer': return `/customers/${entry.resource_id}`

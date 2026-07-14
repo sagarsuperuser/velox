@@ -1529,11 +1529,18 @@ export interface AuditEntry {
   created_at: string
   // Sim axis (ADR-090 §5). Present only on rows emitted inside a test clock's
   // world. created_at stays wall-clock ("when the operator clicked");
-  // sim_effective_at is the SIMULATED instant the action landed at, and is the
-  // only axis that can order or window a clock advance — which replays months
-  // of billing in one wall-clock moment.
+  // sim_effective_at is the simulated instant the clock STOOD AT when the
+  // mutation happened. An advance does not replay the intervening months — it
+  // stands at the new frozen_time and settles what came due there — so every row
+  // an advance produces shares one sim instant. There is deliberately no
+  // "order by simulated time": it would order nothing.
   sim_effective_at?: string
   test_clock_id?: string
+  // The subject is gone. Set when the row's test clock was torn down (ADR-086
+  // hard-deletes the whole simulated graph). The row survives on purpose — it is
+  // the only record left that the simulation happened — but the invoice or
+  // customer it names does not, so a "View" link on it 404s.
+  subject_deleted?: boolean
 }
 
 export interface AuditSimClock {

@@ -43,7 +43,15 @@ alerting tier — what should page someone vs. what's informational.
 | `velox_webhook_outbox_pending` | > 1000 | Webhook dispatcher stuck (−1 = metric query failed) |
 | `velox_creditnote_pending_issue_drafts` | sustained growth over days | Clawback drafts not issuing. NOTE: drafts deferred behind an in-flight source payment (ADR-059) sit here legitimately and do NOT appear in error logs — the reconciler's eligibility scan skips them by design until the source settles. Alert on growth/age, not presence. |
 | `velox_auto_charge_retries_total{outcome="failed"}` | growing rapidly | Many invoices stuck in retry |
-| `velox_audit_write_errors_total` | rate > 0/s | Audit log writes failing — SOC 2 evidence at risk |
+| `velox_audit_write_errors_total{outcome="row_lost"}` | rate > 0/s | **Evidence PERMANENTLY LOST.** The mutation committed and its audit row did not, and nothing retries it. Irrecoverable — the row cannot be reconstructed. Treat as a compliance incident: capture the tenant from the ERROR LOG (the metric deliberately carries no tenant label — see below), and identify the affected mutations by their absence. |
+| `velox_audit_write_errors_total{outcome="mutation_refused"}` | rate > 0/s | **Nothing is missing.** The audit write failed INSIDE the business transaction, so ADR-090's shared fate rolled the mutation back with it. This is an availability problem, not an evidence problem — the customer got an error, and the log is intact. Investigate the DB, not the audit trail. |
+
+> **Why the audit metric carries no `tenant_id` label.** Prometheus client counters
+> never age out, so a raw-tenant label mints a permanent time series for every tenant
+> that ever has a single failure — unbounded cardinality that grows with the customer
+> base and outlives the incident. One shared-DB blip during a busy hour could mint
+> thousands. The tenant is in the **error log**, which is queryable and expires; the
+> metric answers only *"is evidence at risk, and in which direction"*.
 | `velox_audit_uncovered_mutation_total{route}` | any increase | A route mutated state and wrote NO audit row. Should be **flat zero**: every mutating route is declared in `internal/api/audit_routes.go` as `explicit` (it emits) or `exempt` (it doesn't need to). A non-zero counter means one of three things, in order of likelihood: (1) a route declared `explicit` has an emission path that can be skipped — find it via the `route` label and the `UNCOVERED MUTATION` error log; (2) a genuinely non-mutating 2xx path (a cache/idempotency replay, a no-op save) needs an `audit.MarkSkip` declaration; (3) a new route shipped without a declaration — impossible via CI (the route-walk test fails the build), but possible if the registry was edited to silence it. Do not "fix" this by adding an exemption without recording what is being given up. |
 
 ### Info (dashboards, no alert)

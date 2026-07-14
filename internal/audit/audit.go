@@ -19,11 +19,38 @@ import (
 
 var auditWriteErrors *prometheus.CounterVec
 
+// Audit-write failure outcomes. The counter used to carry NO outcome label at all,
+// so an on-call engineer paging on velox_audit_write_errors_total (docs/ops/runbook.md:
+// "rate > 0/s — SOC 2 evidence at risk") could not tell from metrics whether:
+//
+//   - evidence was PERMANENTLY LOST (a post-commit own-tx write failed: the mutation
+//     is durable, the row is not, and nothing will ever retry it), or
+//   - a mutation was REFUSED (an in-tx write failed, so shared fate rolled the
+//     business change back — no evidence is missing, because nothing happened).
+//
+// Those demand opposite responses: the first is a compliance incident and the
+// evidence cannot be reconstructed; the second is a availability blip that fixed
+// itself correctly. One number could not distinguish them.
+const (
+	// OutcomeRowLost: the mutation COMMITTED and its audit row did not. Irrecoverable.
+	OutcomeRowLost = "row_lost"
+	// OutcomeMutationRefused: the audit write failed INSIDE the business tx, so the
+	// mutation rolled back with it (ADR-090 shared fate). Nothing to reconstruct.
+	OutcomeMutationRefused = "mutation_refused"
+)
+
 func init() {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "velox_audit_write_errors_total",
-		Help: "Total failed audit log writes, labeled by tenant.",
-	}, []string{"tenant_id"})
+		// NO tenant_id label. Prometheus client counters never age out, so a
+		// raw-tenant label mints a permanent time series per tenant that ever has a
+		// single failure — unbounded cardinality that grows with the customer base
+		// and survives the incident that caused it. One shared-DB blip during a
+		// busy hour could mint thousands. The TENANT belongs in the ERROR LOG (which
+		// is queryable and expires); the METRIC answers "is evidence at risk, and in
+		// which direction".
+		Help: "Failed audit log writes by outcome: row_lost (mutation committed, evidence did not — irrecoverable) or mutation_refused (in-tx write failed, business change rolled back with it).",
+	}, []string{"outcome"})
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
 		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
 			auditWriteErrors = are.ExistingCollector.(*prometheus.CounterVec)
@@ -102,7 +129,10 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 
 	tx, err := l.db.BeginTx(writeCtx, postgres.TxTenant, tenantID)
 	if err != nil {
-		auditWriteErrors.WithLabelValues(tenantID).Inc()
+		// Own-tx path: the business mutation already committed, so this is evidence
+		// PERMANENTLY LOST — nothing retries it. The tenant goes to the error log,
+		// which is queryable and expires; the metric stays bounded.
+		auditWriteErrors.WithLabelValues(OutcomeRowLost).Inc()
 		slog.Error("audit: failed to begin transaction",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
@@ -168,7 +198,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	`, id, tenantID, actorType, actorID, action, resourceType, resourceID, resourceLabel, metaJSON,
 		nullIfEmpty(ipAddress), nullIfEmpty(requestID), simAt, clockID, time.Now().UTC())
 	if err != nil {
-		auditWriteErrors.WithLabelValues(tenantID).Inc()
+		auditWriteErrors.WithLabelValues(OutcomeRowLost).Inc()
 		slog.Error("audit: failed to insert entry",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
@@ -177,7 +207,7 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	}
 
 	if err := tx.Commit(); err != nil {
-		auditWriteErrors.WithLabelValues(tenantID).Inc()
+		auditWriteErrors.WithLabelValues(OutcomeRowLost).Inc()
 		slog.Error("audit: failed to commit entry",
 			"tenant_id", tenantID, "action", action,
 			"resource_type", resourceType, "resource_id", resourceID,
@@ -393,6 +423,12 @@ func (l *Logger) LogInTx(ctx context.Context, tx *sql.Tx, e Entry) error {
 		nullIfEmpty(ClientIP(ctx)), nullIfEmpty(chimw.GetReqID(ctx)),
 		simAt, clockID, time.Now().UTC())
 	if err != nil {
+		// In-tx path: returning this error ABORTS the caller's business transaction
+		// (ADR-090 shared fate), so the mutation is refused and rolls back with the
+		// row. No evidence is missing — nothing happened. That is the OPPOSITE
+		// incident from the own-tx path's lost row, and the on-call runbook needs to
+		// be able to tell them apart from the metric alone.
+		auditWriteErrors.WithLabelValues(OutcomeMutationRefused).Inc()
 		return fmt.Errorf("audit log (in-tx): insert: %w", err)
 	}
 
@@ -639,6 +675,12 @@ const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
 		al.action, al.resource_type, al.resource_id,
 		COALESCE(NULLIF(al.resource_label,''), ru.email::text, ri.email, '') AS resource_label,
 		al.metadata,
+		-- The row outlived its subject. ADR-086 teardown HARD-DELETES a clock's
+		-- entire simulated graph, and the audit rows deliberately survive it — they
+		-- are the only remaining record that the simulation happened. But the
+		-- resources they name are gone, so a "View" link on them 404s, and the
+		-- dashboard was rendering one. Tell the client, so it can stop.
+		(al.test_clock_id IS NOT NULL AND tc.id IS NULL) AS subject_deleted,
 		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at,
 		al.sim_effective_at, COALESCE(al.test_clock_id,'')
 		FROM audit_log al
@@ -646,7 +688,8 @@ const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
 		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
 		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'
 		LEFT JOIN users ru ON ru.id = al.resource_id AND al.resource_type = 'user'
-		LEFT JOIN member_invitations ri ON ri.id = al.resource_id AND al.resource_type = 'user'`
+		LEFT JOIN member_invitations ri ON ri.id = al.resource_id AND al.resource_type = 'user'
+		LEFT JOIN test_clocks tc ON tc.id = al.test_clock_id`
 
 // auditListOrder is newest-first, with the id tiebreaker the cursor predicate
 // keys on.
@@ -705,7 +748,7 @@ func scanAuditEntry(rows *sql.Rows) (domain.AuditEntry, error) {
 	// export can never disagree about which simulation a row belongs to.
 	if err := rows.Scan(&e.ID, &e.TenantID, &e.ActorType, &e.ActorID, &e.ActorName,
 		&e.Action, &e.ResourceType, &e.ResourceID, &e.ResourceLabel,
-		&metaJSON, &e.IPAddress, &e.RequestID, &e.CreatedAt,
+		&metaJSON, &e.SubjectDeleted, &e.IPAddress, &e.RequestID, &e.CreatedAt,
 		&e.SimEffectiveAt, &e.TestClockID); err != nil {
 		return domain.AuditEntry{}, err
 	}
