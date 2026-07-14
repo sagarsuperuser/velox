@@ -158,8 +158,10 @@ func (h *Handler) invite(w http.ResponseWriter, r *http.Request) {
 		respond.FromError(w, r, err, "invitation")
 		return
 	}
-	h.auditEvent(ctx, tenantID, "member.invited", inv.ID, inv.Email, map[string]any{
-		"email": inv.Email, "expires_at": inv.ExpiresAt.Format(rfc3339),
+	// No email in the label: resource_id is the invitation id and the reader resolves
+	// the address from member_invitations, which is erasable. audit_log is not.
+	h.auditEvent(ctx, tenantID, "member.invited", inv.ID, "", map[string]any{
+		"expires_at": inv.ExpiresAt.Format(rfc3339),
 	})
 	respond.JSON(w, r, http.StatusCreated, h.invitationView(inv, h.svc.clock.Now(ctx)))
 }
@@ -239,7 +241,9 @@ func (h *Handler) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		actx := auth.WithUserID(ctx, res.UserID)
 		actx = audit.WithClientIP(actx, audit.ExtractClientIP(r))
 		actx = postgres.WithLivemode(actx, false)
-		if err := h.audit.Log(actx, res.TenantID, "member.joined", "user", res.UserID, res.Email,
+		// resource_id IS the new member's user id; the reader resolves the address from
+		// the (erasable) users row. Storing it would make it permanent.
+		if err := h.audit.Log(actx, res.TenantID, "member.joined", "user", res.UserID, "",
 			map[string]any{"new_account": res.NewAccount}); err != nil {
 			slog.ErrorContext(ctx, "audit: member.joined write failed", "error", err)
 		}

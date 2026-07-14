@@ -123,7 +123,18 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// prose here named Finalize as the writer for "every engine-generated invoice",
 	// which is the exact negation of what billing/engine.go says.
 	simAt, clockID, metadata := simColumns(ctx, metadata)
-	metaJSON, _ := json.Marshal(metadata)
+	metaJSON, err := json.Marshal(metadata)
+	if err != nil {
+		// Same totality rule as LogInTx, and it was missing here. The old code
+		// discarded this error and then guarded `metadata == nil` — the WRONG
+		// case: on a marshal failure metadata is a perfectly valid non-nil map
+		// and it is metaJSON that is nil. Nil binds into a JSONB NOT NULL column,
+		// the INSERT fails, and ~85 call sites discard Log's error with `_ =` —
+		// so one NaN in a telemetry bag silently DELETED the audit row for a
+		// money mutation. Degrade instead: the row lands, carrying the failure it
+		// represents.
+		metaJSON, _ = json.Marshal(map[string]string{"marshal_error": err.Error()})
+	}
 	if metadata == nil {
 		metaJSON = []byte("{}")
 	}
@@ -593,16 +604,40 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 // users is a global (non-RLS) table so the join works under TxTenant. COALESCE
 // order is safe — the joins are mutually exclusive in practice (an actor_id is
 // exactly one of key / customer / user).
+// resource_label for `user` rows is RESOLVED AT READ TIME, never stored.
+//
+// audit_log is append-only and migration 0150 revoked DELETE from the runtime
+// role, so anything written into resource_label is PERMANENT. Emails were being
+// written there — the invitee's on member.invited, the operator's on login, the
+// requester's on password_reset_requested — which made the audit log a GDPR
+// erasure dead end: the one table from which a person's email could never be
+// removed.
+//
+// Resolving instead of storing fixes both halves at once:
+//
+//   - ERASURE works. Delete the users row (or the member_invitations row) and the
+//     address disappears from every historical audit row, because it was never in
+//     them.
+//   - "WHO was removed?" gets an answer. member.removed stores the target's USER
+//     ID and no label; RemoveMember deletes the user_tenants row, so the tenant's
+//     member list can no longer name them — but the global users row survives, and
+//     this join reaches it.
+//
+// NULLIF-first so rows written BEFORE this change keep the label they stored.
+// Append-only means their history cannot be rewritten; it can only stop growing.
 const auditListSelect = `SELECT al.id, al.tenant_id, al.actor_type, al.actor_id,
 		COALESCE(NULLIF(k.name, ''), c.display_name, u.email::text, '') AS actor_name,
 		al.action, al.resource_type, al.resource_id,
-		COALESCE(al.resource_label,''), al.metadata,
+		COALESCE(NULLIF(al.resource_label,''), ru.email::text, ri.email, '') AS resource_label,
+		al.metadata,
 		COALESCE(al.ip_address,''), COALESCE(al.request_id,''), al.created_at,
 		al.sim_effective_at, COALESCE(al.test_clock_id,'')
 		FROM audit_log al
 		LEFT JOIN api_keys k ON k.id = al.actor_id AND k.tenant_id = al.tenant_id
 		LEFT JOIN customers c ON c.id = al.actor_id AND c.tenant_id = al.tenant_id AND al.actor_type = 'customer'
-		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'`
+		LEFT JOIN users u ON u.id = al.actor_id AND al.actor_type = 'user'
+		LEFT JOIN users ru ON ru.id = al.resource_id AND al.resource_type = 'user'
+		LEFT JOIN member_invitations ri ON ri.id = al.resource_id AND al.resource_type = 'user'`
 
 // auditListOrder is newest-first, with the id tiebreaker the cursor predicate
 // keys on.
