@@ -286,6 +286,15 @@ func TestSimAxis_UsesPartialClockIndex(t *testing.T) {
 	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
 		t.Fatalf("set enable_seqscan: %v", err)
 	}
+	// Bitmap scans too. A bitmap heap scan can use this index and still need a
+	// Sort, because bitmaps do not preserve index order — so leaving it enabled
+	// makes the Sort assertion below a test of the PLANNER'S SCAN-TYPE CHOICE,
+	// which varies with statistics and machine, rather than of the index KEY,
+	// which is the thing that actually rots. (It cost a red CI run to learn: this
+	// passed locally on an index scan and failed on CI, which chose a bitmap.)
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_bitmapscan = off`); err != nil {
+		t.Fatalf("set enable_bitmapscan: %v", err)
+	}
 
 	// EXPLAIN the shape the CODE emits, not a hand-written lookalike: order by
 	// (created_at, id) DESC — see auditListOrder — because that is the list the
