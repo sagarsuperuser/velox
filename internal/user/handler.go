@@ -273,7 +273,10 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.cookie.SetCookie(w, rawID, sess.ExpiresAt)
-	h.auditAuthEvent(r.Context(), r, sess.Livemode, u.ID, tenant.TenantID, "login", u.ID, u.Email,
+	// No email in the label: resource_id IS the user id, and the reader resolves the
+	// address from the (erasable) users row. audit_log is append-only — an email
+	// written here could never be deleted.
+	h.auditAuthEvent(r.Context(), r, sess.Livemode, u.ID, tenant.TenantID, "login", u.ID, "",
 		map[string]any{"livemode": sess.Livemode})
 	respond.JSON(w, r, http.StatusOK, loginResp{
 		UserID:    u.ID,
@@ -423,7 +426,7 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plaintext, tenantID, err := h.users.IssueResetToken(r.Context(), req.Email)
+	plaintext, tenantID, targetUserID, err := h.users.IssueResetToken(r.Context(), req.Email)
 	if err != nil {
 		slog.Error("password reset issue failed", "err", err)
 		// Generic response — don't expose internal failures
@@ -446,13 +449,17 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		} else if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
 			slog.Error("password reset email send failed", "err", sendErr)
 		}
-		// Audit the reset request against the matched account's tenant. The actor
-		// is anonymous (any unauthenticated party can trigger a reset email) so
-		// it records as 'system'; the email identifies the targeted account. Only
-		// written on a match, so it neither leaks to the requester (the response
-		// is identical match-or-not) nor pollutes the log with spray attempts.
-		h.auditAuthEvent(r.Context(), r, false, "", tenantID, "password_reset_requested", "", req.Email,
-			map[string]any{"email": req.Email})
+		// Audit the reset request against the matched account's tenant. The actor is
+		// anonymous (any unauthenticated party can trigger a reset email) so it
+		// records as 'system'. Only written on a match, so it neither leaks to the
+		// requester (the response is identical match-or-not) nor pollutes the log
+		// with spray attempts.
+		//
+		// The row POINTS AT the account (resource_id = the user id) and does not
+		// STORE its address — neither in the label nor in metadata, where it used
+		// to sit twice. audit_log is append-only, so an email written here could
+		// never be erased; the reader resolves it from the users row, which can.
+		h.auditAuthEvent(r.Context(), r, false, "", tenantID, "password_reset_requested", targetUserID, "", nil)
 	} else {
 		// No account matched (or issuance failed): no token exists, nothing was
 		// mutated, and deliberately nothing is written — a row here would turn
@@ -549,7 +556,8 @@ func (h *Handler) confirmPasswordReset(w http.ResponseWriter, r *http.Request) {
 	// a high-value account-takeover signal. Actor is the account owner (they
 	// held the token); tenant resolved separately since domain.User carries none.
 	if tenantID, terr := h.users.TenantForUser(r.Context(), u.ID); terr == nil {
-		h.auditAuthEvent(r.Context(), r, false, u.ID, tenantID, "password_reset_completed", u.ID, u.Email, nil)
+		// resource_id = the user id; the reader resolves the address. Not stored.
+		h.auditAuthEvent(r.Context(), r, false, u.ID, tenantID, "password_reset_completed", u.ID, "", nil)
 	}
 
 	respond.JSON(w, r, http.StatusOK, map[string]string{

@@ -1192,8 +1192,23 @@ func (s *Service) RecordOfflinePayment(ctx context.Context, tenantID, id, note s
 			"currency":              updated.Currency,
 			"recovered_from_status": string(inv.Status),
 		}
+		// The operator's note is FREE TEXT from the request body, and audit_log is
+		// append-only — 0150 revoked DELETE from the runtime role, so whatever lands
+		// here is permanent and cannot be redacted. An unbounded field is therefore
+		// an unbounded permanent liability: paste a customer's email, a card number
+		// or a home address into "note" and it is in the compliance log forever.
+		//
+		// Bound it. 500 chars is generous for "cheque #1234, received 12 May" and
+		// far too small to be a dumping ground, and the row records that the note
+		// was truncated rather than silently keeping half a sentence.
 		if note != "" {
-			meta["note"] = note
+			const maxNote = 500
+			if len(note) > maxNote {
+				meta["note"] = note[:maxNote]
+				meta["note_truncated"] = true
+			} else {
+				meta["note"] = note
+			}
 		}
 		_ = s.audit.Log(ctx, tenantID, domain.AuditActionUpdate, "invoice", updated.ID, updated.InvoiceNumber, meta)
 	}

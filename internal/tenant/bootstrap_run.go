@@ -253,10 +253,13 @@ func RunBootstrap(ctx context.Context, db *postgres.DB, deps BootstrapDeps, opts
 			ResourceType:  "tenant",
 			ResourceID:    tenantID,
 			ResourceLabel: tenantName,
+			// owner_user_id POINTS AT the account; the address is deliberately NOT
+			// stored beside it. audit_log is append-only (0150 revoked DELETE from
+			// the runtime role), so an email written here could never be erased —
+			// and the reader resolves it from the users row, which can be.
 			Metadata: map[string]any{
 				"action":        "bootstrap_provisioned",
 				"owner_user_id": ownerUser.ID,
-				"owner_email":   ownerEmail,
 			},
 		}); err != nil {
 			return BootstrapResult{}, fmt.Errorf("audit bootstrap tenant: %w", err)
@@ -296,7 +299,6 @@ func RunBootstrap(ctx context.Context, db *postgres.DB, deps BootstrapDeps, opts
 			Metadata: map[string]any{
 				"action": "bootstrap_provisioned",
 				"role":   "owner",
-				"email":  ownerEmail,
 			},
 		}); err != nil {
 			return BootstrapResult{}, fmt.Errorf("audit bootstrap owner: %w", err)
