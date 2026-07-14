@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -177,16 +178,36 @@ func (h *Handler) advance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read the clock BEFORE advancing so the audit row can record the WINDOW the
+	// advance swept, not just where it landed. Without the "from" instant, an
+	// advance row says "the clock is now at 2027-06-01" and nothing else — so the
+	// events it caused (every invoice, cancel and dunning step settled in that
+	// sweep) cannot be bounded to it. After ADR-086 teardown these rows are the
+	// ONLY surviving record of the simulation, and "which advance produced this?"
+	// is precisely the question they exist to answer.
+	//
+	// Best-effort: a read failure must not block the operator's advance. The row
+	// then carries the destination alone, exactly as it always did.
+	var advancedFrom *time.Time
+	if before, gerr := h.svc.Get(r.Context(), tenantID, id); gerr == nil {
+		from := before.FrozenTime
+		advancedFrom = &from
+	}
+
 	clk, err := h.svc.Advance(r.Context(), tenantID, id, input)
 	if err != nil {
 		respond.FromError(w, r, err, "test_clock")
 		return
 	}
 	if h.auditLogger != nil {
-		_ = h.auditLogger.Log(h.auditCtx(r.Context(), clk), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, map[string]any{
+		meta := map[string]any{
 			"action":      "advanced",
 			"frozen_time": clk.FrozenTime,
-		})
+		}
+		if advancedFrom != nil {
+			meta["advanced_from"] = *advancedFrom
+		}
+		_ = h.auditLogger.Log(h.auditCtx(r.Context(), clk), tenantID, domain.AuditActionUpdate, "test_clock", clk.ID, clk.Name, meta)
 	}
 	respond.JSON(w, r, http.StatusOK, clk)
 }

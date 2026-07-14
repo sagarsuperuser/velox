@@ -17,7 +17,7 @@ type fakeNoPMNotifier struct {
 	got []domain.Invoice
 }
 
-func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice) (domain.NotifyOutcome, error) {
+func (f *fakeNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	f.got = append(f.got, inv)
 	return domain.NotifySent, nil
 }

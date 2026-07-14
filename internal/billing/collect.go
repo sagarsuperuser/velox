@@ -117,7 +117,7 @@ func (e *Engine) collectAfterFinalize(ctx context.Context, sub domain.Subscripti
 		)
 		return
 	}
-	outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv)
+	outcome, err := e.noPMNotifier.NotifyNoPaymentMethod(ctx, sub.TenantID, notifyInv, "finalize_no_pm")
 	switch {
 	case err != nil:
 		slog.WarnContext(ctx, logTag+": no-payment-method notification failed",

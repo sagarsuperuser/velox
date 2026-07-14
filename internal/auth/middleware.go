@@ -186,10 +186,17 @@ func CustomerActorID(ctx context.Context) string {
 	return v
 }
 
-// WithCustomerActor stamps a customer ID as the request's actor so
-// downstream services (e.g. the audit logger) can record who acted.
-// Currently unused after the customer-portal removal — retained for a
-// future customer-authenticated surface.
+// WithCustomerActor stamps a customer ID as the request's actor so downstream
+// services (chiefly the audit logger) record who acted.
+//
+// It is LIVE, and load-bearing. An earlier version of this comment said it was
+// "currently unused after the customer-portal removal — retained for a future
+// surface", which was false and dangerous in a specific way: it invited a cleanup
+// pass to delete the ONE mechanism that attributes an action to a customer rather
+// than to "system". It is the whole of ADR-090's customer-actor story — the
+// hosted-invoice Pay click (hostedinvoice/handler.go) and the payment-update link
+// (payment/public_handler.go) both stamp it, and audit.ResolveActor reads it to
+// emit actor_type='customer'.
 func WithCustomerActor(ctx context.Context, customerID string) context.Context {
 	return context.WithValue(ctx, customerActorKey, customerID)
 }

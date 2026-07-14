@@ -677,7 +677,12 @@ type noPaymentMethodNotifierAdapter struct {
 	auditLogger      *audit.Logger // optional — engine fires this background task; audit row records the send for operator forensics.
 }
 
-func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice) (domain.NotifyOutcome, error) {
+// trigger is supplied by the CALLER because only the caller knows why the link is
+// being sent. This adapter used to hardcode "finalize_no_pm" — so an OPERATOR
+// clicking "Resend setup link" produced a permanent row asserting the mail was sent
+// by the finalize path, which never ran. A row that names the wrong cause is the
+// same class of false evidence the URL-guessing catch-all was deleted for.
+func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Context, tenantID string, inv domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	if a.paymentUpdateURL == "" {
 		return "", errors.New("PAYMENT_UPDATE_URL not configured")
 	}
@@ -718,7 +723,7 @@ func (a *noPaymentMethodNotifierAdapter) NotifyNoPaymentMethod(ctx context.Conte
 			"action":         "setup_link_sent",
 			"invoice_id":     inv.ID,
 			"invoice_number": inv.InvoiceNumber,
-			"trigger":        "finalize_no_pm",
+			"trigger":        trigger,
 		})
 	}
 	return domain.NotifySent, nil

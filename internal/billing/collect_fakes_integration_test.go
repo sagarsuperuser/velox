@@ -41,7 +41,7 @@ func (d *testDunningResolver) ResolveByInvoice(_ context.Context, _, invoiceID s
 // testNoPMNotifier records sends (queue+notify arm).
 type testNoPMNotifier struct{ got []domain.Invoice }
 
-func (n *testNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice) (domain.NotifyOutcome, error) {
+func (n *testNoPMNotifier) NotifyNoPaymentMethod(_ context.Context, _ string, inv domain.Invoice, trigger string) (domain.NotifyOutcome, error) {
 	n.got = append(n.got, inv)
 	return domain.NotifySent, nil
 }
