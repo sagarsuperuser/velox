@@ -47,9 +47,12 @@ func (r *PostgresTTFIReader) FirstInvoiceFinalizedAt(ctx context.Context, tenant
 
 	// MIN(created_at) over (action='finalize', resource_type='invoice') with
 	// COALESCE-style NULL handling: an empty result set returns a SQL NULL
-	// scanned into sql.NullTime. The where clause matches what
-	// internal/invoice/handler.go:311 emits on Finalize:
-	// auditLogger.Log(ctx, tenantID, AuditActionFinalize, "invoice", inv.ID, ...)
+	// scanned into sql.NullTime. The where clause matches the finalize row as the
+	// TWO writers actually emit it — invoice.Service.Finalize (the operator +
+	// tax-retry chain) and billing.Engine.auditInvoiceFinalized (born-finalized
+	// engine invoices). The handler used to write its own copy; that was removed
+	// as a duplicate, so any comment pointing at invoice/handler.go for this row
+	// is pointing at a writer that no longer exists.
 	//
 	// Explicit tenant_id + livemode predicates for the same reason as
 	// audit.Query (PR2 of the audit e2e arc): the RLS policy's column-free

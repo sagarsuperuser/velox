@@ -78,8 +78,10 @@ func (h *CreatePreviewHandler) create(w http.ResponseWriter, r *http.Request) {
 	// not report it as an uncovered mutation. (It used to opt out of a catch-all
 	// middleware that would have invented a "Created invoice" row with
 	// resource_id="create_preview"; that middleware is gone (ADR-090), but the
-	// declaration is still required — the route is `explicit` in the registry, so
-	// the detector inspects it.) Fired automatically by the dashboard's
+	// route is exempt(non_mutating_preview) in the registry, so the detector
+	// already skips it. MarkSkip is kept as the LOCAL declaration the registry
+	// note cites — the two agree, and if the exemption is ever lifted this call is
+	// what keeps the route from reporting as an uncovered mutation.) Fired automatically by the dashboard's
 	// upcoming-invoice card on every customer page-open.
 	audit.MarkSkip(r.Context())
 

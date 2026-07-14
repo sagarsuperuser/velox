@@ -620,7 +620,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	pricingH.SetAuditLogger(auditLogger)
 	tenantStripeH.SetAuditLogger(auditLogger)
 	// ADR-090 in-tx emitters for the routes whose ONLY audit coverage used to
-	// be the URL-guessing catch-all (which the next PR deletes). These are
+	// be the URL-guessing catch-all (deleted in ADR-090; the registry + the
+	// pure-observer detector replaced it). These are
 	// SERVICE-side seams, distinct from the post-hoc handler seams above.
 	customerSvc.SetAuditLogger(auditLogger)
 	pricingSvc.SetAuditLogger(auditLogger)
@@ -1101,9 +1102,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 
 	// HANDLER-level emitters are gated too. They were exempt on the grounds that
 	// they "keep the *audit.Logger concrete type and fail loudly at compile time"
-	// — and both halves of that were false. Every one of them takes an INTERFACE
-	// (auth.AuditWriter, subscription.auditRecorder, invoice.auditWriter, …), and
-	// every one nil-GUARDS its emission and silently skips it. So a forgotten
+	// — and both halves of that were false. MOST of them take an INTERFACE
+	// (auth.AuditWriter, subscription.auditRecorder, invoice.auditWriter, …), so a
+	// nil emitter does not even fail to TYPE-check; and every one of them —
+	// INCLUDING the two that DO hold the concrete *audit.Logger (customerH,
+	// creditNoteH) — nil-GUARDS its emission and silently skips it. A concrete type
+	// buys nothing when the field is nil-able and the call site tolerates nil. So a forgotten
 	// SetAuditLogger line here did not fail to compile and did not fail any test:
 	// it un-audited a whole domain in silence, with the route registry still
 	// declaring those routes `explicit` and every gate green. The API-key

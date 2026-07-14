@@ -188,8 +188,16 @@ export default function UsageEventsPage() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   // Export pages through ALL filtered events (capped), not just the server's
-  // default page — pre-fix this called listUsageEvents with no limit and
-  // silently truncated the CSV to one page. Mirrors AuditLog.tsx's export.
+  // default page — pre-fix this called listUsageEvents with no limit and silently
+  // truncated the CSV to one page.
+  //
+  // This does NOT mirror AuditLog.tsx any more: that export became a SERVER-side
+  // stream with no cap (GET /v1/exports/audit-log.csv, ADR-090 §7) precisely
+  // because a browser page-walk with a row cap hands the operator a file that
+  // looks complete and is not. This page still page-walks, and still caps at
+  // EXPORT_MAX_ROWS — the same latent truncation, on a smaller artifact. Use
+  // /v1/exports/usage-events.csv (server-side, uncapped, snapshot-consistent)
+  // when that matters; wiring this button to it is the obvious follow-up.
   const EXPORT_PAGE_SIZE = 1000
   const EXPORT_MAX_ROWS = 50_000
   const handleExport = async () => {
