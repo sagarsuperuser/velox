@@ -863,8 +863,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 		auditLogger:      auditLogger,
 	}
 	// Struct-literal wiring again — invisible to the SetAuditLogger grep. This
-	// adapter is the ONLY writer of the finalize-time setup_link_sent row, and its
-	// emitter is nil-guarded, so a dropped wiring here loses that row in silence.
+	// adapter writes the ENGINE-driven setup_link_sent row at finalize (the
+	// operator-driven one comes from paymentmethods.Handler), and its emitter is
+	// nil-guarded — so a dropped wiring here loses that row in silence.
 	audit.MustWired(noPMNotifier)
 	engine.SetNoPaymentMethodNotifier(noPMNotifier)
 	// Same adapter feeds the manual-invoice finalize path so an

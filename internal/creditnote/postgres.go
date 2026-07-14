@@ -587,11 +587,19 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 // replaced.
 //
 // emit fires UNCONDITIONALLY, and is handed `changed` (did the persisted state
-// actually move?). The store REPORTS; it does not DECIDE. That is deliberate,
-// because the two callers want opposite semantics from the same write: a webhook
-// redelivery that moves nothing is a non-event and its closure returns nil, while
-// an OPERATOR's retry hit Stripe and IS the event whether or not the status moved.
-// See the comment at the emit call below, and creditnote.Service.RetryRefund.
+// actually move?). The store REPORTS; it does not DECIDE — the CALLER decides
+// whether a no-move write is audit-worthy, because the answer differs by caller:
+//
+//   - RetryRefund (creditnote.Service): emits even when the status did not move.
+//     The operator's retry HIT STRIPE; the action is the fact. The row carries
+//     status_changed=false.
+//   - runPostIssueExternalLegs: the post-issue refund leg, same store method.
+//
+// The Stripe WEBHOOK is NOT a caller of this method — it goes through
+// ApplyRefundWebhookStatus, which is where the "a redelivery that moves nothing
+// writes no row" rule lives. An earlier version of this comment named the webhook
+// as one of the two callers here, which sent the reader to the wrong function for
+// the rule it was looking for.
 //
 // The row is still touched (updated_at) on a no-op so the "stuck pending >72h"
 // attention window keeps its existing semantics.

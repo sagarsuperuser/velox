@@ -276,7 +276,7 @@ var auditRouteRegistry = map[routeKey]auditDecl{
 	{"POST", "/v1/credits/adjust"}: explicit("credit.Service.Adjust → LogInTx(resource=credit) on the ledger tx. Action is credit.adjustment for a positive amount and credit.deduction for a negative one (the split the dashboard's severity styling keys on). There is no 'adjust' action in the vocabulary."),
 
 	// --- billing ----------------------------------------------------------
-	{"POST", "/v1/billing/run"}: explicit("billing.Handler.triggerCycle → Log(run, billing) — the operator's TRIGGER row. The per-invoice finalize rows the run produces are byte-identical whether the scheduler or an operator drove it, so this row is the only thing that answers \"who started this cycle\". Residual own-tx by design: the route owns no tx. A failed emission is surfaced in the response and left unmarked, so the detector reports it."),
+	{"POST", "/v1/billing/run"}: explicit("billing.Handler.triggerCycle → Log(run, billing) — the operator's TRIGGER row: it records WHO ran a cycle and how many invoices it produced, including a run that produced ZERO (which leaves no finalize rows at all). NOT because the finalize rows are anonymous — triggerCycle runs synchronously on the request ctx, so those rows do carry the operator's actor/IP/request_id, unlike the scheduler's. Residual own-tx by design: the route owns no tx. A failed emission is surfaced in the response and left unmarked, so the detector reports it."),
 
 	// --- dunning ----------------------------------------------------------
 	{"POST", "/v1/dunning/policies"}:                  explicit("dunning.Handler.createPolicy → Log(create, dunning_policy)."),

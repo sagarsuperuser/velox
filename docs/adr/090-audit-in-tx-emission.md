@@ -331,7 +331,7 @@ existing `chimw.GetReqID` reader — the audit writer, `telemetry.ContextHandler
 `respond.go`, `payment/stripe` — is unchanged.
 
 The inbound value is DROPPED, not preserved under a second key. Nothing consumed
-it (no `X-Request-Id` reference exists in the repo, web-v2 or docs; the published
+it as INPUT (the name still appears — in the test that forges the header to prove it is ignored, and in this ADR; an earlier version of this sentence claimed no reference existed anywhere, which was false 15 lines below its own use of the name. State the property, not a grep result); the published
 contract is the `Velox-Request-Id` RESPONSE header); cross-service trace
 continuity is already carried properly by W3C Trace Context via `mw.Tracing()`;
 and recording an unverified client string anywhere on the row — even under an
