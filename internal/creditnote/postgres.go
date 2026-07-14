@@ -584,13 +584,17 @@ func (s *PostgresStore) UpdateRefundStatus(ctx context.Context, tenantID, id str
 //
 // The prior refund state is read UNDER THE ROW LOCK inside this transaction —
 // not from a pre-tx snapshot — so `prior` is the state the write actually
-// replaced. emit fires ONLY when the persisted refund state genuinely MOVES
-// (refund_status changed, or a new stripe_refund_id landed): a retry that
-// re-drives an idempotent Stripe refund and gets the same `pending` back
-// persists nothing new and must record nothing, or the log would claim a
-// transition that never happened. The row is still touched (updated_at) on the
-// no-op so the "stuck pending >72h" attention window keeps its existing
-// semantics.
+// replaced.
+//
+// emit fires UNCONDITIONALLY, and is handed `changed` (did the persisted state
+// actually move?). The store REPORTS; it does not DECIDE. That is deliberate,
+// because the two callers want opposite semantics from the same write: a webhook
+// redelivery that moves nothing is a non-event and its closure returns nil, while
+// an OPERATOR's retry hit Stripe and IS the event whether or not the status moved.
+// See the comment at the emit call below, and creditnote.Service.RetryRefund.
+//
+// The row is still touched (updated_at) on a no-op so the "stuck pending >72h"
+// attention window keeps its existing semantics.
 //
 // An emission failure aborts the write (shared fate) — the refund state and its
 // evidence commit together or not at all.

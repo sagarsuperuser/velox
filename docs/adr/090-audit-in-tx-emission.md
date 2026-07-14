@@ -142,11 +142,16 @@ Two amendments this forced, both deliberate:
   registry's static gate.
 - **`MarkSkip` survives, `MarkHandled` does not.** `MarkSkip` is now the
   detector's "this request mutated nothing" declaration, and it is load-bearing:
-  four live paths return 2xx having mutated nothing (a stale-cookie logout, a
-  password reset for an unknown email — the fixed 200 *is* the enumeration
-  defence, a settings save that changed no field, an idempotency replay), plus
-  the read-only previews, a recipe re-apply that installs nothing, and a
-  credit-note issue that defers. Without the declaration each would report as an
+  NINE live paths return 2xx having mutated nothing: a stale-cookie logout; a
+  password reset for an unknown email (the fixed 200 *is* the enumeration
+  defence); a settings save that changed no field; an idempotency replay; the two
+  read-only previews (invoice `create_preview`, recipe preview); a recipe
+  re-apply that installs nothing; a credit-note issue that defers; a DUPLICATE
+  usage ingest (the idempotency key already exists, so no event row is written);
+  and a hosted-invoice payment-session REUSE (a second Pay click returns the same
+  Stripe session, so there is no new claim row). `internal/audit/context.go`
+  holds the maintained list — keep the two in step, or this paragraph becomes the
+  same kind of lie the registry exists to catch. Without the declaration each would report as an
   uncovered mutation forever, and a detector that cries wolf on a normal client
   retry is a detector nobody keeps. `MarkHandled` is gone because it was the
   exported escape hatch that let a handler ASSERT coverage it did not have; the
@@ -274,6 +279,17 @@ not a rounding error; it is a row the clock filter cannot see):
   layer. **Closure trigger: fix the CN clock binding; the sim axis then
   follows from the ctx with NO further audit change.** Clock-DRIVEN CN
   paths (the catchup clawback issuer) ARE stamped today.
+- **Operator-driven price-override routes** (create / delete a customer price
+  override) emit NO sim axis. Same root cause as the CN routes: `internal/
+  pricing` has no `clock.Resolver` at all, so the handler emits on an unbound
+  `r.Context()` and the row lands with NULL sim columns. Do NOT mistake this
+  for the "not in the clock domain" case below — `customer_price_overrides`
+  IS torn down with the clock (ADR-086), so an operator who negotiates a price
+  for a simulated customer mid-simulation leaves a row that is invisible to
+  `?test_clock_id=` AND, after teardown, is the only surviving evidence the
+  override ever existed. **Closure trigger: give `pricing` a `clock.Resolver`
+  and bind at the handler; the axis then follows from ctx with NO further audit
+  change.**
 - **Payment-method routes** and **public checkout rows** (hosted-invoice Pay
   click, payment-update link, checkout setup) emit no sim axis. Neither
   path binds a pin: both stamp wall-clock and drive real Stripe, so their

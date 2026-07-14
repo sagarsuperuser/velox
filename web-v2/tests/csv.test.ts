@@ -1,4 +1,4 @@
-// CSV formula injection (ADR-090 §6). A cell beginning with = + - @ (or a leading
+// CSV formula injection (ADR-090 §7). A cell beginning with = + - @ (or a leading
 // TAB/CR) is EXECUTED as a formula by Excel, Google Sheets and LibreOffice — and
 // customer display names flow into these exports. The CSV is the artifact an
 // operator hands an auditor; a file that runs code when opened is not evidence.

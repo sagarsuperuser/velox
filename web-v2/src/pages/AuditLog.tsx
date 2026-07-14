@@ -41,17 +41,16 @@ import { Download, ChevronRight, History } from 'lucide-react'
 const PAGE_SIZE = 50
 
 // encodeCursor builds the seek-pagination token for ?after= — the same wire
-// format the backend emits (base64url of {id, created_at, sim_effective_at?})
-// — so the client can transition from the page-1 offset response onto the
-// cursor path.
+// format the backend emits (base64url of {id, created_at}) — so the client can
+// transition from the page-1 offset response onto the cursor path.
 //
-// The sim anchor rides along because under sim ordering the server seeks on
-// sim_effective_at, not created_at: a cursor without it is rejected (400)
-// rather than silently seeking on the wrong column, which under a clock advance
-// (months collapsed into one wall-clock instant) would skip and repeat rows.
+// There is ONE sort axis (created_at) and therefore one anchor. This used to
+// carry a sim_effective_at anchor for an "order by simulated time" seek; that
+// control does not exist (ADR-090 §5 — within a clock it is the same order, and
+// across clocks it interleaves unrelated simulations), and the backend cursor no
+// longer has the field at all.
 function encodeCursor(e: AuditEntry): string {
   const cur: Record<string, string> = { id: e.id, created_at: e.created_at }
-  if (e.sim_effective_at) cur.sim_effective_at = e.sim_effective_at
   return btoa(JSON.stringify(cur))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')

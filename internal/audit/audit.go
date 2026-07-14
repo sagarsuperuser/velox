@@ -13,6 +13,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/crypto"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 )
 
@@ -37,11 +38,44 @@ func init() {
 // Logger appends entries to the audit log. Writes are synchronous so
 // callers know whether the entry was persisted — important for compliance.
 type Logger struct {
-	db *postgres.DB
+	db  *postgres.DB
+	enc *crypto.Encryptor
 }
 
 func NewLogger(db *postgres.DB) *Logger {
 	return &Logger{db: db}
+}
+
+// SetEncryptor lets the READ path decrypt actor_name.
+//
+// actor_name is resolved at read time by LEFT JOIN — an api_keys name, a
+// customers display_name, or a users email. customers.display_name is ENCRYPTED
+// AT REST (customer.PostgresStore.SetEncryptor), and audit_log has no encryptor,
+// so with VELOX_ENCRYPTION_KEY set — i.e. in production — every customer-actor
+// row (a hosted-invoice Pay click, a payment-update link) rendered its Actor as
+// CIPHERTEXT: on the dashboard, and in the CSV handed to an auditor.
+//
+// Decrypting here is safe for all three sources: Encryptor.Decrypt passes a
+// value without the encryption prefix straight through, so api-key names and
+// user emails (plaintext) are untouched. Nil-safe: no key, no decryption, and
+// unencrypted deployments behave exactly as before.
+//
+// The name is NOT stored in audit_log — it is joined from the live row — so this
+// stays consistent with the append-only + GDPR rule: erase the customer and the
+// name disappears from every historical row.
+func (l *Logger) SetEncryptor(enc *crypto.Encryptor) { l.enc = enc }
+
+// decryptActorName is the single point both readers (Query and the CSV Stream)
+// pass through. A decrypt failure is NOT fatal: the row is still evidence, and a
+// key rotation must not blank an auditor's whole log — the ciphertext is left in
+// place, which is visibly wrong rather than silently absent.
+func (l *Logger) decryptActorName(e *domain.AuditEntry) {
+	if l.enc == nil || e.ActorName == "" {
+		return
+	}
+	if plain, err := l.enc.Decrypt(e.ActorName); err == nil {
+		e.ActorName = plain
+	}
 }
 
 // Log records an audit entry synchronously and returns an error if the
@@ -520,6 +554,7 @@ func (l *Logger) Query(ctx context.Context, tenantID string, filter QueryFilter)
 		if err != nil {
 			return nil, 0, err
 		}
+		l.decryptActorName(&e)
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
@@ -580,8 +615,13 @@ func scanAuditEntry(rows *sql.Rows) (domain.AuditEntry, error) {
 // here on purpose — a truncated audit export is a lie about the log, and the
 // only honest bound is "what the filter selected".
 //
-// filter.Limit / filter.Offset / the cursor fields are IGNORED: the export is
-// defined by its predicates, not by a page.
+// filter.Limit / filter.Offset / the cursor fields are IGNORED — and ENFORCED to
+// be, below, by zeroing them. They used to be merely "not set by the caller":
+// Stream handed the whole filter to buildListWhere, which happily applies a
+// cursor predicate, so a future caller who passed a filter carrying one would
+// have received a SILENTLY TRUNCATED export — the precise failure this function
+// exists to prevent, arriving through the back door. The export is defined by its
+// predicates, not by a page, and now it cannot be otherwise.
 //
 // Rows are consumed as they arrive off the wire (database/sql + pgx stream
 // them), so the handler writes CSV to the socket while Postgres is still
@@ -594,6 +634,10 @@ func (l *Logger) Stream(ctx context.Context, tenantID string, filter QueryFilter
 		return err
 	}
 	defer postgres.Rollback(tx)
+
+	// Zero the paging fields: see the doc above. An export is the whole selection.
+	filter.Limit, filter.Offset = 0, 0
+	filter.AfterCreatedAt, filter.AfterID = time.Time{}, ""
 
 	whereClause, args, _, _ := buildListWhere(tenantID, postgres.Livemode(ctx), filter)
 
@@ -608,6 +652,7 @@ func (l *Logger) Stream(ctx context.Context, tenantID string, filter QueryFilter
 		if err != nil {
 			return err
 		}
+		l.decryptActorName(&e)
 		if err := fn(e); err != nil {
 			return err
 		}
