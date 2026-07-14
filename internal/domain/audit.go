@@ -28,6 +28,13 @@ type AuditEntry struct {
 	// clicked Advance. Only this axis can order or window them.
 	SimEffectiveAt *time.Time `json:"sim_effective_at,omitempty"`
 	TestClockID    string     `json:"test_clock_id,omitempty"`
+
+	// SubjectDeleted: the resource this row names no longer exists, because the
+	// test clock it belonged to was torn down (ADR-086 hard-deletes the whole
+	// simulated graph). The ROW survives on purpose — it is the only remaining
+	// record that the simulation happened — but a "View" link on it would 404, so
+	// the dashboard must not offer one. Resolved at read time; never stored.
+	SubjectDeleted bool `json:"subject_deleted,omitempty"`
 }
 
 // Well-known audit actions.

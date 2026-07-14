@@ -1661,17 +1661,54 @@ func handleDeepHealth(db *postgres.DB) http.HandlerFunc {
 	}
 }
 
+// requestLogger writes the access log.
+//
+// It logs WHO, not just what. The access log used to carry only method, path,
+// status and duration — which meant that after an incident it could answer "was
+// there a 500 on this route" and nothing else. It could not answer the two
+// questions that actually get asked: "what did this actor do", and "which tenant
+// was affected". And with no request_id on the line, a log entry could not be
+// joined to the audit row written by the same request, even though the audit row
+// has carried request_id all along.
+//
+// The identity fields come from the SAME resolver the audit rows use
+// (audit.ResolveActor) — deliberately, so a request cannot be one actor in the log
+// and a different actor in the evidence.
+//
+// The actor NAME is not logged, only the id: names are emails for user actors, and
+// logs ship to sinks with no erasure story (the same reason 0150's append-only
+// audit_log stores no addresses either).
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-		slog.Info("request",
+
+		// Read identity AFTER the handler: auth runs downstream of this middleware,
+		// so before ServeHTTP the context is still anonymous.
+		ctx := r.Context()
+		actorType, actorID := audit.ResolveActor(ctx)
+
+		attrs := []any{
 			"method", r.Method,
 			"path", loggablePath(r),
 			"status", ww.Status(),
 			"duration_ms", time.Since(start).Milliseconds(),
-		)
+			"actor_type", actorType,
+			// Never empty: ResolveActor answers "system"/"system" for an
+			// unauthenticated request, which is a real answer rather than a missing
+			// one — and is what the audit row would record for the same request.
+			"actor_id", actorID,
+			// Joins this line to the audit row the same request wrote.
+			"request_id", middleware.GetReqID(ctx),
+			"ip", audit.ClientIP(ctx),
+		}
+		// Omit rather than log empty: an unauthenticated request has no tenant, and a
+		// blank field reads as "we lost it" instead of "there wasn't one".
+		if tenantID := auth.TenantID(ctx); tenantID != "" {
+			attrs = append(attrs, "tenant_id", tenantID)
+		}
+		slog.Info("request", attrs...)
 	})
 }
 

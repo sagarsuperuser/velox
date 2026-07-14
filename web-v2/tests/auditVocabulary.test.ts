@@ -133,3 +133,25 @@ test('a payment-setup-link row names the action, not a generic "Updated <custome
     'Emailed a payment-method setup link to Acme Corp (invoice finalized with no card on file)',
   )
 })
+
+test('a row whose subject was torn down offers no link', () => {
+  // Deleting a test clock hard-deletes its whole simulated graph (ADR-086) while
+  // the audit rows survive on purpose — so the row still names an invoice that no
+  // longer exists. We used to render "View" on it, straight into a 404. The backend
+  // resolves subject_deleted at read time; the only job here is to stop offering
+  // the door.
+  assert.equal(
+    resourceLink(entry({ resource_type: 'invoice', resource_id: 'vlx_inv_sim', subject_deleted: true })),
+    null,
+    'a torn-down subject must not render a View link — it 404s')
+
+  // The same row while its clock still lives: the subject is there, the link works.
+  assert.equal(
+    resourceLink(entry({ resource_type: 'invoice', resource_id: 'vlx_inv_sim', subject_deleted: false })),
+    '/invoices/vlx_inv_sim')
+
+  // Absent (every wall-clock row): unchanged, still links.
+  assert.equal(
+    resourceLink(entry({ resource_type: 'invoice', resource_id: 'vlx_inv_real' })),
+    '/invoices/vlx_inv_real')
+})

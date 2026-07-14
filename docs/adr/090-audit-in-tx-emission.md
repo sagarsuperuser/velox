@@ -81,6 +81,40 @@ the service-built emission before commit. Handlers stop writing audit rows.
 Background/engine/webhook writers pass their BUSINESS tx — never an
 audit-only tx.
 
+> **Status of that last sentence: it is the TARGET, not the present tense.**
+> As of 2026-07-14 the engine has **not** migrated. Seven call sites in
+> `internal/billing` still emit post-commit on their own transaction
+> (`finalize`, `cancel` ×2, `update`, `subscription.pending_change_applied`,
+> `subscription.threshold_crossed`, `subscription.threshold_deferred`), and
+> `internal/dunning`, `internal/webhook` and `internal/stripe` emit none at all.
+> Handlers ARE migrated; the engine is not.
+>
+> This paragraph previously stated the target as accomplished fact, which is the
+> failure mode this whole arc exists to remove — evidence, or a claim about
+> evidence, that reads as true and is not. It is corrected here rather than
+> quietly, because an ADR that overstates its own adoption is how a reviewer comes
+> to believe a guarantee holds on a path where it does not.
+>
+> **The residual exposure, stated plainly.** For those seven, the business change
+> commits first and the audit row is written afterwards in a separate transaction.
+> If that second write fails, the mutation stands and its evidence does not. Every
+> one of them discards the error, correctly — post-commit there is nothing the
+> caller can do. It surfaces as
+> `velox_audit_write_errors_total{outcome="row_lost"}`, and nothing retries it.
+> The worst of the seven is `finalize`: an invoice the operator can see, with no
+> record of what created it.
+>
+> **What holds the line meanwhile.** `internal/arch/audit_background_writers_test.go`
+> pins that exact set. A new post-commit writer in a background package fails CI;
+> a migrated one must be deleted from the list or CI fails too. The set is the
+> migration backlog and is only permitted to shrink.
+>
+> **Trigger to finish it.** Each domain migrates in its own PR under the money-path
+> playbook gates (the emission must ride the tx that performs the change, which
+> means threading it through the tx-owning store method). Do `finalize` first — it
+> is both the highest-value row and the one whose loss is least recoverable by
+> inference from other state.
+
 First batch (this PR): credit grant/adjust. The handler's post-hoc `Log`
 calls are gone; emissions ride the ledger tx (`AppendEntryAudited`,
 `AdjustAtomicAudited`). Each subsequent domain migrates in its own PR under
