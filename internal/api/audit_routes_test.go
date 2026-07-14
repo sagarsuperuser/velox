@@ -117,7 +117,6 @@ func TestAuditRouteRegistry_EntriesAreWellFormed(t *testing.T) {
 		reasonMachineIngest:      true,
 		reasonSystemEndpoint:     true,
 		reasonWebhookOwned:       true,
-		reasonBootstrap:          true,
 	}
 
 	for k, d := range auditRouteRegistry {
@@ -171,9 +170,10 @@ func TestAuditRouteRegistry_ExemptionsStaySmall(t *testing.T) {
 		// it emits (usage.Service.Backfill → IngestAudited).
 		reasonMachineIngest:      3,
 		reasonNonMutatingPreview: 2, // invoice create_preview, recipe preview
-		// POST /v1/bootstrap is NOT exempt: it mints a LIVE secret key and the
-		// owner account, and it emits its provisioning rows on its own tx.
-		reasonBootstrap:    0,
+		// NOTE: there is no `bootstrap` reason at all any more — the constant is
+		// deleted, so exempt("bootstrap") no longer compiles. POST /v1/bootstrap
+		// is explicit: it mints a LIVE secret key and the owner account, and emits
+		// its provisioning rows on its own tx.
 		reasonWebhookOwned: 1, // inbound Stripe webhook
 	}
 	for reason, n := range want {

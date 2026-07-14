@@ -16,10 +16,20 @@ import (
 // simplest gate that fails when a new SetAuditLogger line lands without the
 // matching MustWired entry.
 //
-// Handler-level SetAuditLogger receivers (post-hoc Log writers, e.g.
-// invoiceH) are exempt: MustWired covers services/adapters that emit IN-TX
-// (ADR-090), where a nil emitter silently un-audits a domain. Handlers keep
-// the *audit.Logger concrete type and fail loudly at compile time instead.
+// THERE ARE NO EXEMPTIONS. There used to be 14 — every handler-level receiver —
+// on the written grounds that "handlers keep the *audit.Logger concrete type and
+// fail loudly at compile time instead." BOTH HALVES OF THAT WERE FALSE. Every one
+// of those handlers takes an INTERFACE (auth.AuditWriter, subscription.
+// auditRecorder, invoice.auditWriter, dunning.AuditWriter, …), and every one
+// nil-GUARDS its emission and silently skips it. A nil emitter compiles, boots,
+// serves traffic, and writes nothing.
+//
+// So a forgotten SetAuditLogger line un-audited an entire domain in silence, with
+// the route registry still declaring those routes `explicit` and every gate in
+// this package green. The API-key lifecycle — mint, revoke, rotate — sat behind
+// exactly that hole. If you are about to add an exemption here, you are about to
+// reopen it: MustWired is generic (it reflects the audit field out of any struct),
+// so there is no kind of component it cannot check.
 func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 	src, err := os.ReadFile("router.go")
 	if err != nil {
@@ -38,25 +48,11 @@ func TestMustWired_CoversEveryAuditedComponent(t *testing.T) {
 		}
 	}
 
-	// Service/adapter receivers of SetAuditLogger(auditLogger). Handler
-	// receivers end in "H" by router convention and are exempt (see doc).
-	// Handler receivers of the LEGACY post-hoc Logger (invoiceH, subH, ...)
-	// are exempt — they hold the concrete *audit.Logger and fail at compile
-	// time. In-tx emitters are NOT exempt regardless of naming:
-	// publicPaymentH is one and must appear in a (guarded) MustWired call.
-	legacyHandlerExempt := map[string]bool{
-		"invoiceH": true, "subH": true, "creditNoteH": true, "customerH": true,
-		"settingsH": true, "authH": true, "dunningH": true, "pricingH": true,
-		"tenantStripeH": true, "webhookOutH": true, "testClockH": true,
-		"membersH": true, "dashboardAuthH": true, "paymentMethodsH": true,
-	}
+	// EVERY receiver of SetAuditLogger(auditLogger) — service, adapter or handler.
 	for _, m := range regexp.MustCompile(`(\w+)\.SetAuditLogger\(auditLogger\)`).FindAllStringSubmatch(text, -1) {
 		recv := m[1]
-		if legacyHandlerExempt[recv] {
-			continue
-		}
 		if !wired[recv] {
-			t.Errorf("%s.SetAuditLogger is wired in router.go but %s is missing from audit.MustWired(...) — add it so a dropped wiring line fails at boot", recv, recv)
+			t.Errorf("%s.SetAuditLogger is wired in router.go but %s is missing from audit.MustWired(...) — add it, so that DROPPING that wiring line fails loudly at boot instead of silently un-auditing %s's routes", recv, recv, recv)
 		}
 	}
 }

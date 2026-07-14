@@ -1091,6 +1091,26 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	membersH := dashmembers.NewHandler(membersSvc, sessionSvc, session.DefaultCookieConfig())
 	membersH.SetAuditLogger(auditLogger)
 
+	// HANDLER-level emitters are gated too. They were exempt on the grounds that
+	// they "keep the *audit.Logger concrete type and fail loudly at compile time"
+	// — and both halves of that were false. Every one of them takes an INTERFACE
+	// (auth.AuditWriter, subscription.auditRecorder, invoice.auditWriter, …), and
+	// every one nil-GUARDS its emission and silently skips it. So a forgotten
+	// SetAuditLogger line here did not fail to compile and did not fail any test:
+	// it un-audited a whole domain in silence, with the route registry still
+	// declaring those routes `explicit` and every gate green. The API-key
+	// lifecycle (mint / revoke / rotate) sat behind exactly that hole.
+	//
+	// MustWired is generic — it reflects the audit field out of any struct — so
+	// there was never a reason handlers could not be passed to it. This call is
+	// second because paymentMethodsH / dashboardAuthH / membersH are constructed
+	// after the first one.
+	audit.MustWired(
+		customerH, settingsH, invoiceH, subH, creditNoteH,
+		authH, dunningH, pricingH, tenantStripeH, webhookOutH,
+		testClockH, paymentMethodsH, dashboardAuthH, membersH,
+	)
+
 	s := &Server{
 		BillingEngine:     engine,
 		DunningSvc:        dunningSvc,
@@ -1211,7 +1231,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// NOT chi's middleware.RequestID — it honours an inbound X-Request-Id header
 	// verbatim, which would let a caller choose the request_id recorded on their
 	// own audit_log rows. mw.RequestID always mints server-side. See its doc
-	// comment and ADR-090 §6.
+	// comment and ADR-090 §7 (read egress).
 	r.Use(mw.RequestID)
 	// Only honor X-Forwarded-For / X-Real-IP from configured trusted proxies.
 	// chi's middleware.RealIP trusted them unconditionally, letting any client
@@ -1382,7 +1402,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// socket buffers anything now.
 	//
 	// Every export EMITS an action=export audit row before it streams, and
-	// refuses to stream if that row can't be written (ADR-090 §6, read egress):
+	// refuses to stream if that row can't be written (ADR-090 §7, read egress):
 	// a tamper-evidence system that cannot show who copied the evidence has a
 	// hole in its chain of custody. audit-log.csv is here too — the compliance
 	// export is itself an audited event, and it rides the same permission as the

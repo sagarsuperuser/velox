@@ -76,12 +76,21 @@ func markEmitted(ctx context.Context) {
 // claim about REALITY — "this 2xx changed nothing" — and it is wrong to call it
 // on any path that mutated state.
 //
-// Live callers: the read-only POST previews (invoice create_preview, recipe
-// preview), the idempotency replay (the cached response of a request whose
-// original DID emit), the stale-cookie logout, the unknown-email password reset
-// (the fixed 200 is the enumeration defence), a settings save that changed no
-// field, a recipe re-apply that installs nothing, and a credit-note issue that
-// defers.
+// Live callers — keep this list in step with the code, or it becomes the same
+// kind of lie the registry exists to catch:
+//   - the read-only POST previews (invoice create_preview, recipe preview)
+//   - the idempotency replay (the cached response of a request whose original
+//     DID emit)
+//   - the stale-cookie logout
+//   - the unknown-email password reset (the fixed 200 is the enumeration defence)
+//   - a settings save that changed no field
+//   - a recipe re-apply that installs nothing
+//   - a credit-note issue that defers
+//   - a DUPLICATE usage ingest (usage.Handler.respondIngestError): the
+//     idempotency key already exists, so no event row is written
+//   - a hosted-invoice payment-session REUSE (hostedInvoiceStripeAdapter.
+//     CreateInvoicePaymentSession): the customer clicked Pay twice and got the
+//     same Stripe session back; no new claim row, so nothing to audit
 func MarkSkip(ctx context.Context) {
 	if s, ok := ctx.Value(stateKey).(*requestState); ok {
 		s.accounted.Store(true)

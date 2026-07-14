@@ -191,6 +191,17 @@ type Entry struct {
 //     stays wall-clock would hide that bug inside the audit layer. Closure: fix
 //     the CN clock binding — the sim axis then follows from ctx with no change
 //     here. (Clock-DRIVEN CN paths — the catchup clawback issuer — ARE stamped.)
+//   - Operator-driven PRICE-OVERRIDE routes (create/delete a customer price
+//     override). Same root cause as the CN routes: internal/pricing has no
+//     clock.Resolver at all, so the handler emits on an unbound r.Context() and
+//     the row lands with NULL sim columns. This one is NOT a "not in the clock
+//     domain" case and must not be mistaken for one — customer_price_overrides
+//     IS torn down with the clock (ADR-086, testclock/postgres.go), so an
+//     operator who negotiates a price for a simulated customer mid-simulation
+//     leaves a row that is invisible to ?test_clock_id= AND, after teardown, is
+//     the only surviving evidence the override ever existed. Closure: give
+//     pricing a clock.Resolver and bind at the handler — the axis then follows
+//     from ctx with no change here.
 //   - PAYMENT-METHOD routes. Stripe PM state is a real-world effect with no
 //     simulated counterpart; paymentmethods is not in the clock domain. A
 //     clock-scoped view will not show "operator attached a card mid-simulation."
@@ -384,10 +395,15 @@ func buildListWhere(tenantID string, livemode bool, filter QueryFilter) (whereCl
 	idx := 3
 	where := " AND al.tenant_id = $1 AND al.livemode = $2"
 
-	// Sim axis (0148). test_clock_id equality is what lets the planner ride
-	// idx_audit_log_clock (tenant_id, test_clock_id, sim_effective_at DESC)
-	// WHERE test_clock_id IS NOT NULL — leading equality on both key columns,
-	// then a pre-sorted range/order on the third.
+	// Sim axis (0148). The clock predicate sits HERE, immediately after
+	// tenant/livemode, because that is the leading-key order of the partial index
+	// it rides: idx_audit_log_clock (tenant_id, livemode, test_clock_id,
+	// created_at DESC, id DESC) WHERE test_clock_id IS NOT NULL. Equality on the
+	// first three keys, then the list's sort and cursor columns already in order —
+	// so a clock-scoped read needs no Sort step and the cursor seeks the same
+	// tuple it sorts on. sim_effective_at is NOT an index key: there is one sort
+	// axis (created_at), and a sim_from/sim_to window is a cheap filter inside an
+	// already-narrow clock slice. TestSimAxis_UsesPartialClockIndex pins the plan.
 	if filter.TestClockID != "" {
 		where += andClause(&idx, "al.test_clock_id", &args, filter.TestClockID)
 	}
