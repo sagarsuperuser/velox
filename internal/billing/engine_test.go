@@ -16,6 +16,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
+	"github.com/sagarsuperuser/velox/internal/platform/postgres"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -742,6 +743,13 @@ type mockInvoices struct {
 	// collectAfterFinalize reload-failure arms without breaking the mock's
 	// other by-ID lookups (SetAutoChargePending still succeeds).
 	getErr error
+	// db, when set, gives the Audited create a REAL tenant tx to run the emit
+	// on. The mock has no invoices table, but audit_log is a real table with no
+	// FK to invoices, so a real audit.Logger.LogInTx can ride this tx and its
+	// finalize row lands for real — needed by tests that pair this mock with the
+	// real logger (the finalize row is in-tx now, ADR-090, so a nil tx would
+	// panic the real writer). Unset = fake audit writers ignore the tx.
+	db *postgres.DB
 }
 
 func (m *mockInvoices) CreateInvoice(_ context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error) {
@@ -808,12 +816,32 @@ func (m *mockInvoices) MarkPaid(_ context.Context, _, id string, stripePI string
 	return domain.Invoice{}, fmt.Errorf("not found")
 }
 
-func (m *mockInvoices) CreateInvoiceWithLineItems(_ context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+func (m *mockInvoices) CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error) {
+	return m.CreateInvoiceWithLineItemsAudited(ctx, tenantID, inv, items, nil)
+}
+
+// CreateInvoiceWithLineItemsAudited faithfully models the real store's shared
+// fate (playbook concurrent-resolver fake): emit runs on the would-be row and
+// must succeed BEFORE the insert is committed, so an emission error persists
+// nothing — the same guarantee the Postgres tx gives.
+func (m *mockInvoices) CreateInvoiceWithLineItemsAudited(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error) {
 	if m.createErr != nil {
 		return domain.Invoice{}, m.createErr
 	}
 	inv.ID = fmt.Sprintf("vlx_inv_%d", len(m.invoices)+1)
 	inv.TenantID = tenantID
+	if emit != nil {
+		runEmit := func() error { return emit(nil, inv) }
+		if m.db != nil {
+			// Real tx so a real LogInTx can ride it (see the db field's note).
+			runEmit = func() error {
+				return m.db.WithTenantTx(ctx, tenantID, func(tx *sql.Tx) error { return emit(tx, inv) })
+			}
+		}
+		if err := runEmit(); err != nil {
+			return domain.Invoice{}, fmt.Errorf("audit emission: %w", err)
+		}
+	}
 	m.invoices = append(m.invoices, inv)
 	for _, item := range items {
 		item.InvoiceID = inv.ID

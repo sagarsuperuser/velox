@@ -81,39 +81,48 @@ the service-built emission before commit. Handlers stop writing audit rows.
 Background/engine/webhook writers pass their BUSINESS tx — never an
 audit-only tx.
 
-> **Status of that last sentence: it is the TARGET, not the present tense.**
-> As of 2026-07-14 the engine has **not** migrated. Seven call sites in
-> `internal/billing` still emit post-commit on their own transaction
-> (`finalize`, `cancel` ×2, `update`, `subscription.pending_change_applied`,
-> `subscription.threshold_crossed`, `subscription.threshold_deferred`), and
-> `internal/dunning`, `internal/webhook` and `internal/stripe` emit none at all.
-> Handlers ARE migrated; the engine is not.
+> **Status of that last sentence: PARTLY the present tense, partly still the target.**
+> As of 2026-07-15 the engine has migrated its **first and highest-value** domain:
+> **`finalize`.** Every engine finalize path — the cycle close, subscription
+> create (day-1 in_advance), both cancel-final paths, the cross-interval swap, and
+> the threshold reset — now emits its audit row **inside the invoice-create
+> transaction** (`CreateInvoiceWithLineItemsAudited` on the own-tx paths;
+> `LogInTx` on the coordinator tx for the swap, the atomic cancel and the threshold
+> reset). A finalized invoice can no longer commit without its audit row, or vice
+> versa. Proven by `TestFinalizeAudit_SharedFate` (real Postgres, mutation-verified)
+> and the existing sim-axis parity test.
 >
-> This paragraph previously stated the target as accomplished fact, which is the
-> failure mode this whole arc exists to remove — evidence, or a claim about
-> evidence, that reads as true and is not. It is corrected here rather than
-> quietly, because an ADR that overstates its own adoption is how a reviewer comes
-> to believe a guarantee holds on a path where it does not.
+> **Still residual (six sites, `internal/billing`):** `cancel` ×2, `update`,
+> `subscription.pending_change_applied`, `subscription.threshold_crossed`,
+> `subscription.threshold_deferred` — these still emit post-commit on their own
+> transaction. `internal/dunning`, `internal/webhook` and `internal/stripe` emit
+> none at all. Handlers are fully migrated.
 >
-> **The residual exposure, stated plainly.** For those seven, the business change
+> This paragraph previously stated the whole target as accomplished fact, which is
+> the failure mode this arc exists to remove — evidence, or a claim about evidence,
+> that reads as true and is not. It is kept honest here: an ADR that overstates its
+> own adoption is how a reviewer comes to believe a guarantee holds on a path where
+> it does not.
+>
+> **The residual exposure, stated plainly.** For those six, the business change
 > commits first and the audit row is written afterwards in a separate transaction.
 > If that second write fails, the mutation stands and its evidence does not. Every
 > one of them discards the error, correctly — post-commit there is nothing the
 > caller can do. It surfaces as
 > `velox_audit_write_errors_total{outcome="row_lost"}`, and nothing retries it.
-> The worst of the seven is `finalize`: an invoice the operator can see, with no
-> record of what created it.
 >
 > **What holds the line meanwhile.** `internal/arch/audit_background_writers_test.go`
 > pins that exact set. A new post-commit writer in a background package fails CI;
 > a migrated one must be deleted from the list or CI fails too. The set is the
-> migration backlog and is only permitted to shrink.
+> migration backlog and is only permitted to shrink — `finalize` was the first
+> entry removed, proven gone.
 >
-> **Trigger to finish it.** Each domain migrates in its own PR under the money-path
-> playbook gates (the emission must ride the tx that performs the change, which
-> means threading it through the tx-owning store method). Do `finalize` first — it
-> is both the highest-value row and the one whose loss is least recoverable by
-> inference from other state.
+> **Trigger to finish it.** Each remaining domain migrates in its own PR under the
+> money-path playbook gates (the emission must ride the tx that performs the
+> change, which means threading it through the tx-owning store method). `finalize`
+> is done; `cancel`/`update` come next when a trigger arrives (the subscription
+> lifecycle rows share the item-change tx the way the clawback CN already does,
+> ADR-057).
 
 First batch (this PR): credit grant/adjust. The handler's post-hoc `Log`
 calls are gone; emissions ride the ledger tx (`AppendEntryAudited`,

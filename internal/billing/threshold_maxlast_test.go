@@ -2,11 +2,13 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
@@ -21,6 +23,16 @@ type recordingAudit struct {
 func (r *recordingAudit) Log(_ context.Context, _, action, _, _, _ string, meta map[string]any) error {
 	r.rows = append(r.rows, action)
 	r.metas = append(r.metas, meta)
+	return nil
+}
+
+// LogInTx routes to the same recorder: the threshold FINALIZE row now rides the
+// invoice-create tx (ADR-090), so without this it would vanish from the recording
+// it used to reach via Log, and the once-per-cycle assertions would silently lose
+// a row they mean to see.
+func (r *recordingAudit) LogInTx(_ context.Context, _ *sql.Tx, e audit.Entry) error {
+	r.rows = append(r.rows, e.Action)
+	r.metas = append(r.metas, e.Metadata)
 	return nil
 }
 
