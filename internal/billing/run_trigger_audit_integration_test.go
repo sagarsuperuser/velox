@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -26,13 +27,22 @@ func dueSubForTenant(tenantID, id string) domain.Subscription {
 	return sub
 }
 
-// erroringRunAudit fails every write — the residual-own-tx analogue of an emit
-// failure on the run trigger.
+// erroringRunAudit fails the post-commit trigger Log but lets the in-tx finalize
+// emission (LogInTx) succeed. That split is deliberate and matters here: the
+// per-invoice FINALIZE row now rides the invoice-create tx (ADR-090 shared fate),
+// so failing it would roll the invoice back and the run would generate nothing —
+// but this test needs the run to genuinely produce its invoice and only the
+// operator TRIGGER row (written by the handler AFTER the batch commits, on its
+// own tx) to fail. That trigger is the residual own-tx surface the run lives on.
 type erroringRunAudit struct{ calls int }
 
 func (e *erroringRunAudit) Log(context.Context, string, string, string, string, string, map[string]any) error {
 	e.calls++
 	return errors.New("injected audit failure")
+}
+
+func (e *erroringRunAudit) LogInTx(context.Context, *sql.Tx, audit.Entry) error {
+	return nil
 }
 
 // TestTriggerCycleAudit_OperatorTriggerRow pins the ADR-090 emission on
@@ -86,7 +96,7 @@ func TestTriggerCycleAudit_OperatorTriggerRow(t *testing.T) {
 			subs:         map[string]domain.Subscription{"sub_run": dueSubForTenant(tenantID, "sub_run")},
 			cycleUpdated: make(map[string]bool),
 		}
-		engine := tenantRunEngine(subs)
+		engine := tenantRunEngineWith(subs, &mockInvoices{db: db})
 		engine.SetAuditLogger(logger)
 		h := NewHandler(engine, subs)
 
@@ -141,7 +151,7 @@ func TestTriggerCycleAudit_OperatorTriggerRow(t *testing.T) {
 			subs:         map[string]domain.Subscription{"sub_fail": dueSubForTenant(tenantID, "sub_fail")},
 			cycleUpdated: make(map[string]bool),
 		}
-		engine := tenantRunEngine(subs)
+		engine := tenantRunEngineWith(subs, &mockInvoices{db: db})
 		failing := &erroringRunAudit{}
 		engine.SetAuditLogger(failing)
 		h := NewHandler(engine, subs)

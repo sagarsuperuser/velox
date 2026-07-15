@@ -33,13 +33,16 @@ import (
 // the call, and not by file alone, which would let a new call hide inside a file
 // that is already listed. (That exact miss shipped once in this arc's own MarkSkip
 // gate, which was file-keyed and therefore blind to new calls in declared files.)
+// MIGRATED (no longer here): "finalize". As of 2026-07-15 every engine finalize
+// path emits its audit row IN the invoice-create transaction
+// (CreateInvoiceWithLineItemsAudited on the own-tx paths; LogInTx on the
+// coordinator tx for the cross-interval swap, the atomic cancel, and the threshold
+// reset) — shared fate, ADR-090. It was the highest-value row and the first domain
+// migrated off the post-commit Log; the six textual finalize sites (cycle close,
+// subscription create, both cancel paths, both swap paths, threshold) are covered
+// by the shared-fate + sim-axis-parity tests. This is the shrinking set doing its
+// job: one entry removed, proven, gone.
 var residualOwnTxAuditWriters = map[string]int{
-	// Invoice finalize by the engine, on the scheduled billing run. The highest-value
-	// row in the system and the strongest argument for the migration: a finalize whose
-	// audit write fails leaves an invoice the operator can see and no record of who or
-	// what created it.
-	"finalize": 1,
-
 	// Engine-driven subscription lifecycle. Cancel appears twice: end-of-period cancel
 	// on the billing run, and the cancel-at-period-end sweep.
 	"cancel":                              2,

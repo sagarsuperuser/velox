@@ -787,10 +787,16 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 				return txErr
 			}
 			inv = created
+			// The finalize audit row rides the reset tx (ADR-090 shared fate):
+			// it commits with the invoice + cycle advance, or the whole reset
+			// rolls back.
+			if aErr := e.emitFinalizeAuditTx(ctx, tx, created); aErr != nil {
+				return aErr
+			}
 			return e.subs.UpdateBillingCycleTx(ctx, tx, sub.TenantID, sub.ID, now, nextPeriodEnd, nextPeriodEnd, resetAnchorDay)
 		})
 	} else {
-		inv, err = e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, invoiceRow, eval.LineItems)
+		inv, err = e.invoices.CreateInvoiceWithLineItemsAudited(ctx, sub.TenantID, invoiceRow, eval.LineItems, e.finalizeAuditEmit(ctx))
 	}
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
@@ -803,9 +809,10 @@ func (e *Engine) fireThreshold(ctx context.Context, sub domain.Subscription, eva
 		return false, fmt.Errorf("create threshold invoice: %w", err)
 	}
 
-	// Audit the engine-finalized invoice (no-op for drafts) — same finalize-
-	// row contract as the cycle path; feeds TTFI + the audit log.
-	e.auditInvoiceFinalized(ctx, sub, inv, now)
+	// The finalize AUDIT row already committed inside the create tx above (same
+	// finalize-row contract as the cycle path; feeds TTFI + the audit log). Here
+	// only the post-commit WEBHOOK fires.
+	e.dispatchInvoiceFinalized(ctx, sub, inv)
 
 	// Commit tax (Stripe parity) — matches the cycle scan's flow.
 	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {

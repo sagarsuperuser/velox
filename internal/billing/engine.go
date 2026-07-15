@@ -17,6 +17,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/sagarsuperuser/velox/internal/audit"
 	"github.com/sagarsuperuser/velox/internal/auth"
 	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -104,6 +105,13 @@ func (e *Engine) SetTxRunner(r TxRunner) {
 // skips the audit write but still mutates state + dispatches webhooks.
 type AuditWriter interface {
 	Log(ctx context.Context, tenantID, action, resourceType, resourceID, resourceLabel string, metadata map[string]any) error
+	// LogInTx writes the row on the caller's transaction (ADR-090 shared fate):
+	// the row and the business mutation commit or roll back together. tenant_id,
+	// actor and the sim axis are derived from ctx + the tx GUC, so the Entry
+	// carries only the row's own facts. Used by the engine's finalize emission so
+	// the audit row rides the invoice-create tx instead of a lossy post-commit
+	// write. The concrete *audit.Logger satisfies this directly.
+	LogInTx(ctx context.Context, tx *sql.Tx, e audit.Entry) error
 }
 
 // SetAuditLogger wires the audit logger used by the engine to record
@@ -139,39 +147,79 @@ func (e *Engine) dispatchEvent(ctx context.Context, tenantID, eventType string, 
 	}
 }
 
-// auditInvoiceFinalized writes the finalize audit row for an invoice the
-// engine created already-finalized (cycle close, subscription create,
-// cancel-final, threshold). The operator HTTP path and the tax-retry
-// auto-finalize get their row from invoice.Service.Finalize; engine
-// invoices never pass through Finalize — they're born finalized — so
-// without this they left no audit trace at all, and the TTFI metric
-// (which reads MIN(created_at) of finalize rows) reported nothing for
-// tenants whose first invoice was engine-generated (the normal path).
+// finalizeAuditEntry builds the finalize audit row for an invoice the engine
+// created already-finalized (cycle close, subscription create, cancel-final,
+// threshold), or returns ok=false for a draft.
 //
-// Skips drafts (tax-pending / pause-collection): those finalize later via
-// the tax-retry chain, which writes the row AND fires the webhook in
-// service.Finalize — doing either here too would double-count. Clock-
-// pinned subs get the simulated effective time in metadata (ADR-030:
-// created_at stays wall-clock).
+// Drafts (tax-pending / pause-collection) are skipped: they finalize later via
+// the tax-retry chain's service.Finalize, which writes the row there — auditing
+// here too would double-count. tenant_id, actor and the sim axis are derived
+// from ctx + the tx GUC inside LogInTx, so the Entry carries only the row's own
+// facts (ADR-030: created_at stays wall-clock; the simulated instant is a
+// derived column, not metadata).
 //
-// The invoice.finalized WEBHOOK fires here too: engine-born invoices are
-// born finalized and never pass service.Finalize, so until 2026-06-13 the
-// normal billing path (cycle / create / cancel-final / threshold) emitted
-// NO invoice.finalized at all — integrators only ever saw operator-clicked
-// finalizes. Same skip-drafts gate keeps the emit exactly-once per invoice.
-func (e *Engine) auditInvoiceFinalized(ctx context.Context, sub domain.Subscription, inv domain.Invoice, now time.Time) {
+// The operator HTTP path and the tax-retry auto-finalize get their row from
+// invoice.Service.Finalize; engine invoices never pass through Finalize — they
+// are born finalized — so without this they leave no audit trace at all, and the
+// TTFI metric (MIN(created_at) of finalize rows) reports nothing for tenants
+// whose first invoice is engine-generated (the normal path).
+func finalizeAuditEntry(inv domain.Invoice) (audit.Entry, bool) {
 	if inv.Status != domain.InvoiceFinalized {
-		return
+		return audit.Entry{}, false
 	}
-	if e.auditLogger != nil {
-		meta := map[string]any{
+	return audit.Entry{
+		Action:        domain.AuditActionFinalize,
+		ResourceType:  "invoice",
+		ResourceID:    inv.ID,
+		ResourceLabel: inv.InvoiceNumber,
+		Metadata: map[string]any{
 			"invoice_number":     inv.InvoiceNumber,
 			"customer_id":        inv.CustomerID,
 			"total_amount_cents": inv.TotalAmountCents,
 			"currency":           inv.Currency,
 			"triggered_by":       string(inv.BillingReason),
-		}
-		_ = e.auditLogger.Log(ctx, sub.TenantID, domain.AuditActionFinalize, "invoice", inv.ID, inv.InvoiceNumber, meta)
+		},
+	}, true
+}
+
+// emitFinalizeAuditTx writes the finalize audit row on tx (ADR-090 shared fate):
+// it commits with the invoice or not at all. Returns nil for drafts and when no
+// audit logger is wired (the logger is optional — nil = engine runs unaudited,
+// same contract as the old post-commit path). This is THE fix for the residual
+// own-tx post-commit Log, which left a finalized invoice visible with no record
+// of what created it whenever that second write failed.
+func (e *Engine) emitFinalizeAuditTx(ctx context.Context, tx *sql.Tx, inv domain.Invoice) error {
+	if e.auditLogger == nil {
+		return nil
+	}
+	entry, ok := finalizeAuditEntry(inv)
+	if !ok {
+		return nil
+	}
+	return e.auditLogger.LogInTx(ctx, tx, entry)
+}
+
+// finalizeAuditEmit adapts emitFinalizeAuditTx to the CreateInvoiceWithLineItemsAudited
+// callback shape, so the own-tx finalize paths audit on the create tx. The store
+// hands back the persisted invoice as `out` (with its real ID); audit that, not
+// the pre-insert struct.
+func (e *Engine) finalizeAuditEmit(ctx context.Context) func(tx *sql.Tx, out domain.Invoice) error {
+	return func(tx *sql.Tx, out domain.Invoice) error {
+		return e.emitFinalizeAuditTx(ctx, tx, out)
+	}
+}
+
+// dispatchInvoiceFinalized fires the invoice.finalized WEBHOOK for an engine-born
+// invoice. It runs POST-COMMIT and stays here (the audit row moved in-tx, ADR-090):
+// a webhook is an external effect that must not ride a DB tx, and it is idempotent
+// per invoice via the same skip-drafts gate.
+//
+// Engine-born invoices never pass service.Finalize, so until 2026-06-13 the normal
+// billing path (cycle / create / cancel-final / threshold) emitted NO
+// invoice.finalized at all — integrators only ever saw operator-clicked finalizes.
+func (e *Engine) dispatchInvoiceFinalized(ctx context.Context, sub domain.Subscription, inv domain.Invoice) {
+	if inv.Status != domain.InvoiceFinalized {
+		return
 	}
 	if e.events != nil {
 		e.dispatchEvent(ctx, sub.TenantID, domain.EventInvoiceFinalized, map[string]any{
@@ -508,9 +556,20 @@ type PricingReader interface {
 // InvoiceWriter creates invoices and line items.
 type InvoiceWriter interface {
 	CreateInvoiceWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
+	// CreateInvoiceWithLineItemsAudited is CreateInvoiceWithLineItems with an
+	// in-transaction audit emission (ADR-090): emit runs on the SAME tx as the
+	// header + line INSERTs, after they land and BEFORE commit, so an emission
+	// error rolls the whole invoice back — the finalize row and the invoice share
+	// fate. The own-tx engine finalize paths (cycle close, subscription create,
+	// cancel-final) route through here so a finalized invoice can never commit
+	// without its audit trail (the residual own-tx post-commit Log left an
+	// invoice visible with no record of what created it if the write failed).
+	CreateInvoiceWithLineItemsAudited(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem, emit func(tx *sql.Tx, out domain.Invoice) error) (domain.Invoice, error)
 	// CreateInvoiceWithLineItemsTx is the in-tx variant — used by BillOnCreateTx
 	// so the cross-interval plan-swap can insert the new-period invoice on the
-	// coordinator's tx, atomically with the plan write + watermark advance.
+	// coordinator's tx, atomically with the plan write + watermark advance. The
+	// finalize audit row rides this same tx too (emitted by the caller right
+	// after the insert), so it commits atomically with the swap.
 	CreateInvoiceWithLineItemsTx(ctx context.Context, tx *sql.Tx, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error)
 	// FindFundingInvoicesForPeriod returns EVERY non-voided/non-uncollectible
@@ -3095,7 +3154,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	// This prevents orphaned invoices with missing line items on partial failure.
 	// The unique index on (tenant_id, subscription_id, billing_period_start, billing_period_end)
 	// provides idempotency — duplicate calls return an error instead of double-billing.
-	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, domain.Invoice{
+	inv, err := e.invoices.CreateInvoiceWithLineItemsAudited(ctx, sub.TenantID, domain.Invoice{
 		CustomerID:      sub.CustomerID,
 		SubscriptionID:  sub.ID,
 		BillingTimezone: e.tenantLocation(ctx, sub.TenantID).String(),
@@ -3127,7 +3186,7 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		// from the mutable test_clock_id at read time. The manual-invoice path
 		// captures the same signal from the customer's pin (invoice.Service).
 		IsSimulated: sub.TestClockID != "",
-	}, lineItems)
+	}, lineItems, e.finalizeAuditEmit(ctx))
 	if err != nil {
 		// Idempotency: if this invoice already exists (UNIQUE violation on the
 		// per-subscription+period constraint), the store returns errs.ErrAlreadyExists.
@@ -3174,10 +3233,11 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 		return false, fmt.Errorf("create invoice: %w", err)
 	}
 
-	// Audit the engine-finalized invoice (no-op for drafts — tax-pending /
-	// pause-collection rows get their finalize audit row from the tax-retry
-	// chain's service.Finalize).
-	e.auditInvoiceFinalized(ctx, sub, inv, now)
+	// The finalize AUDIT row already committed inside the create tx above
+	// (finalizeAuditEmit → LogInTx, ADR-090 shared fate): a finalized invoice
+	// cannot exist without it. Here we fire only the post-commit WEBHOOK — an
+	// external effect that must not ride the DB tx.
+	e.dispatchInvoiceFinalized(ctx, sub, inv)
 
 	// Stripe Tax: once the invoice is durably persisted, commit the
 	// tax_calculation into a tax_transaction so Stripe can report the
@@ -3365,7 +3425,7 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 	}
 	inv.InvoiceNumber = invoiceNumber
 
-	created, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, inv, lineItems)
+	created, err := e.invoices.CreateInvoiceWithLineItemsAudited(ctx, sub.TenantID, inv, lineItems, e.finalizeAuditEmit(ctx))
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
 			slog.Info("subscription_create invoice already exists (idempotent skip)",
@@ -3378,7 +3438,8 @@ func (e *Engine) BillOnCreate(ctx context.Context, sub domain.Subscription) (dom
 		return domain.Invoice{}, fmt.Errorf("create invoice: %w", err)
 	}
 
-	// Post-persist external/best-effort steps (audit, tax commit, auto-charge).
+	// Post-persist external/best-effort steps (webhook, tax commit, auto-charge).
+	// The finalize AUDIT row already committed inside the create tx above.
 	e.FinalizeOnCreateInvoice(ctx, sub, created)
 
 	slog.Info("subscription_create invoice generated",
@@ -3436,6 +3497,13 @@ func (e *Engine) BillOnCreateTx(ctx context.Context, tx *sql.Tx, sub domain.Subs
 		// natural period collision is effectively unreachable; this is the
 		// duplicate-retry case, which SHOULD fail loud.
 		return domain.Invoice{}, false, fmt.Errorf("create new-period invoice (tx): %w", err)
+	}
+	// The finalize audit row rides the coordinator tx (ADR-090 shared fate): it
+	// commits atomically with the plan write + watermark advance, or the whole
+	// swap rolls back. The post-commit webhook/tax/auto-charge fire later via
+	// FinalizeOnCreateInvoice, which the swap caller invokes after commit.
+	if err := e.emitFinalizeAuditTx(ctx, tx, created); err != nil {
+		return domain.Invoice{}, false, fmt.Errorf("finalize audit (swap tx): %w", err)
 	}
 	return created, true, nil
 }
@@ -3608,10 +3676,13 @@ func (e *Engine) buildOnCreateInvoice(ctx context.Context, sub domain.Subscripti
 // run AFTER the invoice is durably committed — never inside a DB tx. BillOnCreate
 // calls it inline; the atomic cross-interval swap calls it post-commit.
 func (e *Engine) FinalizeOnCreateInvoice(ctx context.Context, sub domain.Subscription, inv domain.Invoice) {
-	now := inv.CreatedAt
-
-	// Audit the engine-finalized invoice (no-op for drafts).
-	e.auditInvoiceFinalized(ctx, sub, inv, now)
+	// The finalize AUDIT row rode the invoice-create tx (ADR-090 shared fate):
+	// the own-tx callers (BillOnCreate) emit it via finalizeAuditEmit, and the
+	// coordinator-tx caller (the cross-interval swap through BillOnCreateTx) emits
+	// it on the coordinator tx. So this post-commit path fires only the external,
+	// best-effort effects — WEBHOOK, tax commit, auto-charge — none of which may
+	// ride a DB tx.
+	e.dispatchInvoiceFinalized(ctx, sub, inv)
 
 	// Commit tax if a provider produced a calculation (same pattern
 	// as the cycle path; ManualProvider / NoneProvider no-op).
@@ -4303,14 +4374,22 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 	}
 	if tx != nil {
 		// Atomic path (CancelAtomicWithBill): insert on the caller's coordinator
-		// tx; the external finalize (audit + tax commit + auto-charge) runs
-		// post-commit via FinalizeOnCreateInvoice. No idempotent-skip — a unique
-		// violation poisons the caller's tx, so surface it and let the cancel
-		// roll back (same contract as the swap path's BillOnCreateTx).
-		return e.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, sub.TenantID, invToCreate, lineItems)
+		// tx. No idempotent-skip — a unique violation poisons the caller's tx, so
+		// surface it and let the cancel roll back (same contract as the swap
+		// path's BillOnCreateTx). The external finalize (webhook + tax commit +
+		// auto-charge) runs post-commit via FinalizeOnCreateInvoice; the AUDIT row
+		// rides THIS coordinator tx so it commits atomically with the cancel.
+		created, err := e.invoices.CreateInvoiceWithLineItemsTx(ctx, tx, sub.TenantID, invToCreate, lineItems)
+		if err != nil {
+			return domain.Invoice{}, err
+		}
+		if err := e.emitFinalizeAuditTx(ctx, tx, created); err != nil {
+			return domain.Invoice{}, fmt.Errorf("finalize audit (cancel tx): %w", err)
+		}
+		return created, nil
 	}
 
-	inv, err := e.invoices.CreateInvoiceWithLineItems(ctx, sub.TenantID, invToCreate, lineItems)
+	inv, err := e.invoices.CreateInvoiceWithLineItemsAudited(ctx, sub.TenantID, invToCreate, lineItems, e.finalizeAuditEmit(ctx))
 	if err != nil {
 		if errors.Is(err, errs.ErrAlreadyExists) {
 			slog.Info("subscription_cancel final invoice already exists (idempotent skip)",
@@ -4323,8 +4402,9 @@ func (e *Engine) billFinalOnImmediateCancelImpl(ctx context.Context, tx *sql.Tx,
 		return domain.Invoice{}, fmt.Errorf("create final-on-cancel invoice: %w", err)
 	}
 
-	// Audit the engine-finalized invoice (no-op for drafts).
-	e.auditInvoiceFinalized(ctx, sub, inv, now)
+	// The finalize AUDIT row already committed inside the create tx above; here
+	// only the post-commit WEBHOOK fires.
+	e.dispatchInvoiceFinalized(ctx, sub, inv)
 
 	if inv.TaxProvider != "" && inv.TaxCalculationID != "" {
 		if err := e.CommitTax(ctx, sub.TenantID, inv.ID, inv.TaxCalculationID); err != nil {

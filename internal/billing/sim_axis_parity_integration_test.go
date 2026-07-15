@@ -67,7 +67,7 @@ func TestSimAxis_ClockDrivenLifecycle_EveryAuditRowIsStamped(t *testing.T) {
 	engine.SetTaxProviderResolver(tax.NewResolver(nil))
 	engine.SetNoPaymentMethodNotifier(&testNoPMNotifier{})
 	engine.SetTxRunner(db)
-	engine.SetAuditLogger(logger) // the finalize row rides the residual own-tx Log path
+	engine.SetAuditLogger(logger) // the finalize row now rides the invoice-create tx (LogInTx, ADR-090)
 
 	// A clock frozen well away from wall-clock: sim time and real time must be
 	// distinguishable, or a test that stamps wall-clock passes by accident.
