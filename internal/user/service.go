@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -21,30 +20,12 @@ import (
 // Service is the auth-side surface for user accounts. ADR-011.
 //
 // The recipe is intentionally boring: bcrypt cost 12 for hashing,
-// crypto/rand for tokens, sha256 for token storage, single rate-limit
-// rule (5 fails per 1 minute → 15-minute lockout). All of this is
-// well-trodden Go stdlib + x/crypto territory.
+// crypto/rand for tokens, sha256 for token storage. The login brute-force
+// throttle lives in a separate LoginGuard (see loginguard.go / ADR-094), not
+// here. All of this is well-trodden Go stdlib + x/crypto territory.
 type Service struct {
-	store    Store
-	clock    clock.Clock
-	failures FailureCounter
-}
-
-// FailureCounter tracks per-email login-failure counts so the lockout
-// only fires after FailedLoginThreshold consecutive misses, matching
-// the GitHub / Stripe model. Implemented Redis-backed in production
-// (incr + expire). Nil-safe — when not configured (e.g. local dev
-// without Redis) the service degrades to no lockout enforcement,
-// matching the rate limiter's fail-open default.
-type FailureCounter interface {
-	// Increment bumps the counter for email and returns the new count.
-	// First increment also seeds the TTL = LockoutDuration so a user
-	// who fails 4 times then waits long enough has the count quietly
-	// reset before they try again.
-	Increment(ctx context.Context, email string) (int, error)
-	// Reset clears the counter (called on successful login or after a
-	// lockout is triggered).
-	Reset(ctx context.Context, email string) error
+	store Store
+	clock clock.Clock
 }
 
 func NewService(store Store, clk clock.Clock) *Service {
@@ -52,13 +33,6 @@ func NewService(store Store, clk clock.Clock) *Service {
 		clk = clock.Real()
 	}
 	return &Service{store: store, clock: clk}
-}
-
-// SetFailureCounter wires the per-email failure counter. Called from
-// the API wiring layer after Redis is available. Without it,
-// RecordFailedAttempt is a no-op — accounts never lock.
-func (s *Service) SetFailureCounter(fc FailureCounter) {
-	s.failures = fc
 }
 
 const (
@@ -80,18 +54,6 @@ const (
 	// enough for the recipient to find the email and click, short
 	// enough that a leaked token isn't useful days later.
 	PasswordResetTokenTTL = 1 * time.Hour
-
-	// FailedLoginThreshold is how many consecutive failed attempts
-	// trigger a lockout. 5 matches GitHub. Note: counted via the
-	// Redis-backed rate limiter, not via a column on users — failed
-	// attempts that happen against non-existent emails still count.
-	FailedLoginThreshold = 5
-
-	// LockoutDuration is how long a locked account stays locked. 15
-	// minutes matches GitHub's automatic-lockout backoff and balances
-	// "operator can recover quickly after typo" against "attacker
-	// can't brute-force".
-	LockoutDuration = 15 * time.Minute
 )
 
 // CommonPasswords is the top-1000 most-used passwords from the 2023
@@ -207,15 +169,6 @@ func (s *Service) CreateUser(ctx context.Context, email, plaintext, tenantID, ro
 	return u, nil
 }
 
-// Authenticate verifies email + password and returns the user + their
-// tenant memberships. Returns ErrAccountLocked if locked, ErrBadCredentials
-// for any other auth failure (consistent timing across the not-found and
-// wrong-password paths).
-//
-// On success: stamps last_login_at and clears any prior lockout.
-// On failure: caller (the auth handler) is responsible for
-// incrementing the rate-limit counter and triggering Lock() once
-// the threshold is exceeded.
 // GetByID looks up a user by id. Used by /v1/whoami to project email
 // onto the cookie-path response without forcing the session row to
 // duplicate it.
@@ -223,6 +176,14 @@ func (s *Service) GetByID(ctx context.Context, id string) (domain.User, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// Authenticate verifies email + password and returns the user + their tenant
+// memberships. Returns ErrBadCredentials for a missing user or wrong password
+// (identical timing on both paths — the not-found path runs a dummy bcrypt), or
+// ErrAccountLocked if the account carries a manual/backstop lock
+// (users.locked_until). The lock is NO LONGER auto-fired by failure velocity —
+// that moved to the handler's LoginGuard throttle (ADR-094) — and is checked
+// AFTER the password verify so a locked account's timing can't be distinguished.
+// On success: stamps last_login_at and clears any prior backstop lock.
 func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (domain.User, []domain.UserTenant, error) {
 	u, err := s.store.GetByEmail(ctx, email)
 	if err != nil {
@@ -238,13 +199,19 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 		return domain.User{}, nil, err
 	}
 
+	// Verify the password FIRST, then check the (rare, manual) backstop lock, so
+	// a locked account's response timing does not diverge from a wrong-password
+	// one. The old order (lock check before bcrypt) let a locked account answer
+	// faster — it skipped bcrypt — a timing oracle for "this is a real, locked
+	// account". locked_until is no longer auto-fired by failure velocity (that
+	// moved to the LoginGuard throttle, ADR-094); it survives only as an
+	// operator/extreme-confidence backstop.
+	if err := VerifyPassword(u.PasswordHash, plaintext); err != nil {
+		return domain.User{}, nil, err
+	}
 	now := s.clock.Now(ctx)
 	if u.LockedUntil != nil && u.LockedUntil.After(now) {
 		return domain.User{}, nil, ErrAccountLocked
-	}
-
-	if err := VerifyPassword(u.PasswordHash, plaintext); err != nil {
-		return domain.User{}, nil, err
 	}
 
 	tenants, err := s.store.TenantsForUser(ctx, u.ID)
@@ -261,12 +228,9 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 	_ = s.store.TouchLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
 	u.LockedUntil = nil
-	// Successful login resets the consecutive-failure counter so a
-	// user who typed wrong twice then succeeded doesn't carry those
-	// misses into a future session.
-	if s.failures != nil {
-		_ = s.failures.Reset(ctx, email)
-	}
+	// The failed-login throttle is cleared by the handler's guard.Record on
+	// success (ADR-094 / internal/user/loginguard.go); Authenticate no longer
+	// owns a per-email failure counter.
 	return u, tenants, nil
 }
 
@@ -284,46 +248,6 @@ func (s *Service) TenantForUser(ctx context.Context, userID string) (string, err
 		return "", nil
 	}
 	return tenants[0].TenantID, nil
-}
-
-// RecordFailedAttempt is called by the login handler after a bad-
-// credentials response. Bumps the per-email counter; only locks the
-// account once the counter crosses FailedLoginThreshold. Counter
-// auto-expires after LockoutDuration so a user who fails 4 times then
-// waits doesn't accumulate misses indefinitely. Email-as-key (not
-// user_id) means failed attempts against non-existent emails still
-// register, denying enumeration via "wrong-password vs no-such-user"
-// timing — but they don't trigger a Lock() since there's no user row
-// to flip.
-func (s *Service) RecordFailedAttempt(ctx context.Context, email string) {
-	if s.failures == nil {
-		// Only nil in unit tests that build a bare Service. Production wiring
-		// always sets the counter (FallbackFailureCounter — see router.go), so
-		// the lockout is enforced in every real deployment, including local dev
-		// and with Redis down. velox-ops #21.
-		return
-	}
-	count, err := s.failures.Increment(ctx, email)
-	if err != nil {
-		// Defensive only — FallbackFailureCounter never surfaces a Redis error
-		// (it degrades to an in-process counter internally), so this branch is
-		// unreachable in production. Log and skip rather than panic on a
-		// misbehaving counter impl.
-		slog.WarnContext(ctx, "lockout: failed-login counter increment failed", "error", err)
-		return
-	}
-	if count < FailedLoginThreshold {
-		return
-	}
-	// Threshold crossed. Try to find the user row and lock it. A miss
-	// here (counter incremented for a non-existent email) is fine —
-	// there's nothing to flip. Reset the counter either way so the
-	// next 15-minute window starts fresh after the lockout expires.
-	if u, err := s.store.GetByEmail(ctx, email); err == nil {
-		until := s.clock.Now(ctx).Add(LockoutDuration)
-		_ = s.store.Lock(ctx, u.ID, until)
-	}
-	_ = s.failures.Reset(ctx, email)
 }
 
 // IssueResetToken generates a fresh reset token for the user with the
