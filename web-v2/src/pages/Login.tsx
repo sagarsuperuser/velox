@@ -43,7 +43,11 @@ export default function LoginPage() {
         if (err.status === 401) {
           setError('Invalid email or password')
         } else if (err.status === 429) {
-          setError('Too many attempts — try again in 15 minutes')
+          // 429 comes only from the per-IP rate limiter (a ~1-minute window),
+          // never from account lockout — that is deliberately masked as 401 for
+          // anti-enumeration (user/handler.go). So this copy must NOT promise a
+          // 15-minute lockout wait; it describes the rate limit, with no number.
+          setError('Too many attempts. Please wait a moment and try again.')
         } else {
           setError(err.message)
         }
