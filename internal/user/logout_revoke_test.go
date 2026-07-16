@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sagarsuperuser/velox/internal/session"
@@ -120,6 +121,77 @@ func TestLogout_Success_RevokesThenRecordsExactlyOneRow(t *testing.T) {
 	}
 	if rec.rows[0].tenantID != "vlx_ten_1" {
 		t.Errorf("tenant = %q, want vlx_ten_1 (identity must be resolved BEFORE the revoke — after it the token names nobody)", rec.rows[0].tenantID)
+	}
+}
+
+// TestLogout_NoCookie_DoesNotClearTheCookie is the regression lock for the
+// forced-logout CSRF.
+//
+// A cross-site POST is not a hypothetical shape for this branch — it is the
+// ONLY shape that reaches it in a browser. SameSite=Lax withholds velox_session
+// from every cross-site request, so an attacker's form POST arrives here looking
+// exactly like "the user has no cookie". The old code answered it with
+// ClearCookie:
+//
+//	Set-Cookie: velox_session=; Path=/; Max-Age=0
+//
+// which the browser honours. So any website could log any operator out of the
+// dashboard — no click needed, an auto-submitting form does it on page load —
+// while the session it could not see stayed LIVE server-side for the full 7-day
+// TTL. Verified end-to-end in a real Chrome before this fix: one cross-site POST
+// bounced the dashboard to /login, and curl with the original cookie still
+// answered 200.
+//
+// The invariant: a request that could not be authenticated must not mutate the
+// caller's cookie jar. "No cookie arrived" ≠ "the browser holds no cookie".
+func TestLogout_NoCookie_DoesNotClearTheCookie(t *testing.T) {
+	sessions := &fakeSessions{}
+	rec := &rowRecorder{}
+
+	h := NewHandler(nil, sessions, session.CookieConfig{}, nil, "", false)
+	h.SetAuditLogger(rec)
+
+	w := httptest.NewRecorder()
+	// No AddCookie: this is the cross-site POST as the server sees it.
+	h.logout(w, httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil))
+
+	if got := w.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Errorf("responded with Set-Cookie %q to a request that carried NO cookie — "+
+			"a cross-site POST lands here (SameSite=Lax hides the cookie), so this "+
+			"header force-logs-out any operator who visits a hostile page", got)
+	}
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204 (no cookie is not an error)", w.Code)
+	}
+	if sessions.revoked {
+		t.Error("revoked a session for a request with no cookie")
+	}
+	if len(rec.rows) != 0 {
+		t.Errorf("wrote %d audit row(s) for a logout that revoked nothing: %+v", len(rec.rows), rec.rows)
+	}
+}
+
+// The counterpart the fix must NOT break: a real sign-out still clears the
+// cookie, because there the server saw the cookie, authenticated it, and
+// revoked the session first.
+func TestLogout_Success_StillClearsTheCookie(t *testing.T) {
+	sessions := &fakeSessions{sess: session.Session{UserID: "vlx_usr_1", TenantID: "vlx_ten_1"}}
+
+	h := NewHandler(nil, sessions, session.CookieConfig{}, nil, "", false)
+	h.SetAuditLogger(&rowRecorder{})
+
+	w := httptest.NewRecorder()
+	h.logout(w, logoutRequest())
+
+	if !sessions.revoked {
+		t.Fatal("fixture: the session was not revoked")
+	}
+	got := w.Header().Get("Set-Cookie")
+	if got == "" {
+		t.Fatal("a real sign-out did NOT clear the cookie — the browser would keep sending a revoked token")
+	}
+	if !strings.Contains(got, session.CookieName+"=;") {
+		t.Errorf("Set-Cookie = %q, want it to blank %s", got, session.CookieName)
 	}
 }
 

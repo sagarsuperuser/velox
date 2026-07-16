@@ -362,13 +362,23 @@ func (h *Handler) setMode(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(session.CookieName)
 	if err != nil || c.Value == "" {
-		// No cookie: this logout revoked no session — it mutated nothing, so there
-		// is nothing to audit. Say so explicitly. To an observer at the transport a
+		// No cookie: this logout revoked no session, so there is no server-side
+		// mutation to audit. Say so explicitly. To an observer at the transport a
 		// 204 with no audit row is otherwise indistinguishable from a real logout
 		// that LOST its row, and the audit-coverage detector would (correctly, on
 		// the evidence available to it) report it as an uncovered mutation.
 		audit.MarkSkip(r.Context())
-		h.cookie.ClearCookie(w)
+		// Deliberately NO ClearCookie here. "No cookie arrived" does not mean the
+		// browser holds none — SameSite=Lax withholds it from every cross-site
+		// request, so this branch is exactly what an attacker's cross-site POST
+		// lands in. Clearing here emitted Set-Cookie: velox_session=; Max-Age=0,
+		// which the browser honours: any website could force-logout any operator
+		// (drive-by, via an auto-submitting form) while the session it could not
+		// see stayed LIVE server-side for its full TTL — an orphaned credential
+		// and a repeatable nuisance-DoS. Lax already blocks the real revoke; this
+		// branch must not mutate client state for a request it cannot authenticate.
+		// When a cookie genuinely is absent, clearing it was a no-op anyway.
+		// The real sign-out clears below, on the far side of a revoke that worked.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
