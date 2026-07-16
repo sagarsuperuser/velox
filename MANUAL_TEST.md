@@ -307,14 +307,20 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Empty form → inline error, no request.
 - [ ] Wrong password → 401 "Invalid email or password".
-- [ ] 5 consecutive wrong passwords locks the account for 15 min, but the lock is **invisible in the response** — the 5th (and any attempt during the window) still returns the same generic **401 "invalid email or password"**, never a distinct 429/`account_locked`. This is deliberate anti-enumeration: a distinct locked response is an oracle confirming the email is a real account. Verify the lock fired by then submitting the **correct** password during the window → also 401 (Authenticate refuses it while locked). A successful login before the 5th attempt resets the counter.
-- [ ] Lockout still fires with **`REDIS_URL` unset** (or Redis stopped) — the counter degrades to a per-process one, it does not switch off (velox-ops #21). Same observable: 5 wrong then a correct password → still 401 during the window. (Stop Redis mid-session and the WARN "serving from in-process counter" logs once.)
+- [ ] 5 wrong passwords → account locked 15 min; the 5th still returns the same generic 401, never a distinct 429/`account_locked`.
+- [ ] During the lock window the **correct** password also → 401; a success before the 5th resets the counter.
+- [ ] Lockout still fires with `REDIS_URL` unset — the counter degrades per-process, does not switch off; WARN "serving from in-process counter" logs once.
 - [ ] Right credentials → redirect to `/`, dashboard loads.
-- [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage. (Prove HttpOnly rather than reading the header: in the browser console `document.cookie` is `''` — JS sees nothing — while `await fetch('/v1/whoami',{credentials:'same-origin'})` still returns 200. The browser attaches the cookie it refuses to show JS. `velox-theme` is a UI preference, not a credential.)
-- [ ] **A cross-site POST is refused before it can do anything (CSRF gate, ADR-093).** From a page on a *different site* (`127.0.0.1` vs `localhost` — the origin check compares sites, not ports), submit a form to `POST …/v1/auth/logout` **and** one to `POST …/v1/auth/login` carrying `{"email":"attacker@…","password":"…"}` as `text/plain`. Both get **`403 "cross-site request blocked"`** — the browser stamps `Sec-Fetch-Site: cross-site`, which page JS cannot forge, and the guard rejects it before the handler runs. So: you are **not** logged out (session row keeps `revoked_at IS NULL`), and you are **not** silently signed into the attacker's account (the login fixation). A plain **link** from that same cross-site page to the dashboard *does* keep you signed in — that is a top-level GET, which SameSite=Lax and the guard both allow. Legit same-origin dashboard writes and a headerless `curl` login are unaffected. *(automated: `TestCSRFGuard_Matrix`, `TestCSRFGuard_ReproducesTheLoginFixation`; and the defense-in-depth `TestLogout_NoCookie_DoesNotClearTheCookie` / `TestLogout_Success_StillClearsTheCookie` — a same-origin no-cookie logout still clears nothing.)
+- [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
+- [ ] HttpOnly holds: browser-console `document.cookie` is empty, yet `fetch('/v1/whoami')` still returns 200.
+- [ ] Cross-site `POST /v1/auth/logout` (form on a different host) → 403; you stay signed in. *(automated: `TestLogout_NoCookie_DoesNotClearTheCookie`)*
+- [ ] Cross-site `POST /v1/auth/login` (text/plain body) → 403; not signed into the attacker's account. *(automated: `TestCSRFGuard_ReproducesTheLoginFixation`)*
+- [ ] Cross-site top-level *link* to the dashboard → still signed in. *(automated: `TestCSRFGuard_Matrix`)*
+- [ ] Legit same-origin dashboard writes and a headerless `curl` login still work.
 - [ ] Reload → still signed in.
 - [ ] Sign out → cookie cleared, redirect to /login. Stale cookie → 401.
-- [ ] **Auth events are audited**: after the above, open `/audit-log` → a **"login"** row (resource `user`, Actor = the operator, **not** "System"), a **"logout"** row, and (if you toggled test/live) a **"mode_changed"** row. **Expand a row** → the detail shows Actor (the operator's email), Timestamp, and the source **IP address**. A **failed** login writes **NO** audit row (it's in the server security log instead); confirm the failed attempts above did not add audit-log rows.
+- [ ] Auth events audited: `/audit-log` shows `login`, `logout`, and (if toggled) `mode_changed` rows, actor = the operator (not "System"). Expand a row → source IP shown.
+- [ ] A failed login writes NO audit-log row.
 
 ### Password reset
 
