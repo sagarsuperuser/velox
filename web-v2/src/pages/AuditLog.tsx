@@ -553,6 +553,10 @@ export default function AuditLogPage() {
                                       </p>
                                     )}
                                   </div>
+                                  <div>
+                                    <p className="text-xs text-muted-foreground">IP address</p>
+                                    <p className="text-foreground font-mono text-xs mt-0.5">{entry.ip_address || '—'}</p>
+                                  </div>
                                 </div>
                                 {meta.length > 0 && (
                                   <div className="mt-3 pt-3 border-t border-border">
