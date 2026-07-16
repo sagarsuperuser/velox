@@ -1265,7 +1265,8 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if corsEnv == "" {
 		corsEnv = "http://localhost:3000,http://localhost:5173,http://localhost:5174"
 	}
-	r.Use(mw.CORS(strings.Split(corsEnv, ",")))
+	allowedOrigins := strings.Split(corsEnv, ",")
+	r.Use(mw.CORS(allowedOrigins))
 	r.Use(mw.Metrics())
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
@@ -1333,6 +1334,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// flow. Public surface (pre-session). Rate limited to slow
 	// credential stuffing. ADR-011.
 	r.Route("/v1/auth", func(r chi.Router) {
+		// CSRF: these endpoints are browser-dashboard-only and MINT the session
+		// cookie, so a cross-site POST here is the login-fixation vector. Reject
+		// cross-site browser requests before login can set a cookie. No bearer
+		// path exists here, so every unsafe request is origin-checked.
+		r.Use(mw.CSRFGuard(allowedOrigins))
 		r.Use(authLimiter.Middleware())
 		r.Use(middleware.Timeout(30 * time.Second))
 		// Invite accept flow — public like login/reset (the token IS the
@@ -1453,6 +1459,12 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// header doesn't bypass session revocation. Both code paths set
 	// the same auth ctx keys so handlers don't branch.
 	r.Route("/v1", func(r chi.Router) {
+		// CSRF: this group serves BOTH the cookie dashboard and bearer SDK/API
+		// callers. The guard origin-checks unsafe COOKIE-path requests and exempts
+		// bearer requests (a non-ambient credential can't be CSRF'd). Runs before
+		// auth so a cross-site browser mutation is refused before touching session
+		// state. Safe methods and the SSE/export GET siblings are unaffected.
+		r.Use(mw.CSRFGuard(allowedOrigins))
 		r.Use(session.MiddlewareOrAPIKey(sessionSvc, authSvc))
 		// After auth so tenant ID is available for the bucket key. Ingest
 		// paths ride their own (much larger) bucket — see ingestLimiter.
