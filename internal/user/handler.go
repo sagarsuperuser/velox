@@ -463,8 +463,18 @@ func (h *Handler) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
 			// token. Fail safe: don't send a poisonable link. Operator must
 			// set DASHBOARD_BASE_URL to enable password-reset emails.
 			slog.Error("password reset email not sent: DASHBOARD_BASE_URL is unset; refusing to build a reset link from request headers", "tenant_id", tenantID)
-		} else if sendErr := h.email.SendPasswordReset(r.Context(), tenantID, req.Email, resetLink); sendErr != nil {
-			slog.Error("password reset email send failed", "err", sendErr)
+		} else {
+			// This handler runs pre-auth (the /v1/auth group has no session
+			// middleware), so ctx carries no livemode. The reset email is
+			// account-plane, and the production email path is the outbox, whose
+			// TxTenant refuses to open without a livemode — so without this the
+			// send failed and the operator never got the link. Same gap the audit
+			// write below already handles (auditAuthEvent sets it too). Canonical
+			// (test) partition, like every account-plane row.
+			sendCtx := postgres.WithLivemode(r.Context(), false)
+			if sendErr := h.email.SendPasswordReset(sendCtx, tenantID, req.Email, resetLink); sendErr != nil {
+				slog.Error("password reset email send failed", "err", sendErr)
+			}
 		}
 		// Audit the reset request against the matched account's tenant. The actor is
 		// anonymous (any unauthenticated party can trigger a reset email) so it
