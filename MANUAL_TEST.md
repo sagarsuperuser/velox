@@ -381,7 +381,7 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Create dialog: name (≤100 chars), key type (Secret/Publishable), expiration preset (Custom requires date).
 - [ ] Submit success → raw key shown ONCE with Copy button. Closing the dialog removes the raw value from memory; it never re-appears in the active-keys list.
-- [ ] Per-row Revoke → typed confirm; revoked key 401s on next request.
+- [ ] Per-row Revoke → confirm dialog (shows key name + masked prefix, "cannot be undone"); revoked key 401s on next request.
 
 ## FLOW K4: Rotate
 
