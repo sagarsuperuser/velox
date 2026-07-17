@@ -29,6 +29,18 @@ func newMemStore() *memStore {
 	}
 }
 
+// seedPricedMeter injects a meter carrying a default rating-rule binding, so
+// the ADR-096 plan-attach guard treats it as priced. For tests whose subject
+// is NOT pricing completeness (e.g. the ADR-034 immutability guard) but which
+// still attach meters to plans. Direct map write bypasses CreateMeter's ID
+// reassignment so the meter is reachable by the id the test uses.
+func seedPricedMeter(m *memStore, tenantID, id string) {
+	m.meters[id] = domain.Meter{
+		ID: id, TenantID: tenantID, Key: id, Aggregation: "sum",
+		RatingRuleVersionID: "vlx_rrv_seed_" + id,
+	}
+}
+
 func (m *memStore) CreateRatingRule(_ context.Context, tenantID string, r domain.RatingRuleVersion) (domain.RatingRuleVersion, error) {
 	// Mirror the store's SQL allocation: version = MAX+1 per (tenant,
 	// rule_key); the caller's Version field is ignored.
@@ -656,6 +668,61 @@ func TestUpdatePlan(t *testing.T) {
 	}
 }
 
+// TestPlanAttachGuard_UnpricedMeter_ADR096 covers the plan-attach guard:
+// attaching a meter with no rating rule is rejected at authoring, so its
+// usage can never silently bill $0 at cycle close. Both binding mechanisms
+// (a default meter.rating_rule_version_id and a meter_pricing_rules row)
+// count as priced.
+func TestPlanAttachGuard_UnpricedMeter_ADR096(t *testing.T) {
+	ctx := context.Background()
+	plan := func(code string, meters []string) CreatePlanInput {
+		return CreatePlanInput{
+			Code: code, Name: code, Currency: "USD",
+			BillingInterval: domain.BillingMonthly, BaseAmountCents: 2900,
+			MeterIDs: meters,
+		}
+	}
+
+	t.Run("CreatePlan rejects an unpriced meter", func(t *testing.T) {
+		store := newMemStore()
+		store.meters["m1"] = domain.Meter{ID: "m1", TenantID: "t", Key: "api_calls", Aggregation: "sum"}
+		if _, err := NewService(store).CreatePlan(ctx, "t", plan("p", []string{"m1"})); err == nil {
+			t.Fatal("expected rejection: unpriced meter attached to plan")
+		}
+	})
+
+	t.Run("CreatePlan accepts a meter with a default rule binding", func(t *testing.T) {
+		store := newMemStore()
+		store.meters["m1"] = domain.Meter{ID: "m1", TenantID: "t", Key: "api_calls", Aggregation: "sum", RatingRuleVersionID: "vlx_rrv_1"}
+		if _, err := NewService(store).CreatePlan(ctx, "t", plan("p", []string{"m1"})); err != nil {
+			t.Fatalf("default-bound meter should be accepted: %v", err)
+		}
+	})
+
+	t.Run("CreatePlan accepts a meter priced via a meter_pricing_rules row", func(t *testing.T) {
+		store := newMemStore()
+		store.meters["m1"] = domain.Meter{ID: "m1", TenantID: "t", Key: "api_calls", Aggregation: "sum"}
+		store.meterRules["mpr1"] = domain.MeterPricingRule{ID: "mpr1", TenantID: "t", MeterID: "m1", RatingRuleVersionID: "vlx_rrv_1"}
+		if _, err := NewService(store).CreatePlan(ctx, "t", plan("p", []string{"m1"})); err != nil {
+			t.Fatalf("meter with a pricing rule should be accepted: %v", err)
+		}
+	})
+
+	t.Run("UpdatePlan rejects adding an unpriced meter (no live subs)", func(t *testing.T) {
+		store := newMemStore()
+		seedPricedMeter(store, "t", "m1")
+		store.meters["m2"] = domain.Meter{ID: "m2", TenantID: "t", Key: "unpriced", Aggregation: "sum"}
+		svc := NewService(store)
+		p, err := svc.CreatePlan(ctx, "t", plan("p", []string{"m1"}))
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if _, err := svc.UpdatePlan(ctx, "t", p.ID, plan("p", []string{"m1", "m2"})); err == nil {
+			t.Fatal("expected rejection: unpriced meter added on update")
+		}
+	})
+}
+
 // fakePlanUsage is a stub SubscriptionPlanUsageReader that returns a
 // fixed live-sub count for any plan. Used by the immutability guard
 // tests (ADR-034).
@@ -672,7 +739,12 @@ func TestUpdatePlan_ImmutabilityGuard_ADR034(t *testing.T) {
 	ctx := context.Background()
 
 	setup := func(liveCount int) (*Service, domain.Plan) {
-		svc := NewService(newMemStore())
+		store := newMemStore()
+		// meter_a / meter_b priced (default binding): this test's subject is
+		// the ADR-034 immutability guard, not ADR-096 pricing completeness.
+		seedPricedMeter(store, "tenant1", "meter_a")
+		seedPricedMeter(store, "tenant1", "meter_b")
+		svc := NewService(store)
 		svc.SetSubscriptionPlanUsageReader(&fakePlanUsage{count: liveCount})
 		p, err := svc.CreatePlan(ctx, "tenant1", CreatePlanInput{
 			Code: "guard", Name: "Guard", Currency: "USD",
