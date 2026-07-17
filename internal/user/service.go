@@ -20,9 +20,9 @@ import (
 // Service is the auth-side surface for user accounts. ADR-011.
 //
 // The recipe is intentionally boring: bcrypt cost 12 for hashing,
-// crypto/rand for tokens, sha256 for token storage. The login brute-force
-// throttle lives in a separate LoginGuard (see loginguard.go / ADR-094), not
-// here. All of this is well-trodden Go stdlib + x/crypto territory.
+// crypto/rand for tokens, sha256 for token storage. v1 has NO automatic login
+// brute-force throttle — the interim one was removed; ADR-094 records the
+// deferred design. All of this is well-trodden Go stdlib + x/crypto territory.
 type Service struct {
 	store Store
 	clock clock.Clock
@@ -180,9 +180,9 @@ func (s *Service) GetByID(ctx context.Context, id string) (domain.User, error) {
 // memberships. Returns ErrBadCredentials for a missing user or wrong password
 // (identical timing on both paths — the not-found path runs a dummy bcrypt), or
 // ErrAccountLocked if the account carries a manual/backstop lock
-// (users.locked_until). The lock is NO LONGER auto-fired by failure velocity —
-// that moved to the handler's LoginGuard throttle (ADR-094) — and is checked
-// AFTER the password verify so a locked account's timing can't be distinguished.
+// (users.locked_until). The lock is NOT auto-fired by failure velocity (v1 has
+// no automatic login throttle — deferred, ADR-094) and is checked AFTER the
+// password verify so a locked account's timing can't be distinguished.
 // On success: stamps last_login_at and clears any prior backstop lock.
 func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (domain.User, []domain.UserTenant, error) {
 	u, err := s.store.GetByEmail(ctx, email)
@@ -203,8 +203,8 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 	// a locked account's response timing does not diverge from a wrong-password
 	// one. The old order (lock check before bcrypt) let a locked account answer
 	// faster — it skipped bcrypt — a timing oracle for "this is a real, locked
-	// account". locked_until is no longer auto-fired by failure velocity (that
-	// moved to the LoginGuard throttle, ADR-094); it survives only as an
+	// account". locked_until is not auto-fired by failure velocity (v1 has no
+	// automatic login throttle — deferred, ADR-094); it survives only as an
 	// operator/extreme-confidence backstop.
 	if err := VerifyPassword(u.PasswordHash, plaintext); err != nil {
 		return domain.User{}, nil, err
@@ -227,10 +227,9 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 
 	_ = s.store.TouchLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
-	u.LockedUntil = nil
-	// The failed-login throttle is cleared by the handler's guard.Record on
-	// success (ADR-094 / internal/user/loginguard.go); Authenticate no longer
-	// owns a per-email failure counter.
+	u.LockedUntil = nil // clear any (already-expired) backstop lock on the returned user
+	// Authenticate owns no failure counter — v1 has no automatic login throttle
+	// (deferred, ADR-094); the per-IP /v1/auth limiter is the brute-force floor.
 	return u, tenants, nil
 }
 

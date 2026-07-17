@@ -307,9 +307,7 @@ Single tenant-wide timezone used for date input and timestamp display
 
 - [ ] Empty form → inline error, no request.
 - [ ] Wrong password → 401 "Invalid email or password".
-- [ ] Repeated wrong passwords from ONE source against one account → the next attempt from that source is throttled to the same generic 401, refused BEFORE bcrypt (ADR-094). *(automated: `TestPostgresLoginGuard_ThrottlesAttackerNotVictim`, `TestLogin_ThrottleDenyShortCircuitsBeforeBcrypt`)*
-- [ ] The SAME account still logs in from a DIFFERENT IP — the throttle keys on (IP-prefix × account), so knowing an operator's email can't lock its owner out. *(automated: `TestPostgresLoginGuard_ThrottlesAttackerNotVictim`)*
-- [ ] The throttle lives in Postgres (no Redis dependency) and stores no plaintext email in its key. *(automated: `TestPostgresLoginGuard_StoresNoPlaintextEmail`)*
+- [ ] Repeated wrong passwords keep returning the same generic 401 — no lockout, no distinct 429/`account_locked` (v1 has no automatic account lockout or login throttle; deferred — ADR-094).
 - [ ] Right credentials → redirect to `/`, dashboard loads.
 - [ ] Cookie `velox_session`: HttpOnly, SameSite=Lax. No `velox_*` in localStorage.
 - [ ] HttpOnly holds: browser-console `document.cookie` is empty, yet `fetch('/v1/whoami')` still returns 200.

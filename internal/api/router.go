@@ -1165,43 +1165,31 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	} else {
 		slog.Info("REDIS_URL not set — rate limiting disabled in dev; in production the general/hosted limiters FAIL CLOSED (all covered requests 429) — set REDIS_URL")
 	}
-	// Login brute-force throttle (ADR-094) — a Postgres per-(client IP-prefix ×
-	// account) failed-login counter that REPLACES the removed users.locked_until
-	// auto-lockout (which fragmented across Redis↔in-memory and was weaponizable:
-	// any known operator email → a 15-min lockout on demand). One authoritative
-	// store (login already needs Postgres), keyed on the ATTACKER dimension so a
-	// remote party (from a DIFFERENT IP-prefix) can't lock the account's real
-	// owner out. NOTE: that property depends on TRUST_PROXY being set when Velox
-	// runs behind a proxy — otherwise every client collapses to the proxy's IP
-	// (see the TRUST_PROXY warning below). The subject is HMAC(pepper,
-	// ip_prefix|email): the pepper is DERIVED from VELOX_ENCRYPTION_KEY (kept
-	// cryptographically separate from the AES key), falling back to a plain
-	// SHA-256 when the key is unset in local dev. This lean first cut sets up the
-	// full ADR-094 design (graduated ladder + MFA + stuffing detection) behind
-	// the LoginGuard seam.
-	throttleBlinder, err := crypto.DeriveBlinder(os.Getenv("VELOX_ENCRYPTION_KEY"), "login-throttle")
-	if err != nil {
-		slog.Warn("login throttle: could not derive pepper from VELOX_ENCRYPTION_KEY; subjects fall back to sha256", "error", err)
-		throttleBlinder = crypto.NewNoopBlinder()
-	}
-	dashboardAuthH.SetLoginGuard(user.NewPostgresLoginGuard(db, throttleBlinder))
+	// Login brute-force protection: v1 ships NO automatic per-account throttle.
+	// The old users.locked_until auto-lockout (fragmenting across Redis↔in-memory
+	// and weaponizable — any known operator email → a 15-min lockout on demand)
+	// was removed, and the interim Postgres throttle that briefly replaced it was
+	// removed too, to keep v1 lean until the full control lands. The per-IP
+	// /v1/auth limiter below is the brute-force floor; the full design (a
+	// non-weaponizable throttle + MFA + login-time breached-password check) is
+	// documented in ADR-094 and deferred as one unit.
 	rateLimiter := mw.NewRateLimiter(rdb, "general",
 		envInt("VELOX_RATE_LIMIT_GENERAL_PER_MIN", 100), time.Minute)
 	// In production, refuse requests when Redis is unreachable rather than
 	// silently disabling rate limiting (DDoS vector). The general/IP limiter
 	// deliberately stays fail-open in non-prod: per the industry split (OWASP
 	// ASVS + practitioner consensus) generic API rate limiting should fail
-	// open on a store blip, while the auth brute-force control is the
-	// always-on LoginGuard throttle above (ADR-094).
+	// open on a store blip. v1 has no dedicated per-account login throttle
+	// (deferred — ADR-094); the per-IP /v1/auth limiter below is the floor.
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		rateLimiter.SetFailClosed(true)
 	}
 	// /v1/auth gets its OWN limiter instance — same Redis namespace and
 	// limits as the general one (shared buckets), but NEVER fail-closed:
 	// locking operators out of login during a Redis blip re-introduces
-	// the DoS the #21 design avoids, and the brute-force control on auth
-	// is the LoginGuard per-(IP×account) throttle (ADR-094), not
-	// this limiter. The HA-readiness audit (docs/dev/
+	// the DoS the #21 design avoids. This per-IP limiter is the only
+	// brute-force floor on auth in v1 — a per-(IP×account) login throttle
+	// is deferred (ADR-094). The HA-readiness audit (docs/dev/
 	// ha-readiness-2026-07-06.md) found the prior wiring mounted the
 	// fail-closed general limiter on /v1/auth, contradicting this
 	// stated design — a prod Redis outage killed dashboard login.
@@ -1266,18 +1254,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// rate limits on the raw TCP peer.
 	trustedProxies := mw.ParseTrustedProxies(os.Getenv("TRUST_PROXY"))
 	if len(trustedProxies) == 0 {
-		// The login brute-force throttle (ADR-094) keys on the client IP-prefix;
-		// its non-weaponizability rests on that IP being the real client's. Behind
-		// a proxy with TRUST_PROXY unset, every request's peer is the proxy, so all
-		// clients collapse to one prefix and the throttle degrades toward a
-		// bare-account lock. WARN loudly in production; INFO elsewhere (single-node
-		// dev legitimately has no proxy).
-		msg := "TRUST_PROXY not set — X-Forwarded-For/X-Real-IP ignored; rate limiting AND the login throttle key on the direct TCP peer. If Velox runs behind a proxy/LB, set TRUST_PROXY to its CIDR (else all clients collapse to the proxy IP and the login throttle behaves like a bare-account lock)."
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
-			slog.Warn(msg)
-		} else {
-			slog.Info(msg)
-		}
+		slog.Info("TRUST_PROXY not set — X-Forwarded-For/X-Real-IP ignored; rate limiting keys on the direct TCP peer. Set TRUST_PROXY to your load balancer's CIDR if Velox runs behind a proxy.")
 	}
 	r.Use(mw.TrustedRealIP(trustedProxies))
 	corsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")

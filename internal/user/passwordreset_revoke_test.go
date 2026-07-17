@@ -30,15 +30,12 @@ type fakeUserStore struct {
 	// reset tests rely on.
 	loginUser *domain.User
 	tenants   []domain.UserTenant
-
-	getByEmailCalls int // proves whether Authenticate was entered (its first step)
 }
 
 func (f *fakeUserStore) Create(ctx context.Context, email, passwordHash string) (domain.User, error) {
 	return domain.User{}, errs.ErrNotFound
 }
 func (f *fakeUserStore) GetByEmail(ctx context.Context, email string) (domain.User, error) {
-	f.getByEmailCalls++
 	if f.loginUser != nil && f.loginUser.Email == email {
 		return *f.loginUser, nil
 	}
