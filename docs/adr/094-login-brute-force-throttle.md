@@ -7,6 +7,13 @@ first-cut throttle shipped (PR #497) and was then removed to keep v1 lean — se
 dormant `users.locked_until` manual backstop was removed too — v1 has no login
 lockout or throttle of any kind. Login brute-force protection (the throttle + MFA
 + breached-password check) is deferred as one unit.
+**REFINED BY ADR-095** (2026-07-17): an adversarial design panel moved MFA +
+breached-password from "deferred" to the next build phase, reclassified the
+consumer-scale controls below (graduated ladder, HLL/EWMA aggregate detection,
+CAPTCHA) as **never** for this operator-only shape, and simplified the throttle to
+plain `(IP × account)` (prefix bucketing → conditional). See ADR-095 for the whole
+login-security posture and the concrete MFA design; the brute-force-throttle
+reasoning below still stands.
 Relates: ADR-011 (homegrown email+password auth — the login this protects), ADR-014 (SSO stays homegrown/embedded, no SaaS auth vendor — same self-host constraint), ADR-093 (CSRF gate — sibling pre-auth hardening)
 
 ## Context
