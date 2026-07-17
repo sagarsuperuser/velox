@@ -149,6 +149,57 @@ real-inner:
   scheduler — the throttle table's only growth vector; negligible at operator-
   login volume, so deferred with the throttle itself.
 
+### Resource protection (bcrypt-DoS) — a SEPARATE axis, mostly not app-level
+
+Everything above answers "is this the real person?" (protect the *account*). It
+does nothing for "are we being flooded?" (protect the *service*). These are
+different problems and must not be conflated: bcrypt is deliberately ~100–250ms
+per verify, so it is a CPU **amplifier** — a distributed login flood that never
+guesses a password and never beats MFA can still pin cores and starve
+billing/ingest. **Do not ship MFA and declare brute force "solved": MFA protects
+accounts, not CPU; the resource door stays open until the items below are.**
+
+- **Edge-first.** Volumetric floods belong at the deployment edge — WAF/CDN, edge
+  rate-limiting, per-IP connection caps, autoscaling — **not** in the binary.
+  Building app-level DDoS machinery is over-engineering; the operator's reverse
+  proxy is the front line (also why `TRUST_PROXY` matters). Industry norm: leaders
+  offload auth and/or absorb floods at the edge, not with a bespoke in-app governor.
+  **Self-hosted deployments almost always still run a reverse proxy / LB** (nginx,
+  Caddy, Traefik, HAProxy, cloud LB) — if only for TLS termination — so an edge is
+  nearly always present; the bare binary exposed directly is the rare exception. A
+  plain proxy stops volumetric/connection floods but not *distributed* bcrypt
+  amplification (it doesn't know `/v1/auth` is expensive). The cheapest fix for that
+  is an **endpoint-scoped rate limit on `/v1/auth` at the proxy they already run**
+  (nginx `limit_req`, Caddy, HAProxy stick-tables) — edge-layer, no app code.
+- **Already shipped, and sufficient for now:** the per-IP `/v1/auth` limiter +
+  the ingest bulkhead (separate bucket) — bounds per-source amplification and keeps
+  a login flood off the ingest/billing budget. This is the correct app-level posture
+  pre-launch; nothing to add.
+- **The one in-app lever to add IF a self-hoster hits real abuse:** a **bounded
+  login-CPU budget** — a semaphore / small worker-pool around the password verify,
+  sized to a fraction of cores, that sheds excess to `429` *before* bcrypt. It is
+  fail-safe (login degrades and recovers; billing/ingest keep running) and
+  non-weaponizable (it bounds *total* login work, never targets an account). The
+  ladder's CAPTCHA/PoW rung above does the same job from the other side — an
+  unsolved challenge never reaches bcrypt.
+- **Trigger — measured, not speculative.** Build it when `/v1/auth` request-rate +
+  latency (already emitted by the metrics middleware) spike **and** coincide with
+  rising latency/errors on non-login endpoints (billing/ingest) — i.e. login bcrypt
+  is measurably stealing CPU from real work. A login spike alone is not enough; it
+  must be hurting something else. And only once the cheaper layers can't absorb it,
+  in order: (1) a cloud/horizontally-scaled deploy behind a real edge (WAF/CDN +
+  autoscaling) likely **never** triggers — the edge sheds the flood and scale dilutes
+  bcrypt; (2) a self-host behind its (almost-always-present) reverse proxy adds an
+  **endpoint rate limit on `/v1/auth`** at that proxy first — still no app code. The
+  in-app budget is the **sole** lever only in the genuinely edge-less corner (bare
+  binary exposed, no proxy to endpoint-limit) under real distributed abuse — rare.
+  NOT triggered by launch, customer count, or
+  "feels risky." Cheap pre-work (do this instead of building): keep the signal
+  watchable — `/v1/auth` rate+latency already is; add a bcrypt-concurrency gauge if
+  the threshold ever needs to be unambiguous. Named here so nobody (a) bolts a CPU
+  governor into the binary prematurely, or (b) calls brute force solved with the
+  resource axis still open.
+
 ## Consequences
 
 - **Removes a real DoS lever and a PII leak**, and eliminates the fragmentation
