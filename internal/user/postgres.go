@@ -26,11 +26,11 @@ func NewPostgresStore(db *postgres.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
-const userCols = `id, email::text, password_hash, created_at, last_login_at, locked_until`
+const userCols = `id, email::text, password_hash, created_at, last_login_at`
 
 func scanUser(row *sql.Row) (domain.User, error) {
 	var u domain.User
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.LastLoginAt, &u.LockedUntil)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.LastLoginAt)
 	return u, err
 }
 
@@ -101,21 +101,7 @@ func (s *PostgresStore) TouchLastLogin(ctx context.Context, id string, at time.T
 	}
 	defer postgres.Rollback(tx)
 	_, err = tx.ExecContext(ctx,
-		`UPDATE users SET last_login_at = $1, locked_until = NULL WHERE id = $2`, at, id)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *PostgresStore) Lock(ctx context.Context, id string, until time.Time) error {
-	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
-	if err != nil {
-		return err
-	}
-	defer postgres.Rollback(tx)
-	_, err = tx.ExecContext(ctx,
-		`UPDATE users SET locked_until = $1 WHERE id = $2`, until, id)
+		`UPDATE users SET last_login_at = $1 WHERE id = $2`, at, id)
 	if err != nil {
 		return err
 	}
@@ -129,7 +115,7 @@ func (s *PostgresStore) SetPassword(ctx context.Context, id, passwordHash string
 	}
 	defer postgres.Rollback(tx)
 	_, err = tx.ExecContext(ctx,
-		`UPDATE users SET password_hash = $1, locked_until = NULL WHERE id = $2`, passwordHash, id)
+		`UPDATE users SET password_hash = $1 WHERE id = $2`, passwordHash, id)
 	if err != nil {
 		return err
 	}

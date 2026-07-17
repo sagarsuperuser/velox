@@ -140,6 +140,14 @@ The two paths are now structurally independent. Permission middleware doesn't ca
 
 ### Login rate-limit + lockout
 
+> **SUPERSEDED by ADR-094 (2026-07-17).** The account-lockout described in this
+> section was removed: it was weaponizable (any known email → an on-demand
+> lockout) and fragmenting. The interim throttle that briefly replaced it was also
+> removed, and the `users.locked_until` column was dropped (migration 0154). **v1
+> now has no login lockout or throttle** — the per-IP `/v1/auth` rate limiter is
+> the brute-force floor; a non-weaponizable throttle + MFA + breached-password
+> check are deferred as one unit (ADR-094). The paragraph below is historical.
+
 Already-existing Redis rate limiter gets a new key shape: `auth:login:<email_lowercased>`. Rule: 5 attempts per sliding 1-minute window. After 5 fails: `locked_until = now() + 15min` is set on the user row, login endpoint returns 429 with retry-after until cleared.
 
 ### Password recipe (boring + correct)

@@ -2,10 +2,11 @@
 
 Date: 2026-07-17
 Status: Accepted as the DESIGN OF RECORD; implementation DEFERRED. An interim
-first-cut throttle shipped (PR #497) and was then removed the same day to keep v1
-lean — see "What actually ships" below. The old weaponizable lockout stays
-removed and the login timing-oracle fix is retained; login brute-force protection
-(the throttle + MFA + breached-password check) is deferred as one unit.
+first-cut throttle shipped (PR #497) and was then removed to keep v1 lean — see
+"What actually ships" below. The old weaponizable lockout stays removed, and the
+dormant `users.locked_until` manual backstop was removed too — v1 has no login
+lockout or throttle of any kind. Login brute-force protection (the throttle + MFA
++ breached-password check) is deferred as one unit.
 Relates: ADR-011 (homegrown email+password auth — the login this protects), ADR-014 (SSO stays homegrown/embedded, no SaaS auth vendor — same self-host constraint), ADR-093 (CSRF gate — sibling pre-auth hardening)
 
 ## Context
@@ -66,8 +67,9 @@ Architecture (defense in depth, from cheap/outer to real/inner):
   (tarpit → CAPTCHA/PoW → post-password step-up/MFA), never a hard account lock.
   The only hard block attaches to the **attacker dimension** — `(IP-prefix ×
   account)` — so a party who knows only an email can, at worst, force the owner
-  through one self-clearing challenge they always pass. `users.locked_until`
-  survives only as a rare operator/extreme-confidence backstop, never auto-fired.
+  through one self-clearing challenge they always pass. There is deliberately no
+  bare-account lock: a compromised operator account is handled out-of-band by
+  password reset (which revokes sessions) / disable, not by refusing its login.
 - **Multi-dimension keying:** per-`(IP-prefix × account)` (the hard-block dim),
   per-account and per-IP-prefix sensors, a sharded global rollup, and an HLL
   fan-in (distinct IP-prefixes per account) — the last two **alert-only**, never
@@ -95,20 +97,22 @@ PoW as a strong control (a botnet out-computes a phone).
 
 ## What actually ships
 
-The design above is the record of where login protection is going. Of the
-implementation, v1 keeps only the two pieces that are correct independently of any
-throttle, and defers the throttle itself:
+The design above is the record of where login protection is going. v1 ships none
+of it — login is bare email+password behind the per-IP `/v1/auth` limiter — and
+removes the old machinery so nothing dormant lingers:
 
 1. **The weaponizable, fragmenting lockout is removed entirely.** Deleted
    `internal/user/lockout.go` (the Redis + in-memory + circuit-breaker
    `FallbackFailureCounter`), the `FailureCounter` interface, `SetFailureCounter`,
-   and `Service.RecordFailedAttempt`. The `users.locked_until` column and
-   `Store.Lock` survive as a dormant **manual/operator backstop** — no longer
-   auto-fired by failure velocity.
-2. **The login timing oracle is fixed.** The `locked_until` backstop check moved
-   *after* `VerifyPassword` in `Service.Authenticate`, so a locked account's
-   response timing can't be distinguished from a wrong password (the old order
-   checked the lock *before* bcrypt, letting a locked account answer faster).
+   and `Service.RecordFailedAttempt`.
+2. **The `users.locked_until` backstop is removed too** (column dropped in
+   migration 0154, along with `Store.Lock` and `ErrAccountLocked`). After #497
+   nothing wrote to it — it was a dormant manual lock with no wired caller, and a
+   weak one: a lock only gates the login endpoint, never live sessions, so it
+   can't actually stop a compromised account. Incident response for a compromised
+   operator account is **password reset (revokes all sessions) / disable**, not a
+   login lock. Removing the lock also removes the login timing-oracle concern at
+   the source — there is no second check to order after bcrypt.
 3. **No automatic per-account throttle ships.** An interim `LoginGuard` +
    `PostgresLoginGuard` — a fixed-window failed-login counter keyed on
    `HMAC(pepper, ip_prefix|account)` (migration 0152, `login_throttle`) — was

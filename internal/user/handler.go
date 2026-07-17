@@ -242,18 +242,6 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			respond.Unauthorized(w, r, "invalid email or password")
 			return
 		}
-		if errors.Is(err, ErrAccountLocked) {
-			slog.WarnContext(r.Context(), "auth: login blocked — account locked",
-				"email", req.Email, "ip", ip, "reason", "account_locked")
-			// Same generic 401 as a wrong password (a distinct response is an
-			// enumeration oracle). users.locked_until is a rare manual/operator
-			// backstop — v1 has no automatic login throttle (deferred, ADR-094) —
-			// and Authenticate checks it AFTER the constant-time password verify, so
-			// a locked account's response timing does not diverge from a
-			// wrong-password one.
-			respond.Unauthorized(w, r, "invalid email or password")
-			return
-		}
 		respond.FromError(w, r, err, "user")
 		return
 	}
