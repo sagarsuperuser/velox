@@ -203,8 +203,8 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
 - [ ] Advance the clock 31 days: `POST /v1/test-clocks/$CLK/advance` with `frozen_time = now+31d` (BSD `date -u -v+31d` / GNU `date -u -d '+31 days'`).
 - [ ] `curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY"` → 1 invoice generated (bills only THIS tenant's due subs; the response `errors` carry only your own subscription ids, never another tenant's data or raw DB/Stripe text). *(auto: `TestGetDueBillingForTenant_ScopesToTenant`)*
 - [ ] Same call with a **platform** key (no tenant scope) → **403** (never triggers the global scheduler sweep). *(auto: `TestTriggerCycle_ForbidsUnscopedKey`)*
-- [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax.
-- [ ] Stripe CLI shows `payment_intent.succeeded`. Dashboard MRR > $0.
+- [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax. **If the usage line is missing**, the meter has no rating-rule binding (the S1.4 "link to rule" step — key-match alone does NOT bind, and creating the meter before the rule leaves it unbound). The invoice still finalizes + charges with base+tax only; the gap surfaces as a `"meter … has events with no rating rule binding — skipped from totals"` warning on `GET /v1/customers/{id}/usage`, not a hard error. Bind with `POST /v1/meters/{id}/pricing-rules`.
+- [ ] Stripe CLI shows `payment_intent.succeeded`. Dashboard MRR stays **$0** and the invoice shows a **Simulated** badge — the clock-pinned customer's rows are simulated (`is_simulated` / `test_clock_id`) and analytics gates simulated data out of every aggregate (ADR-086, `internal/analytics/simfilter.go`). A real wall-clock customer moves MRR; a test-clock smoke never does.
 
 ### S1.6 Sign out
 - [ ] Sidebar → Sign Out. Redirect to /login.
