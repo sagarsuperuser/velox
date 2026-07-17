@@ -354,7 +354,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] **Cross-tab sync**: open the dashboard in two browser tabs. Toggle test→live in Tab A; switch to Tab B without clicking anything. Tab B's pill flips amber→emerald automatically (BroadcastChannel push from Tab A). Tab B's queries refetch live data on next focus — no stale TEST label over live data.
 - [ ] **URL params dropped on toggle**: navigate to `/customers?status=active&cursor=cus_test_xxx`, toggle modes. URL becomes `/customers` (search string stripped). The opposite-mode page does not show an empty list because the dead cursor was carried over.
 - [ ] **Per-mode invoice numbering**: in test mode, create an invoice → `VLX-000001` (default prefix). Toggle to live mode, create a real invoice → also starts at `VLX-000001` (or wherever the live counter sits — independent from test). Test exploration no longer burns live invoice numbers.
-- [ ] **Per-mode rate-limit buckets**: hammer the dashboard in test mode until you see `429 Too Many Requests`. Toggle to live mode — live requests should still be allowed (separate bucket). Inspect Redis: `KEYS rl:*` shows the rate-limit buckets, keyed `rl:<namespace>:<scope>:<id>` (e.g. `rl:general:ip:1.2.3.4`); test- and live-mode buckets are distinct keys.
+- [ ] **Per-mode rate-limit buckets**: hammer the dashboard in test mode until you see `429 Too Many Requests`. Toggle to live mode — live requests should still be allowed (separate bucket). Inspect Redis: `KEYS rate:rl:*` shows distinct per-mode buckets — dashboard/session traffic keys on `rate:rl:general:tenant:<tenant_id>:test` vs `…:live` (a Bearer key buckets on `key:<key_id>`, unauthenticated on `ip:<addr>`).
 
 ---
 
