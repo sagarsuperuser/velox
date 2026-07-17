@@ -221,7 +221,7 @@ export default function ApiKeysPage() {
                         <p className="text-xs text-muted-foreground mt-1.5">
                           {k.key_type === 'secret'
                             ? 'Full access -- use server-side only. Never expose in client code.'
-                            : 'Read-only access -- safe for frontend and client-side use.'}
+                            : 'Authenticate-only -- identifies the tenant, no data access. Safe to embed in client code.'}
                         </p>
                       </div>
                     </div>
@@ -522,7 +522,7 @@ function CreateKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreate
                   <Eye size={18} className={cn('mt-0.5', keyType === 'publishable' ? 'text-primary' : 'text-muted-foreground')} />
                   <div>
                     <p className={cn('text-sm font-medium', keyType === 'publishable' ? 'text-primary' : 'text-foreground')}>Publishable</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Read-only. Safe for clients.</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Authenticate-only. No data access.</p>
                   </div>
                 </button>
               </div>
