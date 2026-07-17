@@ -12,11 +12,6 @@ type User struct {
 	PasswordHash string     `json:"-"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
-	// LockedUntil is the failed-login lockout deadline. Set by the
-	// rate-limit/lockout policy after N consecutive failures; cleared
-	// automatically when login succeeds. Login endpoint refuses
-	// before this timestamp passes.
-	LockedUntil *time.Time `json:"locked_until,omitempty"`
 }
 
 // UserTenant binds a user to a tenant with a role. v1 ships only the

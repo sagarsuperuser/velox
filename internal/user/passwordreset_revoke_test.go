@@ -50,7 +50,6 @@ func (f *fakeUserStore) GetByID(ctx context.Context, id string) (domain.User, er
 func (f *fakeUserStore) TouchLastLogin(ctx context.Context, id string, at time.Time) error {
 	return nil
 }
-func (f *fakeUserStore) Lock(ctx context.Context, id string, until time.Time) error { return nil }
 func (f *fakeUserStore) SetPassword(ctx context.Context, id, passwordHash string) error {
 	f.setPasswordHash = passwordHash
 	return nil

@@ -136,15 +136,6 @@ func VerifyPassword(hash, plaintext string) error {
 // emails by timing the response. Handler maps to 401.
 var ErrBadCredentials = errs.New("bad_credentials", "invalid email or password")
 
-// ErrAccountLocked is returned when the account's lockout deadline
-// hasn't passed. The login handler deliberately maps this to the SAME
-// generic 401 "invalid email or password" as bad credentials — a distinct
-// locked/429 response is an enumeration oracle (only real accounts can be
-// locked). The lock is enforced (Authenticate refuses the login during the
-// window) but not disclosed. See user/handler.go.
-var ErrAccountLocked = errs.New("account_locked",
-	"too many failed attempts — account temporarily locked")
-
 // CreateUser inserts a new user with hashed password and binds them
 // to the given tenant with the supplied role. Used by the bootstrap
 // CLI; not exposed via the HTTP API in v1 (no public signup).
@@ -177,13 +168,14 @@ func (s *Service) GetByID(ctx context.Context, id string) (domain.User, error) {
 }
 
 // Authenticate verifies email + password and returns the user + their tenant
-// memberships. Returns ErrBadCredentials for a missing user or wrong password
-// (identical timing on both paths — the not-found path runs a dummy bcrypt), or
-// ErrAccountLocked if the account carries a manual/backstop lock
-// (users.locked_until). The lock is NOT auto-fired by failure velocity (v1 has
-// no automatic login throttle — deferred, ADR-094) and is checked AFTER the
-// password verify so a locked account's timing can't be distinguished.
-// On success: stamps last_login_at and clears any prior backstop lock.
+// memberships. Returns ErrBadCredentials for a missing user OR a wrong password —
+// the same error, with identical timing on both paths (the not-found path runs a
+// dummy bcrypt), so response timing can't be used to enumerate registered emails.
+// On success: stamps last_login_at.
+//
+// There is no account-lock check: v1 has no automatic login throttle or lockout
+// (deferred as one unit — ADR-094). An account under active attack is handled by
+// password reset / session revocation, not by refusing login.
 func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (domain.User, []domain.UserTenant, error) {
 	u, err := s.store.GetByEmail(ctx, email)
 	if err != nil {
@@ -199,19 +191,8 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 		return domain.User{}, nil, err
 	}
 
-	// Verify the password FIRST, then check the (rare, manual) backstop lock, so
-	// a locked account's response timing does not diverge from a wrong-password
-	// one. The old order (lock check before bcrypt) let a locked account answer
-	// faster — it skipped bcrypt — a timing oracle for "this is a real, locked
-	// account". locked_until is not auto-fired by failure velocity (v1 has no
-	// automatic login throttle — deferred, ADR-094); it survives only as an
-	// operator/extreme-confidence backstop.
 	if err := VerifyPassword(u.PasswordHash, plaintext); err != nil {
 		return domain.User{}, nil, err
-	}
-	now := s.clock.Now(ctx)
-	if u.LockedUntil != nil && u.LockedUntil.After(now) {
-		return domain.User{}, nil, ErrAccountLocked
 	}
 
 	tenants, err := s.store.TenantsForUser(ctx, u.ID)
@@ -225,11 +206,9 @@ func (s *Service) Authenticate(ctx context.Context, email, plaintext string) (do
 			"user has no tenant membership; contact your administrator")
 	}
 
+	now := s.clock.Now(ctx)
 	_ = s.store.TouchLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
-	u.LockedUntil = nil // clear any (already-expired) backstop lock on the returned user
-	// Authenticate owns no failure counter — v1 has no automatic login throttle
-	// (deferred, ADR-094); the per-IP /v1/auth limiter is the brute-force floor.
 	return u, tenants, nil
 }
 

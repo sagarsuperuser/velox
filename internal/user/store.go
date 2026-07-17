@@ -21,13 +21,8 @@ type Store interface {
 	// GetByID loads the user by id.
 	GetByID(ctx context.Context, id string) (domain.User, error)
 
-	// TouchLastLogin updates last_login_at and clears locked_until on
-	// successful login. Single statement, no read-then-write race.
+	// TouchLastLogin updates last_login_at on successful login.
 	TouchLastLogin(ctx context.Context, id string, at time.Time) error
-
-	// Lock sets locked_until to the supplied deadline. Login endpoint
-	// refuses login until the deadline passes.
-	Lock(ctx context.Context, id string, until time.Time) error
 
 	// SetPassword updates the password_hash. Used by the reset flow.
 	SetPassword(ctx context.Context, id, passwordHash string) error
