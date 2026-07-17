@@ -1,7 +1,11 @@
 # ADR-094: Login brute-force protection — Postgres-authoritative, non-weaponizable, extensible
 
 Date: 2026-07-17
-Status: Accepted (pragmatic-lean first cut; full design documented, rest deferred)
+Status: Accepted as the DESIGN OF RECORD; implementation DEFERRED. An interim
+first-cut throttle shipped (PR #497) and was then removed the same day to keep v1
+lean — see "What actually ships" below. The old weaponizable lockout stays
+removed and the login timing-oracle fix is retained; login brute-force protection
+(the throttle + MFA + breached-password check) is deferred as one unit.
 Relates: ADR-011 (homegrown email+password auth — the login this protects), ADR-014 (SSO stays homegrown/embedded, no SaaS auth vendor — same self-host constraint), ADR-093 (CSRF gate — sibling pre-auth hardening)
 
 ## Context
@@ -26,8 +30,12 @@ problems worth fixing at the root rather than patching:
 
 A design panel (5 independent architectures, each adversarially red-teamed, then
 scored and synthesized) produced the target design below. This ADR records that
-target in full so it is predetermined, then ships a **pragmatic-lean first cut**
-and defers the rest with explicit triggers.
+target in full so it is predetermined. An interim first cut was built (PR #497)
+and then removed (see "What actually ships"): at zero customers, with no named
+attacker pressure, a partial throttle whose real value only arrives alongside the
+deferred MFA + breached-password controls was premature complexity to carry.
+Login brute-force protection is deferred as **one unit**, to be built to this
+design rather than grown from a stub.
 
 ## The target design (documented now, built incrementally)
 
@@ -85,41 +93,42 @@ primary response; distinct `429`/`account_locked` responses (enumeration oracle)
 ASN/shared-IP as a hard-block dimension (collateral DoS); and treating hashcash
 PoW as a strong control (a botnet out-computes a phone).
 
-## Decision — what ships now (the pragmatic-lean first cut)
+## What actually ships
 
-1. **Remove the weaponizable, fragmenting lockout entirely.** Delete
+The design above is the record of where login protection is going. Of the
+implementation, v1 keeps only the two pieces that are correct independently of any
+throttle, and defers the throttle itself:
+
+1. **The weaponizable, fragmenting lockout is removed entirely.** Deleted
    `internal/user/lockout.go` (the Redis + in-memory + circuit-breaker
    `FallbackFailureCounter`), the `FailureCounter` interface, `SetFailureCounter`,
    and `Service.RecordFailedAttempt`. The `users.locked_until` column and
    `Store.Lock` survive as a dormant **manual/operator backstop** — no longer
    auto-fired by failure velocity.
-2. **Introduce the `LoginGuard` seam** (`internal/user/loginguard.go`): a
-   `Check(email, ip) → Decision` (pre-bcrypt) + `Record(email, ip, success)`
-   interface. This is where the graduated ladder plugs in later without touching
-   callers. `NoopLoginGuard` is the default (relies on the /v1/auth IP limiter).
-3. **Ship one lean, non-weaponizable, non-throwaway layer behind it** — the
-   panel's "L2 pre-bcrypt load-shed on the attacker dimension": `PostgresLoginGuard`,
-   a fixed-window failed-login counter keyed on `HMAC(pepper, ip_prefix|account)`
-   (migration 0152, `login_throttle`). Over the threshold, it short-circuits to
-   the generic 401 **before** bcrypt. Keyed on `(IP-prefix × account)`, so it
-   throttles a single source hammering one account but **cannot lock the owner
-   out** (they arrive from a different prefix). Pepper reuses `VELOX_ENCRYPTION_KEY`
-   (a dedicated key is a documented future hardening), falling back to plain
-   SHA-256 in local dev with no key.
-4. **Fix the two confirmed bugs by construction:** the plaintext-email key is
-   gone with the Redis counter; the timing oracle (the `locked_until` check ran
-   *before* bcrypt) is fixed by moving the backstop check *after* `VerifyPassword`
-   in `Service.Authenticate`, so a locked account's response timing can't be
-   distinguished.
-
-The default threshold/window (10 fails per source-account per 15 min) are a lean
-starting point, tunable; a shadow-mode labeling pass on real traffic sets the
-real knobs before they matter.
+2. **The login timing oracle is fixed.** The `locked_until` backstop check moved
+   *after* `VerifyPassword` in `Service.Authenticate`, so a locked account's
+   response timing can't be distinguished from a wrong password (the old order
+   checked the lock *before* bcrypt, letting a locked account answer faster).
+3. **No automatic per-account throttle ships.** An interim `LoginGuard` +
+   `PostgresLoginGuard` — a fixed-window failed-login counter keyed on
+   `HMAC(pepper, ip_prefix|account)` (migration 0152, `login_throttle`) — was
+   built in PR #497 and then removed (migration 0153 drops the table): a partial
+   throttle whose real value only lands with the deferred MFA + breached-password
+   controls was premature complexity to carry at zero customers. Login brute-force
+   protection is deferred as **one unit** (below), built to the target design
+   rather than grown from this stub. Until then, the per-IP `/v1/auth` rate
+   limiter is the brute-force floor.
 
 ## Deferred (documented, triggered)
 
-Each is additive and does not require reworking the above:
+The whole protection is deferred; these are the phases, cheapest-outer to
+real-inner:
 
+- **The `LoginGuard` seam + the Postgres `(IP-prefix × account)` throttle** — the
+  first buildable layer (built in #497, since removed). Rebuild it to the
+  target design: the `Check`/`Record` seam, `HMAC(pepper, …)` subjects (a dedicated
+  pepper key, or `crypto` derivation from `VELOX_ENCRYPTION_KEY`), and a fixed
+  window. Trigger: any real user traffic, or the MFA phase below (whichever first).
 - **MFA / step-up (TOTP homegrown, per ADR-014) and login-time breached-password**
   — the controls that actually stop distributed stuffing. *These are the highest
   security value and should lead the next phase.* Trigger: any real user traffic /
@@ -132,31 +141,32 @@ Each is additive and does not require reworking the above:
   failed-login path ever becomes hot (it essentially never does for operator
   login).
 - **A dedicated throttle pepper key** (separate from `VELOX_ENCRYPTION_KEY`), and
-  **wiring `PostgresLoginGuard.SweepExpired` into the scheduler** (the table's
-  only growth vector; negligible at operator-login volume, so deferred).
+  a **retention sweep** (`DELETE WHERE window_start < now() - ttl`) wired on the
+  scheduler — the throttle table's only growth vector; negligible at operator-
+  login volume, so deferred with the throttle itself.
 
 ## Consequences
 
 - **Removes a real DoS lever and a PII leak**, and eliminates the fragmentation
-  class — a net security improvement even before the deferred controls land.
-- **Honest reduction to be aware of:** single-account brute force from a
-  *distributed* source (many IP-prefixes) is not throttled by the `(IP-prefix ×
-  account)` dimension alone — that is what MFA + breached-password (deferred)
-  stop, and no throttle can. The per-IP `/v1/auth` limiter remains the volumetric
-  floor. This is stated, not hidden; do not present the throttle as adequate
-  standalone protection until MFA lands.
-- MANUAL_TEST FLOW A1's account-lockout steps are replaced by the throttle's
-  observable behavior in the same PR.
+  class — a net security improvement even with no throttle in its place.
+- **Honest reduction to be aware of:** v1 has **no automatic per-account
+  brute-force control** on login. Repeated wrong passwords keep returning the same
+  generic 401; the per-IP `/v1/auth` limiter is the only floor. A single-account
+  brute force — distributed *or* from one source under the per-IP cap — is not
+  throttled until the deferred layers land. This is stated, not hidden; the
+  trigger to build is any real user traffic or a DP security review.
+- MANUAL_TEST FLOW A1's account-lockout steps are removed in the same PR (there is
+  no lockout or throttle behavior left to assert).
 
-### Known residuals (adversarially reviewed, tracked against the deferred ladder)
+### Residuals to design against (they apply to the DEFERRED throttle, not to any shipped code)
 
-Inherent to a lean IP-prefix throttle — the reason the graduated ladder + MFA
-above are the *real* fix, not this cut:
+Inherent to a lean IP-prefix throttle — recorded here so the rebuild designs
+around them, and the reason the graduated ladder + MFA are the *real* fix:
 
 - **TRUST_PROXY precondition.** The non-weaponizability rests on the client IP
   being the real client's. Behind a proxy with `TRUST_PROXY` unset, every peer is
   the proxy → all clients collapse to one prefix → the throttle degrades toward a
-  bare-account lock. Mitigated by a production WARN at boot; the real fix is
+  bare-account lock. The rebuild should add a production boot-WARN; the real fix is
   correct deployment. **Do not run behind a proxy without `TRUST_PROXY`.**
 - **Colocated-attacker collateral.** An attacker SHARING the owner's IP-prefix
   (same office NAT, CGNAT/mobile pool, VPN exit, cloud region) can hold the owner
@@ -170,6 +180,7 @@ above are the *real* fix, not this cut:
   statements, so a simultaneous burst can overshoot the threshold before an
   increment is observed — the throttle bounds steady rate, not a single burst.
   bcrypt cost-12 is the per-attempt floor; a pre-bcrypt concurrency cap is deferred.
-- **Retention sweep not wired.** `SweepExpired` exists but is a deferred
-  follow-up; at operator-login volume growth is negligible and stale rows are
-  inert (ignored by the window predicate).
+- **Retention.** The throttle table's window rows are its only growth vector, so
+  the rebuild needs a periodic sweep (`DELETE WHERE window_start < now() - ttl`)
+  on the scheduler. At operator-login volume growth is negligible and stale rows
+  are inert (ignored by the window predicate), so it can land with the throttle.

@@ -53,7 +53,6 @@ type Handler struct {
 	smtpConfigured   bool        // SMTP wired at boot (email.Sender.IsConfigured); drives the email_delivery hint
 	auditLogger      AuditRecorder
 	resetThrottle    *resetThrottle
-	guard            LoginGuard // pre-auth brute-force throttle (ADR-094); NoopLoginGuard until SetLoginGuard wires the real one
 }
 
 // resetThrottle bounds password-reset EMAILS per target address. The
@@ -175,13 +174,8 @@ func NewHandler(users *Service, sessions SessionService, cookie session.CookieCo
 		dashboardBaseURL: strings.TrimRight(strings.TrimSpace(dashboardBaseURL), "/"),
 		smtpConfigured:   smtpConfigured,
 		resetThrottle:    newResetThrottle(3, time.Hour),
-		guard:            NoopLoginGuard{}, // replaced by SetLoginGuard in production wiring (router.go)
 	}
 }
-
-// SetLoginGuard wires the pre-auth brute-force throttle (ADR-094). Without it,
-// login relies on the /v1/auth per-IP rate limiter alone (NoopLoginGuard).
-func (h *Handler) SetLoginGuard(g LoginGuard) { h.guard = g }
 
 // Routes returns the dashboard auth surface. Mount under /v1/auth.
 // All routes are intentionally outside session middleware: they're
@@ -235,26 +229,9 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 
 	ip := audit.ExtractClientIP(r)
 
-	// Pre-auth brute-force throttle (ADR-094). Keyed on (client IP-prefix ×
-	// account), so it short-circuits a single source hammering one account
-	// BEFORE spending bcrypt, while a remote party from a DIFFERENT IP-prefix
-	// can't lock the account's real owner out (this rests on the trusted client
-	// IP — set TRUST_PROXY behind a proxy). A Deny is masked as the same generic
-	// 401 as a wrong password.
-	if h.guard.Check(r.Context(), req.Email, ip).Deny {
-		slog.WarnContext(r.Context(), "auth: login throttled",
-			"email", req.Email, "ip", ip, "reason", "too_many_failures")
-		respond.Unauthorized(w, r, "invalid email or password")
-		return
-	}
-
 	u, tenants, err := h.users.Authenticate(r.Context(), req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrBadCredentials) {
-			// Record the failure against (IP-prefix × email). A non-existent email
-			// is recorded too — it still deserves throttling and leaks nothing
-			// (the response is identical whether or not the account exists).
-			h.guard.Record(r.Context(), req.Email, ip, false)
 			// Failed logins are a SOC-2 CC6.1 signal (brute force / credential
 			// stuffing). They can't go to the per-tenant audit_log — there's no
 			// resolved tenant pre-auth, and recording email-existence there would
@@ -269,21 +246,17 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			slog.WarnContext(r.Context(), "auth: login blocked — account locked",
 				"email", req.Email, "ip", ip, "reason", "account_locked")
 			// Same generic 401 as a wrong password (a distinct response is an
-			// enumeration oracle). users.locked_until is now a rare manual/operator
-			// backstop — no longer auto-fired by failure velocity (that moved to
-			// the LoginGuard throttle, ADR-094) — and Authenticate checks it AFTER
-			// the constant-time password verify, so a locked account's response
-			// timing does not diverge from a wrong-password one.
+			// enumeration oracle). users.locked_until is a rare manual/operator
+			// backstop — v1 has no automatic login throttle (deferred, ADR-094) —
+			// and Authenticate checks it AFTER the constant-time password verify, so
+			// a locked account's response timing does not diverge from a
+			// wrong-password one.
 			respond.Unauthorized(w, r, "invalid email or password")
 			return
 		}
 		respond.FromError(w, r, err, "user")
 		return
 	}
-
-	// Correct credentials: clear this source's throttle counter — it proved it
-	// holds the credential, so an earlier fat-fingering doesn't carry forward.
-	h.guard.Record(r.Context(), req.Email, ip, true)
 
 	// V1: each user belongs to exactly one tenant. The Authenticate
 	// call already errored out on zero tenants. Pick the first.

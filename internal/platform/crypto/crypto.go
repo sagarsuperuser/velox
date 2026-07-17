@@ -157,27 +157,6 @@ func NewBlinder(hexKey string) (*Blinder, error) {
 // NULL/empty and the magic-link lookup path silently returns "no match".
 func NewNoopBlinder() *Blinder { return &Blinder{key: nil} }
 
-// DeriveBlinder returns a Blinder whose HMAC key is DERIVED from masterHexKey (a
-// 64-hex master such as VELOX_ENCRYPTION_KEY) via HMAC-SHA256 over a purpose
-// label, rather than using the master directly. This lets a subsystem reuse one
-// configured secret without violating the AES/HMAC key-separation the Blinder
-// requires: the derived key is not the AES key, and two different purposes get
-// two independent keys — compromising a derived key reveals neither the master
-// nor a sibling. An empty master yields a noop Blinder (dev without a key).
-func DeriveBlinder(masterHexKey, purpose string) (*Blinder, error) {
-	master := strings.TrimSpace(masterHexKey)
-	if master == "" {
-		return NewNoopBlinder(), nil
-	}
-	raw, err := hex.DecodeString(master)
-	if err != nil {
-		return nil, fmt.Errorf("derive blinder: master key is not valid hex: %w", err)
-	}
-	mac := hmac.New(sha256.New, raw)
-	mac.Write([]byte("velox-blinder-derive:" + purpose))
-	return &Blinder{key: mac.Sum(nil)}, nil // 32-byte derived key
-}
-
 // IsEnabled reports whether the blinder has a key configured. Callers use
 // this to decide whether to run the magic-link code path at all.
 func (b *Blinder) IsEnabled() bool { return b != nil && b.key != nil }
