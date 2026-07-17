@@ -491,6 +491,9 @@ func (s *Service) CreatePlan(ctx context.Context, tenantID string, input CreateP
 	if input.MeterIDs == nil {
 		input.MeterIDs = []string{}
 	}
+	if err := s.assertMetersPriced(ctx, tenantID, input.MeterIDs); err != nil {
+		return domain.Plan{}, err
+	}
 
 	return s.store.CreatePlan(ctx, tenantID, domain.Plan{
 		Code:            code,
@@ -558,6 +561,16 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 		}
 	}
 
+	// Guard newly-attached meters are priced (ADR-096) — reject before the
+	// write so an unpriced meter can't silently bill $0 usage at cycle close.
+	// Runs after the immutability guard so a live-plan meter change still
+	// returns the immutability error first.
+	if input.MeterIDs != nil {
+		if err := s.assertMetersPriced(ctx, tenantID, input.MeterIDs); err != nil {
+			return domain.Plan{}, err
+		}
+	}
+
 	if name := strings.TrimSpace(input.Name); name != "" {
 		existing.Name = name
 	}
@@ -584,6 +597,42 @@ func (s *Service) UpdatePlan(ctx context.Context, tenantID, id string, input Cre
 	existing.TaxCode = taxCode
 
 	return s.store.UpdatePlan(ctx, tenantID, existing)
+}
+
+// assertMetersPriced rejects attaching a meter to a plan unless that meter
+// is priced — it carries a default rating-rule binding
+// (meters.rating_rule_version_id) OR at least one meter_pricing_rules row.
+//
+// Why here, at authoring time (ADR-096): the billing engine's usage-rating
+// loop has no rule to apply for an unpriced meter, so it drops that meter's
+// usage and bills $0 for it — a silent under-bill on the money-moving path.
+// The industry norm (Stripe rate, Orb/Lago price/charge) makes pricing an
+// explicit part of attaching a metric; this guard does the same and removes
+// the "a same-keyed rating rule LOOKS bound but isn't" trap. Recipes bind the
+// rule before creating the plan, so they pass; a genuinely metering-only
+// meter is deferred (it would carry an explicit flag — ADR-096).
+func (s *Service) assertMetersPriced(ctx context.Context, tenantID string, meterIDs []string) error {
+	for _, id := range meterIDs {
+		m, err := s.store.GetMeter(ctx, tenantID, id)
+		if err != nil {
+			if errors.Is(err, errs.ErrNotFound) {
+				return errs.Invalid("meter_ids", fmt.Sprintf("meter %q not found", id))
+			}
+			return err
+		}
+		if m.RatingRuleVersionID != "" {
+			continue
+		}
+		rules, err := s.store.ListMeterPricingRulesByMeter(ctx, tenantID, id)
+		if err != nil {
+			return fmt.Errorf("list pricing rules for meter %s: %w", id, err)
+		}
+		if len(rules) == 0 {
+			return errs.Invalid("meter_ids", fmt.Sprintf(
+				"meter %q has no rating rule — bind one (POST /v1/meters/{id}/pricing-rules) before attaching it to a plan, or its usage will bill $0", m.Key))
+		}
+	}
+	return nil
 }
 
 // sameStringSet returns true when two string slices contain the same

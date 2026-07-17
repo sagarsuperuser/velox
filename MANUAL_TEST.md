@@ -181,7 +181,7 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
 - [ ] Settings shows "Connected".
 
 ### S1.4 Build the graph
-- [ ] Pricing → rating rule `api_calls` flat $0.01. Meter `api_calls` sum, link to rule. Plan `starter` $29/mo, attach meter.
+- [ ] Pricing → rating rule `api_calls` flat $0.01. Meter `api_calls` sum, **link the rule to the meter** (bind — key-match alone does NOT bind). Plan `starter` $29/mo, attach meter. **Guard (ADR-096):** attaching a meter with NO rating rule is rejected at plan create/update — `422 meter "…" has no rating rule` — so an unpriced meter can't silently bill $0. Bind the rule first, then attach.
 - [ ] Customers → create "Smoke Corp", external_id `smoke_corp`, email any@any.test. Billing profile: address + USD + 10% tax.
 - [ ] Customer detail → Set Up Payment → `4242 4242 4242 4242`.
 - [ ] Mint a test clock (avoids 30-day wait):
@@ -203,7 +203,7 @@ Brings the stack up, runs the full money path, signs out. Pre-merge canary.
 - [ ] Advance the clock 31 days: `POST /v1/test-clocks/$CLK/advance` with `frozen_time = now+31d` (BSD `date -u -v+31d` / GNU `date -u -d '+31 days'`).
 - [ ] `curl -sS -X POST "$API/v1/billing/run" -H "Authorization: Bearer $KEY"` → 1 invoice generated (bills only THIS tenant's due subs; the response `errors` carry only your own subscription ids, never another tenant's data or raw DB/Stripe text). *(auto: `TestGetDueBillingForTenant_ScopesToTenant`)*
 - [ ] Same call with a **platform** key (no tenant scope) → **403** (never triggers the global scheduler sweep). *(auto: `TestTriggerCycle_ForbidsUnscopedKey`)*
-- [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax. **If the usage line is missing**, the meter has no rating-rule binding (the S1.4 "link to rule" step — key-match alone does NOT bind, and creating the meter before the rule leaves it unbound). The invoice still finalizes + charges with base+tax only; the gap surfaces as a `"meter … has events with no rating rule binding — skipped from totals"` warning on `GET /v1/customers/{id}/usage`, not a hard error. Bind with `POST /v1/meters/{id}/pricing-rules`.
+- [ ] Invoice auto-finalized, `payment_status=succeeded`. Line items: prorated base + usage + tax. **A missing usage line now means drift, not a setup slip (ADR-096):** the plan-attach guard rejects attaching an unpriced meter, so the common "forgot to bind" case is caught at plan create/update (422), not here. If a rule is later unbound out from under a live sub, finalize drops that meter's usage but is no longer silent — a `slog.Warn` fires (and `GET /v1/customers/{id}/usage` still warns "no rating rule binding — skipped from totals"). Re-bind with `POST /v1/meters/{id}/pricing-rules`.
 - [ ] Stripe CLI shows `payment_intent.succeeded`. Dashboard MRR stays **$0** and the invoice shows a **Simulated** badge — the clock-pinned customer's rows are simulated (`is_simulated` / `test_clock_id`) and analytics gates simulated data out of every aggregate (ADR-086, `internal/analytics/simfilter.go`). A real wall-clock customer moves MRR; a test-clock smoke never does.
 
 ### S1.6 Sign out

@@ -2915,6 +2915,13 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			}
 
 			if meter.RatingRuleVersionID == "" {
+				// Unpriced meter → its usage can't be rated. Never silent
+				// (ADR-096): the plan-attach guard blocks this at authoring,
+				// so reaching it means a rule was unbound out from under a
+				// live sub. Loud log, no revenue billed — matches the
+				// multi-dim sibling above.
+				slog.Warn("cycle: usage on a meter with no rating rule — not billed (unpriced meter on plan; ADR-096)",
+					"meter", meter.Key, "quantity", quantity.String(), "subscription_id", sub.ID)
 				continue
 			}
 			rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, meter.RatingRuleVersionID, periodStart)
@@ -4175,6 +4182,11 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 				continue
 			}
 			if meter.RatingRuleVersionID == "" {
+				// Unpriced meter → its usage can't be rated. Never silent
+				// (ADR-096); see the cycle-path sibling. Loud log, no revenue
+				// billed.
+				slog.Warn("cancel: usage on a meter with no rating rule — not billed (unpriced meter on plan; ADR-096)",
+					"meter", meter.Key, "quantity", quantity.String(), "subscription_id", sub.ID)
 				continue
 			}
 			rule, err := e.resolveRatedRule(ctx, sub.TenantID, sub.CustomerID, meter.RatingRuleVersionID, periodStart)
