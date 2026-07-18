@@ -424,7 +424,7 @@ export default function CustomerDetailPage() {
             {/* Customer-level test-clock attach (ADR-027). Badge on
                 the header so the operator immediately sees that
                 everything for this customer is on simulated time. */}
-            {customer.test_clock_id && <TestClockBadge testClockId={customer.test_clock_id} />}
+            {customer.test_clock_id && <TestClockBadge testClockId={customer.test_clock_id} link />}
           </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-xs text-muted-foreground font-mono">{customer.id}</span>

@@ -312,7 +312,7 @@ export default function SubscriptionDetailPage() {
                 left; lifecycle state pills (active/paused/canceled) sit
                 on the right with the action buttons. Stripe / Linear /
                 Vercel all separate the two zones this way. */}
-            {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
+            {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} link />}
           </div>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{sub.id}</span>
