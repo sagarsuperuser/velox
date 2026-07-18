@@ -98,6 +98,26 @@ export function timeAgo(iso: string, now: EffectiveNow): string {
   return `${days}d ago`
 }
 
+// timeUntil is timeAgo's future-tense twin for timestamps that are
+// EXPECTED to be ahead of now (retry schedules, resumes). Rendering a
+// future instant through timeAgo clamps to "just now" — a failed
+// webhook delivery with next_retry_at 4h out read "next retry just
+// now" for the whole 4 hours. Past inputs (dispatcher lag) collapse
+// to "imminently" rather than lying with an age.
+export function timeUntil(iso: string, now: EffectiveNow): string {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const sec = Math.floor((t - now) / 1000)
+  if (sec <= 0) return 'imminently'
+  if (sec < 60) return 'in under a minute'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `in ${min}m`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `in ${hr}h`
+  const days = Math.floor(hr / 24)
+  return `in ${days}d`
+}
+
 // daysUntil is the ceil-day count used by DueBadge/ExpiryBadge: >0 future,
 // 0 today, <0 past. Matches the prior `Math.ceil((t - ref) / 86_400_000)`.
 export function daysUntil(iso: string, now: EffectiveNow): number {

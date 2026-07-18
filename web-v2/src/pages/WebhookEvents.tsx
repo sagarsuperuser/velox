@@ -13,7 +13,7 @@ import {
 // Webhook deliveries are infrastructure egress — never clock-pinned — so their
 // timestamps are genuinely wall-clock (wallClockNow), same family as the audit
 // log and email outbox (ADR-030 forensic layer).
-import { timeAgo, wallClockNow } from '@/lib/effectiveNow'
+import { timeAgo, wallClockNow, timeUntil } from '@/lib/effectiveNow'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -373,7 +373,7 @@ function DeliveryRow({
             )}
             {delivery.next_retry_at && (
               <>
-                {' \u00b7 next retry '}{timeAgo(delivery.next_retry_at, wallClockNow())}
+                {' \u00b7 next retry '}{timeUntil(delivery.next_retry_at, wallClockNow())}
               </>
             )}
           </div>

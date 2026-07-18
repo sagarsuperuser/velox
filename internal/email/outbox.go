@@ -501,7 +501,7 @@ func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID s
 		                        'dunning_escalation', 'credit_note')
 		  AND i.customer_id = $1
 		  AND eo.created_at >= now() - interval '30 days'
-		ORDER BY eo.created_at DESC
+		ORDER BY COALESCE(eo.dispatched_at, eo.created_at) DESC
 	`, customerID)
 	if err != nil {
 		return nil, err
