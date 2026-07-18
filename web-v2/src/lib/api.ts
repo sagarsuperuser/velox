@@ -253,7 +253,7 @@ export const api = {
   resendSetupLink: (invoiceId: string) =>
     apiRequest<{ status: string }>('POST', `/invoices/${invoiceId}/resend-setup-link`, {}),
   getPaymentTimeline: (invoiceId: string) =>
-    apiRequest<{ events: TimelineEvent[] }>('GET', `/invoices/${invoiceId}/payment-timeline`),
+    apiRequest<{ events: TimelineEvent[]; degraded: string[]; truncated: boolean }>('GET', `/invoices/${invoiceId}/payment-timeline`),
   getSubscriptionTimeline: (subscriptionId: string) =>
     apiRequest<{ events: TimelineEvent[]; truncated?: boolean }>('GET', `/subscriptions/${subscriptionId}/timeline`),
 

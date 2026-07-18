@@ -314,6 +314,10 @@ func (a *creditNoteListerAdapter) List(ctx context.Context, tenantID, invoiceID 
 	return a.svc.List(ctx, creditnote.ListFilter{
 		TenantID:  tenantID,
 		InvoiceID: invoiceID,
+		// Unset Limit fell back to the store default (50) with no
+		// disclosure. Request the store's max; the timeline handler
+		// reports `truncated` when the response comes back at the cap.
+		Limit: invoice.CreditNoteLaneCap,
 	})
 }
 

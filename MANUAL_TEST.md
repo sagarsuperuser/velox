@@ -546,6 +546,7 @@ Locks in the 2026-05-21 `sort.SliceStable` fix. On a test-clock-pinned sub, the 
 
 - [ ] On invoice detail page activity for a clock-pinned in_arrears sub with a known-failed charge at cycle close: lifecycle events (Invoice created → Invoice finalized) render BEFORE dunning events (Automatic retry scheduled). Same-timestamp ties preserve insertion order, not random.
 - [ ] Activity timeline detail timestamps (e.g. "Auto-resumes Jun 20, 2029" on Collection paused, "On Jun 30, 2029" on Cancellation scheduled, "New trial end: Jul 1, 2029" on Trial extended) render in **tenant TZ**, matching the row's main timestamp — NOT in UTC. Regression check for the 2026-05-21 `formatAuditTimestamp` UTC-format bug.
+- [ ] **Lane failure is disclosed, not swallowed:** `REVOKE SELECT ON credit_notes FROM velox_app`, reload an invoice's Activity → red notice "Some activity couldn't be loaded (credit notes). This timeline may be incomplete — refresh to retry." while the lifecycle rows still render; `GRANT SELECT ON credit_notes TO velox_app`, reload → notice gone. `GET /v1/invoices/{id}/payment-timeline` carries the same fact as `degraded: ["credit_notes"]`. *(automated: `TestPaymentTimeline_DegradationDisclosure`)*
 
 ## FLOW SUB-REALIGN: Calendar-billing subs auto-realign anchor at cycle close
 

@@ -140,6 +140,15 @@ const emailSchema = z.object({
 })
 type EmailFormData = z.infer<typeof emailSchema>
 
+// Operator-readable names for the timeline's degraded-lane codes.
+const LANE_LABELS: Record<string, string> = {
+  credit_notes: 'credit notes',
+  emails: 'customer notifications',
+  stripe: 'payment events',
+  dunning: 'payment recovery',
+}
+const laneLabel = (lane: string): string => LANE_LABELS[lane] ?? lane
+
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -236,11 +245,17 @@ export default function InvoiceDetailPage() {
   // log still shows the older state.
   const { data: timelineData } = useQuery({
     queryKey: ['invoice-timeline', id],
-    queryFn: () => api.getPaymentTimeline(id!).then(r => r.events || []),
+    queryFn: () => api.getPaymentTimeline(id!),
     enabled: !!id && invoice?.status !== 'draft',
     refetchInterval: pollIntervalForInvoice(invoice as ApiInvoice | undefined),
   })
-  const timeline = timelineData ?? []
+  const timeline = timelineData?.events ?? []
+  // Lane-degradation disclosure: the server names any side-source
+  // (credit notes, emails, payment events, payment recovery) whose
+  // fetch failed — without the banner, a timeline missing its dunning
+  // rows is indistinguishable from an invoice that never saw dunning.
+  const timelineDegraded = timelineData?.degraded ?? []
+  const timelineTruncated = timelineData?.truncated ?? false
   // Two time-domains must NOT be interleaved in one chronological list:
   // billing rows ride the customer's (possibly simulated) timeline, while
   // wall-clock external events (notification emails; Stripe payment-processor
@@ -1197,12 +1212,23 @@ export default function InvoiceDetailPage() {
           Replaces the older "Payment Activity" framing now that
           lifecycle anchors (created, finalized, scheduled) sit
           alongside Stripe + dunning events. */}
-      {billingTimeline.length > 0 && invoice.status !== 'draft' && (
+      {(billingTimeline.length > 0 || timelineDegraded.length > 0) && invoice.status !== 'draft' && (
         <Card className={cn('mt-6', invoice.status === 'voided' && 'opacity-60')}>
           <CardHeader>
             <CardTitle className="text-sm">Activity</CardTitle>
           </CardHeader>
           <CardContent>
+            {timelineDegraded.length > 0 && (
+              <p className="text-xs text-destructive mb-3">
+                Some activity couldn&apos;t be loaded ({timelineDegraded.map(laneLabel).join(', ')}).
+                This timeline may be incomplete — refresh to retry.
+              </p>
+            )}
+            {timelineTruncated && (
+              <p className="text-xs text-muted-foreground mb-3">
+                Showing the most recent credit notes only — earlier ones aren&apos;t displayed.
+              </p>
+            )}
             <div className="relative">
               {billingTimeline.map((event, i) => {
                 return (
