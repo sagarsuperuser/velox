@@ -57,7 +57,8 @@ func TestMustValidate_CoversEveryCollaborator(t *testing.T) {
 		// maintainer would: keep this number in lockstep with the struct.
 		// If this fails, a collaborator was added/removed — update BOTH
 		// the wiring in router.go and this count deliberately.
-		const collaborators = 24
+		// 25th: ScheduledCancelExecutor (ADR-097 mid-period cancel fire).
+		const collaborators = 25
 		if nilCount != collaborators {
 			t.Errorf("zero engine names %d nil collaborators, expected %d — Engine's dep set changed; update router wiring + this count deliberately", nilCount, collaborators)
 		}

@@ -516,9 +516,9 @@ Yearly-sub and future-dated `cancel_at` variants are impractical to verify on wa
 
 - [ ] Setup: clock-pinned active monthly sub. `POST /subscriptions/:id/schedule-cancel` with `at_period_end=true`.
 - [ ] Sub `cancel_at_period_end=true`.
-- [ ] Advance clock past `current_billing_period_end` → catchup `FireScheduledCancellation` → sub `status=canceled`, `canceled_at` and `ended_at` in frozen-time.
-- [ ] No new invoice generated for the period after cancellation.
-- [ ] Future-dated `cancel_at` variant (set `cancel_at = frozen+200d` on a yearly sub): advance to before → sub still active. Advance past → sub canceled at the simulated `cancel_at` instant.
+- [ ] Advance clock past `current_billing_period_end` → catchup `FireScheduledCancellation` → sub `status=canceled`, `canceled_at` = the period-end instant exactly (frozen-derived, not the advance target). There is no `ended_at` column — `canceled_at` is the single terminal timestamp.
+- [ ] The just-ended period still bills (final invoice on the current plan); no invoice for any period after cancellation.
+- [ ] Future-dated `cancel_at` variant (ADR-097): schedule-cancel REJECTS `cancel_at` inside the current period with a teaching 422 ("must be on or after current_billing_period_end — mid-period cancel with proration is not yet supported"), so `frozen+200d` on a fresh yearly sub is invalid; use `cancel_at = current_billing_period_end + 15d`. Advance to before → sub still active. Advance past → the cycle renews at the boundary, then the due cancel fires AS an immediate cancel at the simulated `cancel_at` instant: `canceled_at = cancel_at` exactly, final partial invoice `[period_start, cancel_at]` (usage + prorated in_arrears base; prepaid in_advance portion returns as balance credit via CN) — the sub is never silently billed past its cancel.
 
 ## FLOW TC8b: Mid-period cancel of an UNPAID in-advance prebill
 

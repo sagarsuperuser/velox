@@ -1703,6 +1703,100 @@ func CancelOrigin(ctx context.Context) string {
 	return origin
 }
 
+// FireDueScheduledCancel executes a scheduled cancel whose cancel_at fell
+// strictly inside a billing period (ADR-097) — the billing engine detects
+// due-ness through the cycle scans' cancel arm and delegates the transition
+// here via its ScheduledCancelExecutor seam, keeping the domain boundary:
+// the engine knows WHEN, this domain owns HOW.
+//
+// The composition is Cancel's, with three deltas: the flip rides
+// FireScheduledCancellationWithBill (CAS on status AND cancel_at = at, so
+// a concurrent unschedule/re-schedule defeats the fire), canceled_at is
+// the contracted instant `at` rather than now, and provenance is
+// "schedule". Both benign race outcomes (already terminated; schedule
+// changed) surface as errs.InvalidState and return nil — whichever writer
+// won has left the sub in a state the scans resolve on their own.
+func (s *Service) FireDueScheduledCancel(ctx context.Context, tenantID, id string, at time.Time) error {
+	ctx = s.bindForSub(ctx, tenantID, id)
+
+	var finalInv domain.Invoice
+	var cancelDraftIDs []string
+	var cancelDraftCredit int64
+	var cancelDraftsHandled bool
+	canceled, err := s.store.FireScheduledCancellationWithBill(ctx, tenantID, id, at, func(tx *sql.Tx, c domain.Subscription) error {
+		emitAudit := func(credited int64, handled bool, currency string) error {
+			if s.audit == nil {
+				return nil
+			}
+			meta := map[string]any{
+				"customer_id": c.CustomerID,
+				"plan_ids":    planIDsFromItems(c.Items),
+				"canceled_by": "schedule",
+			}
+			if handled && credited > 0 {
+				meta["prorated_credit_cents"] = credited
+				if currency != "" {
+					meta["currency"] = currency
+				}
+			}
+			if auditErr := s.audit.LogInTx(ctx, tx, audit.Entry{
+				Action:        domain.AuditActionCancel,
+				ResourceType:  "subscription",
+				ResourceID:    c.ID,
+				ResourceLabel: c.Code,
+				Metadata:      meta,
+			}); auditErr != nil {
+				return fmt.Errorf("audit emission: %w", auditErr)
+			}
+			return nil
+		}
+		if s.biller == nil {
+			return emitAudit(0, false, "")
+		}
+		inv, billErr := s.biller.BillFinalOnImmediateCancelTx(ctx, tx, c)
+		if billErr != nil {
+			return fmt.Errorf("final-on-scheduled-cancel invoice: %w", billErr)
+		}
+		finalInv = inv
+		ids, credited, handled, draftErr := s.biller.BillOnCancelDraftsTx(ctx, tx, c)
+		if draftErr != nil {
+			return fmt.Errorf("scheduled-cancel proration drafts: %w", draftErr)
+		}
+		cancelDraftIDs, cancelDraftCredit, cancelDraftsHandled = ids, credited, handled
+		return emitAudit(credited, handled, inv.Currency)
+	})
+	if err != nil {
+		if errors.Is(err, errs.ErrInvalidState) {
+			slog.InfoContext(ctx, "due scheduled cancel: benign race, skipping",
+				"subscription_id", id, "tenant_id", tenantID, "reason", err.Error())
+			return nil
+		}
+		return err
+	}
+
+	// Post-commit external legs — identical to Cancel: finalize (tax commit +
+	// auto-charge) for the final invoice, then issue the durable relief
+	// drafts (clawback reconciler recovers a failed issue) or the loud
+	// unpaid-source fallback.
+	if s.biller != nil && finalInv.ID != "" {
+		s.biller.FinalizeOnCreateInvoice(ctx, canceled, finalInv)
+	}
+	if s.biller != nil {
+		if cancelDraftsHandled {
+			s.biller.IssueCancelDrafts(ctx, canceled, cancelDraftIDs)
+			_ = cancelDraftCredit
+		} else {
+			if _, err := s.biller.BillOnCancel(ctx, canceled); err != nil {
+				slog.ErrorContext(ctx, "scheduled-cancel proration credit FAILED — customer not credited for unused prepayment; manual credit required",
+					"subscription_id", canceled.ID,
+					"tenant_id", tenantID,
+					"error", err)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Service) Cancel(ctx context.Context, tenantID, id string) (domain.Subscription, int64, error) {
 	ctx = s.bindForSub(ctx, tenantID, id)
 

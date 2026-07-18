@@ -591,6 +591,85 @@ func (s *PostgresStore) FireScheduledCancellation(ctx context.Context, tenantID,
 	return sub, nil
 }
 
+// FireScheduledCancellationWithBill is the ADR-097 mid-period variant of
+// FireScheduledCancellation: it flips the sub AND runs billFn (final
+// partial-period invoice + cancel-proration drafts) in the SAME tx, the
+// CancelAtomicWithBill shape — a billing failure rolls the flip back, and
+// the relief drafts (which have no idempotency key of their own) are only
+// ever written behind this CAS.
+//
+// The CAS matches cancel_at = $at as well as status: the fire must lose to
+// a concurrent UnscheduleCancel (cancel_at NULLed) or a re-schedule to a
+// different instant, not silently override the operator's newer intent.
+// Zero rows disambiguate to ErrNotFound (row gone) or InvalidState (status
+// changed, or the schedule changed under us) — callers treat InvalidState
+// as a benign no-op: whichever writer won has already put the sub in a
+// state the scans resolve (canceled drops out entirely; unscheduled drops
+// out of the cancel arm).
+//
+// Timestamp split (ADR-097 §3): canceled_at = at (the contracted instant,
+// possibly months in the past for the remediation cohort); updated_at =
+// clock.Now(ctx) (operational time — never rewound).
+func (s *PostgresStore) FireScheduledCancellationWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	defer postgres.Rollback(tx)
+
+	var sub domain.Subscription
+	err = scanSubRow(tx.QueryRowContext(ctx, `
+		UPDATE subscriptions
+		SET status = 'canceled',
+		    canceled_at = $1,
+		    cancel_at = NULL,
+		    cancel_at_period_end = false,
+		    updated_at = $2
+		WHERE id = $3 AND status = 'active' AND cancel_at = $1
+		RETURNING `+subCols,
+		at, clock.Now(ctx), id,
+	), &sub)
+	if err == sql.ErrNoRows {
+		var currentStatus string
+		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, id).Scan(&currentStatus)
+		if err2 == sql.ErrNoRows {
+			return domain.Subscription{}, errs.ErrNotFound
+		}
+		if err2 != nil {
+			return domain.Subscription{}, err2
+		}
+		if currentStatus != string(domain.SubscriptionActive) {
+			return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("scheduled cancel cannot fire on %s subscription", currentStatus))
+		}
+		return domain.Subscription{}, errs.InvalidState("scheduled cancel no longer current (unscheduled or re-scheduled concurrently)")
+	}
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if billFn != nil {
+		if err := billFn(tx, sub); err != nil {
+			return domain.Subscription{}, err
+		}
+	}
+
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionCanceled, sub, map[string]any{
+		"canceled_at": at.UTC(),
+		"canceled_by": "schedule",
+	}); err != nil {
+		return domain.Subscription{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Subscription{}, err
+	}
+	return sub, nil
+}
+
 // SetPauseCollection writes (behavior, resumes_at) onto the row. Rejects
 // rows in canceled/archived since collection-pause on a terminated sub has
 // no meaning — the engine wouldn't observe the row anyway, but failing
@@ -1101,7 +1180,8 @@ func (s *PostgresStore) GetDueBilling(ctx context.Context, before time.Time, lim
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.livemode = $1
 		  AND s.test_clock_id IS NULL
-		  AND s.next_billing_at <= $2
+		  AND (s.next_billing_at <= $2
+		       OR (s.status = 'active' AND s.cancel_at IS NOT NULL AND s.cancel_at <= $2))
 		ORDER BY s.next_billing_at ASC LIMIT $3
 		FOR UPDATE OF s SKIP LOCKED
 	`, postgres.Livemode(ctx), before, limit)
@@ -1162,7 +1242,8 @@ func (s *PostgresStore) GetDueBillingForTenant(ctx context.Context, tenantID str
 		SELECT `+qualifiedSubCols("s")+` FROM subscriptions s
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.test_clock_id IS NULL
-		  AND s.next_billing_at <= $1
+		  AND (s.next_billing_at <= $1
+		       OR (s.status = 'active' AND s.cancel_at IS NOT NULL AND s.cancel_at <= $1))
 		ORDER BY s.next_billing_at ASC LIMIT $2
 		FOR UPDATE OF s SKIP LOCKED
 	`, before, limit)
@@ -1218,7 +1299,8 @@ func (s *PostgresStore) GetDueBillingForClock(ctx context.Context, tenantID, clo
 		JOIN test_clocks tc ON tc.id = s.test_clock_id
 		WHERE s.status IN ('active', 'trialing')
 		  AND s.test_clock_id = $1
-		  AND s.next_billing_at <= tc.frozen_time
+		  AND (s.next_billing_at <= tc.frozen_time
+		       OR (s.status = 'active' AND s.cancel_at IS NOT NULL AND s.cancel_at <= tc.frozen_time))
 		ORDER BY s.next_billing_at ASC LIMIT $2
 		FOR UPDATE OF s SKIP LOCKED
 	`, clockID, limit)

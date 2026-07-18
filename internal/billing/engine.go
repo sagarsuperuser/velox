@@ -76,6 +76,7 @@ type Engine struct {
 	noPMNotifier       NoPaymentMethodNotifier
 	dunningStarter     DunningStarter
 	dunningResolver    DunningResolver
+	cancelExecutor     ScheduledCancelExecutor
 	auditLogger        AuditWriter
 	txRunner           TxRunner
 	// deferredThresholdNotes dedups the crossed-but-deferred loudness
@@ -340,6 +341,23 @@ type DunningStarter interface {
 // SetDunningResolver.
 type DunningResolver interface {
 	ResolveByInvoice(ctx context.Context, tenantID, invoiceID string, resolution domain.DunningResolution) error
+}
+
+// ScheduledCancelExecutor executes a scheduled cancel whose cancel_at fell
+// strictly INSIDE a billing period (ADR-097). The engine's cycle scans
+// detect due-ness (the cancel arm of the due queries); the subscription
+// domain owns the transition — one tx composing the CAS flip
+// (canceled_at = at), the final partial-period invoice, and the
+// prepaid-relief credit drafts, then the post-commit finalize/issue legs.
+// Implemented by subscription.Service.FireDueScheduledCancel; wired in
+// router.go via SetScheduledCancelExecutor.
+//
+// REQUIRED — like DunningStarter, boot fails closed if unwired: a due
+// mid-period cancel the loop cannot execute would otherwise re-fetch on
+// every scan pass forever (the 2026-05-31 spin-bug shape), and the sub
+// would keep renewing past its own cancellation (the ADR-097 money bug).
+type ScheduledCancelExecutor interface {
+	FireDueScheduledCancel(ctx context.Context, tenantID, id string, at time.Time) error
 }
 
 // TestClockReader looks up a test clock's frozen_time. The billing engine
@@ -884,6 +902,12 @@ func (e *Engine) SetDunningStarter(d DunningStarter) {
 // See the DunningResolver doc-comment.
 func (e *Engine) SetDunningResolver(d DunningResolver) {
 	e.dunningResolver = d
+}
+
+// SetScheduledCancelExecutor wires the ADR-097 mid-period scheduled-cancel
+// executor. See the ScheduledCancelExecutor doc-comment.
+func (e *Engine) SetScheduledCancelExecutor(x ScheduledCancelExecutor) {
+	e.cancelExecutor = x
 }
 
 // resolveDunningRecovered best-effort resolves an active dunning run for an
@@ -1892,6 +1916,35 @@ func (e *Engine) billSubscription(ctx context.Context, sub domain.Subscription) 
 		// determines "now"; sub.NextBillingAt strictly after that
 		// means there's nothing more to bill in this call.
 		now := e.effectiveNow(ctx, sub)
+
+		// ADR-097: a cancel_at strictly INSIDE the current period fires
+		// here, BEFORE the caught-up early-return — the motivating bug's
+		// sub has next_billing_at months in the future, so any code below
+		// that return never sees it. Strict Before on next_billing_at:
+		// cancel_at == next_billing_at is the boundary path's tie
+		// (shouldFireScheduledCancel fires at equality after billing the
+		// full period); the two paths must never both claim an instant.
+		// The due scans admit these subs via their cancel arm (gated
+		// status='active' in SQL — the same predicate as this branch, so
+		// every admitted row makes progress and the fetch loop can't
+		// livelock on a clean decline).
+		if sub.Status == domain.SubscriptionActive &&
+			sub.CancelAt != nil && !sub.CancelAt.After(now) &&
+			(sub.NextBillingAt == nil || sub.CancelAt.Before(*sub.NextBillingAt)) {
+			if e.cancelExecutor == nil {
+				// Fail loud: an unexecutable due cancel would re-fetch on
+				// every scan pass forever and keep renewing past its own
+				// cancellation. The producer always wires the executor.
+				return count, fmt.Errorf("due mid-period cancel_at on %s but no ScheduledCancelExecutor wired", sub.ID)
+			}
+			if err := e.cancelExecutor.FireDueScheduledCancel(ctx, sub.TenantID, sub.ID, *sub.CancelAt); err != nil {
+				return count, fmt.Errorf("fire due mid-period cancel %s: %w", sub.ID, err)
+			}
+			// Terminal: the sub is canceled (or a benign race already
+			// resolved it) — either way it drops out of the due scans.
+			return count, nil
+		}
+
 		if sub.NextBillingAt == nil || sub.NextBillingAt.After(now) {
 			return count, nil
 		}
@@ -4613,9 +4666,12 @@ func (e *Engine) prepareCancelCredit(ctx context.Context, sub domain.Subscriptio
 	cancelAt := *sub.CanceledAt
 
 	// Clean cancel (at or after period end): period was billed normally,
-	// no unused portion. Cancel-before-period-start is defensive — you
-	// can't cancel before sub start.
-	if !cancelAt.Before(periodEnd) || !cancelAt.After(periodStart) {
+	// no unused portion. cancel_at == period_start is a REAL zero-
+	// consumption case (ADR-097: a schedule landing between the loop's
+	// refresh and the boundary's cycle advance cancels a fully-prepaid,
+	// zero-used period) — relieve the whole period rather than keep it;
+	// only strictly-before-period-start stays defensive-rejected.
+	if !cancelAt.Before(periodEnd) || cancelAt.Before(periodStart) {
 		return cancelCreditInputs{}, false, nil
 	}
 
