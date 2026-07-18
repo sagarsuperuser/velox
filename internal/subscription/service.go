@@ -2505,7 +2505,19 @@ func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, te
 		batchErrs []error
 	)
 	for _, sub := range expired {
-		bound := s.bindForSub(ctx, tenantID, sub.ID)
+		// The resume's instant is the CONTRACTED resumes_at, not wherever
+		// the advance happened to land (same split as trial flips, boundary
+		// cancels, and ADR-097: contractual facts stamp their promised
+		// instant). Pre-fix a Sep 4 auto-resume swept by an advance to
+		// Oct 2 stamped resumed_at/sim_effective_at = Oct 2 — an event
+		// consumer asking "when did collection resume" got a date up to
+		// the whole advance-span late. Fallback to frozen is defensive
+		// (the scan only returns rows with a due resumes_at).
+		resumeAt := frozen
+		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
+			resumeAt = *sub.PauseCollection.ResumesAt
+		}
+		bound := clock.WithEffectiveNow(s.bindForSub(ctx, tenantID, sub.ID), resumeAt)
 		cleared, err := s.store.ClearPauseCollection(bound, tenantID, sub.ID)
 		if err != nil {
 			batchErrs = append(batchErrs, fmt.Errorf("clear pause %s: %w", sub.ID, err))
@@ -2515,7 +2527,7 @@ func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, te
 			_ = s.audit.Log(bound, tenantID, domain.AuditActionUpdate, "subscription", cleared.ID, cleared.Code, map[string]any{
 				"action":       "collection_resumed",
 				"customer_id":  cleared.CustomerID,
-				"resumed_at":   frozen.UTC(),
+				"resumed_at":   resumeAt.UTC(),
 				"triggered_by": "schedule",
 			})
 		}
@@ -2523,7 +2535,7 @@ func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, te
 			s.dispatchEvent(bound, tenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
 				"subscription_id": cleared.ID,
 				"customer_id":     cleared.CustomerID,
-				"resumed_at":      frozen.UTC(),
+				"resumed_at":      resumeAt.UTC(),
 				"triggered_by":    "schedule",
 			})
 		}
@@ -2551,6 +2563,13 @@ func (s *Service) ProcessExpiredPauseCollections(ctx context.Context, batch int)
 		batchErrs []error
 	)
 	for _, sub := range expired {
+		// Contracted instant, same rationale as the clock path above. On
+		// the cron this is at most one tick behind wall now, but the
+		// principle holds: resumed_at is when the resume was promised.
+		resumeAt := now
+		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
+			resumeAt = *sub.PauseCollection.ResumesAt
+		}
 		cleared, err := s.store.ClearPauseCollection(ctx, sub.TenantID, sub.ID)
 		if err != nil {
 			batchErrs = append(batchErrs, fmt.Errorf("clear pause %s: %w", sub.ID, err))
@@ -2560,7 +2579,7 @@ func (s *Service) ProcessExpiredPauseCollections(ctx context.Context, batch int)
 			_ = s.audit.Log(ctx, sub.TenantID, domain.AuditActionUpdate, "subscription", cleared.ID, cleared.Code, map[string]any{
 				"action":       "collection_resumed",
 				"customer_id":  cleared.CustomerID,
-				"resumed_at":   now.UTC(),
+				"resumed_at":   resumeAt.UTC(),
 				"triggered_by": "schedule",
 			})
 		}
@@ -2568,7 +2587,7 @@ func (s *Service) ProcessExpiredPauseCollections(ctx context.Context, batch int)
 			s.dispatchEvent(ctx, sub.TenantID, domain.EventSubscriptionCollectionResumed, map[string]any{
 				"subscription_id": cleared.ID,
 				"customer_id":     cleared.CustomerID,
-				"resumed_at":      now.UTC(),
+				"resumed_at":      resumeAt.UTC(),
 				"triggered_by":    "schedule",
 			})
 		}

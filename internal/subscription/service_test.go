@@ -3754,6 +3754,47 @@ func TestProcessExpiredPauseCollections(t *testing.T) {
 		if e.metadata["triggered_by"] != "schedule" {
 			t.Errorf("audit triggered_by: got %v, want schedule", e.metadata["triggered_by"])
 		}
+		// Regression (FLOW TC9 live find): resumed_at is the CONTRACTED
+		// resumes_at instant, not the tick/advance time that happened to
+		// sweep it — same contractual-instant split as trial flips and
+		// ADR-097 cancels.
+		if got, ok := e.metadata["resumed_at"].(time.Time); !ok || !got.Equal(past) {
+			t.Errorf("resumed_at: got %v, want the contracted resumes_at %v (not scan-time now)", e.metadata["resumed_at"], past)
+		}
+	})
+
+	t.Run("clock path stamps the contracted resumes_at too", func(t *testing.T) {
+		now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+		mem := newMemStore()
+		svc := NewService(mem, clock.NewFake(now))
+		audit := &captureAudit{}
+		svc.SetAuditLogger(audit)
+
+		ctx := context.Background()
+		s, _ := svc.Create(ctx, "t1", CreateInput{Code: "clkpause", DisplayName: "clkpause", CustomerID: "c", Items: []CreateItemInput{{PlanID: "p"}}, StartNow: true})
+		_, _ = svc.Activate(ctx, "t1", s.ID)
+		contracted := time.Date(2028, 9, 3, 18, 30, 0, 0, time.UTC) // Sep 4 IST
+		row := mem.subs[s.ID]
+		row.TestClockID = "clk_1"
+		row.PauseCollection = &domain.PauseCollection{Behavior: domain.PauseCollectionKeepAsDraft, ResumesAt: &contracted}
+		mem.subs[s.ID] = row
+
+		audit.entries = nil
+		// Advance swept far past the contracted instant (Oct 2).
+		frozen := time.Date(2028, 10, 2, 0, 0, 0, 0, time.UTC)
+		processed, errs := svc.ProcessExpiredPauseCollectionsForClock(ctx, "t1", "clk_1", frozen)
+		if len(errs) > 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		if processed != 1 {
+			t.Fatalf("processed: got %d, want 1", processed)
+		}
+		if len(audit.entries) != 1 {
+			t.Fatalf("audit entries: got %d, want 1", len(audit.entries))
+		}
+		if got, ok := audit.entries[0].metadata["resumed_at"].(time.Time); !ok || !got.Equal(contracted) {
+			t.Errorf("resumed_at: got %v, want the contracted %v, NOT advance-end %v", audit.entries[0].metadata["resumed_at"], contracted, frozen)
+		}
 	})
 }
 
