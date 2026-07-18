@@ -544,7 +544,13 @@ Locks in the 2026-05-20 "Renews on" annotation + alignment tooltip (Stripe/Lago/
 
 Locks in the 2026-05-21 `sort.SliceStable` fix. On a test-clock-pinned sub, the inline cycle close → charge fail → dunning start cascade stamps three audit events at the EXACT same simulated instant.
 
-- [ ] On invoice detail page activity for a clock-pinned in_arrears sub with a known-failed charge at cycle close: lifecycle events (Invoice created → Invoice finalized) render BEFORE dunning events (Automatic retry scheduled). Same-timestamp ties preserve insertion order, not random.
+- [ ] On invoice detail page activity for a clock-pinned in_arrears sub with a known-failed charge at cycle close: lifecycle events (Invoice created → Invoice finalized) render BEFORE dunning events (Automatic retry scheduled).
+- [ ] **Same-instant tie matrix** (a frozen-clock close cascade stamps ALL of these at ONE instant — each pair must render in causal order, whatever order the sources returned): *(automated: `TestSortInvoiceTimeline_CausalTies`, `internal/platform/timeline`)*
+  - Invoice created → Invoice finalized → Dunning started
+  - Retry attempt → Escalated → Marked uncollectible
+  - Failed retry attempt → Invoice paid (the retry that collected renders ABOVE "Invoice paid")
+  - Two credit notes milliseconds apart keep creation order (full-precision axis, not the second-truncated string)
+  - Subscription timeline: same-sim-instant rows order by wall recorded-at (a pause PUT and its audit row never swap)
 - [ ] Activity timeline detail timestamps (e.g. "Auto-resumes Jun 20, 2029" on Collection paused, "On Jun 30, 2029" on Cancellation scheduled, "New trial end: Jul 1, 2029" on Trial extended) render in **tenant TZ**, matching the row's main timestamp — NOT in UTC. Regression check for the 2026-05-21 `formatAuditTimestamp` UTC-format bug.
 - [ ] **Lane failure is disclosed, not swallowed:** `REVOKE SELECT ON credit_notes FROM velox_app`, reload an invoice's Activity → red notice "Some activity couldn't be loaded (credit notes). This timeline may be incomplete — refresh to retry." while the lifecycle rows still render; `GRANT SELECT ON credit_notes TO velox_app`, reload → notice gone. `GET /v1/invoices/{id}/payment-timeline` carries the same fact as `degraded: ["credit_notes"]`. *(automated: `TestPaymentTimeline_DegradationDisclosure`)*
 
