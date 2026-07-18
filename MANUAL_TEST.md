@@ -424,7 +424,7 @@ Single tenant-wide timezone used for date input and timestamp display
 - [ ] Customer Detail header shows test-clock badge when pinned.
 - [ ] Customer Detail → Create Subscription dialog has no clock dropdown. Shows amber inheritance hint when the customer is pinned. Server inherits automatically.
 - [ ] Subscriptions page → Create Subscription dialog: same behaviour driven by the customer dropdown. Pick a non-pinned customer → no hint, sub goes wall-clock. Pick a pinned customer → amber hint appears below the customer selector ("This subscription will inherit the customer's test clock — &lt;name&gt;"). Switch back to a non-pinned customer → hint disappears.
-- [ ] `/subscriptions/:id` for a sub on a pinned customer → "Test clock" badge linking to detail.
+- [ ] `/subscriptions/:id` for a sub on a pinned customer → "Test clock" badge in the header; the sim-time banner below it links to the clock detail via **View clock** (the chip itself is not a link — same pattern as Customer Detail).
 - [ ] Test Clock Detail page → "Attached customers" section above "Subscriptions on this clock" — shows customers attached to this clock, each linking to the customer detail.
 - [ ] `POST /v1/subscriptions` against a pinned customer → response shows `test_clock_id` matching the customer's clock (server-side inherit; the API does not accept a per-sub `test_clock_id`, mirroring Stripe).
 - [ ] `POST /v1/subscriptions` with a stray `test_clock_id` field in the body → field is silently ignored; sub still inherits from the customer.
