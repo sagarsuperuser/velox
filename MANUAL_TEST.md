@@ -1303,6 +1303,9 @@ Policy configuration surface — distinct from the dunning state machine under c
 
 - [ ] Customer ledger shows 5 columns (Date · Type · Description · Amount · Balance) with Amount/Balance fully visible at a 1280px window — nothing clipped at the right edge.
 - [ ] An "Applied to invoice DEMO-NNNN" row's description IS the invoice link; a grant with expiry shows "Expires <date>" as subtext; an expiry row reads "Grant expired" (machine id only as small mono subtext).
+- [ ] A customer with >50 ledger entries: page footer says "of <true total>" (not 50), and page 3 shows rows 51+ — `GET /v1/credits/ledger/{cus}?limit=25&offset=50` returns those same rows with `total` = the full count.
+- [ ] Type filter "Applied" on that customer matches entries **beyond the first 50** (filter is a server query param, not a client slice).
+- [ ] CSV export row count = the true total + 1 header (the export pages the API to completion; it is NOT the visible page).
 
 ## FLOW C3: Credit-note refund handling (ADR-063)
 

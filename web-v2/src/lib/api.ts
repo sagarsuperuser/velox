@@ -302,7 +302,7 @@ export const api = {
     if (params?.sort) qs.set('sort', params.sort)
     if (params?.dir) qs.set('dir', params.dir)
     const q = qs.toString()
-    return apiRequest<{ data: CreditLedgerEntry[] }>('GET', `/credits/ledger/${customerId}${q ? '?' + q : ''}`)
+    return apiRequest<{ data: CreditLedgerEntry[]; total: number }>('GET', `/credits/ledger/${customerId}${q ? '?' + q : ''}`)
   },
 
   // Customer portal

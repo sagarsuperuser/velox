@@ -1342,6 +1342,34 @@ func (s *PostgresStore) ListEntries(ctx context.Context, filter ListFilter) ([]d
 	return entries, rows.Err()
 }
 
+// CountEntries is ListEntries' total-row twin: same filter arms, no
+// limit/offset/sort. Powers honest pagination + the complete-CSV export
+// on the credits page (pre-fix the UI paginated, filtered, and exported
+// a silently-capped 50-row slice as if it were the whole ledger).
+func (s *PostgresStore) CountEntries(ctx context.Context, filter ListFilter) (int, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, filter.TenantID)
+	if err != nil {
+		return 0, err
+	}
+	defer postgres.Rollback(tx)
+
+	query := `SELECT COUNT(*) FROM customer_credit_ledger WHERE tenant_id = $1 AND customer_id = $2`
+	args := []any{filter.TenantID, filter.CustomerID}
+	idx := 3
+	if filter.InvoiceID != "" {
+		query += fmt.Sprintf(" AND invoice_id = $%d", idx)
+		args = append(args, filter.InvoiceID)
+		idx++
+	}
+	if filter.EntryType != "" {
+		query += fmt.Sprintf(" AND entry_type = $%d", idx)
+		args = append(args, filter.EntryType)
+	}
+	var n int
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
 // creditEntryOrderBy validates sort + dir against a closed allow-list
 // and adds a deterministic id tie-break matching the primary
 // direction. See invoiceOrderBy for the design rationale.

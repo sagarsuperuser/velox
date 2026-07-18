@@ -334,6 +334,23 @@ func (m *memStore) RetireCommitGrantForInvoiceTx(_ context.Context, _ *sql.Tx, t
 	return 0, nil
 }
 
+func (m *memStore) CountEntries(_ context.Context, filter ListFilter) (int, error) {
+	n := 0
+	for _, e := range m.entries {
+		if filter.CustomerID != "" && e.CustomerID != filter.CustomerID {
+			continue
+		}
+		if filter.EntryType != "" && string(e.EntryType) != filter.EntryType {
+			continue
+		}
+		if filter.InvoiceID != "" && e.InvoiceID != filter.InvoiceID {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (m *memStore) ListEntries(_ context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error) {
 	var result []domain.CreditLedgerEntry
 	for _, e := range m.entries {
