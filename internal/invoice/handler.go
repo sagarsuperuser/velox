@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1186,8 +1187,63 @@ func (h *Handler) retryTax(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, r, http.StatusOK, inv)
 }
 
+// Causal tie-ranks for same-instant timeline cascades (frozen-clock
+// closes stamp finalize → dunning start → retries → escalation →
+// write-off → resolve at ONE instant; the rank encodes their causal
+// order so ties never render effect-before-cause). Gaps left for
+// future event kinds.
+const (
+	rankInvoiceCreated    = 10
+	rankInvoiceFinalized  = 20
+	rankDunningStarted    = 30 // dunning_started, retry_scheduled
+	rankRetryAttempted    = 40
+	rankStripe            = 45 // wall rows; external lane on sim invoices
+	rankEscalated         = 50
+	rankLifecycleTerminal = 60 // paid / voided / uncollectible
+	rankCreditNote        = 70
+	rankDunningResolved   = 80
+	rankEmail             = 90 // external lane; rank is a formality
+)
+
+func dunningEventRank(eventType domain.DunningEventType) int {
+	switch eventType {
+	case domain.DunningEventRetryAttempted:
+		return rankRetryAttempted
+	case domain.DunningEventEscalated:
+		return rankEscalated
+	case domain.DunningEventResolved:
+		return rankDunningResolved
+	default: // dunning_started, retry_scheduled, future kinds
+		return rankDunningStarted
+	}
+}
+
+// sortInvoiceTimeline orders events by their full-precision source
+// instant, breaking true same-instant ties by causal rank, and residual
+// ties by insertion order (SliceStable; callers append sources oldest-
+// first). Sorting the serialized second-truncated Timestamp string was
+// the 2026-07-19 inversion class: same-second pairs kept whatever
+// orientation their source query happened to use.
+func sortInvoiceTimeline(events []timelineEvent) {
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].sortAt.Equal(events[j].sortAt) {
+			return events[i].sortAt.Before(events[j].sortAt)
+		}
+		return events[i].tieRank < events[j].tieRank
+	})
+}
+
 type timelineEvent struct {
-	Timestamp       string `json:"timestamp"`
+	Timestamp string `json:"timestamp"`
+	// sortAt/tieRank are ordering-only, never serialized. sortAt is the
+	// FULL-PRECISION source instant (the serialized Timestamp truncates
+	// to seconds — sorting it inverted same-second pairs, the 2026-07-19
+	// subscription-timeline class). tieRank orders true same-instant
+	// cascades causally: on a frozen clock an entire close cascade
+	// (finalize → dunning start → retries → escalate → write-off →
+	// resolve) legitimately shares one instant, and source-major
+	// insertion rendered "Marked uncollectible" above the escalation
+	// that caused it. See sortInvoiceTimeline.
 	Source          string `json:"source"` // "stripe" / "dunning" / "lifecycle" / "email" / "credit_note"
 	EventType       string `json:"event_type"`
 	Status          string `json:"status"`
@@ -1197,6 +1253,8 @@ type timelineEvent struct {
 	Currency        string `json:"currency,omitempty"`
 	PaymentIntentID string `json:"payment_intent_id,omitempty"`
 	AttemptCount    int    `json:"attempt_count,omitempty"`
+	sortAt          time.Time
+	tieRank         int
 	// Detail is a sub-line rendered beneath the row's main
 	// description. Used today on invoice.paid for the payment
 	// instrument ("via Visa •••• 4242"); generic enough that
@@ -1510,6 +1568,8 @@ func describeEmailEvent(emailType, outboxStatus, _ string) (string, string) {
 		desc = "Payment-failed email sent to customer"
 	case "payment_setup_request":
 		desc = "Customer notified — set up payment method"
+	case "credit_note":
+		desc = "Credit note emailed to customer"
 	case "dunning_warning":
 		desc = "Dunning reminder emailed"
 	case "dunning_escalation":
@@ -1606,6 +1666,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// on Created → Finalized regardless of payment progress.
 	events = append(events, timelineEvent{
 		Timestamp:   inv.CreatedAt.Format(time.RFC3339),
+		sortAt:      inv.CreatedAt,
+		tieRank:     rankInvoiceCreated,
 		Source:      "lifecycle",
 		EventType:   "invoice.created",
 		Status:      "succeeded",
@@ -1616,6 +1678,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		amt := inv.AmountDueCents
 		events = append(events, timelineEvent{
 			Timestamp:   inv.IssuedAt.Format(time.RFC3339),
+			sortAt:      *inv.IssuedAt,
+			tieRank:     rankInvoiceFinalized,
 			Source:      "lifecycle",
 			EventType:   "invoice.finalized",
 			Status:      "succeeded",
@@ -1633,6 +1697,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	if inv.VoidedAt != nil {
 		events = append(events, timelineEvent{
 			Timestamp:   inv.VoidedAt.Format(time.RFC3339),
+			sortAt:      *inv.VoidedAt,
+			tieRank:     rankLifecycleTerminal,
 			Source:      "lifecycle",
 			EventType:   "invoice.voided",
 			Status:      "canceled",
@@ -1643,6 +1709,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	if inv.UncollectibleAt != nil {
 		events = append(events, timelineEvent{
 			Timestamp:   inv.UncollectibleAt.Format(time.RFC3339),
+			sortAt:      *inv.UncollectibleAt,
+			tieRank:     rankLifecycleTerminal,
 			Source:      "lifecycle",
 			EventType:   "invoice.marked_uncollectible",
 			Status:      "canceled",
@@ -1663,6 +1731,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, timelineEvent{
 			Timestamp:   inv.PaidAt.Format(time.RFC3339),
+			sortAt:      *inv.PaidAt,
+			tieRank:     rankLifecycleTerminal,
 			Source:      "lifecycle",
 			EventType:   "invoice.paid",
 			Status:      "succeeded",
@@ -1690,6 +1760,9 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// lane (migration 0117 added the per-CN flag).
 	if h.creditNotes != nil {
 		if cns, err := h.creditNotes.List(r.Context(), tenantID, inv.ID); err == nil {
+			// Store returns created_at DESC — reverse so residual
+			// exact-tie insertion order is causal (oldest first).
+			slices.Reverse(cns)
 			for _, cn := range cns {
 				if cn.Status != domain.CreditNoteIssued || cn.IssuedAt == nil {
 					continue
@@ -1707,6 +1780,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 				events = append(events, timelineEvent{
 					Timestamp:   cn.IssuedAt.Format(time.RFC3339),
+					sortAt:      *cn.IssuedAt,
+					tieRank:     rankCreditNote,
 					Source:      "credit_note",
 					EventType:   "credit_note.issued",
 					Status:      "succeeded",
@@ -1759,6 +1834,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 				events = append(events, timelineEvent{
 					Timestamp:   ts.Format(time.RFC3339),
+					sortAt:      ts,
+					tieRank:     rankEmail,
 					Source:      "email",
 					EventType:   "email." + evt.EmailType,
 					Status:      status,
@@ -1804,6 +1881,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				desc, status := describeStripeEvent(evt.EventType, evt.FailureMessage)
 				events = append(events, timelineEvent{
 					Timestamp:       evt.OccurredAt.Format(time.RFC3339),
+					sortAt:          evt.OccurredAt,
+					tieRank:         rankStripe,
 					Source:          "stripe",
 					EventType:       evt.EventType,
 					Status:          status,
@@ -1826,6 +1905,10 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	if h.dunningTimeline != nil {
 		runs, err := h.dunningTimeline.ListRunsByInvoice(r.Context(), tenantID, id)
 		if err == nil {
+			// ListRuns returns created_at DESC — reverse so multi-run
+			// invoices append run 1 before run 2 (residual exact-tie
+			// insertion order stays causal).
+			slices.Reverse(runs)
 			for _, run := range runs {
 				runEvents, err := h.dunningTimeline.ListEvents(r.Context(), tenantID, run.ID)
 				if err != nil {
@@ -1851,6 +1934,8 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 					desc, status := describeDunningEvent(string(evt.EventType), evt.Reason, evt.AttemptCount)
 					events = append(events, timelineEvent{
 						Timestamp:    evt.CreatedAt.Format(time.RFC3339),
+						sortAt:       evt.CreatedAt,
+						tieRank:      dunningEventRank(evt.EventType),
 						Source:       "dunning",
 						EventType:    string(evt.EventType),
 						Status:       status,
@@ -1886,18 +1971,14 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	events = foldEmailIntoStripeFailed(events, 2*time.Minute)
 	events = mergeFailedPaymentTwins(events)
 
-	// Sort by timestamp ascending. Use SliceStable so equal-timestamp
-	// events preserve insertion order — on a test-clock-pinned sub, the
-	// inline charge-fail-then-dunning-start cascade lands at the SAME
-	// simulated instant (cycle close) as the invoice's CreatedAt /
-	// IssuedAt, so the RFC3339 strings are identical. Unstable sort
-	// would render "Automatic retry scheduled" before "Invoice created"
-	// — which read as a bug even though it was a sort tiebreak. Events
-	// are inserted in lifecycle → email → stripe → dunning order
-	// upstream, which is the right rendering order on ties.
-	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].Timestamp < events[j].Timestamp
-	})
+	// Full-precision ascending with CAUSAL tie ranks — see
+	// sortInvoiceTimeline. The prior string sort compared second-
+	// truncated timestamps and fell back to source-major insertion
+	// order, which was anti-causal for every same-instant pair the
+	// TIMELINE-ORDER flow didn't pin (escalation vs write-off, failed
+	// retry vs same-second settle) and preserved the DESC orientation
+	// of the runs/credit-note source queries within collided seconds.
+	sortInvoiceTimeline(events)
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{"events": events})
 }
