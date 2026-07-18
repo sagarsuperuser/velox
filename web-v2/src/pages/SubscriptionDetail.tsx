@@ -558,10 +558,13 @@ export default function SubscriptionDetailPage() {
             }
           } else if (sub.pause_collection) {
             // Collection paused: invoices draft but don't charge — the
-            // honest next point is the resume, not "Next Billing".
+            // honest next point is the resume, not "Next Billing". With no
+            // resume date (keep_as_draft, e.g. dunning-exhausted) the pause
+            // is open-ended, so say "Indefinite" — a bare "—" in the date
+            // column reads as missing data next to the "paused" banner.
             timelinePoints.push({
               label: sub.pause_collection.resumes_at ? 'Collection resumes' : 'Collection paused',
-              date: sub.pause_collection.resumes_at ? formatDate(sub.pause_collection.resumes_at) : '—',
+              date: sub.pause_collection.resumes_at ? formatDate(sub.pause_collection.resumes_at) : 'Indefinite',
               isPast: false,
             })
           } else if (sub.next_billing_at) {
