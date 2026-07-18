@@ -35,6 +35,15 @@ type SettingsGetter interface {
 	Get(ctx context.Context, tenantID string) (domain.TenantSettings, error)
 }
 
+// CreditNoteLaneCap is how many credit notes the timeline's CN lane
+// fetches — the creditnote store's hard clamp. The lister interface
+// carries no total, so the handler discloses `truncated` when a fetch
+// comes back AT the cap (it can't know what fell off, only that
+// something may have). The adapter must request exactly this many;
+// requesting fewer would trip the disclosure early, more gets clamped
+// silently.
+const CreditNoteLaneCap = 100
+
 // CreditNoteLister fetches credit notes for an invoice.
 type CreditNoteLister interface {
 	List(ctx context.Context, tenantID, invoiceID string) ([]domain.CreditNote, error)
@@ -1705,7 +1714,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 
 	// Draft invoices have no payment activity
 	if inv.Status == domain.InvoiceDraft {
-		respond.JSON(w, r, http.StatusOK, map[string]any{"events": []timelineEvent{}})
+		respond.JSON(w, r, http.StatusOK, map[string]any{"events": []timelineEvent{}, "degraded": []string{}, "truncated": false})
 		return
 	}
 
@@ -1809,6 +1818,21 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Lane-degradation disclosure (2026-07-19 audit, finding 4): a
+	// side-lane fetch failure used to be swallowed (`if err == nil`) — the
+	// lane silently vanished, and a timeline missing its dunning rows is
+	// indistinguishable from an invoice that never saw dunning. The core
+	// lifecycle rows come from the invoice row itself (a failure there
+	// 500s above); side lanes degrade LOUDLY instead: named in `degraded`,
+	// logged, and bannered by the UI. `truncated` discloses the one capped
+	// lane (credit notes, CreditNoteLaneCap).
+	degraded := []string{}
+	truncated := false
+	degrade := func(lane string, err error) {
+		degraded = append(degraded, lane)
+		slog.ErrorContext(r.Context(), "payment timeline: lane degraded", "lane", lane, "invoice_id", inv.ID, "error", err)
+	}
+
 	// Credit-note chronology rows. The settlement waterfall on the page
 	// already shows credit notes channel-by-channel; these rows give the
 	// SAME facts a place in the chronology ("Invoice paid" then silence
@@ -1824,7 +1848,15 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// lane, so an engine CN showed a simulated timestamp in the wall-clock
 	// lane (migration 0117 added the per-CN flag).
 	if h.creditNotes != nil {
-		if cns, err := h.creditNotes.List(r.Context(), tenantID, inv.ID); err == nil {
+		if cns, err := h.creditNotes.List(r.Context(), tenantID, inv.ID); err != nil {
+			degrade("credit_notes", err)
+		} else {
+			// The lister fetches at most CreditNoteLaneCap notes; at the
+			// cap we can't know what fell off, only that something may
+			// have (the interface carries no total).
+			if len(cns) >= CreditNoteLaneCap {
+				truncated = true
+			}
 			// Store returns created_at DESC — reverse so residual
 			// exact-tie insertion order is causal (oldest first).
 			slices.Reverse(cns)
@@ -1867,7 +1899,9 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// about the issue — the email outbox is the durable trace.
 	if h.emailEvents != nil {
 		emailEvts, err := h.emailEvents.ListByInvoice(r.Context(), tenantID, inv.InvoiceNumber)
-		if err == nil {
+		if err != nil {
+			degrade("emails", err)
+		} else {
 			for _, evt := range emailEvts {
 				// Dunning warning + escalation emails are surfaced in the
 				// per-customer "Sent emails" section on CustomerDetail
@@ -1925,7 +1959,9 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// always keep — it's the only signal of a failed charge attempt.
 	if h.webhookEvents != nil {
 		webhookEvts, err := h.webhookEvents.ListByInvoice(r.Context(), tenantID, id)
-		if err == nil {
+		if err != nil {
+			degrade("stripe", err)
+		} else {
 			for _, evt := range webhookEvts {
 				if !relevantStripeEvents[evt.EventType] {
 					continue
@@ -1969,14 +2005,23 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	maxAttemptCount := 0
 	if h.dunningTimeline != nil {
 		runs, err := h.dunningTimeline.ListRunsByInvoice(r.Context(), tenantID, id)
-		if err == nil {
+		if err != nil {
+			degrade("dunning", err)
+		} else {
 			// ListRuns returns created_at DESC — reverse so multi-run
 			// invoices append run 1 before run 2 (residual exact-tie
 			// insertion order stays causal).
 			slices.Reverse(runs)
+			dunningDegraded := false
 			for _, run := range runs {
 				runEvents, err := h.dunningTimeline.ListEvents(r.Context(), tenantID, run.ID)
 				if err != nil {
+					// One run's events failing still loses a slice of the
+					// lane — disclose it (once), don't just skip the run.
+					if !dunningDegraded {
+						dunningDegraded = true
+						degrade("dunning", err)
+					}
 					continue
 				}
 				for _, evt := range runEvents {
@@ -2048,7 +2093,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 	// of the runs/credit-note source queries within collided seconds.
 	sortInvoiceTimeline(events)
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"events": events})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"events": events, "degraded": degraded, "truncated": truncated})
 }
 
 func (h *Handler) downloadPDF(w http.ResponseWriter, r *http.Request) {
