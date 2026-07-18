@@ -1102,27 +1102,30 @@ export default function SubscriptionDetailPage() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <p className="text-sm text-foreground">{event.description}</p>
-                        {/* Chip semantics post ADR-030 2026-05-28
-                            amendment: the row's primary timestamp is
-                            wall-clock (audit_log.created_at), and
-                            sim_effective_at carries the simulated
-                            effect time when the action landed on a
-                            clock-pinned entity. Chip label "test clock"
-                            so operators don't misread "simulated" as
-                            "this timestamp is fake" — it's not, it's
-                            wall-clock; the test-clock effect time
-                            shows on the subline below. Mirrors the
-                            AuditLog page pattern. */}
+                        {/* Chip semantics per ADR-030 2026-07-18
+                            amendment: this is a NARRATIVE surface, so
+                            the row's primary timestamp is the
+                            simulated instant (sim_effective_at) when
+                            the action landed on a clock-pinned
+                            entity — it lines up with every other date
+                            on this page (periods, invoices, stat
+                            cards). Wall-clock (audit_log.created_at)
+                            is provenance, demoted to the "Recorded …"
+                            subline; the raw clock ID stays out of the
+                            visible copy (chip tooltip carries the
+                            full dual-stamp provenance). The AuditLog
+                            page deliberately does the OPPOSITE
+                            (wall-primary) — it's a forensic surface. */}
                         {event.is_simulated && (
                           <span
-                            title={event.sim_effective_at ? `Operator action at wall-clock ${formatDateTime(event.timestamp)}; effect on test clock ${event.test_clock_id || ''} at simulated ${formatDateTime(event.sim_effective_at)}` : 'Action affected a clock-pinned entity'}
+                            title={event.sim_effective_at ? `Simulated ${formatDateTime(event.sim_effective_at)} on test clock ${event.test_clock_id || ''}; operator action recorded at wall-clock ${formatDateTime(event.timestamp)}` : 'Action affected a clock-pinned entity'}
                             className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
                           >
                             test clock
                           </span>
                         )}
                       </div>
-                      <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.timestamp)}</span>
+                      <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.sim_effective_at || event.timestamp)}</span>
                     </div>
                     {(event.detail || event.detail_timestamp) && (
                       <p className="text-xs text-muted-foreground mt-0.5">
@@ -1132,15 +1135,17 @@ export default function SubscriptionDetailPage() {
                         )}
                       </p>
                     )}
-                    {event.sim_effective_at && (
-                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-                        Effect on test clock {event.test_clock_id ? <span className="font-mono">{event.test_clock_id}</span> : ''} at {formatDateTime(event.sim_effective_at)}
-                      </p>
-                    )}
-                    {(event.actor_name || event.actor_type) && (
+                    {event.sim_effective_at ? (
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        by {event.actor_name || event.actor_type}
+                        Recorded {formatDateTime(event.timestamp)}
+                        {(event.actor_name || event.actor_type) && <> · by {event.actor_name || event.actor_type}</>}
                       </p>
+                    ) : (
+                      (event.actor_name || event.actor_type) && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          by {event.actor_name || event.actor_type}
+                        </p>
+                      )
                     )}
                   </div>
                 </div>
