@@ -25,6 +25,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 	"github.com/sagarsuperuser/velox/internal/platform/money"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
+	"github.com/sagarsuperuser/velox/internal/platform/timeline"
 	"github.com/sagarsuperuser/velox/internal/tax"
 )
 
@@ -3252,12 +3253,9 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	// the stable sort preserves true insertion order, not the audit
 	// query's DESC.
 	slices.Reverse(events)
-	sort.SliceStable(events, func(i, j int) bool {
-		if !events[i].sortAt.Equal(events[j].sortAt) {
-			return events[i].sortAt.Before(events[j].sortAt)
-		}
-		return events[i].recordedAt.Before(events[j].recordedAt)
-	})
+	timeline.SortStable(events,
+		func(e timelineEvent) time.Time { return e.sortAt },
+		func(a, b timelineEvent) bool { return a.recordedAt.Before(b.recordedAt) })
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{
 		"events": events,

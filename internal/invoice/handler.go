@@ -22,6 +22,7 @@ import (
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
 	"github.com/sagarsuperuser/velox/internal/payment"
+	"github.com/sagarsuperuser/velox/internal/platform/timeline"
 )
 
 // CustomerGetter resolves customer IDs to names and billing profiles for PDF rendering.
@@ -1234,12 +1235,9 @@ func dunningEventRank(eventType domain.DunningEventType) int {
 // the 2026-07-19 inversion class: same-second pairs kept whatever
 // orientation their source query happened to use.
 func sortInvoiceTimeline(events []timelineEvent) {
-	sort.SliceStable(events, func(i, j int) bool {
-		if !events[i].sortAt.Equal(events[j].sortAt) {
-			return events[i].sortAt.Before(events[j].sortAt)
-		}
-		return events[i].tieRank < events[j].tieRank
-	})
+	timeline.SortStable(events,
+		func(e timelineEvent) time.Time { return e.sortAt },
+		func(a, b timelineEvent) bool { return a.tieRank < b.tieRank })
 }
 
 type timelineEvent struct {

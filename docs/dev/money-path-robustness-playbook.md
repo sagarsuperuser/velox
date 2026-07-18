@@ -40,6 +40,7 @@ that's why they're separate.
 | **G** | **Lifecycle termination (liveness sink)** | Every run/subscription/invoice reaches a terminal state — no stuck-active, no infinite retry, never escalate/cancel a paid customer | ensure a writer advances *every* reachable state to terminal | card-less `auto_charge_pending` retried forever (#297); exhaustRun set `escalated` even when the mover failed (#299) |
 | **H** | **Tenant/livemode isolation** | Every `tenant_id` table has RLS `ENABLE`+**`FORCE`**+policy; app runs as non-superuser `velox_app` (fail-closed); scope is server-derived, never client-supplied; every `TxBypass` carries explicit `WHERE tenant_id` | migration adds RLS in the same PR; `openAppPool` role swap | 45 tables covered; `os.Exit(1)` refuses to boot RLS-bypassed in non-local |
 | **I** | **Time / precision / validation** | Month/year math anchored in tenant TZ (never host `time.Local`); simulated vs wall-clock never cross-compare; int64 cents with `RoundHalfToEven` (no float); currency UPPERCASE at store; malformed input fails loud; a call that never reached the provider isn't a burned attempt | `addIntervalIn` / `time.Now().UTC()` both sides / `ErrTransientSkip` | tenant-TZ `domain.addIntervalIn` (ADR-058); `ErrTransientSkip` rewinds the attempt |
+| **J** | **Contracted-instant stamping** | A transition executed LATE (catchup sweep, background settle, webhook, operator retry) stamps the instant it was *contracted* to fire — never the executor's effective-now; purely operational stamps (`issued_at`, `updated_at`, audit recorded-at) stay at effective-now. One advance crossing N boundaries produces N artifacts each at its own boundary instant | plumb the contracted instant INTO the writer (an `at` param like `resolveRunAt`; a `WithSim` ctx rebind per boundary; a PI-metadata anchor across the provider round-trip) — never re-resolve `clock.Now()` at the write site | **6 sightings before mechanizing**: trial flips, boundary cancels (ADR-097), pause resumes (#516), dunning resolves + success retry rows (#520), retry-charge ctx (#523), `paid_at` via `velox_anchor_at` (#523) |
 
 ### The C1–C4 concurrency sub-table (class D)
 
@@ -197,7 +198,7 @@ Nth duplicate of a proven pattern; (iii) **partial-failure / crash-between-write
 **Manual `[~]`** only for observable/UI/live-external surfaces (live-Stripe
 exactly-once stays manual).
 
-Four non-negotiable patterns:
+Five non-negotiable patterns:
 
 1. **Collision, not happy-path.** Fire the SAME mutation twice — concurrently AND
    serially — assert exactly-one effect + the SPECIFIC dedup error code
@@ -227,6 +228,14 @@ Four non-negotiable patterns:
    red run is the *only* proof the guard exists rather than being decorative — and
    it's what a later refactor that re-introduces an unconditional fire or a second
    tx trips over in CI. (PR #325 shipped a 5-mutation check.)
+5. **One advance, many boundaries (class J).** Drive a test clock across ≥2
+   contracted instants in a SINGLE advance (two retry dates; a resume date plus a
+   cycle close) and assert each artifact — `resolved_at`, `paid_at`, timeline
+   rows, the charge ctx's `Sim.At` — stamps ITS OWN boundary instant, none the
+   advance-end frozen time. Asserting only the final state is vacuous: the sweep
+   reaches it either way; the *instants* are what regress. *Pattern:*
+   `TestProcessDueRunsForClock_RecoveryStampsContractedInstant`,
+   `TestProcessDueRunsForClock_ChargeCtxCarriesAnchoredInstant`.
 
 ---
 
