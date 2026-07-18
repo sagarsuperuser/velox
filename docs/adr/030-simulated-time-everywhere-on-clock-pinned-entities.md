@@ -375,3 +375,32 @@ coherence; the lanes make the boundary visible instead.
 - `web-v2`: invoice header + list render the authoritative `is_simulated`
   badge; the activity timeline splits email rows into a real-time
   "Notifications" lane.
+
+## Amendment 2026-07-18 — narrative surfaces render sim-primary; forensic surfaces stay wall-primary
+
+**What changed (display only — storage unchanged):** Audit-log
+`created_at` remains wall-clock **always**, with `metadata.sim_effective_at`
++ `metadata.test_clock_id` enrichment. What changes is which stamp each
+*surface* leads with:
+
+- **Narrative surfaces** (the Activity timeline on subscription/customer
+  detail pages): the row's primary right-aligned timestamp is now
+  `sim_effective_at` when present — the simulated instant that lines up
+  with every other date on those pages (periods, invoices, stat cards).
+  Wall-clock is demoted to a muted provenance subline:
+  `Recorded <wall> · by <actor>`. The raw test-clock ID leaves the
+  visible copy (operator jargon; the page header already links the
+  clock) and lives on in the chip tooltip with full dual-stamp
+  provenance.
+- **Forensic surfaces** (the Audit Log page): wall-primary, unchanged —
+  that page answers "what happened when in the real world", and the
+  clock ID is legitimate forensic detail there.
+
+**Why:** Found live walking FLOW TC7. The subscription page said
+"Created: Jun 1, 2027" in Properties while the Activity row for the
+same event led with "Jul 18, 2026" — two dates for one event on one
+page, with the prominent one contradicting the page's own timeline.
+This inverted the ADR's core principle ("operators never need to know
+about wall-clock when working with test clocks"). The 2026-05-28
+amendment's "subline below the wall-clock primary stamp" rendering is
+superseded for narrative surfaces only; its storage rule is untouched.
