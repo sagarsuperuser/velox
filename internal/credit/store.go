@@ -52,6 +52,11 @@ type Store interface {
 	GetByCreditNoteSource(ctx context.Context, tenantID, creditNoteID string) (domain.CreditLedgerEntry, error)
 	ListBalances(ctx context.Context, tenantID string) ([]domain.CreditBalance, error)
 	ListEntries(ctx context.Context, filter ListFilter) ([]domain.CreditLedgerEntry, error)
+	// CountEntries returns the TOTAL rows matching the filter (limit/
+	// offset/sort ignored) so paginated consumers can be honest about
+	// truncation — the ledger page's CSV silently exported the capped
+	// 50-row slice as if complete before this existed.
+	CountEntries(ctx context.Context, filter ListFilter) (int, error)
 
 	// ExpireGrantAtomic retires one expired grant — flips its
 	// consumed_cents to amount_cents and appends the -remaining expiry

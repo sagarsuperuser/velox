@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -129,13 +130,30 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantID(r.Context())
 	customerID := chi.URLParam(r, "customer_id")
 
-	entries, err := h.svc.ListEntries(r.Context(), ListFilter{
+	// limit/offset were silently unparsed pre-fix: the store's default-50
+	// cap made every consumer (pagination, type filter, CSV export)
+	// operate on a truncated slice presented as complete. Clamp mirrors
+	// the store (1..100, default 50); offset >= 0.
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	filter := ListFilter{
 		TenantID:   tenantID,
 		CustomerID: customerID,
 		EntryType:  r.URL.Query().Get("entry_type"),
 		Sort:       r.URL.Query().Get("sort"),
 		SortDir:    r.URL.Query().Get("dir"),
-	})
+		Limit:      limit,
+		Offset:     offset,
+	}
+	entries, err := h.svc.ListEntries(r.Context(), filter)
 	if err != nil {
 		respond.InternalError(w, r)
 		slog.ErrorContext(r.Context(), "list credit entries", "error", err)
@@ -144,6 +162,12 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []domain.CreditLedgerEntry{}
 	}
+	total, err := h.svc.CountEntries(r.Context(), filter)
+	if err != nil {
+		respond.InternalError(w, r)
+		slog.ErrorContext(r.Context(), "count credit entries", "error", err)
+		return
+	}
 
-	respond.JSON(w, r, http.StatusOK, map[string]any{"data": entries})
+	respond.JSON(w, r, http.StatusOK, map[string]any{"data": entries, "total": total})
 }

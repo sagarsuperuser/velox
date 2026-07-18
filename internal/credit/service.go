@@ -619,6 +619,10 @@ func (s *Service) ListEntries(ctx context.Context, filter ListFilter) ([]domain.
 	return s.store.ListEntries(ctx, filter)
 }
 
+func (s *Service) CountEntries(ctx context.Context, filter ListFilter) (int, error) {
+	return s.store.CountEntries(ctx, filter)
+}
+
 type AdjustInput struct {
 	CustomerID  string `json:"customer_id"`
 	AmountCents int64  `json:"amount_cents"` // Positive or negative

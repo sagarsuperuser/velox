@@ -193,11 +193,22 @@ export default function CreditsPage() {
   // changing the sort triggers a refetch and the URL state survives
   // back-button navigation. Disabled when no customer is selected.
   const ledgerQuery = useQuery({
-    queryKey: ['credits', 'ledger', urlState.customer, urlState.sort, urlState.dir],
-    queryFn: () => api.listLedger(urlState.customer, { sort: urlState.sort, dir: urlState.dir }),
+    queryKey: ['credits', 'ledger', urlState.customer, urlState.sort, urlState.dir, urlState.entryType, urlState.page],
+    queryFn: () => api.listLedger(urlState.customer, {
+      sort: urlState.sort,
+      dir: urlState.dir,
+      // Server-side page + filter: the store caps every response (50
+      // default / 100 max), so client-side slicing presented a capped
+      // fetch as the complete ledger — pagination, the type filter, and
+      // the CSV all lied past 50 rows.
+      limit: ledgerPageSize,
+      offset: (Math.max(1, parseInt(urlState.page) || 1) - 1) * ledgerPageSize,
+      ...(urlState.entryType !== 'All' ? { entry_type: urlState.entryType } : {}),
+    }),
     enabled: !!urlState.customer,
   })
   const ledger = ledgerQuery.data?.data ?? []
+  const ledgerTotal = ledgerQuery.data?.total ?? 0
   const ledgerLoading = ledgerQuery.isLoading && !!urlState.customer
   const loadLedger = (customerId: string) => {
     void queryClient.invalidateQueries({ queryKey: ['credits', 'ledger', customerId] })
@@ -221,15 +232,15 @@ export default function CreditsPage() {
   const selectedBalance = balances.find(b => b.customer_id === selectedCustomerId) || null
   const selectedCustomer = selectedCustomerId ? customerMap[selectedCustomerId] : null
 
-  const filteredLedger = useMemo(() => entryTypeFilter === 'All'
-    ? ledger
-    : ledger.filter(e => e.entry_type === entryTypeFilter), [ledger, entryTypeFilter])
+  // entry-type filtering happens SERVER-SIDE now (query param above);
+  // the fetched page is already the filtered page.
+  const filteredLedger = ledger
 
   const ledgerSortKey = urlState.sort
   const ledgerSortDir = urlState.dir as SortDir
   // Server-side sort: useSortable only owns the click-handler /
   // direction-flip / URL-state semantics. The data is rendered as
-  // returned by the server (filtered for entry-type client-side).
+  // returned by the server (filtered and paginated server-side too).
   const { onSort: onLedgerSort } = useSortable(
     filteredLedger,
     ledgerSortKey,
@@ -238,9 +249,10 @@ export default function CreditsPage() {
   )
   const sortedLedger = filteredLedger
 
-  const ledgerTotalPages = Math.ceil(sortedLedger.length / ledgerPageSize)
+  const ledgerTotalPages = Math.ceil(ledgerTotal / ledgerPageSize)
   const ledgerCurrentPage = Math.min(ledgerPage, ledgerTotalPages || 1)
-  const ledgerPaginated = sortedLedger.slice((ledgerCurrentPage - 1) * ledgerPageSize, ledgerCurrentPage * ledgerPageSize)
+  // Server-paginated: the fetched slice IS the page.
+  const ledgerPaginated = sortedLedger
 
   // ---- Detail View ----
   if (selectedCustomerId) {
@@ -291,16 +303,35 @@ export default function CreditsPage() {
               </select>
               {ledger.length > 0 && (
                 <Button variant="outline" size="sm" onClick={() => {
-                  const rows = filteredLedger.map(e => [
-                    formatDateTime(e.created_at),
-                    e.entry_type,
-                    e.description,
-                    (e.amount_cents / 100).toFixed(2),
-                    (e.balance_after / 100).toFixed(2),
-                    e.invoice_id || '',
-                  ])
-                  downloadCSV(`credits-${selectedCustomer?.external_id || 'customer'}.csv`,
-                    ['Date', 'Type', 'Description', 'Amount', 'Balance', 'Invoice ID'], rows)
+                  // Complete export: page through the FULL filtered ledger
+                  // (store caps each response at 100) — pre-fix this
+                  // exported the visible capped slice of an immutable
+                  // money ledger as if it were everything.
+                  void (async () => {
+                    const all: typeof ledger = []
+                    const pageSize = 100
+                    for (let offset = 0; ; offset += pageSize) {
+                      const res = await api.listLedger(urlState.customer, {
+                        sort: urlState.sort,
+                        dir: urlState.dir,
+                        limit: pageSize,
+                        offset,
+                        ...(urlState.entryType !== 'All' ? { entry_type: urlState.entryType } : {}),
+                      })
+                      all.push(...res.data)
+                      if (res.data.length < pageSize || all.length >= res.total) break
+                    }
+                    const rows = all.map(e => [
+                      formatDateTime(e.created_at),
+                      e.entry_type,
+                      e.description,
+                      (e.amount_cents / 100).toFixed(2),
+                      (e.balance_after / 100).toFixed(2),
+                      e.invoice_id || '',
+                    ])
+                    downloadCSV(`credits-${selectedCustomer?.external_id || 'customer'}.csv`,
+                      ['Date', 'Type', 'Description', 'Amount', 'Balance', 'Invoice ID'], rows)
+                  })()
                 }}>
                   <Download size={14} className="mr-1" /> CSV
                 </Button>
@@ -380,7 +411,7 @@ export default function CreditsPage() {
                     <p className="text-xs text-muted-foreground">
                       Showing {(ledgerCurrentPage - 1) * ledgerPageSize + 1}
                       {'\u2013'}
-                      {Math.min(ledgerCurrentPage * ledgerPageSize, sortedLedger.length)} of {sortedLedger.length}
+                      {(ledgerCurrentPage - 1) * ledgerPageSize + ledgerPaginated.length} of {ledgerTotal}
                     </p>
                     <Pagination>
                       <PaginationContent>
