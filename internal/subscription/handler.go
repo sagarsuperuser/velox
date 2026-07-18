@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2752,6 +2753,18 @@ type timelineEvent struct {
 	EventType   string `json:"event_type"`
 	Status      string `json:"status"`
 	Description string `json:"description"`
+	// sortAt / recordedAt are the ORDERING axes, never serialized.
+	// sortAt is the instant the surface DISPLAYS (sim_effective_at on
+	// clock-pinned rows, wall created_at otherwise — the ADR-030
+	// narrative-surface rule); recordedAt is the full-precision wall
+	// write instant used as the causal tie-break. Sorting on the
+	// serialized Timestamp string was the 2026-07-19 inversion bug:
+	// second-truncated wall stamps collided (a pause PUT and the
+	// catchup resume 36ms later), the tie kept the audit query's DESC
+	// orientation, and "auto-resumed (sim Nov 10)" rendered above
+	// "paused (sim Nov 2)".
+	sortAt     time.Time
+	recordedAt time.Time
 	// Detail renders as a sub-line beneath the description (mirrors
 	// invoice timeline's same-named field). Used for the
 	// human-meaningful context that doesn't belong in the main line:
@@ -3185,6 +3198,16 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 				// columns are the queryable copy). Empty for everything else.
 				simAt, _ := e.Metadata["sim_effective_at"].(string)
 				clockID, _ := e.Metadata["test_clock_id"].(string)
+				// The display/sort instant: the simulated effect time on
+				// clock-pinned rows, wall write-time otherwise. Parse
+				// failure (malformed metadata) falls back to wall rather
+				// than sorting a garbage zero-time to the top.
+				sortAt := e.CreatedAt
+				if simAt != "" {
+					if t, perr := time.Parse(time.RFC3339, simAt); perr == nil {
+						sortAt = t
+					}
+				}
 				events = append(events, timelineEvent{
 					Timestamp:       e.CreatedAt.UTC().Format(time.RFC3339),
 					Source:          "audit",
@@ -3199,6 +3222,8 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 					IsSimulated:     simAt != "",
 					SimEffectiveAt:  simAt,
 					TestClockID:     clockID,
+					sortAt:          sortAt,
+					recordedAt:      e.CreatedAt,
 				})
 			}
 		} else {
@@ -3214,13 +3239,24 @@ func (h *Handler) activityTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ascending order — CS reps read a timeline top-down, earliest first.
-	// audit.Logger.Query returns DESC so we flip. SliceStable preserves
-	// insertion order for equal-timestamp events — on clock-pinned subs,
-	// multiple audit rows can land at the exact same simulated instant
-	// (e.g. activate + first-period bill), and Stable keeps the
-	// DB-query ordering rather than randomizing it.
+	// The sort axis is the axis the surface DISPLAYS (ADR-030 narrative
+	// amendment): the simulated instant on clock-pinned rows, wall
+	// otherwise. Sorting the serialized wall Timestamp string under a
+	// sim-primary display inverted causally-ordered pairs whose
+	// second-truncated wall stamps collided (2026-07-19 live find:
+	// "auto-resumed, sim Nov 10" rendered above "paused, sim Nov 2" —
+	// both wall-stamped 19:06:37, tie kept the query's DESC orientation).
+	//
+	// Equal display instants tie-break on full-precision wall recordedAt
+	// (causal write order); events sharing BOTH are pre-reversed below so
+	// the stable sort preserves true insertion order, not the audit
+	// query's DESC.
+	slices.Reverse(events)
 	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].Timestamp < events[j].Timestamp
+		if !events[i].sortAt.Equal(events[j].sortAt) {
+			return events[i].sortAt.Before(events[j].sortAt)
+		}
+		return events[i].recordedAt.Before(events[j].recordedAt)
 	})
 
 	respond.JSON(w, r, http.StatusOK, map[string]any{
