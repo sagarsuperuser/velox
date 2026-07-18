@@ -773,6 +773,46 @@ func TestUpsertPolicy(t *testing.T) {
 	}
 }
 
+// TestUpsertPolicy_RejectsUnparseableSchedule is the regression for the
+// FLOW TC5 "3d" livelock (2026-07-18): save-time validation checked only
+// schedule LENGTH, so an entry time.ParseDuration can't read ("3d" — Go
+// has no day unit) persisted fine and then wedged the run at retry-time:
+// the parse error fired after the attempt persisted but before the
+// reschedule landed, so next_action_at never advanced and every later
+// tick re-attempted into the no-progress guard. Every entry must parse
+// as a positive duration at save.
+func TestUpsertPolicy_RejectsUnparseableSchedule(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &noopRetrier{}, nil)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		schedule []string
+		wantErr  bool
+	}{
+		{"day shorthand rejected", []string{"3d", "5d"}, true},
+		{"garbage rejected", []string{"soon"}, true},
+		{"negative rejected", []string{"-72h", "120h"}, true},
+		{"zero rejected", []string{"0s", "120h"}, true},
+		{"go durations accepted", []string{"72h", "120h"}, false},
+		{"mixed units accepted", []string{"72h30m", "120h"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.UpsertPolicy(ctx, "t1", domain.DunningPolicy{
+				Name: "P", Enabled: true, MaxRetryAttempts: 2, RetrySchedule: tc.schedule,
+			})
+			if tc.wantErr && err == nil {
+				t.Errorf("schedule %v: expected save-time rejection, got nil", tc.schedule)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("schedule %v: unexpected error: %v", tc.schedule, err)
+			}
+		})
+	}
+}
+
 // TestUpsertPolicyTx_ValidationParity locks the recipe-path (tx) upsert to the
 // SAME save-time invariants as the API path. Pre-fix UpsertPolicyTx forwarded
 // straight to the store — its comment claimed "the recipe template layer

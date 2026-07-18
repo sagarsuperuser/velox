@@ -620,7 +620,10 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	// Grace period (used in StartDunning) determines when retry 1 happens.
 	//
 	// Save-time validation (Service.UpsertPolicy) guarantees the schedule
-	// has at least (MaxRetryAttempts - 1) entries. The pre-ADR-036
+	// has at least (MaxRetryAttempts - 1) entries AND that every entry
+	// parses as a positive Go duration (an unparseable entry here would
+	// error after the attempt persisted but before the reschedule landed,
+	// wedging the run — the FLOW TC5 "3d" livelock). The pre-ADR-036
 	// "reuse last interval when idx out of bounds" runtime fallback was
 	// removed — that was a silent fallback (feedback_no_silent_fallbacks);
 	// out-of-bounds here now indicates a schema invariant violation, so
@@ -1076,6 +1079,24 @@ func normalizeAndValidatePolicy(policy domain.DunningPolicy) (domain.DunningPoli
 		return domain.DunningPolicy{}, errs.Invalid("retry_schedule",
 			fmt.Sprintf("max_retry_attempts (%d) requires at least %d retry_schedule entries — got %d",
 				policy.MaxRetryAttempts, needed, len(policy.RetrySchedule)))
+	}
+	// Every entry must parse as a positive Go duration NOW: the retry path
+	// calls time.ParseDuration at fire time, and an unparseable entry there
+	// errors AFTER the attempt is persisted but BEFORE the reschedule lands
+	// — wedging the run in a re-attempt livelock at that retry forever
+	// (found live in FLOW TC5 with "3d": Go durations have no day unit).
+	// Rejecting here keeps the retry path's "save-time validation
+	// guarantees the schedule" contract actually true.
+	for i, entry := range policy.RetrySchedule {
+		d, err := time.ParseDuration(entry)
+		if err != nil {
+			return domain.DunningPolicy{}, errs.Invalid("retry_schedule",
+				fmt.Sprintf("entry %d (%q) is not a valid Go duration — use h/m/s units, e.g. \"72h\" for 3 days", i, entry))
+		}
+		if d <= 0 {
+			return domain.DunningPolicy{}, errs.Invalid("retry_schedule",
+				fmt.Sprintf("entry %d (%q) must be a positive duration", i, entry))
+		}
 	}
 	return policy, nil
 }
