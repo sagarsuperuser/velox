@@ -1010,3 +1010,74 @@ func TestClockResolver_ErrorFallback(t *testing.T) {
 			run.CreatedAt, before, after)
 	}
 }
+
+// failThenSucceedRetrier declines the first N attempts, then succeeds —
+// exercises processRun's success branch mid-schedule.
+type failThenSucceedRetrier struct{ failures, calls int }
+
+func (f *failThenSucceedRetrier) RetryPayment(_ context.Context, _, _, _ string) error {
+	f.calls++
+	if f.calls <= f.failures {
+		return fmt.Errorf("payment declined")
+	}
+	return nil
+}
+
+// TestProcessDueRunsForClock_RecoveryStampsContractedInstant is the
+// contracted-instant regression for the retry-SUCCESS path (4th sighting
+// of the class: trial flips, scheduled cancels, pause resumes, and now
+// dunning resolves). Retry #1 (May 4) fails, retry #2 (May 7) succeeds,
+// the operator advanced to May 20 in one click. Pre-fix: resolved_at and
+// the resolved timeline row stamped May 20 (advance-end frozen_time), and
+// NO retry_attempted row existed for the succeeding attempt — the May 7
+// recovery instant appeared nowhere.
+func TestProcessDueRunsForClock_RecoveryStampsContractedInstant(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &failThenSucceedRetrier{failures: 1}, nil)
+	ctx := context.Background()
+
+	cycleClose := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	frozen := time.Date(2024, 5, 20, 0, 0, 0, 0, time.UTC)
+	retry2At := cycleClose.Add(72*time.Hour + 72*time.Hour) // grace 3d + schedule[0] 3d = May 7
+
+	if _, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", cycleClose); err != nil {
+		t.Fatalf("start dunning: %v", err)
+	}
+	if _, errs := svc.ProcessDueRunsForClock(ctx, "t1", "clock_1", frozen, 20); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	var run domain.InvoiceDunningRun
+	for _, r := range store.runs {
+		run = r
+	}
+	if run.State != domain.DunningResolved || run.Resolution != domain.ResolutionPaymentRecovered {
+		t.Fatalf("run: state=%q resolution=%q, want resolved/payment_recovered", run.State, run.Resolution)
+	}
+	if run.ResolvedAt == nil || !run.ResolvedAt.Equal(retry2At) {
+		t.Errorf("resolved_at: got %v, want the recovering retry's contracted instant %v (NOT advance-end %v)", run.ResolvedAt, retry2At, frozen)
+	}
+
+	var successRow, resolvedRow *domain.InvoiceDunningEvent
+	for i := range store.events {
+		e := store.events[i]
+		if e.EventType == domain.DunningEventRetryAttempted && e.Reason == "succeeded" {
+			successRow = &store.events[i]
+		}
+		if e.EventType == domain.DunningEventResolved {
+			resolvedRow = &store.events[i]
+		}
+	}
+	if successRow == nil {
+		t.Fatal("the SUCCESSFUL retry must write its own retry_attempted row — 'resolved after N attempts' with N-1 visible retries otherwise")
+	}
+	if !successRow.CreatedAt.Equal(retry2At) {
+		t.Errorf("success retry row: got %v, want %v", successRow.CreatedAt, retry2At)
+	}
+	if resolvedRow == nil {
+		t.Fatal("resolved event missing")
+	}
+	if !resolvedRow.CreatedAt.Equal(retry2At) {
+		t.Errorf("resolved row: got %v, want the contracted instant %v (NOT advance-end %v)", resolvedRow.CreatedAt, retry2At, frozen)
+	}
+}

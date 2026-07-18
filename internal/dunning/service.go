@@ -609,7 +609,25 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			"invoice_id", run.InvoiceID,
 			"attempt", run.AttemptCount,
 		)
-		_, rerr := s.resolveRunNow(ctx, tenantID, run, domain.ResolutionPaymentRecovered, "payment_recovered")
+		// The SUCCESSFUL retry gets its own timeline row too — pre-fix
+		// only failures wrote retry_attempted, so a run resolved "after
+		// 3 retry attempts" showed 2 retry rows and the recovering
+		// attempt's instant appeared nowhere on the invoice timeline.
+		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
+			RunID:        run.ID,
+			InvoiceID:    run.InvoiceID,
+			EventType:    domain.DunningEventRetryAttempted,
+			State:        domain.DunningResolved,
+			AttemptCount: run.AttemptCount,
+			Reason:       "succeeded",
+			CreatedAt:    now,
+		})
+		// Resolve AT the retry's contracted instant (`now` = the anchored
+		// run.NextActionAt) — resolveRunNow's own clock read is the
+		// advance-end frozen_time under catchup, which stamped a Mar 7
+		// recovery "resolved Apr 1" when the operator advanced a month in
+		// one click (the contracted-instant class, 4th sighting).
+		_, rerr := s.resolveRunAt(ctx, tenantID, run, domain.ResolutionPaymentRecovered, "payment_recovered", &now)
 		return rerr
 	}
 
@@ -904,8 +922,22 @@ func (s *Service) ResolveRun(ctx context.Context, tenantID, runID string, resolu
 // invoices. Shared by ResolveByInvoice, the processRun success branch, and the
 // processRun paid-pre-check so the transition is identical across all of them.
 func (s *Service) resolveRunNow(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, resolution domain.DunningResolution, eventReason string) (domain.InvoiceDunningRun, error) {
+	return s.resolveRunAt(ctx, tenantID, run, resolution, eventReason, nil)
+}
+
+// resolveRunAt is resolveRunNow with an explicit resolve instant. at nil
+// derives the clock (settle/operator paths — their contract IS "now");
+// the retry-success path passes its anchored contracted instant
+// (run.NextActionAt at fire time) so resolved_at and the resolved
+// timeline row land on the retry that recovered the invoice, not on
+// wherever the clock advance happened to end (ADR-030 contracted-instant
+// rule; same split as trial flips, scheduled cancels, pause resumes).
+func (s *Service) resolveRunAt(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, resolution domain.DunningResolution, eventReason string, at *time.Time) (domain.InvoiceDunningRun, error) {
 	ctx = s.bindForInvoice(ctx, tenantID, run.InvoiceID)
 	now := s.clock.Now(ctx)
+	if at != nil {
+		now = *at
+	}
 	run.State = domain.DunningResolved
 	run.Resolution = resolution
 	run.ResolvedAt = &now
