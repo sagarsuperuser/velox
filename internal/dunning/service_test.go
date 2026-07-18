@@ -1136,3 +1136,45 @@ func TestProcessDueRunsForClock_ChargeCtxCarriesAnchoredInstant(t *testing.T) {
 		}
 	}
 }
+
+// piCarryingRetrier declines with a RetryError carrying the failed PI id —
+// the adapter's post-fix shape.
+type piCarryingRetrier struct{ pi string }
+
+func (p *piCarryingRetrier) RetryPayment(_ context.Context, _, _, _ string) error {
+	return &RetryError{PaymentIntentID: p.pi, Err: fmt.Errorf("payment declined")}
+}
+
+// TestProcessRun_FailedRetryStampsPIAttribution: the retry_attempted event
+// carries the failed charge's PI id in metadata (the invoice timeline's
+// exact-attribution key) and the Reason string is the INNER error —
+// RetryError must be invisible in operator-facing text.
+func TestProcessRun_FailedRetryStampsPIAttribution(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, &piCarryingRetrier{pi: "pi_dun_1"}, nil)
+	ctx := context.Background()
+
+	cycleClose := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", cycleClose); err != nil {
+		t.Fatalf("start dunning: %v", err)
+	}
+	if _, errs := svc.ProcessDueRunsForClock(ctx, "t1", "clock_1", cycleClose.Add(96*time.Hour), 20); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	var retryEvt *domain.InvoiceDunningEvent
+	for i := range store.events {
+		if store.events[i].EventType == domain.DunningEventRetryAttempted {
+			retryEvt = &store.events[i]
+		}
+	}
+	if retryEvt == nil {
+		t.Fatal("retry_attempted event missing")
+	}
+	if got, _ := retryEvt.Metadata["payment_intent_id"].(string); got != "pi_dun_1" {
+		t.Errorf("event metadata payment_intent_id: got %q, want pi_dun_1", got)
+	}
+	if retryEvt.Reason != "payment declined" {
+		t.Errorf("Reason must be the inner error, got %q (RetryError leaking into operator text)", retryEvt.Reason)
+	}
+}

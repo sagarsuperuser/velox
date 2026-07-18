@@ -1390,6 +1390,32 @@ func foldEmailIntoStripeFailed(events []timelineEvent, window time.Duration) []t
 // One-to-one pairing; excess Stripe rows survive (rare — dunning
 // disabled or lagging), excess dunning rows survive (rare — Stripe
 // webhook hasn't arrived yet).
+// liftStripeOntoDunning moves the Stripe failure row's payment facts onto
+// its dunning twin (which carries the operator-meaningful attempt context);
+// the Stripe row is then dropped by the caller.
+func liftStripeOntoDunning(d *timelineEvent, s timelineEvent) {
+	if d.PaymentIntentID == "" {
+		d.PaymentIntentID = s.PaymentIntentID
+	}
+	if d.AmountCents == nil {
+		d.AmountCents = s.AmountCents
+	}
+	if d.Currency == "" {
+		d.Currency = s.Currency
+	}
+	if d.Error == "" {
+		d.Error = s.Error
+	}
+	if d.Detail == "" {
+		d.Detail = s.Detail
+	}
+}
+
+func piFromEventMetadata(meta map[string]any) string {
+	pi, _ := meta["payment_intent_id"].(string)
+	return pi
+}
+
 func mergeFailedPaymentTwins(events []timelineEvent) []timelineEvent {
 	var stripeIdxs, dunningIdxs []int
 	for i, e := range events {
@@ -1401,6 +1427,59 @@ func mergeFailedPaymentTwins(events []timelineEvent) []timelineEvent {
 			dunningIdxs = append(dunningIdxs, i)
 		}
 	}
+
+	// PASS 1 — exact attribution by PaymentIntent id. Dunning retry rows
+	// written since the RetryError plumbing carry the failed charge's PI
+	// id; pairing them positionally risked stamping a CUSTOMER-initiated
+	// failure's decline message onto an engine retry's row (a failed
+	// hosted-page attempt on the same invoice lands in the same webhook
+	// table). Matched pairs leave both index pools; the residual pools
+	// fall through to the legacy index pairing for pre-plumbing rows.
+	stripeByPI := map[string]int{}
+	for _, sIdx := range stripeIdxs {
+		if pi := events[sIdx].PaymentIntentID; pi != "" {
+			if _, dup := stripeByPI[pi]; !dup {
+				stripeByPI[pi] = sIdx
+			}
+		}
+	}
+	exactDrop := map[int]bool{}
+	pairedDunning := map[int]bool{}
+	for _, dIdx := range dunningIdxs {
+		pi := events[dIdx].PaymentIntentID
+		if pi == "" {
+			continue
+		}
+		sIdx, ok := stripeByPI[pi]
+		if !ok {
+			// The webhook twin hasn't arrived (or was for a charge that
+			// never produced a webhook row). Keep the dunning row as-is
+			// but EXCLUDE it from residual index pairing: its twin is
+			// identified, just absent — stealing a positional partner
+			// would mis-attribute someone else's failure onto it.
+			pairedDunning[dIdx] = true
+			continue
+		}
+		liftStripeOntoDunning(&events[dIdx], events[sIdx])
+		exactDrop[sIdx] = true
+		pairedDunning[dIdx] = true
+		delete(stripeByPI, pi)
+	}
+	if len(exactDrop) > 0 || len(pairedDunning) > 0 {
+		var residualStripe, residualDunning []int
+		for _, sIdx := range stripeIdxs {
+			if !exactDrop[sIdx] {
+				residualStripe = append(residualStripe, sIdx)
+			}
+		}
+		for _, dIdx := range dunningIdxs {
+			if !pairedDunning[dIdx] {
+				residualDunning = append(residualDunning, dIdx)
+			}
+		}
+		stripeIdxs, dunningIdxs = residualStripe, residualDunning
+		defer func() {}() // (keeps the diff local; drop set merged below)
+	}
 	sort.SliceStable(stripeIdxs, func(a, b int) bool {
 		return events[stripeIdxs[a]].Timestamp < events[stripeIdxs[b]].Timestamp
 	})
@@ -1408,30 +1487,16 @@ func mergeFailedPaymentTwins(events []timelineEvent) []timelineEvent {
 		return events[dunningIdxs[a]].Timestamp < events[dunningIdxs[b]].Timestamp
 	})
 	pairs := min(len(stripeIdxs), len(dunningIdxs))
-	if pairs == 0 {
+	if pairs == 0 && len(exactDrop) == 0 {
 		return events
 	}
-	dropIdx := make(map[int]bool, pairs)
+	dropIdx := exactDrop
 	for k := range pairs {
 		sIdx := stripeIdxs[k]
 		dIdx := dunningIdxs[k]
 		s := events[sIdx]
 		d := &events[dIdx]
-		if d.PaymentIntentID == "" {
-			d.PaymentIntentID = s.PaymentIntentID
-		}
-		if d.AmountCents == nil {
-			d.AmountCents = s.AmountCents
-		}
-		if d.Currency == "" {
-			d.Currency = s.Currency
-		}
-		if d.Error == "" {
-			d.Error = s.Error
-		}
-		if d.Detail == "" {
-			d.Detail = s.Detail
-		}
+		liftStripeOntoDunning(d, s)
 		dropIdx[sIdx] = true
 	}
 	out := make([]timelineEvent, 0, len(events)-len(dropIdx))
@@ -1943,6 +2008,9 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 						Error:        evt.Reason,
 						AttemptCount: evt.AttemptCount,
 						IsSimulated:  isSimulated,
+						// Exact-attribution key written by the dunning
+						// retry path (RetryError); empty on legacy rows.
+						PaymentIntentID: piFromEventMetadata(evt.Metadata),
 					})
 				}
 			}
