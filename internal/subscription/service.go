@@ -2517,7 +2517,12 @@ func (s *Service) ProcessExpiredPauseCollectionsForClock(ctx context.Context, te
 		if sub.PauseCollection != nil && sub.PauseCollection.ResumesAt != nil {
 			resumeAt = *sub.PauseCollection.ResumesAt
 		}
-		bound := clock.WithEffectiveNow(s.bindForSub(ctx, tenantID, sub.ID), resumeAt)
+		// Override the INSTANT while keeping the CLOCK: WithEffectiveNow
+		// deliberately clears the clock id (it means "time from no clock I
+		// can name"), which stripped sim_effective_at/test_clock_id off the
+		// resume's audit row and cost it the test-clock chip. This phase
+		// runs inside a named clock's catchup — WithSim keeps the pair.
+		bound := clock.WithSim(s.bindForSub(ctx, tenantID, sub.ID), clock.Sim{At: resumeAt, TestClockID: clockID})
 		cleared, err := s.store.ClearPauseCollection(bound, tenantID, sub.ID)
 		if err != nil {
 			batchErrs = append(batchErrs, fmt.Errorf("clear pause %s: %w", sub.ID, err))
