@@ -419,7 +419,19 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	// webhook's "Payment failed for invoice X" plus dunning's
 	// "Action required — payment retry for invoice X (Attempt N of M)".
 	_, err = a.charger.ChargeInvoiceForDunningRetry(chargeCtx, tenantID, inv, ps.StripeCustomerID, ps.StripePaymentMethodID)
-	return classifyDunningRetryError(err)
+	if cerr := classifyDunningRetryError(err); cerr != nil {
+		// Counted declines carry their PI id across the boundary (typed
+		// dunning wrapper, no payment import in dunning) so the failed
+		// retry's timeline row can be matched to its exact
+		// payment_intent.payment_failed webhook twin. Transient skips
+		// pass through untouched — no attempt row is written for them.
+		var pe *payment.PaymentError
+		if !errors.Is(cerr, dunning.ErrTransientSkip) && errors.As(err, &pe) && pe.PaymentIntentID != "" {
+			return &dunning.RetryError{PaymentIntentID: pe.PaymentIntentID, Err: cerr}
+		}
+		return cerr
+	}
+	return nil
 }
 
 // classifyDunningRetryError maps a dunning-retry CHARGE result to the signal

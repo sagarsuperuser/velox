@@ -251,15 +251,38 @@ func TestMergeFailedPaymentTwins(t *testing.T) {
 		}
 	})
 
-	t.Run("dunning row with pre-existing PI id is not overwritten", func(t *testing.T) {
+	t.Run("dunning row with its own PI id only accepts ITS twin", func(t *testing.T) {
+		// Contract change with the PI-attribution fix (timeline-audit
+		// finding 4): a dunning row that DECLARES its PI is claimed by
+		// exactly that PI's failure. A different PI's failure — here a
+		// customer-initiated attempt — must survive standalone rather
+		// than fold its decline facts onto the wrong retry (the old
+		// index pairing did exactly that; this subtest used to lock it).
 		dunning := dunningRetry(0, 1)
 		dunning.PaymentIntentID = "pi_preset"
 		got := mergeFailedPaymentTwins([]timelineEvent{
 			stripeFailed(15*time.Second, "pi_stripe"),
 			dunning,
 		})
-		if len(got) != 1 || got[0].PaymentIntentID != "pi_preset" {
-			t.Errorf("existing PI id should be preserved, got %+v", got)
+		if len(got) != 2 {
+			t.Fatalf("mismatched PI must NOT fold: want both rows to survive, got %+v", got)
+		}
+		for _, e := range got {
+			if e.Source == "dunning" && (e.PaymentIntentID != "pi_preset" || e.Error != "") {
+				t.Errorf("dunning row must stay untouched: %+v", e)
+			}
+		}
+
+		// And the exact twin DOES fold, lifting facts without overwriting
+		// the declared id.
+		dunning2 := dunningRetry(0, 1)
+		dunning2.PaymentIntentID = "pi_exact"
+		got2 := mergeFailedPaymentTwins([]timelineEvent{
+			stripeFailed(15*time.Second, "pi_exact"),
+			dunning2,
+		})
+		if len(got2) != 1 || got2[0].PaymentIntentID != "pi_exact" || got2[0].Error == "" {
+			t.Errorf("exact twin should fold onto the dunning row: %+v", got2)
 		}
 	})
 

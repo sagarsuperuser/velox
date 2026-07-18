@@ -13,6 +13,22 @@ import (
 	"github.com/sagarsuperuser/velox/internal/platform/clock"
 )
 
+// RetryError is the adapter's decline wrapper: it carries the Stripe
+// PaymentIntent id of the FAILED charge across the domain boundary
+// without dunning importing payment types. The timeline uses the id to
+// attribute payment_intent.payment_failed webhook rows to their exact
+// retry (pre-fix the k-th failure paired with the k-th dunning row by
+// index, so a customer's failed hosted-page attempt could stamp ITS
+// decline message onto an engine retry's row). Error() delegates so
+// event Reason strings are unchanged.
+type RetryError struct {
+	PaymentIntentID string
+	Err             error
+}
+
+func (e *RetryError) Error() string { return e.Err.Error() }
+func (e *RetryError) Unwrap() error { return e.Err }
+
 // ErrTransientSkip signals that the PaymentRetrier could not attempt a
 // charge this tick — the Stripe call never happened, so dunning must NOT
 // tick attempt_count or emit a failure event. Typical causes: per-tenant
@@ -588,6 +604,14 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		// (= run.NextActionAt at fire time, captured into `now` above)
 		// so each retry row on the invoice timeline carries its own
 		// scheduled timestamp instead of all sharing frozen_time.
+		// Attribution key for the invoice timeline: the failed charge's
+		// PI id, when the adapter surfaced it (RetryError). Legacy rows
+		// without it fall back to index pairing in the timeline merge.
+		var evtMeta map[string]any
+		var rerr *RetryError
+		if errors.As(retryErr, &rerr) && rerr.PaymentIntentID != "" {
+			evtMeta = map[string]any{"payment_intent_id": rerr.PaymentIntentID}
+		}
 		_, _ = s.store.CreateEvent(ctx, tenantID, domain.InvoiceDunningEvent{
 			RunID:        run.ID,
 			InvoiceID:    run.InvoiceID,
@@ -595,6 +619,7 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			State:        domain.DunningActive,
 			AttemptCount: run.AttemptCount,
 			Reason:       retryErr.Error(),
+			Metadata:     evtMeta,
 			CreatedAt:    now,
 		})
 
