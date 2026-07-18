@@ -2137,8 +2137,19 @@ func (s *PostgresStore) ListFailedWithoutDunningRun(ctx context.Context, olderTh
 }
 
 // ListAutoChargePendingForClock is the catchup-path counterpart to
-// ListAutoChargePending. Returns invoices whose owning subscription is
+// ListAutoChargePending. Returns invoices whose owning CUSTOMER is
 // pinned to the given clock and need auto-charge retry. ADR-029 Phase 1.
+//
+// Clock membership resolves through customers, NOT a subscriptions
+// join: the pin is customer-level (ADR-027; a sub only ever inherits
+// its customer's clock), and an inner subscriptions join silently
+// dropped one-off invoices (subscription_id NULL) — the wall sweep
+// correctly skips them via is_simulated, so a sub-joined catchup left
+// them stranded UNCHARGEABLE forever (found live in FLOW TC4: a
+// clock-pinned one-off with a card on file survived two wall ticks
+// AND an Advance uncharged). Same fix applied to
+// ListPendingTaxRetryForClock below; every other ForClock candidate
+// query already resolves via customers.
 //
 // Time predicate is implicit: the catchup worker calls this AFTER it
 // has finalized any newly-due periods for the same clock, so any
@@ -2160,13 +2171,13 @@ func (s *PostgresStore) ListAutoChargePendingForClock(ctx context.Context, tenan
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedInvCols("i")+` FROM invoices i
-		JOIN subscriptions s ON s.id = i.subscription_id
+		JOIN customers c ON c.id = i.customer_id
 		WHERE i.auto_charge_pending = TRUE
 		  AND i.payment_status = 'pending'
 		  AND i.status = 'finalized'
 		  AND i.amount_due_cents > 0
 		  AND i.tenant_id = $1
-		  AND s.test_clock_id = $2
+		  AND c.test_clock_id = $2
 		ORDER BY i.created_at ASC
 		LIMIT $3
 	`, tenantID, clockID, limit)
@@ -2517,9 +2528,9 @@ func (s *PostgresStore) ListPendingTaxRetryForClock(ctx context.Context, tenantI
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT `+qualifiedInvCols("i")+` FROM invoices i
-		JOIN subscriptions s ON s.id = i.subscription_id
+		JOIN customers c ON c.id = i.customer_id
 		WHERE i.tenant_id = $1
-		  AND s.test_clock_id = $2
+		  AND c.test_clock_id = $2
 		  AND i.status = 'draft'
 		  AND i.tax_status IN ('pending', 'failed')
 		  AND COALESCE(i.tax_error_code, '') = ANY($3)
