@@ -124,7 +124,7 @@ type InvoiceDunningRun struct {
 	InvoiceAmountDue int64  `json:"invoice_amount_due_cents,omitempty"`
 	InvoiceCurrency  string `json:"invoice_currency,omitempty"`
 
-	// EffectiveNow is the owning sub's test-clock frozen_time when
+	// EffectiveNow is the owning customer's test-clock frozen_time when
 	// the run is on a clock-pinned sub. Frontend uses this as the
 	// "now" baseline for relative-time rendering — wall-clock would
 	// surface "overdue" on every row whose next_action_at sits in
@@ -133,6 +133,11 @@ type InvoiceDunningRun struct {
 	// to Date.now()). Authoritative; replaces the prior client-side
 	// 24h-divergence heuristic.
 	EffectiveNow *time.Time `json:"effective_now,omitempty"`
+	// TestClockID is the owning customer's clock when pinned — drives
+	// the amber test-clock badge server-authoritatively (the prior
+	// client-side subscription-map heuristic lost the badge on
+	// one-off-invoice runs and past page 1).
+	TestClockID string `json:"test_clock_id,omitempty"`
 }
 
 // CustomerDunningOverride was removed in ADR-036. The partial-field

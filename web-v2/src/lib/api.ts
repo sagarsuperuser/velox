@@ -1470,6 +1470,7 @@ export interface DunningRun {
   // Retry / Started). Missing for wall-clock runs — renderer falls
   // back to Date.now(). Authoritative; replaces prior heuristic.
   effective_now?: string
+  test_clock_id?: string
 }
 
 export interface DunningEvent {
