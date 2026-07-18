@@ -3795,6 +3795,21 @@ func TestProcessExpiredPauseCollections(t *testing.T) {
 		if got, ok := audit.entries[0].metadata["resumed_at"].(time.Time); !ok || !got.Equal(contracted) {
 			t.Errorf("resumed_at: got %v, want the contracted %v, NOT advance-end %v", audit.entries[0].metadata["resumed_at"], contracted, frozen)
 		}
+		// The instant override must NOT strip the sim axis: the first fix
+		// used WithEffectiveNow, which deliberately clears the clock id,
+		// and the resume's audit row lost sim_effective_at/test_clock_id
+		// (and its test-clock chip in the UI). Overriding the instant on a
+		// KNOWN clock is WithSim's job — assert the pair survives.
+		e := audit.entries[0]
+		if !e.bound {
+			t.Fatal("resume audit emission lost its sim binding — the row would render as wall-clock with no test-clock chip")
+		}
+		if !e.sim.At.Equal(contracted) {
+			t.Errorf("sim instant: got %v, want the contracted %v", e.sim.At, contracted)
+		}
+		if e.sim.TestClockID != "clk_1" {
+			t.Errorf("sim clock id: got %q, want clk_1", e.sim.TestClockID)
+		}
 	})
 }
 
