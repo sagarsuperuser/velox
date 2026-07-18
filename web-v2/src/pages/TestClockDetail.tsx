@@ -245,7 +245,7 @@ export default function TestClockDetailPage() {
             <FastForward size={14} className="mr-2" />
             Advance
           </Button>
-          <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setShowDelete(true)}>
+          <Button size="sm" variant="outline" aria-label="Delete test clock" className="text-destructive hover:text-destructive" onClick={() => setShowDelete(true)}>
             <Trash2 size={14} />
           </Button>
         </div>
