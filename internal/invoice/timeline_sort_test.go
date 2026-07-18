@@ -68,10 +68,11 @@ func TestSortInvoiceTimeline_CausalTies(t *testing.T) {
 	})
 
 	t.Run("dunningEventRank maps every kind causally", func(t *testing.T) {
-		if !(dunningEventRank(domain.DunningEventStarted) < dunningEventRank(domain.DunningEventRetryAttempted) &&
+		causal := dunningEventRank(domain.DunningEventStarted) < dunningEventRank(domain.DunningEventRetryAttempted) &&
 			dunningEventRank(domain.DunningEventRetryAttempted) < dunningEventRank(domain.DunningEventEscalated) &&
 			dunningEventRank(domain.DunningEventEscalated) < rankLifecycleTerminal &&
-			rankLifecycleTerminal < dunningEventRank(domain.DunningEventResolved)) {
+			rankLifecycleTerminal < dunningEventRank(domain.DunningEventResolved)
+		if !causal {
 			t.Error("dunning rank ordering broken: started < retry < escalated < terminal-lifecycle < resolved must hold")
 		}
 	})
