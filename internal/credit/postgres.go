@@ -1364,7 +1364,6 @@ func (s *PostgresStore) CountEntries(ctx context.Context, filter ListFilter) (in
 	if filter.EntryType != "" {
 		query += fmt.Sprintf(" AND entry_type = $%d", idx)
 		args = append(args, filter.EntryType)
-		idx++
 	}
 	var n int
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&n)

@@ -87,7 +87,7 @@ func TestCreditHandler_ListEntries_PaginationContract(t *testing.T) {
 	t.Run("response carries total from CountEntries, not the page length", func(t *testing.T) {
 		spy, h := newSpyHandler()
 		for i := 0; i < 3; i++ {
-			spy.memStore.entries = append(spy.memStore.entries, domain.CreditLedgerEntry{
+			spy.entries = append(spy.entries, domain.CreditLedgerEntry{
 				CustomerID: "cus_1", EntryType: domain.CreditGrant, AmountCents: 100,
 			})
 		}
