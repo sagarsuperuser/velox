@@ -242,6 +242,34 @@ func (m *memStore) FireScheduledCancellation(ctx context.Context, tenantID, id s
 	return s, nil
 }
 
+func (m *memStore) FireScheduledCancellationWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error) {
+	s, ok := m.subs[id]
+	if !ok || s.TenantID != tenantID {
+		return domain.Subscription{}, errs.ErrNotFound
+	}
+	// Mirror the real CAS: status AND cancel_at equality (ADR-097).
+	if s.Status != domain.SubscriptionActive {
+		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("scheduled cancel cannot fire on %s subscription", s.Status))
+	}
+	if s.CancelAt == nil || !s.CancelAt.Equal(at) {
+		return domain.Subscription{}, errs.InvalidState("scheduled cancel no longer current (unscheduled or re-scheduled concurrently)")
+	}
+	s.Status = domain.SubscriptionCanceled
+	s.CanceledAt = &at
+	s.CancelAt = nil
+	s.CancelAtPeriodEnd = false
+	s.UpdatedAt = clock.Now(ctx)
+	s.Items = m.hydrateItems(id)
+	if billFn != nil {
+		if err := billFn(nil, s); err != nil {
+			// Real store rolls the flip back on billFn error.
+			return domain.Subscription{}, err
+		}
+	}
+	m.subs[id] = s
+	return s, nil
+}
+
 func (m *memStore) SetPauseCollection(ctx context.Context, tenantID, id string, pc domain.PauseCollection) (domain.Subscription, error) {
 	s, ok := m.subs[id]
 	if !ok || s.TenantID != tenantID {

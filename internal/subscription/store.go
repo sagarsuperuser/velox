@@ -83,6 +83,13 @@ type Store interface {
 	// active by the time the UPDATE ran.
 	FireScheduledCancellation(ctx context.Context, tenantID, id string, at time.Time) (domain.Subscription, error)
 
+	// FireScheduledCancellationWithBill is the ADR-097 mid-period variant:
+	// flip + billFn (final partial invoice + relief drafts) in ONE tx, CAS
+	// on status='active' AND cancel_at = at so a concurrent unschedule or
+	// re-schedule defeats the fire. errs.InvalidState covers both benign
+	// race outcomes (already terminated; schedule changed).
+	FireScheduledCancellationWithBill(ctx context.Context, tenantID, id string, at time.Time, billFn func(tx *sql.Tx, canceled domain.Subscription) error) (domain.Subscription, error)
+
 	// SetPauseCollection writes the (behavior, resumes_at) pair onto the row.
 	// Distinct from the removed hard-pause (Service.Pause/PauseAtomic, dropped
 	// in PR-8 / migration 0090) — pause_collection keeps the cycle running but

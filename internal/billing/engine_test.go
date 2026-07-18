@@ -341,7 +341,11 @@ func (m *mockSubs) GetDueBilling(_ context.Context, before time.Time, limit int)
 			continue
 		}
 		eligible := s.Status == domain.SubscriptionActive || s.Status == domain.SubscriptionTrialing
-		if eligible && s.NextBillingAt != nil && !s.NextBillingAt.After(before) {
+		due := s.NextBillingAt != nil && !s.NextBillingAt.After(before)
+		// Mirror the real query's ADR-097 cancel arm: active subs with a
+		// due cancel_at are admitted even when next_billing_at is future.
+		cancelDue := s.Status == domain.SubscriptionActive && s.CancelAt != nil && !s.CancelAt.After(before)
+		if eligible && (due || cancelDue) {
 			result = append(result, s)
 		}
 	}

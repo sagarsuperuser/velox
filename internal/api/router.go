@@ -876,6 +876,11 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// route card-less auto_charge_pending invoices into dunning so they
 	// reach a terminal instead of looping in RetryPendingCharges forever.
 	engine.SetDunningStarter(&dunningStarterAdapter{dunning: dunningSvc})
+	// ADR-097: a cancel_at strictly inside a billing period fires through
+	// the subscription service's one-tx composition (flip + final invoice +
+	// relief drafts). The engine detects due-ness via the scans' cancel
+	// arm; unwired, a due mid-period cancel would spin the scan forever.
+	engine.SetScheduledCancelExecutor(subSvc)
 	// Close an active dunning run when a background settle (credit-cover sweep /
 	// threshold close) pays the invoice without going through the invoice
 	// handler. dunningSvc.ResolveByInvoice matches the interface directly (no
