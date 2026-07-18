@@ -417,8 +417,12 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		return nil, 0, err
 	}
 
-	// LEFT JOIN denormalizes invoice fields + the owning sub's test-
-	// clock frozen_time onto each row. Eliminates N round-trips for
+	// LEFT JOIN denormalizes invoice fields + the owning CUSTOMER's
+	// test-clock frozen_time onto each row (through customers, not
+	// subscriptions — a one-off invoice has no subscription row, and
+	// the sub join left its runs rendering wall-anchored relative
+	// times with no clock badge; a sub's clock always equals its
+	// customer's clock, ADR-027). Eliminates N round-trips for
 	// the /dunning page (was: 1 list + N invoice fetches + N sub
 	// fetches + N clock fetches; now: 1 query). LEFT JOINs because
 	// invoice / sub / clock references can be NULL or unresolvable
@@ -427,11 +431,11 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		COALESCE(r.reason,''), r.attempt_count, r.last_attempt_at, r.next_action_at,
 		r.paused, r.resolved_at, COALESCE(r.resolution,''), r.created_at, r.updated_at,
 		COALESCE(i.invoice_number, ''), COALESCE(i.amount_due_cents, 0), COALESCE(i.currency, ''),
-		tc.frozen_time
+		tc.frozen_time, COALESCE(tc.id, '')
 		FROM invoice_dunning_runs r
 		LEFT JOIN invoices i ON i.id = r.invoice_id
-		LEFT JOIN subscriptions s ON s.id = i.subscription_id
-		LEFT JOIN test_clocks tc ON tc.id = s.test_clock_id` + whereClause + ` ORDER BY r.created_at DESC`
+		LEFT JOIN customers cu ON cu.id = i.customer_id
+		LEFT JOIN test_clocks tc ON tc.id = cu.test_clock_id` + whereClause + ` ORDER BY r.created_at DESC`
 	// Default 50, clamp to 100 — no-silent-fallbacks principle.
 	limit := filter.Limit
 	if limit <= 0 {
@@ -454,7 +458,7 @@ func (s *PostgresStore) ListRuns(ctx context.Context, filter RunListFilter) ([]d
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.InvoiceID, &r.CustomerID, &r.PolicyID,
 			&r.State, &r.Reason, &r.AttemptCount, &r.LastAttemptAt, &r.NextActionAt,
 			&r.Paused, &r.ResolvedAt, &r.Resolution, &r.CreatedAt, &r.UpdatedAt,
-			&r.InvoiceNumber, &r.InvoiceAmountDue, &r.InvoiceCurrency, &r.EffectiveNow); err != nil {
+			&r.InvoiceNumber, &r.InvoiceAmountDue, &r.InvoiceCurrency, &r.EffectiveNow, &r.TestClockID); err != nil {
 			return nil, 0, err
 		}
 		runs = append(runs, r)
@@ -626,9 +630,16 @@ func (s *PostgresStore) ListDueRunsForClock(ctx context.Context, tenantID, clock
 			r.paused, r.resolved_at, COALESCE(r.resolution,''), r.created_at, r.updated_at
 		FROM invoice_dunning_runs r
 		JOIN invoices i ON i.id = r.invoice_id
-		JOIN subscriptions s ON s.id = i.subscription_id
+		-- Clock membership resolves through CUSTOMERS (the pin's owner,
+		-- ADR-027), NOT subscriptions: a one-off invoice has
+		-- subscription_id NULL, so the subscriptions join stranded its
+		-- dunning run unadvanceable — invisible here AND excluded from
+		-- the wall sweep by is_simulated (the #510 class, dunning twin).
+		-- A sub's clock always equals its customer's clock (inherit-only,
+		-- immutable), so sub-backed runs behave identically.
+		JOIN customers c ON c.id = i.customer_id
 		WHERE r.tenant_id = $1
-			AND s.test_clock_id = $2
+			AND c.test_clock_id = $2
 			AND r.next_action_at <= $3
 			AND r.paused = false
 			AND r.state NOT IN ('resolved', 'escalated')
@@ -706,7 +717,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, tenantID, runID string) 
 		SELECT id, run_id, tenant_id, invoice_id, event_type, state,
 			COALESCE(reason,''), attempt_count, metadata, created_at
 		FROM invoice_dunning_events WHERE run_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, runID)
 	if err != nil {
 		return nil, err

@@ -139,22 +139,23 @@ function RunsTab() {
       const runs = runsRes.data || []
       const invoiceIds = Array.from(new Set(runs.map(r => r.invoice_id).filter(Boolean)))
       const customerIds = Array.from(new Set(runs.map(r => r.customer_id).filter(Boolean)))
-      const [invoicesRes, custRes, subsRes] = await Promise.all([
+      const [invoicesRes, custRes] = await Promise.all([
         invoiceIds.length > 0
           ? api.listInvoices(`ids=${invoiceIds.join(',')}&limit=${invoiceIds.length}`).catch(() => ({ data: [] as Invoice[], total: 0 }))
           : Promise.resolve({ data: [] as Invoice[], total: 0 }),
         customerIds.length > 0
           ? api.listCustomers(`ids=${customerIds.join(',')}&limit=${customerIds.length}`).catch(() => ({ data: [] as Customer[], total: 0 }))
           : Promise.resolve({ data: [] as Customer[], total: 0 }),
-        api.listSubscriptions().catch(() => ({ data: [], total: 0 })),
       ])
       const iMap: Record<string, Invoice> = {}
       invoicesRes.data.forEach(inv => { iMap[inv.id] = inv })
       const cMap: Record<string, Customer> = {}
       custRes.data.forEach(c => { cMap[c.id] = c })
-      const sMap: Record<string, string> = {}
-      subsRes.data.forEach(s => { if (s.test_clock_id) sMap[s.id] = s.test_clock_id })
-      return { runs, total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap, subTestClockMap: sMap }
+      // Test-clock badge is server-authoritative now (run.test_clock_id
+      // resolves through the CUSTOMER's pin) — the old client-side
+      // subscription map lost the badge on one-off-invoice runs and on
+      // subs past the first unpaginated page.
+      return { runs, total: runsRes.total || 0, invoiceMap: iMap, customerMap: cMap }
     },
   })
 
@@ -171,7 +172,6 @@ function RunsTab() {
   const runs = runsData?.runs ?? []
   const total = runsData?.total ?? 0
   const invoiceMap = runsData?.invoiceMap ?? {}
-  const subTestClockMap = runsData?.subTestClockMap ?? {}
   const customerMap = runsData?.customerMap ?? {}
 
   const loadRunEvents = async (runId: string) => {
@@ -331,8 +331,8 @@ function RunsTab() {
                                 className="text-sm font-mono text-primary hover:underline">
                                 {run.invoice_number || inv?.invoice_number || run.invoice_id.slice(0, 8) + '...'}
                               </Link>
-                              {inv?.subscription_id && subTestClockMap[inv.subscription_id] && (
-                                <TestClockBadge testClockId={subTestClockMap[inv.subscription_id]} />
+                              {run.test_clock_id && (
+                                <TestClockBadge testClockId={run.test_clock_id} />
                               )}
                             </div>
                           </TableCell>
