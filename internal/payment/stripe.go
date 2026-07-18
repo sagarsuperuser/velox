@@ -462,6 +462,16 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	if purpose != "" {
 		metadata["velox_purpose"] = purpose
 	}
+	// velox_anchor_at: the CONTRACTED simulated instant this charge fires
+	// at (a dunning retry's next_action_at, a cycle's close boundary).
+	// The settle path — inline OR the wall-side webhook, which cannot see
+	// the caller's ctx — stamps paid_at from this anchor, so a recovery
+	// that happened at sim Mar 7 never records "paid Apr 1" just because
+	// the operator advanced a month in one click (ADR-030
+	// contracted-instant rule). Absent on wall-clock charges.
+	if sim, ok := clock.SimOf(ctx); ok {
+		metadata["velox_anchor_at"] = sim.At.UTC().Format(time.RFC3339Nano)
+	}
 	// Per-attempt idempotency key. inv.UpdatedAt advances every time
 	// UpdatePayment runs (which happens on every prior failed attempt
 	// recording last_payment_error), so each genuine retry gets a
@@ -628,7 +638,13 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 	// requires_action / requires_confirmation / requires_capture — delayed
 	// methods, or rare off-session SCA) stay `processing` and await the webhook.
 	if result.Status == "succeeded" {
-		if serr := s.SettleSucceeded(ctx, tenantID, inv, result.ID, inv.AmountDueCents, SourceChargeResponse); serr != nil {
+		settleCtx := ctx
+		if sim, ok := clock.SimOf(ctx); ok {
+			// Same anchor the PI metadata carries — the inline path can
+			// hand it over directly instead of round-tripping via Stripe.
+			settleCtx = withSettleAnchor(ctx, sim.At)
+		}
+		if serr := s.SettleSucceeded(settleCtx, tenantID, inv, result.ID, inv.AmountDueCents, SourceChargeResponse); serr != nil {
 			return domain.Invoice{}, fmt.Errorf("settle succeeded inline: %w", serr)
 		}
 		// Return the freshly-settled row so callers (dunning retrier, portal,
@@ -1063,6 +1079,9 @@ func (s *Stripe) handlePaymentSucceeded(ctx context.Context, tenantID string, ev
 	var captured int64
 	if event.AmountCents != nil {
 		captured = *event.AmountCents
+	}
+	if a, ok := anchorFromEventPayload(event); ok {
+		ctx = withSettleAnchor(ctx, a)
 	}
 	return s.SettleSucceeded(ctx, tenantID, inv, event.PaymentIntentID, captured, SourceWebhook)
 }

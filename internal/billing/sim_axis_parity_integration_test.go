@@ -175,8 +175,17 @@ func TestSimAxis_ClockDrivenLifecycle_EveryAuditRowIsStamped(t *testing.T) {
 				r.id, r.action, r.resourceType)
 			continue
 		}
-		if !r.simAt.Equal(frozen) {
-			t.Errorf("audit row %s: sim_effective_at = %v, want the clock's frozen_time %v", r.id, r.simAt, frozen)
+		// Post contracted-instant anchoring (the #513-#523 arc), a catchup
+		// row stamps ITS OWN cycle's close instant, not advance-end — a
+		// Jan-cycle row says Jan 1 even when the advance lands Mar 1. The
+		// parity assertion is therefore a WINDOW: every sim stamp lies
+		// inside the advance's simulated span, never past the frozen
+		// target and never before the simulation's first billable instant.
+		if r.simAt.After(frozen) {
+			t.Errorf("audit row %s: sim_effective_at = %v is PAST the clock's frozen_time %v", r.id, r.simAt, frozen)
+		}
+		if r.simAt.Before(cycleStart) {
+			t.Errorf("audit row %s: sim_effective_at = %v predates the simulation's first cycle %v", r.id, r.simAt, cycleStart)
 		}
 		// created_at stays WALL-clock (ADR-030) — the sim axis is the second
 		// axis, never a replacement. A row whose created_at drifted into 2027

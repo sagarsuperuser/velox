@@ -1081,3 +1081,58 @@ func TestProcessDueRunsForClock_RecoveryStampsContractedInstant(t *testing.T) {
 		t.Errorf("resolved row: got %v, want the contracted instant %v (NOT advance-end %v)", resolvedRow.CreatedAt, retry2At, frozen)
 	}
 }
+
+// clockCapturingRetrier records the ctx time-binding at RetryPayment — the
+// mechanism the paid_at anchor rides on (the charge stamps PI metadata
+// velox_anchor_at from clock.SimOf(ctx)).
+type clockCapturingRetrier struct {
+	sims []clock.Sim
+}
+
+func (c *clockCapturingRetrier) RetryPayment(ctx context.Context, _, _, _ string) error {
+	if sim, ok := clock.SimOf(ctx); ok {
+		c.sims = append(c.sims, sim)
+	} else {
+		c.sims = append(c.sims, clock.Sim{})
+	}
+	return fmt.Errorf("payment declined")
+}
+
+// TestProcessDueRunsForClock_ChargeCtxCarriesAnchoredInstant: each retry's
+// charge must fire under a ctx whose Sim instant is the retry's CONTRACTED
+// next_action_at (clock retained) — that binding is what the payment layer
+// reads into the PI's velox_anchor_at, which the settle prefers for
+// paid_at. Pre-fix the ctx carried the catchup's advance-end frozen_time
+// for every retry.
+func TestProcessDueRunsForClock_ChargeCtxCarriesAnchoredInstant(t *testing.T) {
+	store := newMemStore()
+	retrier := &clockCapturingRetrier{}
+	svc := NewService(store, retrier, nil)
+	ctx := clock.WithSim(context.Background(), clock.Sim{At: time.Date(2024, 5, 20, 0, 0, 0, 0, time.UTC), TestClockID: "clock_1"})
+
+	cycleClose := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	frozen := time.Date(2024, 5, 20, 0, 0, 0, 0, time.UTC)
+	if _, err := svc.StartDunning(ctx, "t1", "inv_1", "cus_1", cycleClose); err != nil {
+		t.Fatalf("start dunning: %v", err)
+	}
+	if _, errs := svc.ProcessDueRunsForClock(ctx, "t1", "clock_1", frozen, 20); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	wantInstants := []time.Time{
+		cycleClose.Add(72 * time.Hour),                              // retry #1: May 4
+		cycleClose.Add(72*time.Hour + 72*time.Hour),                 // retry #2: May 7
+		cycleClose.Add(72*time.Hour + 72*time.Hour + 120*time.Hour), // retry #3: May 12
+	}
+	if len(retrier.sims) != len(wantInstants) {
+		t.Fatalf("retries: got %d, want %d", len(retrier.sims), len(wantInstants))
+	}
+	for i, want := range wantInstants {
+		if !retrier.sims[i].At.Equal(want) {
+			t.Errorf("retry #%d charge ctx instant: got %v, want the contracted %v (NOT advance-end %v)", i+1, retrier.sims[i].At, want, frozen)
+		}
+		if retrier.sims[i].TestClockID != "clock_1" {
+			t.Errorf("retry #%d lost its clock: %q (WithEffectiveNow would do this — must be WithSim)", i+1, retrier.sims[i].TestClockID)
+		}
+	}
+}

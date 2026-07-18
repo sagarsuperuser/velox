@@ -3065,6 +3065,15 @@ func (e *Engine) billOnePeriod(ctx context.Context, sub domain.Subscription) (bo
 	if sub.NextBillingAt != nil {
 		now = *sub.NextBillingAt
 	}
+	// Rebind ctx's instant to this cycle's own close (keeping the clock)
+	// so downstream effects that read ctx time — the auto-charge, whose
+	// PI metadata anchor drives the settle's paid_at — land on the
+	// boundary like every other cycle stamp, not on advance-end
+	// frozen_time (live find: a Jul-1-boundary invoice recorded
+	// paid_at at the advance target an hour later).
+	if sim, ok := clock.SimOf(ctx); ok {
+		ctx = clock.WithSim(ctx, clock.Sim{At: now, TestClockID: sim.TestClockID})
+	}
 
 	// Pause auto-resume is no longer evaluated here — it now runs as a
 	// dedicated phase BEFORE this loop (Scheduler.pauseResumer for

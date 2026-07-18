@@ -508,6 +508,25 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	}
 	run.LastAttemptAt = &now
 
+	// Rebind ctx's instant to the anchored retry time while keeping the
+	// clock (WithSim, never WithEffectiveNow — that clears the clock id).
+	// Everything downstream of this retry — the charge (which stamps the
+	// anchor into PI metadata for the webhook settle), credit applies,
+	// the inline settle's paid_at — inherits the CONTRACTED instant
+	// instead of the catchup's advance-end frozen_time. Wall-clock runs
+	// carry no Sim binding and are untouched.
+	if sim, ok := clock.SimOf(ctx); ok {
+		ctx = clock.WithSim(ctx, clock.Sim{At: now, TestClockID: sim.TestClockID})
+	}
+
+	// Rebind ctx's instant to the anchored retry time while keeping the
+	// clock (WithSim, never WithEffectiveNow — that clears the clock id).
+	// Everything downstream of this retry — the charge (which stamps the
+	// anchor into PI metadata for the webhook settle), credit applies,
+	// the inline settle's paid_at — inherits the CONTRACTED instant
+	// instead of the catchup's advance-end frozen_time. Wall-clock runs
+	// carry no Sim binding and are untouched.
+
 	// Record the attempt BEFORE the charge (record-before-effect): a resolver that
 	// fires synchronously inside RetryPayment — a card success that settles this
 	// invoice — re-reads the run from the store, so it must see the FULL

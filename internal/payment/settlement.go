@@ -5,8 +5,10 @@ import (
 	"errors"
 
 	"fmt"
-	"github.com/stripe/stripe-go/v82"
 	"log/slog"
+	"time"
+
+	"github.com/stripe/stripe-go/v82"
 
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/errs"
@@ -86,6 +88,15 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// 2026-05-08" for a simulation-2024 invoice.
 	ctx = s.bindForInvoice(ctx, tenantID, inv.ID)
 	now := clock.Now(ctx)
+	// The charge's CONTRACTED instant beats the bind: the pin resolves the
+	// clock's CURRENT frozen_time — during (or after) a wide advance that's
+	// the advance TARGET, not the retry/boundary the charge fired at, so a
+	// sim-Mar-7 dunning recovery stamped "paid Apr 1". The inline settle
+	// hands the anchor over on ctx; the webhook path recovers it from the
+	// PI's velox_anchor_at metadata. Wall charges carry no anchor.
+	if a, ok := settleAnchorFrom(ctx); ok {
+		now = a
+	}
 
 	// Single atomic operation: mark paid, zero amount_due, record PI + paid_at,
 	// AND enqueue invoice.paid + payment.succeeded in the SAME tx (the card path).
@@ -484,4 +495,41 @@ func (s *Stripe) expireCheckoutSessionsBestEffort(ctx context.Context, tenantID 
 			slog.WarnContext(ctx, "settle: mark claim expired failed", "claim_id", c.ID, "error", err)
 		}
 	}
+}
+
+// settleAnchorKey carries the charge's contracted instant from the charge
+// site (inline) or the webhook's PI metadata into SettleSucceeded, which
+// rebinds ctx internally (bindForInvoice resolves the clock's CURRENT
+// frozen_time and would otherwise win). Package-private: the anchor is a
+// payment-internal contract between the charge and its settle.
+type settleAnchorKeyType struct{}
+
+var settleAnchorKey = settleAnchorKeyType{}
+
+func withSettleAnchor(ctx context.Context, at time.Time) context.Context {
+	return context.WithValue(ctx, settleAnchorKey, at.UTC())
+}
+
+func settleAnchorFrom(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(settleAnchorKey).(time.Time)
+	return t, ok && !t.IsZero()
+}
+
+// anchorFromEventPayload extracts data.object.metadata.velox_anchor_at from
+// a parsed Stripe webhook event. Returns false on absence or parse failure —
+// the settle then falls back to the invoice-pin binding (the pre-anchor
+// behavior), never errors: a malformed anchor must not block a settlement.
+func anchorFromEventPayload(event domain.StripeWebhookEvent) (time.Time, bool) {
+	data, _ := event.Payload["data"].(map[string]any)
+	obj, _ := data["object"].(map[string]any)
+	meta, _ := obj["metadata"].(map[string]any)
+	raw, _ := meta["velox_anchor_at"].(string)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
