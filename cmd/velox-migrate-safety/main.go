@@ -17,8 +17,12 @@
 //     during the migration (sampled by a side goroutine reading
 //     pg_locks every 50ms)
 //  5. Walk DOWN every migration in reverse to verify rollback paths
-//     don't error and don't silently drop seeded data on tables that
-//     should still exist.
+//     don't error (each step's duration + lock pressure is recorded).
+//     NOTE: this does NOT verify that seeded data survives a down —
+//     a general survival check needs per-migration semantics (downs
+//     legitimately drop columns/rows), so it would be noise without
+//     annotations. Add per-migration assertions when the first prod
+//     rollback makes them worth writing (2026-07-19 truth audit).
 //  6. Emit a CSV report to stdout (or the path given by --report).
 //
 // Usage:

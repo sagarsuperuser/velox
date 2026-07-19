@@ -128,4 +128,31 @@ func TestDueScans_CancelArm_Scoping(t *testing.T) {
 			t.Error("clock scan admitted a cancel_at only due vs WALL time — must compare tc.frozen_time")
 		}
 	})
+
+	t.Run("GetDueBillingForTenant carries the same cancel arm", func(t *testing.T) {
+		// The tenant manual-run scan is the THIRD due-subscription query
+		// (ADR-097 names all three); it carried the arm untested — the
+		// header's "three queries" claim was only two-thirds true until
+		// this leg existed (2026-07-19 truth audit).
+		got, err := store.GetDueBillingForTenant(ctx, tenantID, wallNow, 50)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		found := map[string]bool{}
+		for _, s := range got {
+			found[s.ID] = true
+		}
+		if !found["sub_ca_hit"] {
+			t.Error("active sub with due cancel_at NOT returned by the tenant scan — its ADR-097 arm is missing")
+		}
+		if found["sub_ca_trial"] {
+			t.Error("trialing sub admitted by the tenant scan's cancel arm — livelock decliner (must be active-only)")
+		}
+		if found["sub_ca_pin_future"] || found["sub_ca_pin_due"] {
+			t.Error("clock-pinned sub leaked into the tenant WALL scan via the cancel arm")
+		}
+		if found["sub_ca_live"] {
+			t.Error("live-mode sub leaked into a test-mode tenant scan via the cancel arm")
+		}
+	})
 }
