@@ -661,11 +661,11 @@ Boot warnings on startup (one each when var unset; never fatal):
 
 Default `base_bill_timing=in_arrears`: the recurring base + any usage settles at period end. Mid-period sub starts prorate the base. See B15 / B16 for `in_advance` variants.
 
-- [ ] Plan created without `base_bill_timing` → API returns `base_bill_timing: "in_arrears"`.
-- [ ] New sub mid-month on this plan → `billing_period_end` = 1st of next month, **NO invoice generated at create time** (cycle path handles it at period close).
-- [ ] Run billing before period close → 0 invoices.
-- [ ] Backdate `current_period_end` → 1 invoice with prorated base + usage + tax + due date + invoice-number prefix.
-- [ ] Invoice line items: base line's `billing_period_start/end` matches the invoice's (current period).
+- [x] Plan created without `base_bill_timing` → API returns `base_bill_timing: "in_arrears"`. *(manual 2026-07-19: POST /v1/plans omitting the field → response carried `"in_arrears"` verbatim.)*
+- [x] New sub mid-month on this plan → `billing_period_end` = 1st of next month, **NO invoice generated at create time** (cycle path handles it at period close). *(manual 2026-07-19: sub created Jul 19 → `current_billing_period_end = 2026-07-31T18:30Z` = Aug 1 00:00 **in the tenant TZ** (Asia/Kolkata, ADR-058 anchoring); customer had 0 invoices after activate.)*
+- [x] Run billing before period close → 0 invoices. *(manual 2026-07-19: POST /v1/billing/run → `{invoices_generated: 0, errors: []}`.)*
+- [x] Backdate `current_billing_period_end` (+ `next_billing_at`) → 1 invoice with prorated base + usage + tax + due date + invoice-number prefix. *(manual 2026-07-19: NIM-000125 — base line self-describes "prorated 1/31 days", 3100¢×1/31 = 100¢ exact; +10% tax = 110¢ due; due_at = issued+30d; a second cycle billed the usage: 40 calls × 1¢ = 44¢ w/ tax. SEQUENCING NOTE: events stamped after the backdated period end are correctly EXCLUDED and bill on the next cycle — backdate to a moment AFTER your test events if you want one combined invoice.)*
+- [x] Invoice line items: base line's `billing_period_start/end` matches the invoice's (current period). *(manual 2026-07-19: equal to the microsecond on NIM-000125. Line items ride the top-level `line_items` key of GET /v1/invoices/{id} — there is no separate GET route.)*
 
 ## FLOW B2: Tax precision (NUMERIC(7,4), ADR-042/043)
 
