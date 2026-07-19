@@ -199,6 +199,11 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	// sends would default to live regardless of which mode the
 	// email was enqueued under.
 	ctx = postgres.WithLivemode(ctx, row.Livemode)
+	// Stamp the row id for provider-metadata correlation: the MIME
+	// builders emit it as an X-PM-Metadata-* header so the provider's
+	// Delivery/Bounce/SpamComplaint webhooks can name the exact outbox
+	// row they concern (ADR-098).
+	ctx = WithCorrelation(ctx, row.ID)
 
 	switch row.EmailType {
 	case TypeInvoice:

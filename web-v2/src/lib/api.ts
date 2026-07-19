@@ -560,7 +560,11 @@ export interface SentEmail {
   id: string
   email_type: string
   recipient: string
-  status: 'pending' | 'dispatched' | 'failed' | string
+  status: 'pending' | 'dispatched' | 'failed' | 'skipped' | string
+  // Provider-confirmed outcome layered over status (ADR-098):
+  // 'dispatched' means the relay accepted the handoff; delivery_state is
+  // what the provider then reported via webhook.
+  delivery_state: 'unknown' | 'delivered' | 'bounced' | 'complained' | string
   invoice_number?: string
   last_error?: string
   created_at: string

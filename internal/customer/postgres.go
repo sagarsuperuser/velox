@@ -916,8 +916,25 @@ func (s *PostgresStore) ResetEmailStatus(ctx context.Context, tenantID, customer
 // routing a raw email string through the store — the caller holds the
 // blind-index lookup, which keeps encrypted email handling in one place.
 // Idempotent: repeated calls refresh the timestamp and reason but are
-// otherwise no-ops.
+// otherwise no-ops. NEVER downgrades 'complained' (ADR-098): a spam
+// complaint outranks a bounce, and provider webhooks arrive in any order
+// — a Bounce landing after a SpamComplaint is a benign no-op, not an
+// ErrNotFound (the SMTP-path caller logs ErrNotFound as a real miss).
 func (s *PostgresStore) MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error {
+	return s.markEmailSuppressed(ctx, tenantID, customerID, reason, string(domain.EmailStatusBounced))
+}
+
+// MarkEmailComplained flips email_status to 'complained' — the top of the
+// suppression lattice (unknown < ok < bounced < complained). Sole caller
+// is the provider's SpamComplaint webhook (ADR-098; the state 0050
+// anticipated but nothing wrote until now): a complaint is at least as
+// severe as a hard bounce, and provider-side it is effectively
+// irreversible. Idempotent; never downgraded by later bounces.
+func (s *PostgresStore) MarkEmailComplained(ctx context.Context, tenantID, customerID, reason string) error {
+	return s.markEmailSuppressed(ctx, tenantID, customerID, reason, string(domain.EmailStatusComplained))
+}
+
+func (s *PostgresStore) markEmailSuppressed(ctx context.Context, tenantID, customerID, reason, status string) error {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return err
@@ -925,18 +942,30 @@ func (s *PostgresStore) MarkEmailBounced(ctx context.Context, tenantID, customer
 	defer postgres.Rollback(tx)
 
 	res, err := tx.ExecContext(ctx, `
-		UPDATE customers SET email_status = 'bounced',
+		UPDATE customers SET email_status = $3,
 			email_last_bounced_at = NOW(),
 			email_bounce_reason = NULLIF($1, ''),
 			updated_at = NOW()
-		WHERE id = $2
-	`, reason, customerID)
+		WHERE id = $2 AND email_status <> 'complained'
+	`, reason, customerID, status)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errs.ErrNotFound
+		// Distinguish "row absent" (a real miss the caller should hear
+		// about) from "row present but already 'complained'" (the
+		// monotonic guard blocked a downgrade — benign no-op).
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM customers WHERE id = $1)`, customerID,
+		).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return errs.ErrNotFound
+		}
+		return nil
 	}
 	return tx.Commit()
 }

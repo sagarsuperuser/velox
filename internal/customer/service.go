@@ -238,6 +238,32 @@ func (s *Service) MarkEmailBounced(ctx context.Context, tenantID, customerID, re
 	return nil
 }
 
+// MarkEmailComplained records a spam complaint against the customer's
+// email (resolved from the webhook's address by the caller via the
+// blind-index lookup). Fires customer.email_complained after a
+// successful write — per-cause, never folded into email_bounced: a
+// complaint is a person saying "stop", which partners handle differently
+// from a dead mailbox (and provider-side it is effectively irreversible).
+func (s *Service) MarkEmailComplained(ctx context.Context, tenantID, customerID, reason string) error {
+	if err := s.store.MarkEmailComplained(ctx, tenantID, customerID, reason); err != nil {
+		return err
+	}
+	if s.events != nil {
+		payload := map[string]any{
+			"customer_id": customerID,
+			"reason":      reason,
+		}
+		// Non-fatal on dispatch error — the state transition already
+		// landed; losing a webhook event isn't worth reversing the
+		// status.
+		if err := s.events.Dispatch(ctx, tenantID, domain.EventCustomerEmailComplained, payload); err != nil {
+			slog.WarnContext(ctx, "dispatch customer.email_complained",
+				"tenant_id", tenantID, "customer_id", customerID, "error", err)
+		}
+	}
+	return nil
+}
+
 type CreateInput struct {
 	ExternalID  string `json:"external_id"`
 	DisplayName string `json:"display_name"`

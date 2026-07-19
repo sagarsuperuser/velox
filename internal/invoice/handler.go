@@ -116,12 +116,15 @@ type EmailEventLister interface {
 // EmailEventRow is the timeline-friendly view of an email_outbox row.
 // Trimmed to the fields the timeline renderer needs.
 type EmailEventRow struct {
-	EmailType    string
-	Status       string // pending / dispatched / failed
-	CreatedAt    time.Time
-	DispatchedAt *time.Time
-	LastError    string
-	To           string // resolved from payload
+	EmailType string
+	Status    string // pending / dispatched / failed / skipped
+	// DeliveryState is the provider-confirmed outcome layered over
+	// Status (ADR-098): unknown / delivered / bounced / complained.
+	DeliveryState string
+	CreatedAt     time.Time
+	DispatchedAt  *time.Time
+	LastError     string
+	To            string // resolved from payload
 }
 
 // RefundIssuer issues a direct refund on a paid invoice. Concretely this
@@ -1631,7 +1634,7 @@ var relevantDunningEvents = map[string]bool{
 // templates doesn't accidentally surface them). Status maps to the
 // existing dot-color grammar: succeeded (emerald), processing (blue),
 // failed (red).
-func describeEmailEvent(emailType, outboxStatus, _ string) (string, string) {
+func describeEmailEvent(emailType, outboxStatus, deliveryState string) (string, string) {
 	desc := ""
 	switch emailType {
 	case "invoice":
@@ -1651,14 +1654,30 @@ func describeEmailEvent(emailType, outboxStatus, _ string) (string, string) {
 	default:
 		return "", ""
 	}
-	// Map outbox row status to timeline-status grammar.
+	// Map outbox row status to timeline-status grammar, layering the
+	// provider-confirmed outcome (ADR-098) over a completed handoff:
+	// 'dispatched' alone only means the relay accepted the message —
+	// delivered/bounced/complained is what the provider then learned.
 	switch outboxStatus {
 	case "dispatched":
+		switch deliveryState {
+		case "delivered":
+			return desc + " — delivered", "succeeded"
+		case "bounced":
+			return desc + " — bounced", "failed"
+		case "complained":
+			return desc + " — recipient marked it as spam", "failed"
+		}
 		return desc, "succeeded"
 	case "failed":
 		return desc + " (delivery failed)", "failed"
 	case "pending":
 		return desc + " (queued)", "processing"
+	case "skipped":
+		// Deliberately not sent — the invoice settled while the row sat
+		// queued (0155). Pre-ADR-098 this fell through to the default
+		// "succeeded" rendering, showing a never-sent email as sent.
+		return desc + " (not sent — invoice settled first)", "info"
 	}
 	return desc, "succeeded"
 }
@@ -1921,7 +1940,7 @@ func (h *Handler) paymentTimeline(w http.ResponseWriter, r *http.Request) {
 				if evt.EmailType == "dunning_warning" || evt.EmailType == "dunning_escalation" {
 					continue
 				}
-				desc, status := describeEmailEvent(evt.EmailType, evt.Status, evt.LastError)
+				desc, status := describeEmailEvent(evt.EmailType, evt.Status, evt.DeliveryState)
 				if desc == "" {
 					continue
 				}

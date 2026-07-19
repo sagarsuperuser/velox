@@ -142,9 +142,15 @@ const (
 	EventSubscriptionTrialExtended          = "subscription.trial_extended"
 	EventSubscriptionThresholdCrossed       = "subscription.threshold_crossed"
 	EventCustomerEmailBounced               = "customer.email_bounced"
-	EventDunningStarted                     = "dunning.started"
-	EventDunningEscalated                   = "dunning.escalated"
-	EventDunningResolved                    = "dunning.resolved"
+	// EventCustomerEmailComplained fires when the email provider's
+	// SpamComplaint webhook reports the recipient marked a message as
+	// spam (ADR-098). Per-cause, deliberately not folded into
+	// email_bounced: a complaint is a person opting out, not a dead
+	// mailbox, and it is the more severe (provider-irreversible) state.
+	EventCustomerEmailComplained = "customer.email_complained"
+	EventDunningStarted          = "dunning.started"
+	EventDunningEscalated        = "dunning.escalated"
+	EventDunningResolved         = "dunning.resolved"
 	// Credit balance-VALUE crossing events (ADR-078). Computed on
 	// SUM(amount_cents) before/after inside each ledger-writing tx and
 	// enqueued on the same tx (transactional outbox) — well-ordered per
@@ -213,6 +219,7 @@ var KnownWebhookEventTypes = map[string]bool{
 	EventSubscriptionTrialExtended:          true,
 	EventSubscriptionThresholdCrossed:       true,
 	EventCustomerEmailBounced:               true,
+	EventCustomerEmailComplained:            true,
 	EventDunningStarted:                     true,
 	EventDunningEscalated:                   true,
 	EventDunningResolved:                    true,

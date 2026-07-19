@@ -40,9 +40,16 @@ type Store interface {
 
 	// MarkEmailBounced records a permanent delivery failure for a customer.
 	// Sender calls this via a narrow interface when SMTP returns a 5xx; the
-	// same path is later reused by provider webhooks (SES/SendGrid) when
-	// wired. Idempotent — repeated calls just refresh the timestamp.
+	// Postmark webhook reuses the same path for async hard bounces
+	// (ADR-098). Idempotent — repeated calls just refresh the timestamp.
+	// Never downgrades an existing 'complained' (benign no-op, not an error).
 	MarkEmailBounced(ctx context.Context, tenantID, customerID, reason string) error
+
+	// MarkEmailComplained records a spam complaint — the most severe
+	// recipient state, written only by the provider's SpamComplaint
+	// webhook (ADR-098). Idempotent; outranks and is never replaced by
+	// a later bounce.
+	MarkEmailComplained(ctx context.Context, tenantID, customerID, reason string) error
 
 	// ResetEmailStatus clears any prior bounce/complain flag on the
 	// customer — called by the service layer when the email value

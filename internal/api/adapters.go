@@ -624,12 +624,13 @@ func (a *invoiceEmailEventsAdapter) ListByInvoice(ctx context.Context, tenantID,
 	for _, r := range rows {
 		to, _ := r.Payload["to"].(string)
 		out = append(out, invoice.EmailEventRow{
-			EmailType:    r.EmailType,
-			Status:       r.Status,
-			CreatedAt:    r.CreatedAt,
-			DispatchedAt: r.DispatchedAt,
-			LastError:    r.LastError,
-			To:           to,
+			EmailType:     r.EmailType,
+			Status:        r.Status,
+			DeliveryState: r.DeliveryState,
+			CreatedAt:     r.CreatedAt,
+			DispatchedAt:  r.DispatchedAt,
+			LastError:     r.LastError,
+			To:            to,
 		})
 	}
 	return out, nil
@@ -665,6 +666,7 @@ func (a *customerSentEmailsAdapter) ListByCustomer(ctx context.Context, tenantID
 			EmailType:     r.EmailType,
 			Recipient:     to,
 			Status:        r.Status,
+			DeliveryState: r.DeliveryState,
 			LastError:     r.LastError,
 			CreatedAt:     r.CreatedAt,
 			DispatchedAt:  r.DispatchedAt,
@@ -924,6 +926,49 @@ func (a *bounceReporterAdapter) ReportBounce(ctx context.Context, tenantID, emai
 			_ = err
 		}
 	}
+}
+
+// SuppressBounced / SuppressComplained satisfy email.RecipientSuppressor
+// for the Postmark webhook (ADR-098). Same blind-index resolution as
+// ReportBounce, but errors RETURN so a transient DB failure can 5xx and
+// ride Postmark's redelivery into the idempotent writes. Zero matches is
+// benign (a never-a-customer CC alias — log-only per ADR-082), as is a
+// store-level ErrNotFound (customer deleted between lookup and write).
+func (a *bounceReporterAdapter) SuppressBounced(ctx context.Context, tenantID, email, reason string) error {
+	return a.suppress(ctx, tenantID, email, reason, false)
+}
+
+func (a *bounceReporterAdapter) SuppressComplained(ctx context.Context, tenantID, email, reason string) error {
+	return a.suppress(ctx, tenantID, email, reason, true)
+}
+
+func (a *bounceReporterAdapter) suppress(ctx context.Context, tenantID, email, reason string, complaint bool) error {
+	if a == nil || a.store == nil || a.svc == nil || a.blinder == nil || email == "" {
+		return nil
+	}
+	blind := a.blinder.Blind(email)
+	if blind == "" {
+		return nil
+	}
+	matches, err := a.store.FindByEmailBlindIndex(ctx, blind, 10)
+	if err != nil {
+		return err
+	}
+	for _, m := range matches {
+		if m.TenantID != tenantID {
+			continue
+		}
+		var markErr error
+		if complaint {
+			markErr = a.svc.MarkEmailComplained(ctx, tenantID, m.CustomerID, reason)
+		} else {
+			markErr = a.svc.MarkEmailBounced(ctx, tenantID, m.CustomerID, reason)
+		}
+		if markErr != nil && !errors.Is(markErr, errs.ErrNotFound) {
+			return markErr
+		}
+	}
+	return nil
 }
 
 // suppressionCheckerAdapter is the inverse of bounceReporterAdapter:
