@@ -66,7 +66,7 @@ import { Plus, Search, Download, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Users
 import { EmptyState } from '@/components/EmptyState'
 
 const createCustomerSchema = z.object({
-  external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores allowed'),
+  external_id: z.string().min(1, 'External ID is required').regex(/^[a-zA-Z0-9_-]+$/, 'Only letters, numbers, hyphens, and underscores allowed'),
   display_name: z.string().min(1, 'Display name is required'),
   email: z.string().email('Invalid email address').optional().or(z.literal('')),
   // Test-clock pin: customer-level attach (ADR-027, Stripe parity).

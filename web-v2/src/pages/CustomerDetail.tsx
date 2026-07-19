@@ -75,7 +75,7 @@ function splitEmails(value: string): string[] {
 
 const billingProfileSchema = z.object({
   legal_name: z.string(),
-  phone: z.string().regex(/^[\+\d\s\-\(\)]{7,20}$/, 'Invalid phone number').or(z.literal('')),
+  phone: z.string().regex(/^[+\d\s()-]{7,20}$/, 'Invalid phone number').or(z.literal('')),
   address_line1: z.string(), address_line2: z.string(),
   city: z.string(), state: z.string(), postal_code: z.string(),
   country: z.string(), currency: z.string(),
@@ -405,7 +405,7 @@ export default function CustomerDetailPage() {
             <p className="text-sm text-amber-800 dark:text-amber-300">This customer has been archived. All data is read-only.</p>
             <Button variant="outline" size="sm"
               onClick={() => {
-                api.updateCustomer(customer.id, { status: 'active' } as any).then(() => {
+                api.updateCustomer(customer.id, { status: 'active' }).then(() => {
                   toast.success('Customer restored')
                   invalidateAll()
                 }).catch((err: Error) => showApiError(err, 'Failed to update'))
@@ -467,7 +467,7 @@ export default function CustomerDetailPage() {
                   <AlertDialogAction
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                     onClick={() => {
-                      api.updateCustomer(customer.id, { status: 'archived' } as any).then(() => {
+                      api.updateCustomer(customer.id, { status: 'archived' }).then(() => {
                         toast.success('Customer archived')
                         // invalidateAll() covers ['customers'] (list)
                         // + per-customer queries. refetch() alone
@@ -1881,7 +1881,7 @@ function NewInvoiceDialog({ customerId, customer, billingProfile, onClose, onCre
           try {
             await api.sendInvoiceEmail(invoice.id, recipient)
             sent = true
-          } catch (sendErr) {
+          } catch {
             toast.warning(
               `Invoice finalized, but email to ${recipient} failed. Resend from the invoice detail page.`,
             )
