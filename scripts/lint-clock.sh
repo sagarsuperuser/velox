@@ -69,7 +69,17 @@ violations=0
 violation_lines=""
 
 for pkg in "${PACKAGES[@]}"; do
-  for pattern in "${PATTERNS[@]}"; do
+  # Integration doors have no service.go/postgres.go shape — their whole
+  # surface is handler/mapper/payload files, so the PATTERNS list matched
+  # ZERO litellm files and the package sat in this list scanning nothing
+  # (2026-07-19 truth audit: the gate's own comment cited the litellm
+  # regression it was silently not guarding). Doors scan every prod file.
+  if [[ "$pkg" == *"/integrations/"* ]]; then
+    pkg_patterns=(".go")
+  else
+    pkg_patterns=("${PATTERNS[@]}")
+  fi
+  for pattern in "${pkg_patterns[@]}"; do
     # Find all *<pattern> files (not _test) and scan each.
     while IFS= read -r file; do
       [ -z "$file" ] && continue

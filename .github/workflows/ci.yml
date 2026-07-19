@@ -266,6 +266,13 @@ jobs:
         # genuine bugs) accumulated invisibly. The production build is the gate.
         run: cd web-v2 && npm install --legacy-peer-deps && npm run build
 
+      # The web-v2 unit suite (effectiveNow drift-guard, csv, vocabulary) ran
+      # NOWHERE in CI until 2026-07-19 — a green pipeline said nothing about
+      # it. `npm run lint` is still absent: 10 react-hooks errors block it
+      # (tracked); it lands with that cleanup.
+      - name: Frontend unit tests
+        run: cd web-v2 && npm test
+
   docker:
     needs: [test, frontend]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')

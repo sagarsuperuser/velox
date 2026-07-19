@@ -53,7 +53,7 @@ import { TeamTab } from '@/components/TeamTab'
 const settingsSchema = z.object({
   company_name: z.string().max(255, 'Must be at most 255 characters'),
   company_email: z.string().email('Invalid email address').or(z.literal('')),
-  company_phone: z.string().regex(/^[\+\d\s\-\(\)]{7,20}$/, 'Invalid phone number').or(z.literal('')),
+  company_phone: z.string().regex(/^[+\d\s()-]{7,20}$/, 'Invalid phone number').or(z.literal('')),
   company_address_line1: z.string().max(200, 'Must be at most 200 characters'),
   company_address_line2: z.string().max(200, 'Must be at most 200 characters'),
   company_city: z.string().max(100, 'Must be at most 100 characters'),

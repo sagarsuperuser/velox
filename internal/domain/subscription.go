@@ -107,7 +107,7 @@ func FormatInclusivePeriod(start, end time.Time, loc *time.Location) string {
 		inc = startCivil
 	}
 	const layout = "Jan 2, 2006"
-	return startCivil.Format(layout) + " – " + inc.Format(layout)
+	return startCivil.Format(layout) + " – " + inc.Format(layout) //tz:ok — both values constructed IN loc above (time.Date(..., loc)); the zone is applied at construction, not at render
 }
 
 // NextBillingPeriodEnd computes the next period's end boundary at

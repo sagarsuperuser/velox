@@ -38,7 +38,7 @@ import {
 // create-subscription form across entry points, with the parent ID
 // pre-filled.
 const schema = z.object({
-  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_\-]+$/, 'Only letters, numbers, hyphens, and underscores'),
+  code: z.string().min(1, 'Code is required').regex(/^[a-zA-Z0-9_-]+$/, 'Only letters, numbers, hyphens, and underscores'),
   display_name: z.string().min(1, 'Display name is required'),
   customer_id: z.string().min(1, 'Customer is required'),
   items: z.array(z.object({

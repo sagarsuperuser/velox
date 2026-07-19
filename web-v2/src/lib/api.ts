@@ -333,7 +333,7 @@ export const api = {
     ),
 
   // Customer updates
-  updateCustomer: (id: string, data: { display_name?: string; email?: string; additional_emails?: string[]; dunning_policy_id?: string }) =>
+  updateCustomer: (id: string, data: { display_name?: string; email?: string; additional_emails?: string[]; dunning_policy_id?: string; status?: 'active' | 'archived' }) =>
     apiRequest<Customer>('PATCH', `/customers/${id}`, data),
 
   // Subscription detail

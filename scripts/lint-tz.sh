@@ -46,6 +46,25 @@ if [ -n "$offenders" ]; then
   fail=1
 fi
 
+# ── 1b. Civil-day layouts bound to NAMED CONSTANTS ────────────────────────────
+# The inline grep above cannot see `.Format(layoutConst)`. Enumerate every
+# civil-day layout string CONSTANT (a date token, no clock ':' component),
+# then apply the same .In(/waiver rule to each constant's .Format uses.
+# Without this, routing a render through a named constant silently exited
+# the gate (2026-07-19 truth audit) — the "machine-checked proof" claim
+# held only for inline literals.
+const_names="$(grep -rhoE '(const )?[A-Za-z_][A-Za-z0-9_]* = "[^"]*(2006|January|Jan )[^"]*"' internal/ cmd/ --include='*.go'   | grep -vE '"[^"]*:[^"]*"'   | sed -E 's/^(const )?([A-Za-z_][A-Za-z0-9_]*) = .*/\2/' | sort -u || true)"
+for cname in $const_names; do
+  const_offenders="$(grep -rnE "\.Format\(${cname}\)" internal/ cmd/ --include='*.go'     | grep -v '_test.go:'     | grep -v '\.In('     | grep -v '//tz:ok' || true)"
+  if [ -n "$const_offenders" ]; then
+    echo "✗ lint-tz: civil-day .Format(${cname}) without an explicit .In(loc) zone (ADR-076):"
+    echo
+    echo "$const_offenders" | sed 's/^/    /'
+    echo
+    fail=1
+  fi
+done
+
 # ── 2. The process-UTC pin (ADR-075) must be present ──────────────────────────
 if ! grep -q 'time.Local = time.UTC' cmd/velox/main.go; then
   echo "✗ lint-tz: cmd/velox/main.go must pin the process to UTC (time.Local = time.UTC), ADR-075."
