@@ -85,32 +85,41 @@ func internalDir(t *testing.T) string {
 func domainImports(t *testing.T, internal, dom string, isDomain func(string) bool) []string {
 	t.Helper()
 	dir := filepath.Join(internal, dom)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
 	seen := map[string]bool{}
 	fset := token.NewFileSet()
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ImportsOnly)
+	// WalkDir, not ReadDir: the original non-recursive read skipped domain
+	// SUBPACKAGES (internal/payment/breaker/ is prod code), so a
+	// cross-domain import added there passed this gate unreviewed — the
+	// "a new edge fails this test" guarantee was narrower than claimed
+	// (2026-07-19 truth audit). A subpackage's edges count as its root
+	// domain's edges: the boundary is the domain, not the Go package.
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if perr != nil {
+			return perr
 		}
 		for _, imp := range f.Imports {
-			path := strings.Trim(imp.Path.Value, `"`)
+			ipath := strings.Trim(imp.Path.Value, `"`)
 			const pfx = "github.com/sagarsuperuser/velox/internal/"
-			if !strings.HasPrefix(path, pfx) {
+			if !strings.HasPrefix(ipath, pfx) {
 				continue
 			}
-			pkg := strings.SplitN(strings.TrimPrefix(path, pfx), "/", 2)[0]
+			pkg := strings.SplitN(strings.TrimPrefix(ipath, pfx), "/", 2)[0]
 			if pkg != dom && isDomain(pkg) {
 				seen[pkg] = true
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
 	}
 	out := make([]string, 0, len(seen))
 	for p := range seen {
