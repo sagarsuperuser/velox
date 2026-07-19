@@ -571,3 +571,66 @@ func TestClassify_PaymentUnconfirmed_NoDeadAction(t *testing.T) {
 		t.Errorf("unconfirmed banner carries %d actions, want 0 (dead disabled button removed)", len(att.Actions))
 	}
 }
+
+// TestClassifyTaxAttention_RetryPolicyTruth locks the 2026-07-19 truth-audit
+// fixes: the banner's retry claims mirror the reconciler's actual policy.
+// Pre-fix: "will retry automatically" rendered forever after the cap
+// excluded the invoice; provider_not_configured promised scheduler retries
+// the predicate never made; NextAttemptAt was populated by no code path.
+func TestClassifyTaxAttention_RetryPolicyTruth(t *testing.T) {
+	next := time.Date(2027, 6, 2, 9, 0, 0, 0, time.UTC)
+	base := Invoice{Status: InvoiceFinalized, TaxFacts: TaxFacts{TaxStatus: InvoiceTaxPending}}
+
+	t.Run("retries remaining: Warning, attempts-used copy, real NextAttemptAt", func(t *testing.T) {
+		inv := base
+		inv.TaxErrorCode = "provider_outage"
+		inv.TaxRetryCount = 3
+		inv.TaxNextRetryAt = &next
+		att := ClassifyInvoiceAttention(inv, AttentionContext{})
+		if att == nil || att.Severity != AttentionSeverityWarning {
+			t.Fatalf("want Warning while retries remain, got %+v", att)
+		}
+		if !strings.Contains(att.Message, "3 of 8 attempts used") {
+			t.Errorf("message must state real attempt usage, got %q", att.Message)
+		}
+		if att.NextAttemptAt == nil || !att.NextAttemptAt.Equal(next) {
+			t.Errorf("NextAttemptAt must surface the reconciler's tax_next_retry_at, got %v", att.NextAttemptAt)
+		}
+	})
+
+	t.Run("exhausted: escalates to Critical, no NextAttemptAt, no retry promise", func(t *testing.T) {
+		inv := base
+		inv.TaxErrorCode = "provider_outage"
+		inv.TaxRetryCount = MaxTaxRetryAttempts
+		inv.TaxNextRetryAt = &next // stale row value must NOT surface
+		att := ClassifyInvoiceAttention(inv, AttentionContext{})
+		if att == nil || att.Severity != AttentionSeverityCritical {
+			t.Fatalf("exhausted retries must escalate to Critical, got %+v", att)
+		}
+		if att.NextAttemptAt != nil {
+			t.Error("no next attempt exists after exhaustion — surfacing one is a lie")
+		}
+		if strings.Contains(att.Message, "retries automatically") {
+			t.Errorf("exhausted banner must not promise automatic retries: %q", att.Message)
+		}
+	})
+
+	t.Run("not_configured + connected: Info with truthful queue copy", func(t *testing.T) {
+		inv := base
+		inv.TaxErrorCode = "provider_not_configured"
+		inv.TaxRetryCount = 1
+		att := ClassifyInvoiceAttention(inv, AttentionContext{StripeConnected: true})
+		if att == nil || att.Severity != AttentionSeverityInfo {
+			t.Fatalf("want Info for queued post-connect recompute, got %+v", att)
+		}
+		if strings.Contains(att.Message, "scheduler tick") {
+			t.Errorf("copy must not reference internals; got %q", att.Message)
+		}
+	})
+
+	t.Run("not_configured is genuinely retryable by the policy the banner asserts", func(t *testing.T) {
+		if !TaxErrorCodeRetryable("provider_not_configured") {
+			t.Error("banner promises automatic recompute; the policy must actually include provider_not_configured")
+		}
+	})
+}
