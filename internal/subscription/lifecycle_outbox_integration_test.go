@@ -103,9 +103,12 @@ func TestLifecycleEvents_EnqueuedInTransitionTx(t *testing.T) {
 		t.Fatalf("created: got n=%d payload=%v", n, p)
 	}
 
-	// (2) activated — Update is Activate's draft→active writer.
-	sub.Status = domain.SubscriptionActive
-	if _, err := store.Update(ctx, tenantID, sub); err != nil {
+	// (2) activated — ActivateDraftWithBill is Activate's draft→active
+	// writer; the event rides its tx (the enqueue once lived in a store
+	// Update method that lost its last caller, so this event silently
+	// stopped firing while this test stayed green against the dead path).
+	actAt := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.ActivateDraftWithBill(ctx, tenantID, sub.ID, actAt, actAt, actAt.AddDate(0, 1, 0), 1, nil); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	if n, p := events(domain.EventSubscriptionActivated); n != 1 || p["status"] != "active" {
