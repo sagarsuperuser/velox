@@ -33,7 +33,7 @@
 //	  --report /tmp/migration-safety.csv
 //
 // Default scale is "small" (50 tenants × 200 customers × 500 subs × 20 events
-// = 500k events, 250k invoices). Bigger scales can be specified via --scale
+// = 500k events, 125k invoices). Bigger scales can be specified via --scale
 // but seeding time grows linearly. The default targets a 5–10 min total
 // runtime, suitable for a developer-laptop pass.
 //
@@ -286,8 +286,9 @@ func upTo(dsn string, target uint) error {
 // stepUp runs `migrate up N` and returns timing.
 func stepUp(dsn string, n int) (time.Duration, error) {
 	start := time.Now()
-	// We use migrate.Up + version check rather than exposing a Steps helper —
-	// the test re-uses the package's openMigrationPool path indirectly.
+	// migrateSteps builds its own golang-migrate instance over a dedicated
+	// connection — it does not go through the internal migrate package's
+	// Up/openMigrationPool path (see its doc comment for why).
 	if err := migrateSteps(dsn, n); err != nil {
 		return 0, err
 	}

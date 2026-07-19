@@ -37,13 +37,13 @@ func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "velox-cli",
 		Short:         "Operator CLI for Velox",
-		Long:          "velox-cli talks to a running Velox API to run common operator tasks (list subscriptions, send invoices, …) using a platform API key.",
+		Long:          "velox-cli talks to a running Velox API to run common operator tasks (list subscriptions, send invoices, …) using a secret API key.",
 		Version:       version,
 		SilenceErrors: true, // we print the error in main; cobra would double-print.
 		SilenceUsage:  true, // usage on error is noise once a real call has been made.
 	}
 
-	root.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", fmt.Sprintf("Velox platform API key (env: %s)", envAPIKey))
+	root.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", fmt.Sprintf("Velox secret API key (env: %s)", envAPIKey))
 	root.PersistentFlags().StringVar(&flagAPIURL, "api-url", "", fmt.Sprintf("Velox API base URL (env: %s, default: %s)", envAPIURL, client.DefaultBaseURL))
 
 	root.AddCommand(newSubCmd())
@@ -62,7 +62,7 @@ func resolveAuth() (*client.Client, error) {
 		apiKey = os.Getenv(envAPIKey)
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("missing API key — set %s or pass --api-key (use a platform API key from the Velox dashboard)", envAPIKey)
+		return nil, fmt.Errorf("missing API key — set %s or pass --api-key (use a secret API key from the Velox dashboard)", envAPIKey)
 	}
 
 	apiURL := flagAPIURL

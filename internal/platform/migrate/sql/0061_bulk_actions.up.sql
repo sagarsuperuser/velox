@@ -11,8 +11,6 @@
 -- Per-customer mutations are recorded in audit_log via per-target entries
 -- with the matching bulk_action_id in metadata, plus a single cohort
 -- summary entry on the bulk_action_id row itself.
---
--- See Week 7 deliverable in docs/90-day-plan.md.
 
 CREATE TABLE bulk_actions (
     id                  TEXT PRIMARY KEY DEFAULT 'vlx_bact_' || encode(gen_random_bytes(12), 'hex'),

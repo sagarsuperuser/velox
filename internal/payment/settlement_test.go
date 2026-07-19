@@ -143,7 +143,8 @@ func TestSettleSucceeded_ConcurrentRedeliveryFiresSideEffectsOnce(t *testing.T) 
 	s.SetEmailReceipt(email, staticCustomerEmail{})
 
 	// The stale snapshot both racing deliveries hold: invoice still
-	// `processing`, so it passes the line-47 fast-path guard each time. The
+	// `processing`, so it passes SettleSucceeded's already-paid
+	// fast-path guard (the Status/PaymentStatus check at the top) each time. The
 	// transition gate (MarkPaidReportingTransition) is what de-dupes them.
 	stale := invoices.invoices["inv_1"]
 	for i := 0; i < 2; i++ {
@@ -196,7 +197,7 @@ func TestSettleSucceeded_MarksPaidFromAnySource(t *testing.T) {
 // TestSettleFailed_ConcurrentRedeliveryFiresSideEffectsOnce is the failed-path
 // twin of the H7 success-path test: two at-least-once deliveries of the SAME
 // payment_intent.payment_failed that race — both holding a stale `processing`
-// snapshot, so both slip past the line-159 already-settled fast-path guard —
+// snapshot, so both slip past SettleFailed's already-settled fast-path guard —
 // must fire the failure-notification set (payment.failed event + customer
 // email + dunning) EXACTLY once. The PI-keyed transition gate in
 // MarkPaymentFailedReportingTransition de-dupes them. Pre-fix both fired,

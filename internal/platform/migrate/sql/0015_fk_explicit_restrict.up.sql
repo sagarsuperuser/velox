@@ -26,8 +26,10 @@
 --   The whole sequence still runs inside golang-migrate's outer transaction.
 --   That is fine: the AccessExclusiveLock concern is the validation pass,
 --   not the transactional wrapping. With NOT VALID + VALIDATE inside one tx,
---   no AccessExclusiveLock is ever held during validation. See
---   docs/migration-safety-findings.md for the measurement methodology.
+--   no AccessExclusiveLock is ever held during validation. Lock timings were
+--   measured with the populated-DB safety harness (cmd/velox-migrate-safety +
+--   scripts/migration-safety-test.sh); the findings register lives in the
+--   private velox-ops repo.
 
 ALTER TABLE api_keys DROP CONSTRAINT api_keys_tenant_id_fkey;
 ALTER TABLE api_keys

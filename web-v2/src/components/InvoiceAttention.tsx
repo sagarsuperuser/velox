@@ -133,10 +133,12 @@ export function InvoiceAttention({
         )}
 
         {/* Auto-collect armed indicator: for the no_payment_method
-            state, the engine has queued for scheduler retry — the
-            moment a PM goes ready, the invoice charges automatically
-            without operator intervention. Surface this so the
-            operator knows the system is "watching" and the manual
+            state, the engine has queued for scheduler retry — after a
+            PM goes ready, the next RetryPendingCharges sweep charges
+            the invoice automatically without operator intervention
+            (attach itself kicks no charge; the sweep runs on the
+            billing interval, 1h in prod / 5m local). Surface this so
+            the operator knows the system is "watching" and the manual
             Collect Payment click is an override, not a requirement. */}
         {att.reason === 'no_payment_method' && (
           <p className="text-xs text-muted-foreground flex items-center gap-1.5 pl-7">
@@ -410,8 +412,11 @@ function defaultLabel(action: AttentionAction): string {
     // send_reminder = server-side email to the customer with a
     // payment link. Verb is "Email" not "Share" — operators
     // mistakenly expected a clipboard action with the older "Share
-    // invoice link" copy. Server picks the appropriate template per
-    // attention reason; the UI label is generic.
+    // invoice link" copy. The per-reason routing is CLIENT-side:
+    // InvoiceDetail's onSendReminder branches on attention.reason
+    // (no_payment_method → resend-setup-link endpoint, else → the
+    // invoice email dialog); each backend endpoint sends one fixed
+    // template.
     send_reminder: 'Email payment link',
     add_payment_method: 'Add payment method',
     update_payment_method: 'Update payment method',

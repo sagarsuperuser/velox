@@ -2748,14 +2748,16 @@ func (s *PostgresStore) GetByPublicToken(ctx context.Context, token string) (dom
 }
 
 // GetByStripeInvoiceID resolves a Stripe invoice id (in_xxx) to its imported
-// Velox invoice row. Backs the velox-import CLI's idempotency lookup —
+// Velox invoice row. Built as the idempotency lookup for the Stripe importer
+// removed in the 2026-04-29 lean-cut (rebuild deferred until a design-partner
+// cutover), so it has no production caller today. When an importer returns,
 // re-running an import after a finalized invoice has already landed must
 // detect the existing row and emit skip-equivalent (or skip-divergent)
 // rather than ErrAlreadyExists from a unique-violation collision.
 //
 // Empty stripeInvoiceID returns ErrNotFound rather than matching the
 // partial unique index's NULL gap (no Velox-native invoice should match).
-// Runs under TxTenant — the importer always has a tenant in context, and
+// Runs under TxTenant — an importer always has a tenant in context, and
 // scoping by tenant is the standard RLS posture for this store.
 func (s *PostgresStore) GetByStripeInvoiceID(ctx context.Context, tenantID, stripeInvoiceID string) (domain.Invoice, error) {
 	if stripeInvoiceID == "" {

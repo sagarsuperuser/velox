@@ -434,7 +434,7 @@ export default function PlanDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Detach Meter</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to detach "{detachTarget?.name}" from this plan? Usage for this meter will no longer be tracked.
+              Are you sure you want to detach "{detachTarget?.name}" from this plan? Usage events for this meter will still be ingested and visible — but subscriptions on this plan will no longer be billed for it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

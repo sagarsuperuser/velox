@@ -929,7 +929,7 @@ export default function CustomerDetailPage() {
                             <AlertDialogTitle>Remove this payment method?</AlertDialogTitle>
                             <AlertDialogDescription>
                               {paymentMethods.length === 1
-                                ? `${(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····${pm.card_last4 || '????'} will be detached in Stripe and removed from this customer. After this the customer will have no payment method on file — auto-collection on any active subscriptions will fail until a new card is added, which will trigger dunning per your policy.`
+                                ? `${(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····${pm.card_last4 || '????'} will be detached in Stripe and removed from this customer. After this the customer will have no payment method on file — new invoices won't be auto-charged: they'll be flagged for attention and the customer will be emailed a link to add a card. Billing resumes automatically once a new card is added.`
                                 : `${(pm.card_brand || 'Card').charAt(0).toUpperCase() + (pm.card_brand || 'card').slice(1)} ····${pm.card_last4 || '????'} will be detached in Stripe and removed from this customer. Any subscriptions billing against it will fall back to the new default (if any) on next charge.`}
                             </AlertDialogDescription>
                           </AlertDialogHeader>

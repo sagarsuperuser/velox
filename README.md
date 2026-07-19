@@ -221,9 +221,9 @@ ADRs explaining the load-bearing decisions live in [`docs/adr/`](docs/adr/).
 
 Velox moves money, so correctness is the product, not a feature. The disciplines that show up in the code:
 
-- **Money-path changes follow a written protocol, not judgment.** Any change to an invoice, payment, credit, or state machine goes through the [money-path robustness playbook](docs/dev/money-path-robustness-playbook.md): enumerate the state's *complete* site-set — every writer, effect-firer, gated reader, crash point — before writing a line, because local reasoning is exactly how money bugs ship. Nine named failure classes, each with the gate that closes it.
+- **Money-path changes follow a written protocol, not judgment.** Any change to an invoice, payment, credit, or state machine goes through the [money-path robustness playbook](docs/dev/money-path-robustness-playbook.md): enumerate the state's *complete* site-set — every writer, effect-firer, gated reader, crash point — before writing a line, because local reasoning is exactly how money bugs ship. Ten named failure classes, each with the gate that closes it.
 - **Invariants are enforced by machines, not convention.** Tenant isolation is Postgres Row-Level Security, proven by integration tests that fail if a query escapes its tenant. Exactly-once auto-charge is a compare-and-swap claim that holds through a dual-leader failover — no double charge when a Postgres failover hands two schedulers the same lock. A new cross-domain import fails an [architecture test](internal/arch/boundaries_test.go) until it's justified in an allowlist. `time.Now()` on a clock-pinned entity fails a lint. The rule: if a mistake can recur, a machine catches the next one.
-- **The database is never mocked.** Every test that touches a database touches real Postgres — ~75k lines of Go test code against ~83k of production Go — so a green suite means migrations, RLS, and the money math work end-to-end, including concurrent-claimer collision tests and mutation-verified assertions (break the logic on purpose; the test must fail).
+- **The database is never mocked.** Every test that touches a database touches real Postgres — ~90k lines of Go test code against ~88k of production Go — so a green suite means migrations, RLS, and the money math work end-to-end, including concurrent-claimer collision tests and mutation-verified assertions (break the logic on purpose; the test must fail).
 - **Decisions are written down — including the reversals.** [80+ ADRs](docs/adr/) record the load-bearing calls, and the honest ones: a per-subscription timezone snapshot was built, shipped, then *deleted* once org-level proved the complete abstraction (ADR-074 → 077). When a design keeps spawning guard machinery, the model is treated as wrong, not the guards as missing.
 - **Audited like production, pre-launch.** A [117-finding end-to-end audit](docs/dev/audit-2026-07-02-full-product.md) remediated in gated PRs; an [N=2 HA-readiness audit](docs/dev/ha-readiness-2026-07-06.md) that names every single-point-of-failure before the word "production" gets used.
 
@@ -283,12 +283,9 @@ API keys are salted-SHA-256 hashed at rest; rotation supports an optional grace 
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full ship log.
 
-### In flight
-
-- **AI-native primitive sharpening** — per-token, model-tier, prompt/completion split surfacing in dashboard + invoices
-
 ### Explicitly deferred (on hold pending design partner)
 
+- Per-million rate display for token meters (`$3.00 / 1M tokens`) — the last residual of the AI-native rate surfacing arc; the per-(model, token-type) split already ships on dashboard + invoices (ADR-044/045/054)
 - Helm chart + Terraform AWS module + multi-replica HA
 - Stripe Billing migration tool (`velox-import`)
 - SOC 2 / GDPR-deletion / audit-log retention / encryption-at-rest enterprise-readiness docs

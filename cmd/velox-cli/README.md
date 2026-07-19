@@ -2,8 +2,10 @@
 
 Operator CLI for a running Velox deployment. Talks to the same `/v1/*`
 HTTP surface external integrations use — no direct DB coupling, no
-runtime config files. Authenticates with a platform API key from the
-`VELOX_API_KEY` env var or the `--api-key` flag.
+runtime config files. Authenticates with a secret API key
+(`vlx_secret_…`) from the `VELOX_API_KEY` env var or the `--api-key`
+flag. A platform key will not work: it carries only tenant scopes, and
+both shipped commands need subscription / invoice permissions.
 
 ## Install
 
@@ -28,7 +30,7 @@ Two env vars cover the common case:
 
 | Env             | Default                  | Notes                                           |
 | --------------- | ------------------------ | ----------------------------------------------- |
-| `VELOX_API_KEY` | (required)               | Platform API key from the Velox dashboard.      |
+| `VELOX_API_KEY` | (required)               | Secret API key from the Velox dashboard.        |
 | `VELOX_API_URL` | `http://localhost:8080`  | Base URL — point at staging / prod as needed.   |
 
 Equivalent flags `--api-key` and `--api-url` override the env. The CLI

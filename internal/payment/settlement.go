@@ -162,7 +162,8 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	//      seconds-wide and grew every time a PR inserted another call
 	//      above it (2026-07-05 reassessment).
 	//   2. dunning resolve: idempotent AND backstopped — the dunning
-	//      sweep's paid-pre-check floor re-resolves it on the next tick.
+	//      sweep's paid-pre-check floor re-resolves it when the run's
+	//      next retry comes due (the sweep only processes due runs).
 	//   3. checkout-session expire + card stamp: Stripe NETWORK calls with
 	//      their own backstops (session ExpiresAt <= 1h; card stamp is a
 	//      cosmetic timeline sub-line).
@@ -215,7 +216,8 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// Resolve any active dunning run for this now-paid invoice — symmetric with the
 	// engine's background-settle DunningResolver (#317). A card success should clear
 	// the "in dunning" state promptly instead of waiting for the dunning sweep's
-	// paid-pre-check floor to catch it on the next tick. Best-effort + nil-tolerant
+	// paid-pre-check floor to catch it when the run next comes due (which can be
+	// days out). Best-effort + nil-tolerant
 	// (narrow tests) + idempotent (no-op when there is no active run); on failure the
 	// floor still resolves it, so log and continue. Runs in the invoice-bound ctx
 	// so it stamps simulated time on clock-pinned invoices.
@@ -226,7 +228,7 @@ func (s *Stripe) SettleSucceeded(ctx context.Context, tenantID string, inv domai
 	// resolver firing synchronously here re-reads the FULL attempt_count (not one low).
 	if s.dunningResolver != nil {
 		if err := s.dunningResolver.ResolveByInvoice(ctx, tenantID, inv.ID, domain.ResolutionPaymentRecovered); err != nil {
-			slog.Warn("payment succeeded: resolve dunning run failed; the dunning sweep's paid-pre-check floor will resolve it on the next tick",
+			slog.Warn("payment succeeded: resolve dunning run failed; the run stays visible in dunning until its next scheduled retry, when the sweep's paid check will resolve it",
 				"invoice_id", inv.ID, "error", err)
 		}
 	}
@@ -400,7 +402,7 @@ func (s *Stripe) SettleFailed(ctx context.Context, tenantID string, inv domain.I
 	if s.dunning != nil {
 		failureAt := simulatedFailureAt(inv)
 		if err := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); err != nil {
-			slog.Error("payment failure StartDunning failed after retries — dunning will NOT auto-retry; operator must start manually from invoice attention banner",
+			slog.Error("payment failure StartDunning failed after retries — no action needed: the dunning backfill sweep starts the run automatically on a later scheduler tick (clock-pinned invoices on their next advance)",
 				"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", err)
 		} else {
 			slog.Info("dunning started for failed payment", "invoice_id", inv.ID)

@@ -10,7 +10,8 @@ import (
 // TestNewServer_BootWiresEveryEngineCollaborator is the boot proof for
 // engine.MustValidate (2026-07-10 design review, redesign #3 stage 1):
 // constructing the production Server against a real database must wire all
-// 24 engine collaborators — a missing Set* call panics HERE, in CI, naming
+// 25 engine collaborators (count pinned by billing's must_validate_test.go) —
+// a missing Set* call panics HERE, in CI, naming
 // the field, instead of silently diverging on a money path in production.
 func TestNewServer_BootWiresEveryEngineCollaborator(t *testing.T) {
 	if testing.Short() {

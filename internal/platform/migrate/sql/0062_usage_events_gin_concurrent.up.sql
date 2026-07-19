@@ -3,10 +3,11 @@
 -- GIN index on usage_events.properties — moved out of 0054 because
 -- `CREATE INDEX … USING GIN` (the non-concurrent form) holds an
 -- AccessExclusiveLock on `usage_events` for the entire build. The
--- populated-DB safety harness measured this at 53.5s on 5M rows
--- (docs/migration-safety-findings.md, 0054 entry); in production that
--- would freeze every concurrent insert into the largest table in the
--- schema for the same window.
+-- populated-DB safety harness (cmd/velox-migrate-safety +
+-- scripts/migration-safety-test.sh) measured this at 53.5s on 5M rows;
+-- in production that would freeze every concurrent insert into the
+-- largest table in the schema for the same window. The findings register
+-- lives in the private velox-ops repo.
 --
 -- CONCURRENTLY does not block writes — Postgres builds the index in two
 -- passes against a snapshot taken under ShareUpdateExclusiveLock, then

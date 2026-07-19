@@ -96,10 +96,11 @@ const ENTRY_TYPE_LABELS: Record<string, string> = {
 }
 const entryTypeLabel = (t: string): string => ENTRY_TYPE_LABELS[t] ?? t
 
-// The expiry worker writes "Expired grant <ledger-id>" descriptions (the
-// format is load-bearing for backend dedup — credit/postgres.go matches it
-// with LIKE — so the STORED text must not change). Display-side we render
-// the human phrase and demote the machine id to subtext.
+// The expiry worker writes "Expired grant <ledger-id>" descriptions. The
+// stored text is display-only: since migration 0127 the backend's
+// exactly-once expiry rides a consumed-vs-amount row-lock gate, not the
+// old description-LIKE dedup. Display-side we render the human phrase and
+// demote the machine id to subtext.
 const EXPIRED_GRANT_RE = /^Expired grant (vlx_ccl_\w+)$/
 
 function SortableHead({

@@ -51,9 +51,9 @@ func newInvoiceSendCmd() *cobra.Command {
 		Use:   "send",
 		Short: "Send an existing invoice by email",
 		Long: "Send an existing finalized invoice as a PDF attachment to the supplied email address.\n\n" +
-			"This is a thin client over POST /v1/invoices/{id}/send. The server requires an email — pass --email " +
-			"to override the customer's billing-profile email, or use --dry-run to verify the invoke shape without " +
-			"hitting the send endpoint.",
+			"This is a thin client over POST /v1/invoices/{id}/send. The server requires an email and has no " +
+			"stored-address fallback — --email is the sole recipient. Use --dry-run to verify the invoke shape " +
+			"without hitting the send endpoint.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if flagInvoice == "" {
 				return fmt.Errorf("--invoice is required")

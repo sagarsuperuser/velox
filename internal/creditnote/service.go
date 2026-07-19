@@ -126,7 +126,7 @@ func (s *Service) SetTaxReverser(tr TaxReverser) {
 	s.taxRev = tr
 }
 
-// CreateInput is the public payload for POST /v1/credit_notes. Three
+// CreateInput is the public payload for POST /v1/credit-notes. Three
 // allocation fields mirror Stripe (`refund_amount` / `credit_amount` /
 // `out_of_band_amount`) and Lago (`refund_amount_cents` /
 // `credit_amount_cents` / `offset_amount_cents`): the operator splits

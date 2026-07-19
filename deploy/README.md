@@ -71,7 +71,7 @@ endpoints are exempt from rate limiting and audit logging.
 
 - **Horizontal:** Multi-replica is safe on the money paths — schedulers
   and outbox dispatchers are leader-elected via Postgres advisory locks
-  (`internal/billing/postgres_locker.go`) with SKIP-LOCKED row claims,
+  (`internal/billing/lock_adapter.go`) with SKIP-LOCKED row claims,
   so replicas coexist without double-billing or double-sending. "Safe"
   is not "fully supported": a few surfaces still assume one process
   (the dashboard's live webhook-event tail only shows events dispatched

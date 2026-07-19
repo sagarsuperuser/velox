@@ -114,9 +114,11 @@ export interface Invoice {
   source_subscription_item_id?: string;
   source_change_type?: ItemChangeType;
   billing_reason?: InvoiceBillingReason;
-  /** Source Stripe invoice id (`in_xxx`) populated by `velox-import`
-  for invoices imported from a Stripe account. Empty for
-  Velox-native invoices.
+  /** Source Stripe invoice id (`in_xxx`) for an invoice imported from
+  a Stripe account. Currently always empty: the Stripe importer was
+  removed (deferred until a design-partner cutover) and nothing
+  writes this field today. The column and its unique index remain
+  for a future importer. Empty for Velox-native invoices.
    */
   stripe_invoice_id?: string;
   /** Whether this invoice's domain timestamps (created/issued/due/paid)

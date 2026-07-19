@@ -22,7 +22,7 @@ Backup MUST include them; restore MUST verify they match.
 | `tenants` | Top-level isolation key; every other row references this |
 | `customers`, `customer_billing_profiles` | Customer identity + tax/PII |
 | `subscriptions`, `subscription_items` | Active billing relationships |
-| `plans`, `meters`, `rating_rules`, `rating_rule_versions` | Pricing config — invoice math depends on this |
+| `plans`, `meters`, `rating_rule_versions` | Pricing config — invoice math depends on this |
 | `invoices`, `invoice_line_items` | Issued invoices — financial record |
 | `credit_notes`, `credit_note_line_items` | Refunds and adjustments — financial record |
 | `customer_credit_ledger` | Customer credit balance state (event-sourced; ALL entries are needed) |

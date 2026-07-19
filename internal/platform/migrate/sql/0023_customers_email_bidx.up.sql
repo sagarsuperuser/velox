@@ -7,10 +7,11 @@
 -- HMAC-SHA256(VELOX_EMAIL_BIDX_KEY, lower(email)) — deterministic, keyed,
 -- and only useful to an attacker who also has the HMAC key.
 --
--- Forward-only schema: existing rows get NULL and stay unfindable until the
--- operator runs cmd/velox-backfill-email-bidx, which decrypts each email
--- with VELOX_ENCRYPTION_KEY and writes the index. Backfilling in SQL isn't
--- possible because decryption lives in Go.
+-- Forward-only schema: existing rows get NULL and stay unfindable by blind
+-- index until the customer row is next written through the API (create and
+-- update both recompute email_bidx — internal/customer/postgres.go). No
+-- backfill command exists: cmd/velox-backfill-email-bidx was never built.
+-- Backfilling in SQL isn't possible because decryption lives in Go.
 
 ALTER TABLE customers
     ADD COLUMN email_bidx TEXT;

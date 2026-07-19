@@ -895,9 +895,11 @@ type Invoice struct {
 	// nothing).
 	Status InvoiceStatus `json:"status"`
 
-	// StripeInvoiceId Source Stripe invoice id (`in_xxx`) populated by `velox-import`
-	// for invoices imported from a Stripe account. Empty for
-	// Velox-native invoices.
+	// StripeInvoiceId Source Stripe invoice id (`in_xxx`) for an invoice imported from
+	// a Stripe account. Currently always empty: the Stripe importer was
+	// removed (deferred until a design-partner cutover) and nothing
+	// writes this field today. The column and its unique index remain
+	// for a future importer. Empty for Velox-native invoices.
 	StripeInvoiceId       string `json:"stripe_invoice_id,omitempty"`
 	StripePaymentIntentId string `json:"stripe_payment_intent_id,omitempty"`
 

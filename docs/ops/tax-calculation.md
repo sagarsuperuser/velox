@@ -13,9 +13,10 @@ and Velox supports whatever shape that registration produces.
 
 Zero-tax backend. `Calculate` returns zero per line; `Commit` and
 `Reverse` are no-ops. Pick this when the tenant doesn't collect tax
-(early-stage B2B, unregulated jurisdictions). An empty or unrecognised
-`tax_provider` falls through to `none` so a mis-seeded tenant cannot take
-billing offline.
+(early-stage B2B, unregulated jurisdictions). An empty `tax_provider`
+falls through to `none`; an unrecognised value is a loud error that
+aborts invoice creation for that tenant — a corrupted settings row
+stalls billing rather than silently taxing at zero.
 
 ### `manual`
 
@@ -132,9 +133,8 @@ retry. Alert on the metric, not on log presence.
   tenant side, or their customers are missing country data. Action:
   contact the tenant.
 - **Many tenants, correlated in time** — Stripe API incident. Check
-  [status.stripe.com](https://status.stripe.com). Action: none for
-  fallback (correct by design); for `deferred` invoices, ensure the
-  retry scheduler clears them once Stripe recovers.
+  [status.stripe.com](https://status.stripe.com). Action: ensure the
+  retry scheduler clears the `deferred` invoices once Stripe recovers.
 - **Single tenant, sudden start** — Stripe API key rotated or revoked.
   Action: ask the tenant to update credentials.
 
@@ -149,8 +149,9 @@ invoice to the live client. This matters because:
    though no state mutation occurs (a calculation creates no upstream
    state, but `Commit` does).
 
-If only one mode has a key configured, the other mode falls back per the
-configured `OnFailure` policy (recorded as reason `no_client_for_mode`).
+If only one mode has a key configured, calculations in the other mode
+fail and the invoice is deferred to tax retry (metric outcome `deferred`,
+reason `no_client_for_mode`) — post-ADR-041 there is no fallback policy.
 Tenants who want both modes operational must configure both keys in
 their tenant settings.
 

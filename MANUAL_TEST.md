@@ -849,7 +849,7 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 ## FLOW B15: `in_advance` plan happy path (ADR-031)
 
 - [ ] **A tax-deferred day-1 DRAFT defers credit application too (ADR-088)** — with Stripe Tax erroring, a credit-holding customer's day-1 invoice parks as a tax-pending draft with credits UNAPPLIED; when tax retry finalizes it, the sweep applies credits before charging.
-- [ ] **Activating a DRAFT bills day-1 atomically (ADR-056 sibling)** — create a draft sub on an in_advance plan, then POST /{id}/activate → the sub flips active AND the `subscription_create` invoice exists with the first period (pre-fix the flip billed nothing: the first base fee was silently never invoiced). *(automated: `TestActivateAndCancel` billing subtests + `TestActivateDraftWithBill_*`)*
+- [ ] **Activating a DRAFT bills day-1 atomically (ADR-056 sibling)** — create a draft sub on an in_advance plan, then POST /{id}/activate → the sub flips active AND the `subscription_create` invoice exists with the first period (pre-fix the flip billed nothing: the first base fee was silently never invoiced). *(automated: `TestActivateAndCancel` subtests "activating a draft BILLS day-1 in the flip tx" + "bill failure rolls the activation back")*
 - [ ] **Credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee, subscribe to an in_advance plan. Day-1 invoice lands **Paid** with a Credits Applied line covering the total; balance drained; no Stripe charge. With a partial balance: Credits Applied for the balance, card charged exactly the remainder (card-less: remainder queues + setup email).
 
 Verifies the day-1 invoice + the cycle-close invoice that bills the upcoming period's base.
@@ -1074,7 +1074,7 @@ Server-derived from invoice fields. Suppressed for healthy / paid / voided / dra
 - [ ] Still failing → banner refreshes with new reason. Each click bumps `tax_retry_count`.
 - [ ] Retry on non-pending/non-failed invoice → 409.
 - [ ] **Auto-finalize (ADR-017)**: subscription-cycle invoice in `tax_status=pending` → click Retry tax with the underlying issue fixed → invoice flips to `status='finalized'` automatically (one click, not two). Status pill goes Open; hosted-invoice URL appears; auto-charge flow kicks off if a PM is on file.
-- [ ] **Manual drafts stay draft**: create a manual invoice, force its tax to pending via tooling, fix the issue, click Retry tax → tax becomes ok BUT invoice stays draft (operator must finalize explicitly). Toast: "Tax computed; click Finalize to issue."
+- [ ] **Manual drafts stay draft**: create a manual invoice, force its tax to pending via tooling, fix the issue, click Retry tax → tax becomes ok BUT invoice stays draft (operator must finalize explicitly). Toast: "Tax recalculated successfully".
 
 ### Background tax-retry reconciler (ADR-017)
 - [ ] Force a subscription-cycle invoice into `tax_pending` with `tax_error_code='provider_outage'` and `tax_next_retry_at IS NULL` (e.g. by simulating a Stripe Tax 5xx during finalize). Watch the scheduler tick (default 5min in local) — within one tick the invoice should retry; if the underlying issue resolved, it auto-finalizes.
@@ -1620,7 +1620,7 @@ Setup: ≥26 customers so at least one lands on page 2 (FLOW S1 tenant + a quick
 | Case | Expected |
 |------|----------|
 | Zero usage | Base fee only |
-| Meter without rating rule | Usage silently skipped |
+| Meter without rating rule | Plan attach 422s ("meter … has no rating rule"); if unbound under a live sub, usage not billed + WARN log (ADR-096) |
 | Invalid `external_customer_id` on ingest | "customer not found" |
 | Invalid `event_name` on ingest | "meter not found" |
 | Void already voided invoice | Error |
@@ -1701,7 +1701,7 @@ Setup: Mailpit up, a customer with a paid invoice.
 - [ ] Wait 10s, 20 more → ~16 allowed (general limit is 100/min = 1.67/sec, so 10s refills ≈ 16.7 tokens).
 - [ ] **Ingest rides its own bucket (2026-07-05):** `POST /v1/usage-events` / `/batch` / `/integrations/litellm/spend` respond with `X-RateLimit-Limit: 1000` (per second — LiteLLM POSTs one callback per LLM call; the 100/min CRUD bucket silently dropped its events, since LiteLLM retries only on 5xx). Exhausting the general bucket does NOT 429 ingest. Overrides: `VELOX_RATE_LIMIT_GENERAL_PER_MIN`, `VELOX_RATE_LIMIT_INGEST_PER_SEC`.
 - [ ] Tenant A exhausted → Tenant B succeeds (separate buckets).
-- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → general fail-closed; **ingest AND `/v1/auth` stay fail-open even in prod** (a Redis blip must not drop revenue events or lock operators out of login — brute-force control is the Postgres-backed lockout, not the limiter; 2026-07-06 HA audit fix). Boot logs state the split explicitly, never a blanket "fail open".
+- [ ] Stop Redis → requests succeed (fail-open in dev). `APP_ENV=production` → general fail-closed; **ingest AND `/v1/auth` stay fail-open even in prod** (a Redis blip must not drop revenue events or lock operators out of login; the per-IP `/v1/auth` limiter is v1's only brute-force floor — no per-account lockout/throttle exists, removed per ADR-094 (migrations 0153/0154); 2026-07-06 HA audit fix). Boot logs state the split explicitly, never a blanket "fail open".
 - [ ] `/health`, `/health/ready`, `/metrics` not rate-limited.
 
 ## FLOW X4: Security headers + metrics auth
@@ -1833,7 +1833,7 @@ The wedge integration. Validates the adapter accepts LiteLLM's `StandardLoggingP
 
 ## Sign-in fails
 - 401 → wrong creds. Re-bootstrap or use password-reset.
-- 429 → 5 wrong attempts, 15-min lockout. Check `users.locked_until`.
+- 429 → per-IP `/v1/auth` rate limit (100/min per IP), not a lockout — v1 has no account lockout; repeated wrong passwords 401 forever (ADR-094). Wait ~1 min, retry.
 - CORS: `CORS_ALLOWED_ORIGINS` must include frontend origin.
 - Cookie not set → check `Set-Cookie` on response. `Secure` in dev should be off.
 - Cookie present but every request 401s → check `dashboard_sessions.expires_at` / `revoked_at`.

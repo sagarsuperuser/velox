@@ -52,8 +52,9 @@ function humanizeError(msg: string): string {
 // receives a response — a stalled dev proxy, a reset/half-open connection, a
 // wedged upstream — must NOT leave the UI spinning forever. We abort after
 // this window so React Query surfaces a recoverable error instead of an
-// infinite loading state. Set a touch above the backend's 30s WriteTimeout so
-// the server's own error wins when the backend is merely slow.
+// infinite loading state. Set above the backend's 35s WriteTimeout (and its
+// 30s per-route middleware timeout) so the server's own error wins when the
+// backend is merely slow.
 const DEFAULT_REQUEST_TIMEOUT_MS = 40_000
 
 // fetchWithTimeout wraps fetch with an AbortController so a hung request fails
@@ -926,8 +927,11 @@ export interface LineItem {
   quantity: number
   unit_amount_cents: number
   // Full-precision per-unit price in decimal cents (e.g. "0.3" = $0.003).
-  // Derived server-side as amount_cents ÷ quantity; render with formatRate so
-  // sub-cent rates don't collapse to "$0.00" like unit_amount_cents would.
+  // Server-side display value (ADR-054): the stamped NOMINAL configured rate
+  // on flat usage lines, falling back to amount_cents ÷ quantity only when no
+  // nominal rate is stamped — so on flat lines it deliberately may differ from
+  // amount ÷ quantity. Render with formatRate so sub-cent rates don't collapse
+  // to "$0.00" like unit_amount_cents would.
   unit_amount_decimal?: string
   amount_cents: number
   total_amount_cents: number
@@ -1483,8 +1487,10 @@ export interface DunningEvent {
   created_at: string
 }
 
-// Backend-computed aggregate counts + at-risk sum across ALL dunning
-// runs for the tenant. Source of truth for the dashboard stat cards;
+// Backend-computed aggregate counts across ALL dunning runs for the
+// tenant; at_risk_cents sums only invoices in the tenant's default
+// currency (runs in other currencies still count in the counts but are
+// excluded from the sum). Source of truth for the dashboard stat cards;
 // computing these client-side from a paginated /runs response
 // undercounts as soon as runs exceed the page size.
 export interface DunningStats {

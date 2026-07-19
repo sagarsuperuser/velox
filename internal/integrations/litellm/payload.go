@@ -23,7 +23,9 @@ type StandardLoggingPayload struct {
 	// ID is LiteLLM's per-call identifier. Used as the idempotency
 	// key prefix on every usage event derived from this payload.
 	// Replays with the same id are silently deduped by the usage
-	// store's (tenant, customer, meter, idempotency_key) UNIQUE.
+	// store's UNIQUE (tenant_id, livemode, idempotency_key) — the
+	// dedup scope is tenant-wide, so the mapper suffixes this id
+	// with the token type to keep sibling events distinct.
 	ID string `json:"id"`
 
 	// CallType narrows what kind of LLM operation this was —

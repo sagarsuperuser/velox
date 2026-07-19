@@ -481,9 +481,11 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 // post-finalize block so a manual one-off invoice collects identically:
 //   - payment method ready → auto-charge the saved card (the Stripe webhook
 //     fires the receipt on success; a decline starts dunning).
-//   - no payment method → queue for the scheduler's auto-charge retry (which
-//     charges the moment the customer attaches a card) AND email the customer
-//     a payment-update link. Pre-fix the no-PM case did nothing, so a manual
+//   - no payment method → queue for the scheduler's auto-charge retry (the
+//     RetryPendingCharges sweep picks it up on its next tick after the
+//     customer attaches a card — attach itself kicks no charge, so collection
+//     can lag attach by up to the billing interval, 1h in prod / 5m local)
+//     AND email the customer a payment-update link. Pre-fix the no-PM case did nothing, so a manual
 //     invoice silently went overdue — customer never told, scheduler never
 //     retried.
 func (h *Handler) collectAtFinalize(ctx context.Context, tenantID string, inv domain.Invoice) domain.Invoice {

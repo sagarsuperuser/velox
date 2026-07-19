@@ -1,9 +1,9 @@
 # Email Setup
 
-Velox sends customer-facing emails (invoices, dunning notices,
-payment-failed notifications, magic-link portal logins, password
-resets) through SMTP. Plug in your existing ESP via env vars; no
-code changes needed to swap providers.
+Velox sends customer-facing emails (invoices, receipts, credit notes,
+dunning notices, payment-failed notifications, payment-setup links,
+password resets, team invites) through SMTP. Plug in your existing
+ESP via env vars; no code changes needed to swap providers.
 
 This doc covers production-ready SMTP configuration. Bounce/
 complaint webhooks (per-ESP webhook receivers feeding `email_status`
@@ -221,8 +221,8 @@ After setting env vars, restart Velox and run a test send:
 # Trigger an invoice email (requires a finalized invoice)
 curl -X POST -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"to":"you@yourdomain.com"}' \
-  "$API/v1/invoices/$INV_ID/email"
+  -d '{"email":"you@yourdomain.com"}' \
+  "$API/v1/invoices/$INV_ID/send"
 
 # Watch the outbox dispatcher pick it up
 PGPASSWORD=velox psql -h localhost -U velox -d velox \

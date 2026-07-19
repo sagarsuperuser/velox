@@ -54,10 +54,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   // Controlled input → debounced server-side search. With no query the
   // palette shows the 50 most recent rows per entity (jump-to-recent);
   // once the operator types, the term goes to the backend's search=
-  // param so matches come from the FULL dataset — not whichever 50
-  // rows happened to be cached. Customer search matches name / email /
-  // external ID (the backend decrypt-matches the encrypted PII
-  // columns); invoices match by number; subscriptions by name / code.
+  // param so matches come from the backend, not whichever 50 rows
+  // happened to be cached. Customer search matches name / email /
+  // external ID (the backend decrypt-matches the encrypted PII columns,
+  // bounded by its 5000-row scan cap); invoices match by number;
+  // subscriptions by name / code.
   const [query, setQuery] = useState('')
   const term = useDebouncedValue(query.trim(), 250)
   // Reset the query in the close handlers (not an effect) so the next

@@ -108,7 +108,7 @@ func ValidatePassword(plaintext string) error {
 	// rather than getting a deceptively-strong-looking password
 	// that's effectively the same as its 72-byte prefix.
 	if len(plaintext) > 72 {
-		return errs.Invalid("password", "must be 72 characters or fewer")
+		return errs.Invalid("password", "must be at most 72 bytes — accented and non-Latin characters count as more than one byte, so use a shorter password")
 	}
 	if _, blocked := commonPasswords[strings.ToLower(plaintext)]; blocked {
 		return errs.Invalid("password",

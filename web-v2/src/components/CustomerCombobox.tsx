@@ -24,7 +24,8 @@ function customerOption(c: Customer) {
 
 // Server-searched customer picker. Every keystroke queries the backend's
 // `search=` param (name / email / external id, post-decryption match), so
-// the picker finds ANY customer — the previous shape fetched one 50-row
+// the picker searches the whole list up to the backend's 5000-row
+// decrypt-and-match scan cap — the previous shape fetched one 50-row
 // page and filtered client-side, which made every customer past the 50th
 // unselectable: on the Subscriptions page that meant their FIRST
 // subscription was uncreatable from the dashboard.

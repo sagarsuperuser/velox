@@ -231,7 +231,11 @@ func renderDunningEscalationHTML(customerName, invoiceNumber, action, hostedURL 
 	case "cancel_subscription":
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription has been canceled. The outstanding balance remains due — you can settle it using the link below.</p>`)
 	case "pause":
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription is paused until the balance is settled. Pay the invoice below to resume service.</p>`)
+		// Resumption is a manual operator step (nothing auto-resumes a
+		// dunning pause on payment — dunning sets no ResumesAt and the
+		// settle path only resolves the run), so the copy must not
+		// promise that paying alone restores service.
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription is paused until the balance is settled. Pay the invoice below — once your payment is confirmed, we will restore your service.</p>`)
 	default: // manual_review and any future action: neutral, still payable.
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">To resume service, please settle the invoice using the link below or reach out to support.</p>`)
 	}
