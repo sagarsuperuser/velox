@@ -360,15 +360,8 @@ func TestUpdate_PersistsActivationCycleAndAnchor(t *testing.T) {
 	ps := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 	pe := time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 1, 31, 12, 0, 0, 0, time.UTC)
-	draft.Status = domain.SubscriptionActive
-	draft.ActivatedAt = &now
-	draft.StartedAt = &now
-	draft.CurrentBillingPeriodStart = &ps
-	draft.CurrentBillingPeriodEnd = &pe
-	draft.NextBillingAt = &pe
-	draft.BillingAnchorDay = 31
-	if _, err := store.Update(ctx, tenantID, draft); err != nil {
-		t.Fatalf("update: %v", err)
+	if _, err := store.ActivateDraftWithBill(ctx, tenantID, draft.ID, now, ps, pe, 31, nil); err != nil {
+		t.Fatalf("activate: %v", err)
 	}
 
 	// Re-fetch from Postgres — every activation column must have persisted.

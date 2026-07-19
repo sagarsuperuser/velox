@@ -1750,7 +1750,7 @@ func TestScheduleCancel(t *testing.T) {
 		stored, _ := svc.Get(context.Background(), "t1", sub.ID)
 		stored.CurrentBillingPeriodStart = &periodStart
 		stored.CurrentBillingPeriodEnd = &periodEnd
-		_, _ = svc.store.Update(context.Background(), "t1", stored)
+		_, _ = svc.store.(*memStore).Update(context.Background(), "t1", stored)
 		return svc, stored
 	}
 

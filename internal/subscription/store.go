@@ -33,7 +33,6 @@ type Store interface {
 	// trial, etc). Item mutations use the item-scoped methods below so a
 	// partial update to one field doesn't accidentally overwrite an entire
 	// item list.
-	Update(ctx context.Context, tenantID string, s domain.Subscription) (domain.Subscription, error)
 	UpdateBillingCycle(ctx context.Context, tenantID, id string, periodStart, periodEnd, nextBillingAt time.Time, anchorDay int) error
 	// UpdateBillingCycleTx is the in-tx variant — advances the watermark on the
 	// caller's tx so a coordinator (e.g. the atomic cross-interval swap) can move

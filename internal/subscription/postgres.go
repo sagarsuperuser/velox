@@ -295,83 +295,6 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.S
 	return subs, total, nil
 }
 
-func (s *PostgresStore) Update(ctx context.Context, tenantID string, sub domain.Subscription) (domain.Subscription, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.Subscription{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	now := clock.Now(ctx)
-	// Update is Service.Activate's writer (its only caller). It must persist
-	// the full activation transition: status, activated_at, started_at, the
-	// computed period bounds, next_billing_at, AND billing_anchor_day
-	// (ADR-055). The period + anchor columns were historically omitted here —
-	// masked by the in-memory test fake that replaces the whole struct — so
-	// draft→active never persisted its cycle on Postgres and an anniversary
-	// month-end anchor was dropped (ratcheting). All in one tx.
-	err = scanSubRow(tx.QueryRowContext(ctx, `
-		UPDATE subscriptions SET status = $1, activated_at = $2, canceled_at = $3,
-			trial_start_at = $4, trial_end_at = $5, started_at = $6,
-			current_billing_period_start = $7, current_billing_period_end = $8,
-			next_billing_at = $9, billing_anchor_day = $10,
-			usage_cap_units = $11, overage_action = COALESCE(NULLIF($12,''),'charge'),
-			updated_at = $13
-		WHERE id = $14 AND status = 'draft'
-		RETURNING `+subCols,
-		sub.Status, postgres.NullableTime(sub.ActivatedAt), postgres.NullableTime(sub.CanceledAt),
-		postgres.NullableTime(sub.TrialStartAt), postgres.NullableTime(sub.TrialEndAt),
-		postgres.NullableTime(sub.StartedAt),
-		postgres.NullableTime(sub.CurrentBillingPeriodStart), postgres.NullableTime(sub.CurrentBillingPeriodEnd),
-		postgres.NullableTime(sub.NextBillingAt), sub.BillingAnchorDay,
-		sub.UsageCapUnits, sub.OverageAction,
-		now, sub.ID,
-	), &sub)
-
-	if err == sql.ErrNoRows {
-		// The row is gone OR no longer draft. `AND status = 'draft'` is the
-		// concurrency guard: without it this UPDATE writes status='active'
-		// WHERE id alone, so a draft→canceled cancel that commits between
-		// Service.Activate's status check and this write would be clobbered
-		// back to active — a terminal subscription resurrected into a live
-		// billing state with fresh period bounds, and the handler then fires
-		// subscription.activated on it. Every sibling transition already carries
-		// this guard via transitionInTx (WHERE status IN (...)); this bespoke
-		// multi-column writer is the one that historically didn't. Re-query to
-		// distinguish not-found from a lost race and return a precise error.
-		var currentStatus string
-		err2 := tx.QueryRowContext(ctx, `SELECT status FROM subscriptions WHERE id = $1`, sub.ID).Scan(&currentStatus)
-		if err2 == sql.ErrNoRows {
-			return domain.Subscription{}, errs.ErrNotFound
-		}
-		if err2 != nil {
-			return domain.Subscription{}, err2
-		}
-		return domain.Subscription{}, errs.InvalidState(fmt.Sprintf("can only activate draft subscriptions, current status: %s", currentStatus))
-	}
-	if err != nil {
-		return domain.Subscription{}, err
-	}
-
-	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
-		return domain.Subscription{}, err
-	}
-
-	// Update is Service.Activate's writer (sole caller) and its CAS admits
-	// only draft rows — a successful write with status=active IS the
-	// activation transition. Enqueue in-tx (DispatchTx subscription subset).
-	if sub.Status == domain.SubscriptionActive {
-		if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionActivated, sub, nil); err != nil {
-			return domain.Subscription{}, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return domain.Subscription{}, err
-	}
-	return sub, nil
-}
-
 // CancelAtomic terminates a subscription. Cancellation is allowed from
 // every non-terminal status — draft (operator scrapping a never-activated
 // row), trialing (customer abandoning during trial — by far the dominant
@@ -811,6 +734,16 @@ func (s *PostgresStore) ActivateDraftWithBill(ctx context.Context, tenantID, id 
 		return domain.Subscription{}, err
 	}
 	if err := hydrateSubChildrenTx(ctx, tx, &sub); err != nil {
+		return domain.Subscription{}, err
+	}
+	// The CAS above admits only draft rows, so reaching here IS the
+	// draft→active activation transition — enqueue subscription.activated
+	// in-tx (shared fate with the transition AND the day-1 bill below: a
+	// billFn failure rolls the event back with everything else). This
+	// enqueue previously lived in the store's Update method, which lost its
+	// last caller when Activate migrated here — the event silently stopped
+	// firing while Update's outbox test stayed green against the dead path.
+	if err := s.enqueueLifecycle(ctx, tx, domain.EventSubscriptionActivated, sub, nil); err != nil {
 		return domain.Subscription{}, err
 	}
 	if billFn != nil {

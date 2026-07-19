@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sagarsuperuser/velox/internal/customer"
 	"github.com/sagarsuperuser/velox/internal/domain"
@@ -58,13 +59,15 @@ func TestActivate_StoreUpdate_GuardsAgainstConcurrentCancel(t *testing.T) {
 		return s
 	}
 
+	at := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
+	pe := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
+
 	// Positive: a genuine draft still activates. The guard must not block the valid
 	// transition — and the in-memory fake can't prove this since it ignores the WHERE.
 	valid := newDraft("sub-act-ok")
-	valid.Status = domain.SubscriptionActive
-	activated, err := store.Update(ctx, tenantID, valid)
+	activated, err := store.ActivateDraftWithBill(ctx, tenantID, valid.ID, at, at, pe, 1, nil)
 	if err != nil {
-		t.Fatalf("Update on a genuine draft must succeed: %v", err)
+		t.Fatalf("ActivateDraftWithBill on a genuine draft must succeed: %v", err)
 	}
 	if activated.Status != domain.SubscriptionActive {
 		t.Fatalf("draft must activate: status=%q, want active", activated.Status)
@@ -76,9 +79,8 @@ func TestActivate_StoreUpdate_GuardsAgainstConcurrentCancel(t *testing.T) {
 	if _, err := store.CancelAtomic(ctx, tenantID, raced.ID); err != nil {
 		t.Fatalf("cancel the draft: %v", err)
 	}
-	raced.Status = domain.SubscriptionActive // the stale in-memory struct Activate would persist
-	if _, err := store.Update(ctx, tenantID, raced); err == nil {
-		t.Fatal("Update on a concurrently-canceled sub must FAIL, not clobber it back to active")
+	if _, err := store.ActivateDraftWithBill(ctx, tenantID, raced.ID, at, at, pe, 1, nil); err == nil {
+		t.Fatal("activating a concurrently-canceled sub must FAIL, not clobber it back to active")
 	} else if !errors.Is(err, errs.ErrInvalidState) {
 		t.Fatalf("want an InvalidState conflict, got %v", err)
 	}
