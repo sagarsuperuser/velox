@@ -182,10 +182,14 @@ func (l *Logger) Log(ctx context.Context, tenantID, action, resourceType, resour
 	// this for ~2 weeks via subscription.auditCtxForSub (since reverted
 	// 2026-05-28) — see ADR-030 amendment.
 	//
-	// The SECOND axis is sim_effective_at + test_clock_id: the simulated instant
-	// the clock STOOD AT when this mutation was performed (not the period the
-	// mutation was about — an advance settles everything it finds due at one
-	// instant). Derived from the ctx's clock binding (simColumns), queryable via
+	// The SECOND axis is sim_effective_at + test_clock_id: the simulated
+	// instant the ctx's clock binding CARRIED when this mutation was
+	// performed. Since the contracted-instant arc (#520/#523, playbook
+	// class J) the engine and dunning REBIND that instant per cycle close /
+	// per retry, so rows inside one advance carry their own boundary
+	// instants — a Jan→Mar advance stamps January's close on January's
+	// rows. Writers without a rebinding still stamp where the clock stood.
+	// Derived from the ctx's clock binding (simColumns), queryable via
 	// ?test_clock_id= / ?sim_from= / ?sim_to=. It is not a substitute for
 	// created_at — it is the only axis that survives ADR-086 teardown, which
 	// hard-deletes every simulated business row and leaves the audit log as
@@ -927,17 +931,18 @@ type QueryFilter struct {
 	// whose sim columns are NULL, so filtering on them excludes those rows by
 	// construction.
 	//
-	// There is deliberately NO "order by simulated time". sim_effective_at is
-	// the instant the clock STOOD AT when the mutation was performed, and an
-	// advance performs everything it settles at ONE instant — so within a clock
-	// the sim order and the wall-clock order are the same order (advances are
-	// monotonic; rows inside one advance tie and fall back to the id tiebreak
-	// either way). Across clocks it is worse than redundant: interleaving two
-	// unrelated simulations by their simulated instants produces a timeline that
-	// never happened. A sort control that changes nothing, under a label that
-	// promises it separates the events inside one advance, is a lie with a
-	// checkbox — so it does not exist. Ordering stays on created_at (see
-	// auditListOrder), and there is exactly one cursor axis to match.
+	// There is deliberately NO "order by simulated time". Across clocks it
+	// interleaves unrelated simulations into a timeline that never happened,
+	// and a second sort means a second cursor axis to keep correct. Within
+	// one clock the two orders USED to coincide (one advance = one instant);
+	// since the contracted-instant arc (#520/#523) rows inside an advance
+	// carry distinct per-boundary instants, so for a multi-subscription
+	// advance sim order and wall order can genuinely differ — the original
+	// "changes nothing" premise no longer holds. The deletion stands on the
+	// cross-clock and cursor grounds alone; re-litigate if an operator needs
+	// intra-advance ordering across subscriptions (that is now a real
+	// ordering, not a no-op). Ordering stays on created_at (see
+	// auditListOrder).
 	TestClockID string
 	SimFrom     time.Time
 	SimTo       time.Time

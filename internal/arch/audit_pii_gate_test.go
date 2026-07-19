@@ -43,10 +43,11 @@ var auditEmitCall = regexp.MustCompile(`(?:\.Log|\.LogInTx|auditEvent|auditAuthE
 // that becomes permanent.
 var emailBearingArg = regexp.MustCompile(`\b\w*[Ee]mail\b`)
 
-// emailFlag is the CORRECT pattern: recording WHETHER an address exists, not the
-// address. `"email_set": out.Email != ""` must pass this gate, or the gate is
-// punishing the very fix it exists to require.
-var emailFlag = regexp.MustCompile(`[Ee]mail\s*[!=]=\s*""`)
+// flagComparisonTail matches what must FOLLOW an email identifier for the
+// occurrence to be the CORRECT pattern — a boolean flag (`out.Email != ""`)
+// recording WHETHER an address exists, not the address. Matched against the
+// text immediately after the identifier, per occurrence.
+var flagComparisonTail = regexp.MustCompile(`^\s*[!=]=\s*""`)
 
 // stripComments removes // prose so the gate reads CODE, not the explanation of it.
 func stripComments(s string) string {
@@ -80,14 +81,13 @@ func TestNoEmailAddressesEnterTheAppendOnlyLog(t *testing.T) {
 			if !auditEmitCall.MatchString(line) {
 				continue
 			}
-			// An emit call can span lines; look at the call and its argument tail.
-			hi := min(len(lines), i+8)
-			call := strings.Join(lines[i:hi], " ")
-			// Stop at the end of the call's argument list to avoid swallowing the
-			// next statement.
-			if end := strings.Index(call, "})"); end > 0 {
-				call = call[:end]
-			}
+			// An emit call can span lines. The first version of this window was
+			// a fixed 8 lines with a "})" cutoff — an address on line 9+ of a
+			// metadata literal, or after a nested close, escaped the gate. Now
+			// the window follows the call's own paren balance to its closing
+			// paren (capped defensively), so the gate reads the WHOLE argument
+			// list however long the literal grows.
+			call := collectCallText(lines, i, 60)
 
 			// Strip comments before matching. The first version of this gate fired on
 			// its own explanatory prose ("an email written here could never be
@@ -95,7 +95,8 @@ func TestNoEmailAddressesEnterTheAppendOnlyLog(t *testing.T) {
 			// next person deletes.
 			call = stripComments(call)
 
-			for _, m := range emailBearingArg.FindAllString(call, -1) {
+			for _, loc := range emailBearingArg.FindAllStringIndex(call, -1) {
+				m := call[loc[0]:loc[1]]
 				// `email_set`, `email_changed`, `email_status` are FLAGS, not
 				// addresses — recording the flag instead of the value is exactly
 				// the pattern this rule asks for.
@@ -108,9 +109,12 @@ func TestNoEmailAddressesEnterTheAppendOnlyLog(t *testing.T) {
 				if idish.MatchString(m) {
 					continue
 				}
-				// `X.Email != ""` is a boolean FLAG, not the address — it is the
-				// pattern this rule asks for, so it must pass.
-				if emailFlag.MatchString(call) {
+				// `X.Email != ""` is a boolean FLAG, not the address. The check
+				// is PER OCCURRENCE — the first version exempted the whole call
+				// if a flag appeared anywhere in it, so an address co-passed
+				// BESIDE a legitimate flag sailed through. Only the identifier
+				// that is itself compared to "" is exempt.
+				if flagComparisonTail.MatchString(call[loc[1]:]) {
 					continue
 				}
 				offenders = append(offenders, path+":"+itoa(i+1)+": "+strings.TrimSpace(line))
@@ -140,6 +144,54 @@ historical row at once. Record a FLAG (email_set, email_changed) when you only n
 to know that an address was involved.`,
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
+}
+
+// collectCallText joins lines from the emit call until its parenthesis balance
+// closes (or maxLines as a defensive cap). Balance is counted on a copy with
+// string literals blanked, so a ")" inside a description cannot end the window
+// early; email matching runs on the REAL text.
+func collectCallText(lines []string, start, maxLines int) string {
+	depth := 0
+	var parts []string
+	for i := start; i < len(lines) && i < start+maxLines; i++ {
+		parts = append(parts, lines[i])
+		for _, r := range blankStrings(lines[i]) {
+			switch r {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth <= 0 && i > start {
+			break
+		}
+		if depth <= 0 && strings.Contains(blankStrings(lines[i]), ")") {
+			break
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// blankStrings replaces the contents of double-quoted string literals with
+// spaces so parens inside them do not affect balance counting.
+func blankStrings(line string) string {
+	out := []rune(line)
+	inStr := false
+	for i := 0; i < len(out); i++ {
+		switch {
+		case out[i] == '\\' && inStr:
+			if i+1 < len(out) {
+				out[i], out[i+1] = ' ', ' '
+				i++
+			}
+		case out[i] == '"':
+			inStr = !inStr
+		case inStr:
+			out[i] = ' '
+		}
+	}
+	return string(out)
 }
 
 func itoa(n int) string {

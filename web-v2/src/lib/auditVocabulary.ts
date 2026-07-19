@@ -196,9 +196,9 @@ export function resourceLink(entry: AuditEntry): string | null {
 
 // Fallbacks for an empty tenant: without any audit rows the /filters endpoint
 // returns [], leaving the dropdowns blank. These lists give a new tenant the
-// common vocabulary (it's a hint, not a contract — merged with whatever the
-// server returns), so they mirror what the writers actually emit rather than an
-// arbitrary subset.
+// common vocabulary (it's a hint, not a contract — the server list REPLACES
+// them wholesale as soon as it is non-empty), so they mirror what the writers
+// actually emit rather than an arbitrary subset.
 export const DEFAULT_RESOURCE_TYPES = [
   'customer', 'subscription', 'invoice', 'plan', 'meter',
   'credit', 'credit_note', 'api_key', 'billing', 'billing_profile',

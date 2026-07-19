@@ -11,8 +11,9 @@ import (
 // The residual own-tx audit writers, and why each one is still allowed.
 //
 // ADR-090 made audit emission ride the BUSINESS transaction (`LogInTx`): the row
-// and the change it describes commit together or not at all. Handlers are fully
-// migrated. The engine is NOT — these call sites still use the own-tx `Log`, which
+// and the change it describes commit together or not at all. The money-path
+// handler routes named LogInTx in the route registry are migrated; most other
+// mutating routes and the engine are NOT — those call sites still use the own-tx `Log`, which
 // writes the row in a SEPARATE transaction AFTER the business change has already
 // committed. If that write fails, the mutation stands and its evidence does not.
 // That is the `row_lost` outcome on velox_audit_write_errors_total, and nothing
@@ -56,25 +57,60 @@ var residualOwnTxAuditWriters = map[string]int{
 	"subscription.threshold_deferred": 1,
 }
 
-// Packages whose audit emission runs OUTSIDE a request, on the scheduler. These are
-// the ones that must eventually ride their business tx.
-var backgroundPkgs = []string{"../billing", "../dunning", "../webhook", "../stripe"}
+// Own-tx audit writes that are REQUEST-scoped (chi handlers living inside the
+// scanned packages). These are not background backlog — their routes are
+// declared in internal/api/audit_routes.go like every other handler route —
+// but the scan sees them, so they are pinned here (package/action, counted)
+// instead of being silently skipped: a NEW own-tx call in a handler file
+// still fails CI until declared somewhere. Classification rule: a match in a
+// file whose name contains "handler" is request-scoped. A background writer
+// hiding in a handler file would be mis-bucketed here, not missed.
+var requestScopedOwnTxWriters = map[string]int{
+	"billing/run":    1,
+	"dunning/create": 1,
+	"dunning/update": 3,
+	"dunning/delete": 1,
+	"webhook/create": 1,
+	"webhook/update": 3,
+	"webhook/delete": 1,
+	"webhook/rotate": 1,
+}
 
-var ownTxLogCall = regexp.MustCompile(`auditLogger\.Log\(\s*ctx\s*,[^,]+,\s*(?:"([^"]+)"|domain\.(\w+))`)
+// Packages whose audit emission can run OUTSIDE a request, on the scheduler.
+// These are the ones that must eventually ride their business tx.
+//
+// "payment" is scanned with ZERO expected matches: all of its emission is
+// LogInTx (in-tx), and this scan locks that in — a first own-tx Log() there
+// fails CI. (The list once said "stripe", a package that does not exist; the
+// scan silently skipped it for weeks, which is why a missing directory is now
+// a test failure, not a continue.) "paymentmethods" is deliberately NOT here:
+// its own-tx emission is request-scoped service code behind HTTP routes, the
+// same class as the ~50 post-commit handler routes tracked by the route
+// registry, not scheduler work.
+var backgroundPkgs = []string{"../billing", "../dunning", "../webhook", "../payment"}
+
+// Any audit-shaped own-tx Log call: ANY receiver (e.auditLogger, aw, s.audit),
+// ANY ctx expression (ctx, auditCtx, r.Context()). The previous pattern
+// matched only the literal spelling `auditLogger.Log(ctx, ...)`, so a writer
+// named differently escaped the "fails CI" promise — the gate's guarantee was
+// narrower than its comment claimed. The action shape (third arg = quoted
+// string or domain.AuditAction* constant) is what distinguishes an audit call
+// from slog's Log.
+var ownTxLogCall = regexp.MustCompile(`[\w.]+\.Log\(\s*[\w.()]+\s*,[^,]+,\s*(?:"([^"]+)"|domain\.(\w+))`)
 
 // TestBackgroundAuditWriters_AreAnExplicitShrinkingSet fails when a background
 // package grows a NEW post-commit audit writer, or when a declared one is migrated
 // but left in the list.
 func TestBackgroundAuditWriters_AreAnExplicitShrinkingSet(t *testing.T) {
 	found := map[string]int{}
+	foundRequestScoped := map[string]int{}
 
 	for _, pkg := range backgroundPkgs {
 		entries, err := os.ReadDir(pkg)
-		if os.IsNotExist(err) {
-			continue
-		}
 		if err != nil {
-			t.Fatalf("read %s: %v", pkg, err)
+			// A listed package that cannot be read scans NOTHING — the
+			// "../stripe" phantom entry hid behind a silent continue here.
+			t.Fatalf("read %s: %v (a listed package must exist — fix the backgroundPkgs list)", pkg, err)
 		}
 		for _, e := range entries {
 			name := e.Name()
@@ -91,8 +127,31 @@ func TestBackgroundAuditWriters_AreAnExplicitShrinkingSet(t *testing.T) {
 					// domain.AuditActionFinalize -> "finalize"
 					action = strings.ToLower(strings.TrimPrefix(m[2], "AuditAction"))
 				}
-				found[action]++
+				if strings.Contains(name, "handler") {
+					foundRequestScoped[filepath.Base(pkg)+"/"+action]++
+				} else {
+					found[action]++
+				}
 			}
+		}
+	}
+
+	for key, n := range foundRequestScoped {
+		want, declared := requestScopedOwnTxWriters[key]
+		if !declared {
+			t.Errorf("NEW own-tx audit write %q (%d call(s)) in a handler file of a background package.\n"+
+				"If it is a request-scoped handler row: declare it in requestScopedOwnTxWriters "+
+				"(and make sure its route is in internal/api/audit_routes.go). If it is scheduler "+
+				"work hiding in a handler file: move it, then see the background-writer rules below.", key, n)
+			continue
+		}
+		if n != want {
+			t.Errorf("request-scoped own-tx audit write %q: found %d call(s), declared %d — update the declaration to match reality.", key, n, want)
+		}
+	}
+	for key, want := range requestScopedOwnTxWriters {
+		if _, ok := foundRequestScoped[key]; !ok {
+			t.Errorf("declared request-scoped own-tx write %q (%d) no longer exists — delete the entry.", key, want)
 		}
 	}
 

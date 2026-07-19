@@ -95,8 +95,14 @@ audit-only tx.
 > **Still residual (six sites, `internal/billing`):** `cancel` ×2, `update`,
 > `subscription.pending_change_applied`, `subscription.threshold_crossed`,
 > `subscription.threshold_deferred` — these still emit post-commit on their own
-> transaction. `internal/dunning`, `internal/webhook` and `internal/stripe` emit
-> none at all. Handlers are fully migrated.
+> transaction. `internal/dunning`, `internal/webhook` and `internal/stripe`
+> background paths emit none at all. Handlers are NOT fully migrated: the
+> money-path routes named `LogInTx` in the route registry ride the business tx,
+> but the majority of mutating HTTP routes (subscription updates, pricing,
+> webhook config, dunning ops, test clocks, auth, …) still emit post-commit
+> `Log` with the same residual exposure. `internal/api/audit_routes.go` is the
+> authoritative per-route record of which is which — trust it, not any prose
+> summary, including this one.
 >
 > This paragraph previously stated the whole target as accomplished fact, which is
 > the failure mode this arc exists to remove — evidence, or a claim about evidence,
