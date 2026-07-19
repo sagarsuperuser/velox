@@ -268,10 +268,20 @@ jobs:
 
       # The web-v2 unit suite (effectiveNow drift-guard, csv, vocabulary) ran
       # NOWHERE in CI until 2026-07-19 — a green pipeline said nothing about
-      # it. `npm run lint` is still absent: 10 react-hooks errors block it
-      # (tracked); it lands with that cleanup.
+      # it.
       - name: Frontend unit tests
         run: cd web-v2 && npm test
+
+      # Lint gates the ERROR-level rules: the ADR-086 relative-time ban
+      # (raw Date.now()) and the react-hooks error rules (refs,
+      # set-state-in-effect, static-components). Warn-level rules —
+      # exhaustive-deps among them — do NOT fail the run (plain eslint,
+      # no --max-warnings): they surface in the log only. First wired
+      # 2026-07-19 after the 10 react-hooks errors blocking a green run
+      # were fixed — before that, eslint.config.js claimed to be a CI
+      # gate while lint ran nowhere.
+      - name: Frontend lint
+        run: cd web-v2 && npm run lint
 
   docker:
     needs: [test, frontend]

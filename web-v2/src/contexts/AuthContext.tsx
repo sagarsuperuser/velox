@@ -61,7 +61,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Session bootstrap: ask the server who owns the cookie, once, on
+  // mount. This is the rule's own sanctioned case (synchronizing with an
+  // external system — the session store); every setState here runs after
+  // an await, so no cascading sync render exists. The linter's
+  // interprocedural pass can't see through the async boundary.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async session fetch; all state sets are post-await
     refresh().finally(() => setLoading(false))
   }, [refresh])
 

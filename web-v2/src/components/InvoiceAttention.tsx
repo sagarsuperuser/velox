@@ -56,7 +56,7 @@ export function InvoiceAttention({
   if (!att) return null
 
   const styles = severityStyles(att.severity)
-  const Icon = severityIcon(att.severity)
+  const Icon = severityIcons[att.severity] ?? Info
 
   return (
     <Card className={cn('mb-6', styles.card)}>
@@ -370,16 +370,15 @@ function severityStyles(s: AttentionSeverity) {
   }
 }
 
-function severityIcon(s: AttentionSeverity) {
-  switch (s) {
-    case 'critical':
-      return AlertCircle
-    case 'warning':
-      return AlertTriangle
-    case 'info':
-    default:
-      return Info
-  }
+// Module-scope lookup (not a function called during render): these are
+// references to existing icon components, and a plain index makes that
+// visible to both readers and the react-hooks/static-components rule —
+// a render-time call assigned to a Capitalized JSX variable reads as
+// creating a new component type per render.
+const severityIcons: Record<string, typeof Info> = {
+  critical: AlertCircle,
+  warning: AlertTriangle,
+  info: Info,
 }
 
 // humanReason maps a typed reason code to dashboard-display copy.

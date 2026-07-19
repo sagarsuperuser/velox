@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,9 +43,17 @@ export function TypedConfirmDialog({
   const [typed, setTyped] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
+  // Reset the typed text when the dialog closes, via the documented
+  // adjust-state-during-render pattern (guarded compare, no effect):
+  // an effect-based reset fires a render with the STALE text first and
+  // covers only post-commit; this covers every close path — including a
+  // parent flipping `open` programmatically after a confirm succeeds —
+  // before anything visible renders.
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (prevOpen !== open) {
+    setPrevOpen(open)
     if (!open) setTyped('')
-  }, [open])
+  }
 
   const matches = typed.trim().toUpperCase() === confirmWord.toUpperCase()
 

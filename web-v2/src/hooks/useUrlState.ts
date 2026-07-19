@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 // Backs a bag of string-typed fields (filter, sort, page, search) with URL
@@ -14,21 +14,26 @@ import { useSearchParams } from 'react-router-dom'
 export function useUrlState<T extends Record<string, string>>(
   defaults: T,
 ): [T, (partial: Partial<T>) => void] {
-  // Capture defaults on first render so an inline-object literal at the call
-  // site doesn't destabilise downstream memoisation.
-  const defaultsRef = useRef(defaults)
+  // Freeze defaults at first render (useState initializer — never set
+  // again) so an inline-object literal at the call site doesn't
+  // destabilise downstream memoisation. A ref held the same value until
+  // the 2026-07-19 hooks cleanup: reading ref.current during render is
+  // barred (React may render speculatively), and state read during
+  // render is the sanctioned equivalent with identical capture-once
+  // semantics.
+  const [frozenDefaults] = useState(defaults)
   const [searchParams, setSearchParams] = useSearchParams()
 
   const state = useMemo(() => {
-    const result = { ...defaultsRef.current }
-    for (const key of Object.keys(defaultsRef.current)) {
+    const result = { ...frozenDefaults }
+    for (const key of Object.keys(frozenDefaults)) {
       const val = searchParams.get(key)
       if (val !== null) {
         ;(result as Record<string, string>)[key] = val
       }
     }
     return result
-  }, [searchParams])
+  }, [searchParams, frozenDefaults])
 
   const setState = useCallback(
     (partial: Partial<T>) => {
@@ -37,7 +42,7 @@ export function useUrlState<T extends Record<string, string>>(
           const next = new URLSearchParams(current)
           for (const [key, value] of Object.entries(partial)) {
             if (value === undefined) continue
-            const isDefault = value === (defaultsRef.current as Record<string, string>)[key]
+            const isDefault = value === (frozenDefaults as Record<string, string>)[key]
             if (isDefault || value === '') {
               next.delete(key)
             } else {
@@ -49,7 +54,7 @@ export function useUrlState<T extends Record<string, string>>(
         { replace: true },
       )
     },
-    [setSearchParams],
+    [setSearchParams, frozenDefaults],
   )
 
   return [state, setState]

@@ -10,14 +10,12 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 // lie. All age/countdown/window UI must anchor on an EffectiveNow built via
 // effectiveNow(frozenISO) or wallClockNow() (src/lib/effectiveNow.ts), which the
 // type system already makes non-optional at the helper boundary. This rule is
-// meant as the second, independent gate against hand-rolled wall-clock
-// relative-time — but NOTE (2026-07-19 truth audit): `npm run lint` is not yet
-// a CI step (the frontend job runs build+test only), so today this fires only
-// on a voluntary local run. CI wiring lands with the react-hooks error cleanup
-// (tracked); until then this rule is a local check, not a CI guarantee.
-// Genuine calendar /
-// date-picker / infra uses opt out with a one-line eslint-disable + reason, or
-// live in the date-infra modules exempted below.
+// the second, independent gate against hand-rolled wall-clock relative-time,
+// and since 2026-07-19 it is a real CI gate: the frontend job runs
+// `npm run lint`, and this rule is error-level so a violation fails CI.
+// Genuine calendar / date-picker / infra uses opt out with a one-line
+// eslint-disable + reason, or live in the date-infra modules exempted
+// below.
 const noWallClockNow = [
   'error',
   {
