@@ -155,9 +155,10 @@ const (
 	// deep-links the dashboard for the no-PM case): there's already a
 	// PM on file but it's broken — the verb is "replace this card",
 	// not "set up your first card". Surfaced on payment.declined.
-	// Operator clicking it opens Stripe Checkout in a new tab via
-	// the same /payment-portal/{id}/update-payment-method endpoint
-	// the customer-facing email link uses.
+	// Operator clicking it opens the send-setup-link dialog
+	// (email the customer / copy the link) backed by the operator
+	// setup-session endpoint — the customer completes the Stripe-
+	// hosted setup themselves; nothing opens in the operator's tab.
 	AttentionActionUpdatePaymentMethod AttentionAction = "update_payment_method"
 	// AttentionActionConnectTaxProvider deep-links the dashboard to
 	// Settings → Payments so the operator can connect the tax
@@ -242,20 +243,20 @@ type Attention struct {
 	ProviderResponse string `json:"provider_response,omitempty"`
 
 	// Since is when the attention condition started — operators triage
-	// by age. tax_deferred_at for tax reasons; due_at for overdue;
-	// updated_at as a proxy for payment_failed/unconfirmed (we don't
-	// track a precise failed_at timestamp).
+	// by age. tax_deferred_at for tax reasons; updated_at as a proxy
+	// for payment_failed/unconfirmed (we don't track a precise
+	// failed_at timestamp).
 	Since *time.Time `json:"since,omitempty"`
 
 	// NextAttemptAt is when the engine will retry an automatic action.
-	// Populated ONLY when there's a real scheduled retry — typically
-	// `payment_scheduled` (auto_charge_pending=true, scheduler will
-	// fire on its next sweep) or a dunning retry. Crucially, this is
-	// NOT due_at: due_at is a deadline (when the invoice becomes
-	// overdue), not when the engine is scheduled to act. Empty when
-	// the system has no automatic next action — including the
-	// no_payment_method case where the engine has nothing scheduled
-	// and the operator is the only mover.
+	// Populated ONLY when a real scheduled instant exists — today that
+	// is the tax reconciler's tax_next_retry_at while automatic tax
+	// retries remain. payment_scheduled deliberately does NOT populate
+	// it (the sweep is tick-based; "on its next tick" is honest, a
+	// fabricated precise instant is not), and dunning surfaces its own
+	// next_action_at on the dunning run. Crucially, this is NOT due_at:
+	// due_at is a deadline, not when the engine is scheduled to act.
+	// Empty when the system has no automatic next action.
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 
 	// DueBy is the invoice's payment deadline (mirrors invoice.due_at).
@@ -336,11 +337,10 @@ const docBaseURL = "https://docs.velox.dev/errors/"
 //  1. Tax failed          — blocks finalize, Critical
 //  2. Payment failed      — money flow broken, Critical
 //  3. Tax pending         — engine retrying, Warning
-//  4. Overdue             — needs collection action, Warning
-//  5. Payment unconfirmed — reconciler resolves, Info
-//  6. Payment processing  — charge in flight at provider, Info
-//  7. Payment scheduled   — auto-charge will fire on next tick, Info
-//  8. Awaiting payment    — finalized, no charge attempted yet, Info
+//  4. Payment unconfirmed — reconciler resolves, Info
+//  5. Payment processing  — charge in flight at provider, Info
+//  6. Payment scheduled   — auto-charge will fire on next tick, Info
+//  7. Awaiting payment    — finalized, no charge attempted yet, Info
 //
 // Terminal-state invoices (paid, voided) never raise attention.
 // Drafts also skip — the page itself communicates draft state and
@@ -425,6 +425,37 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 //     unclassified content. If it turns out to be Velox-internal, we'd
 //     just be mis-labelling it as a provider response, which is the
 //     same as today's behaviour for known cases.
+//
+// MaxTaxRetryAttempts is the reconciler's hard cap on automatic tax
+// retries (the SQL predicate lives in billing/tax_retry.go, which
+// sources this const). The attention banner asserts this policy to
+// operators, so the classifier and the reconciler must share one
+// number — a banner promising retries the reconciler stopped making
+// was the 2026-07-19 truth-audit finding this closes.
+const MaxTaxRetryAttempts = 8
+
+// TaxRetryableErrorCodes is the single source for WHICH tax error
+// codes the reconciler retries. provider_not_configured is retryable
+// on purpose: it fails PRE-FLIGHT (no provider API call, no quota),
+// and retrying self-heals the invoice that raced a Stripe connect —
+// the banner already promised this behavior; now it is true. Codes
+// outside this list are operator-action-required (auth, bad customer
+// data, unregistered jurisdiction): retrying those burns provider
+// quota with no chance of success.
+func TaxRetryableErrorCodes() []string {
+	return []string{"provider_outage", "unknown", "provider_not_configured"}
+}
+
+// TaxErrorCodeRetryable reports whether the reconciler retries code.
+func TaxErrorCodeRetryable(code string) bool {
+	for _, c := range TaxRetryableErrorCodes() {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionSeverity) *Attention {
 	errorCode := inv.TaxErrorCode
 	if errorCode == "" {
@@ -435,6 +466,22 @@ func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionS
 		Severity: severity,
 		Since:    inv.TaxDeferredAt,
 		Code:     "tax." + errorCode,
+	}
+	// Exhaustion escalates. After MaxTaxRetryAttempts the reconciler
+	// permanently excludes the invoice (tax_retry.go predicate), so a
+	// "retrying automatically" banner would soothe forever over an
+	// invoice nothing will touch — the operator is the only mover, and
+	// the severity must say so.
+	retryable := TaxErrorCodeRetryable(errorCode)
+	exhausted := retryable && inv.TaxRetryCount >= MaxTaxRetryAttempts
+	if exhausted {
+		att.Severity = AttentionSeverityCritical
+	}
+	// A real scheduled next attempt exists only while retries remain;
+	// the reconciler stamps tax_next_retry_at (plumbed fact, not a
+	// derived guess).
+	if retryable && !exhausted && inv.TaxNextRetryAt != nil {
+		att.NextAttemptAt = inv.TaxNextRetryAt
 	}
 	// provider_not_configured is the only tax code that's pre-flight
 	// (no API call). Every other code reflects something the provider
@@ -463,7 +510,11 @@ func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionS
 		}
 	case "provider_outage":
 		att.Reason = AttentionReasonTaxCalculationFailed
-		att.Message = "The tax provider is temporarily unreachable. The engine will retry automatically."
+		if exhausted {
+			att.Message = "The tax provider stayed unreachable through all automatic retries. Retry manually once the provider recovers."
+		} else {
+			att.Message = fmt.Sprintf("The tax provider is temporarily unreachable. The engine retries automatically (%d of %d attempts used).", inv.TaxRetryCount, MaxTaxRetryAttempts)
+		}
 		att.DocURL = docBaseURL + "tax-provider-outage"
 		att.Actions = []AttentionActionItem{
 			{Code: AttentionActionWaitProvider, Label: "Check provider status"},
@@ -490,9 +541,14 @@ func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionS
 		// ADR-019 already wires a tenant-wide retry on Stripe connect,
 		// so the gap is purely about UX during the 5-min/1-hr window
 		// before the tick fires.
-		if atc.StripeConnected {
+		if atc.StripeConnected && !exhausted {
 			att.Severity = AttentionSeverityInfo
-			att.Message = "Tax calculation is queued. The engine will retry on the next scheduler tick (typically a few minutes). Click Retry now to recompute immediately."
+			att.Message = "Tax calculation is queued. The engine retries automatically now that Stripe is connected. Click Retry now to recompute immediately."
+			att.Actions = []AttentionActionItem{
+				{Code: AttentionActionRetryTax, Label: "Retry now"},
+			}
+		} else if atc.StripeConnected {
+			att.Message = "Automatic tax retries are exhausted for this invoice. Click Retry now to recompute it."
 			att.Actions = []AttentionActionItem{
 				{Code: AttentionActionRetryTax, Label: "Retry now"},
 			}
@@ -505,7 +561,11 @@ func classifyTaxAttention(inv Invoice, atc AttentionContext, severity AttentionS
 		}
 	default:
 		att.Reason = AttentionReasonTaxCalculationFailed
-		att.Message = "Tax calculation failed for an unrecognised reason. See the raw provider response below."
+		if exhausted {
+			att.Message = "Tax calculation kept failing for an unrecognised reason and automatic retries are exhausted. See the raw provider response below."
+		} else {
+			att.Message = "Tax calculation failed for an unrecognised reason. See the raw provider response below."
+		}
 		att.DocURL = docBaseURL + "tax-calculation-failed"
 		att.Actions = []AttentionActionItem{
 			{Code: AttentionActionRetryTax, Label: "Retry tax"},

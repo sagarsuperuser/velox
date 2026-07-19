@@ -4,7 +4,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/sagarsuperuser/velox/internal/tax"
+	"github.com/sagarsuperuser/velox/internal/domain"
 )
 
 // Tax-retry policy for the background reconciler (ADR-017).
@@ -26,9 +26,11 @@ import (
 // maxTaxRetryAttempts is the hard cap on automatic retries before
 // the reconciler stops re-scheduling. After the cap, the invoice
 // stays at tax_status=pending|failed with its last tax_error_code
-// — the operator-facing attention surface remains live so a human
-// can act, but the worker stops burning provider quota.
-const maxTaxRetryAttempts = 8
+// — the attention banner ESCALATES to Critical on exhaustion (the
+// classifier reads the same policy), and the worker stops burning
+// provider quota. Sourced from domain so the banner's asserted
+// policy and the reconciler's SQL predicate cannot drift apart.
+const maxTaxRetryAttempts = domain.MaxTaxRetryAttempts
 
 // taxRetryBackoff returns the wait duration for the Nth attempt.
 // `attempts` is the number of attempts already made (so 0 → first
@@ -74,17 +76,18 @@ func taxRetryBackoff(attempts int) time.Duration {
 }
 
 // taxRetryableCodes lists the tax_error_code values the reconciler
-// will retry. Codes outside this list are deliberately operator-
-// action-required (auth, bad customer data, jurisdiction not
-// registered, provider not connected) — automatic retry would
-// burn provider quota with no chance of success.
+// will retry — sourced from domain.TaxRetryableErrorCodes, the same
+// list the attention banner asserts to operators (a banner promising
+// scheduler retries the predicate never made was the 2026-07-19
+// truth-audit finding). provider_not_configured joined the list then:
+// it fails PRE-FLIGHT (no provider call, no quota burn) and retrying
+// self-heals an invoice that raced a Stripe connect. Remaining
+// non-retryable codes (auth, bad customer data, unregistered
+// jurisdiction) stay operator-action-required — retrying those burns
+// provider quota with no chance of success.
 //
-// Kept as a function (not a const slice) so callers always pass a
-// fresh slice into the SQL query — share-by-reference would let a
-// pathological caller mutate the global.
+// Kept as a function so callers always pass a fresh slice into the
+// SQL query — share-by-reference would let a caller mutate a global.
 func taxRetryableCodes() []string {
-	return []string{
-		string(tax.ErrCodeProviderOutage),
-		string(tax.ErrCodeUnknown),
-	}
+	return domain.TaxRetryableErrorCodes()
 }
