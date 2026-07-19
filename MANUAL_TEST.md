@@ -601,12 +601,12 @@ End-to-end coverage of `pause_collection` with `resumes_at` auto-resume. The das
 
 The ONLY end-to-end manual-test coverage of credit expiry actually firing. C1 verifies the grant is created with `expires_at` populated but doesn't exercise the cron's `ExpireCredits` job; test clock is the only practical way to verify the expiry mechanic.
 
-- [ ] Setup: clock-pinned customer. Grant $50 credit with `expires_at = frozen+30d`.
-- [ ] Customer credit balance = $50; ledger entry `entry_type=grant`.
-- [ ] Advance clock past `expires_at` → catchup Phase 4 fires → new ledger entry `entry_type=expiry`, `amount_cents=-5000`, `created_at` in frozen-time. Balance back to $0.
-- [ ] Customer detail page Credits tab shows both grant and expiry entries with frozen-time dates.
-- [ ] **Expired grant is retired, not just journaled (ADR-071)** — after the expiry fires, a new invoice applied to this customer consumes **$0** from the expired grant (Credits Applied stays $0; the invoice's amount due is unchanged).
-- [ ] Non-expiring grants (`expires_at IS NULL`) survive arbitrary advances — only expirable grants get expired.
+- [~] Setup: clock-pinned customer. Grant $50 credit with `expires_at = frozen+30d`. *(manual 2026-07-19: clock tc10-credit-expiry frozen Jan 1 2028 IST; Expiry Corp created INTO the clock — customer row Created "Jan 1, 2028"; $50 grant via the Credits dialog, expiry Jan 31 2028; the dialog's expiry floor reads the customer's SIMULATED now — useEffectiveNow(test_clock_id) — so sim-future dates validate correctly.)*
+- [~] Customer credit balance = $50; ledger entry `entry_type=grant`. *(manual 2026-07-19: balance $50.00; Grant row dated Jan 1, 2028 — FROZEN time, not wall — with "Expires Jan 31, 2028" subtext.)*
+- [~] Advance clock past `expires_at` → catchup Phase 4 fires → new ledger entry `entry_type=expiry`, `amount_cents=-5000`, `created_at` at the grant's **contracted expiry instant** (its `expires_at`, NOT the advance-end frozen time). Balance back to $0. *(manual 2026-07-19: advanced Jan 1→Feb 15; advance telemetry card reported "Credit grants expired: 1"; Expiry row -$50.00 dated Jan 31, 2028 — the contracted instant; balance $0.00.)*
+- [~] Customer detail page shows the ledger one click away: the **Credit Balance stat card links to** `/credits?customer=…`, whose Transaction History shows both grant and expiry entries with frozen-time dates. *(manual 2026-07-19: stat card $0.00 → linked ledger shows both rows; the old inline "Credits tab" wording predated the stat-card redesign.)*
+- [~] **Expired grant is retired, not just journaled (ADR-071)** — after the expiry fires, a new invoice applied to this customer consumes **$0** from the expired grant (Credits Applied stays $0; the invoice's amount due is unchanged). *(manual 2026-07-19: one-off $10+tax invoice finalized at frozen Feb 15 → NO Credits Applied row, Amount Due $11.00.)*
+- [~] Non-expiring grants (`expires_at IS NULL`) survive arbitrary advances — only expirable grants get expired. *(manual 2026-07-19: $20 no-expiry grant; +1mo advance produced NO expiry entry and no "grants expired" telemetry — instead the catchup's credit-cover sweep legitimately APPLIED $11 to the open invoice (ledger "Applied to invoice NIM-000122" dated Mar 15; invoice flipped Paid, paid_at = the simulated sweep instant), balance $9.00 — the surviving grant works as live money.)*
 
 ---
 
