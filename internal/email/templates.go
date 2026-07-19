@@ -137,21 +137,40 @@ func escape(s string) string { return html.EscapeString(s) }
 // tuple. The caller renders through renderLayout then ships via the
 // multipart pipeline alongside the plaintext fallback.
 
-func renderInvoiceHTML(customerName, invoiceNumber, amount string, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
+// zeroDue is the plumbed fact `amount_due_cents == 0` (paid or fully
+// credit-covered at send time). The copy adapts: the old rendering titled
+// a settled invoice "Invoice X — USD 0.00" with a "View & pay" CTA —
+// asking the customer to pay nothing (2026-07-19 FLOW E copy finding).
+func renderInvoiceHTML(customerName, invoiceNumber, amount string, hostedURL string, zeroDue bool) (subject, contentHTML, ctaURL, ctaLabel string) {
 	subject = "Invoice " + invoiceNumber + " — " + amount
+	if zeroDue {
+		subject = "Invoice " + invoiceNumber + " — no payment due"
+	}
 	var b strings.Builder
 	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">Your invoice is ready</h1>`)
 	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(customerName) + `,</p>`)
 	b.WriteString(`<p style="margin:0 0 20px;color:#4b5563;">Invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> is now available.</p>`)
 	b.WriteString(`<div style="background:#f9fafb;border-radius:8px;padding:16px 20px;margin:8px 0 16px;">`)
-	b.WriteString(`<div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;">Amount due</div>`)
-	b.WriteString(`<div style="font-size:24px;font-weight:600;color:#111827;margin-top:4px;font-variant-numeric:tabular-nums;">` + escape(amount) + `</div>`)
+	if zeroDue {
+		b.WriteString(`<div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;">Amount due</div>`)
+		b.WriteString(`<div style="font-size:24px;font-weight:600;color:#111827;margin-top:4px;font-variant-numeric:tabular-nums;">` + escape(amount) + ` — settled</div>`)
+	} else {
+		b.WriteString(`<div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;">Amount due</div>`)
+		b.WriteString(`<div style="font-size:24px;font-weight:600;color:#111827;margin-top:4px;font-variant-numeric:tabular-nums;">` + escape(amount) + `</div>`)
+	}
 	b.WriteString(`</div>`)
-	if hostedURL != "" {
+	switch {
+	case zeroDue && hostedURL != "":
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This invoice is settled — no payment is needed. The PDF is attached for your records.</p>`)
+		ctaURL = hostedURL
+		ctaLabel = "View invoice"
+	case zeroDue:
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This invoice is settled — no payment is needed. The PDF is attached for your records.</p>`)
+	case hostedURL != "":
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Tap the button below to view or pay your invoice. The PDF is also attached for your records.</p>`)
 		ctaURL = hostedURL
 		ctaLabel = "View & pay invoice"
-	} else {
+	default:
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Please find the invoice PDF attached.</p>`)
 	}
 	return subject, b.String(), ctaURL, ctaLabel

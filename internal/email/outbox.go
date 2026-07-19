@@ -90,6 +90,11 @@ func IsPermanentSendError(err error) bool {
 // fail identically on every attempt.
 var ErrPayloadDecode = errors.New("email outbox: payload decode failed")
 
+// ErrEmailObsolete marks an action-required row whose invoice settled (or
+// was torn down) while the row sat queued. ProcessBatch marks it 'skipped'
+// — deliberately not sent; nothing failed, nothing was delivered.
+var ErrEmailObsolete = errors.New("email outbox: obsolete — invoice settled before delivery")
+
 // outboxBackoff returns the delay before the next attempt given the current
 // attempt count (1 = after the first failure). Ramp: 1s, 5s, 30s, 2m, 5m,
 // 15m, 30m, 1h, 2h, 4h, 8h, 12h, 12h, 12h, 12h — ~72h total over 15 tries.
@@ -328,6 +333,22 @@ func (s *OutboxStore) attemptRow(ctx context.Context, row OutboxRow, handler Out
 			SET status = 'dispatched', dispatched_at = now(), last_error = NULL
 			WHERE id = $1 AND status = 'pending'
 		`)
+		return
+	}
+
+	// Obsolete beats every other classification: the email must not be
+	// sent, retried, or DLQ'd — the world moved on while it waited.
+	if errors.Is(hErr, ErrEmailObsolete) {
+		s.markCAS(markCtx, row.ID, `
+			UPDATE email_outbox
+			SET status = 'skipped', last_error = `+"$2"+`
+			WHERE id = $1 AND status = 'pending'
+		`, truncateError(hErr.Error()))
+		slog.Info("email outbox: row skipped as obsolete",
+			"outbox_id", row.ID,
+			"tenant_id", row.TenantID,
+			"email_type", row.EmailType,
+		)
 		return
 	}
 

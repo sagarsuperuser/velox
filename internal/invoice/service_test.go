@@ -21,6 +21,18 @@ type memStore struct {
 	failNotedPI map[string]string // invoice ID -> PI whose failure notifications fired
 }
 
+func (m *memStore) ActionRequiredObsolete(_ context.Context, _, invoiceNumber string) (bool, error) {
+	for _, inv := range m.invoices {
+		if inv.InvoiceNumber == invoiceNumber {
+			settled := inv.PaymentStatus == domain.PaymentSucceeded ||
+				inv.Status == domain.InvoicePaid || inv.Status == domain.InvoiceVoided ||
+				inv.Status == domain.InvoiceUncollectible
+			return settled, nil
+		}
+	}
+	return true, nil
+}
+
 func newMemStore() *memStore {
 	return &memStore{
 		invoices:    make(map[string]domain.Invoice),

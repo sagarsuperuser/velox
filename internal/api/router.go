@@ -84,19 +84,23 @@ type Server struct {
 	router chi.Router
 
 	// Exported for main.go to wire the billing scheduler + dunning
-	BillingEngine     *billing.Engine
-	DunningSvc        *dunning.Service
-	SettingsStore     *tenant.SettingsStore
-	WebhookOutSvc     *webhook.Service
-	OutboxStore       *webhook.OutboxStore
-	EmailOutboxStore  *email.OutboxStore
-	EmailSender       *email.Sender
-	CreditSvc         *credit.Service
-	InvoiceSvc        *invoice.Service
-	CreditNoteSvc     *creditnote.Service
-	SubscriptionSvc   *subscription.Service
-	TokenSvc          *payment.TokenService
-	PaymentReconciler *payment.Reconciler
+	BillingEngine    *billing.Engine
+	DunningSvc       *dunning.Service
+	SettingsStore    *tenant.SettingsStore
+	WebhookOutSvc    *webhook.Service
+	OutboxStore      *webhook.OutboxStore
+	EmailOutboxStore *email.OutboxStore
+	EmailSender      *email.Sender
+	// EmailSettledChecker feeds the email dispatcher's staleness gate
+	// (cmd/velox wires it via SetSettledChecker): action-required emails
+	// whose invoice settled while queued are skipped, not delivered.
+	EmailSettledChecker email.InvoiceSettledChecker
+	CreditSvc           *credit.Service
+	InvoiceSvc          *invoice.Service
+	CreditNoteSvc       *creditnote.Service
+	SubscriptionSvc     *subscription.Service
+	TokenSvc            *payment.TokenService
+	PaymentReconciler   *payment.Reconciler
 
 	// TestClockSvc lets main.go wire the async catchup queue + worker
 	// (per ADR-015 — Stripe-style async test-clock advance) and run
@@ -1134,20 +1138,24 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	)
 
 	s := &Server{
-		BillingEngine:     engine,
-		DunningSvc:        dunningSvc,
-		SettingsStore:     settingsStore,
-		WebhookOutSvc:     webhookOutSvc,
-		OutboxStore:       outboxStore,
-		EmailOutboxStore:  emailOutboxStore,
-		EmailSender:       emailSender,
-		CreditSvc:         creditSvc,
-		InvoiceSvc:        invoiceSvc,
-		CreditNoteSvc:     creditNoteSvc,
-		SubscriptionSvc:   subSvc,
-		TokenSvc:          tokenSvc,
-		PaymentReconciler: paymentReconciler,
-		TestClockSvc:      testClockSvc,
+		BillingEngine:    engine,
+		DunningSvc:       dunningSvc,
+		SettingsStore:    settingsStore,
+		WebhookOutSvc:    webhookOutSvc,
+		OutboxStore:      outboxStore,
+		EmailOutboxStore: emailOutboxStore,
+		EmailSender:      emailSender,
+		// The invoice store satisfies email.InvoiceSettledChecker
+		// directly (ActionRequiredObsolete) — consumer-defined
+		// interface, wired here at the composition root.
+		EmailSettledChecker: invoiceStore,
+		CreditSvc:           creditSvc,
+		InvoiceSvc:          invoiceSvc,
+		CreditNoteSvc:       creditNoteSvc,
+		SubscriptionSvc:     subSvc,
+		TokenSvc:            tokenSvc,
+		PaymentReconciler:   paymentReconciler,
+		TestClockSvc:        testClockSvc,
 	}
 
 	// Redis for distributed rate limiting. Failure direction is split:

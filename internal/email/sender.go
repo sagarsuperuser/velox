@@ -403,7 +403,7 @@ func (s *Sender) SendInvoice(ctx context.Context, tenantID, to string, cc []stri
 	hostedURL := s.hostedInvoiceURL(publicToken)
 	amount := formatAmount(totalCents, currency)
 
-	subject, contentHTML, ctaURL, ctaLabel := renderInvoiceHTML(customerName, invoiceNumber, amount, hostedURL)
+	subject, contentHTML, ctaURL, ctaLabel := renderInvoiceHTML(customerName, invoiceNumber, amount, hostedURL, totalCents == 0)
 	htmlBody, err := renderLayout(layoutInputs{
 		Subject: subject, CompanyName: brand.CompanyName, LogoURL: brand.LogoURL,
 		BrandColor: brand.BrandColor, SupportURL: brand.SupportURL,
@@ -413,7 +413,7 @@ func (s *Sender) SendInvoice(ctx context.Context, tenantID, to string, cc []stri
 	if err != nil {
 		return fmt.Errorf("render invoice html: %w", err)
 	}
-	textBody := invoiceTextBody(customerName, invoiceNumber, amount, currency, hostedURL)
+	textBody := invoiceTextBody(customerName, invoiceNumber, amount, currency, hostedURL, totalCents == 0)
 
 	return s.sendRich(ctx, richMessage{
 		TenantID:       tenantID,
@@ -673,12 +673,21 @@ If you weren't expecting this invitation, you can safely ignore this email.
 
 // ---- Plaintext fallback bodies (multipart/alternative text part) ----
 
-func invoiceTextBody(customerName, invoiceNumber, amount, currency, hostedURL string) string {
+func invoiceTextBody(customerName, invoiceNumber, amount, currency, hostedURL string, zeroDue bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hi %s,\n\n", customerName)
-	fmt.Fprintf(&b, "Invoice %s is ready.\n\nAmount due: %s\nCurrency: %s\n\n", invoiceNumber, amount, strings.ToUpper(currency))
-	if hostedURL != "" {
-		fmt.Fprintf(&b, "View or pay online: %s\n\n", hostedURL)
+	if zeroDue {
+		// Plumbed amount_due==0: same fact the HTML twin adapts on —
+		// never ask the customer to pay a settled invoice.
+		fmt.Fprintf(&b, "Invoice %s is ready. It is settled — no payment is needed.\n\n", invoiceNumber)
+		if hostedURL != "" {
+			fmt.Fprintf(&b, "View online: %s\n\n", hostedURL)
+		}
+	} else {
+		fmt.Fprintf(&b, "Invoice %s is ready.\n\nAmount due: %s\nCurrency: %s\n\n", invoiceNumber, amount, strings.ToUpper(currency))
+		if hostedURL != "" {
+			fmt.Fprintf(&b, "View or pay online: %s\n\n", hostedURL)
+		}
 	}
 	b.WriteString("The invoice PDF is attached for your records.\n")
 	return b.String()

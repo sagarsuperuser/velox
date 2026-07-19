@@ -279,6 +279,7 @@ func serve() {
 	go func() {
 		defer workers.Done()
 		dispatcher := email.NewDispatcher(server.EmailOutboxStore, server.EmailSender, email.DispatcherConfig{})
+		dispatcher.SetSettledChecker(server.EmailSettledChecker)
 		dispatcher.SetLocker(server.EmailOutboxStore)
 		dispatcher.Start(ctx)
 	}()

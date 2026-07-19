@@ -66,10 +66,11 @@ type EmailDeliverer interface {
 // SMTP Sender in production). Handler semantics: a row is marked 'dispatched'
 // once the Send* call returns nil.
 type Dispatcher struct {
-	outbox *OutboxStore
-	sender EmailDeliverer
-	cfg    DispatcherConfig
-	locker DispatchLocker
+	settled InvoiceSettledChecker
+	outbox  *OutboxStore
+	sender  EmailDeliverer
+	cfg     DispatcherConfig
+	locker  DispatchLocker
 }
 
 func NewDispatcher(outbox *OutboxStore, sender EmailDeliverer, cfg DispatcherConfig) *Dispatcher {
@@ -137,10 +138,34 @@ func (d *Dispatcher) tick(ctx context.Context) {
 	}
 }
 
+// InvoiceSettledChecker answers whether an action-required email
+// referencing an invoice is obsolete (invoice settled or gone). Satisfied
+// by the invoice store through a composition-root adapter — the email
+// package never imports a peer domain. Optional: nil skips the gate.
+type InvoiceSettledChecker interface {
+	ActionRequiredObsolete(ctx context.Context, tenantID, invoiceNumber string) (bool, error)
+}
+
+// SetSettledChecker wires the staleness gate (see handle).
+func (d *Dispatcher) SetSettledChecker(c InvoiceSettledChecker) { d.settled = c }
+
+// actionRequiredTypes are the email types whose ENTIRE purpose collapses
+// once the invoice settles: "update your payment method", "payment
+// failed", "we'll retry on <date>", "action taken — balance due". The
+// informational types (invoice document, receipt, credit note) stay
+// deliverable regardless — a paid invoice's document is still the
+// customer's record.
+var actionRequiredTypes = map[string]bool{
+	TypePaymentSetupRequest: true,
+	TypePaymentFailed:       true,
+	TypeDunningWarning:      true,
+	TypeDunningEscalation:   true,
+}
+
 // handle is the per-row handler. It demarshals the payload based on
 // email_type and dispatches to the matching Send* method. Returning nil
 // marks the row 'dispatched'; returning an error schedules a retry (or DLQ
-// after MaxOutboxAttempts).
+// after MaxOutboxAttempts); returning ErrEmailObsolete marks it 'skipped'.
 func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 	msg, err := decodeMessage(row.EmailType, row.Payload)
 	if err != nil {
@@ -148,6 +173,24 @@ func (d *Dispatcher) handle(ctx context.Context, row OutboxRow) error {
 		// ErrPayloadDecode sentinel makes ProcessBatch DLQ it NOW
 		// instead of riding 15 no-op cycles over ~72h (P5 panel).
 		return fmt.Errorf("%w: %v", ErrPayloadDecode, err)
+	}
+
+	// Staleness gate: a queued action-required email whose invoice
+	// settled while the row waited (SMTP outage, paused dispatcher) must
+	// not deliver — "action required: update your payment method" landing
+	// AFTER the customer paid erodes trust (found live, FLOW E
+	// 2026-07-19). FAIL-OPEN on checker errors: a DB blip must never eat
+	// customer mail; the pre-gate behavior (send) is the fallback.
+	if d.settled != nil && actionRequiredTypes[row.EmailType] && msg.InvoiceNumber != "" {
+		livemodeCtx := postgres.WithLivemode(ctx, row.Livemode)
+		obsolete, cerr := d.settled.ActionRequiredObsolete(livemodeCtx, row.TenantID, msg.InvoiceNumber)
+		if cerr != nil {
+			slog.Warn("email staleness check failed — sending anyway (fail-open)",
+				"outbox_id", row.ID, "email_type", row.EmailType,
+				"invoice_number", msg.InvoiceNumber, "error", cerr)
+		} else if obsolete {
+			return fmt.Errorf("%w: invoice %s settled or gone before delivery", ErrEmailObsolete, msg.InvoiceNumber)
+		}
 	}
 
 	// Pin the row's livemode on the per-call ctx so the Sender's
