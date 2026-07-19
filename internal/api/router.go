@@ -518,7 +518,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// own request handler / job log. This boot-time line sits above
 	// the per-request volume so the misconfiguration is unmissable.
 	if !emailSender.IsConfigured() {
-		slog.Warn("SMTP NOT CONFIGURED — every customer-facing email (invoices, dunning, password-reset, magic-link) will fail with ErrSMTPNotConfigured. Set SMTP_HOST + credentials. See docs/ops/email-setup.md.")
+		slog.Warn("SMTP NOT CONFIGURED — every customer-facing email (invoices, receipts, dunning, payment-setup links, password resets, team invites) will fail with ErrSMTPNotConfigured. Set SMTP_HOST + credentials. See docs/ops/email-setup.md.")
 	} else {
 		slog.Info("SMTP configured", "host", emailSender.SMTPHost())
 	}
@@ -996,7 +996,7 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	if bidxKey := strings.TrimSpace(os.Getenv("VELOX_EMAIL_BIDX_KEY")); bidxKey != "" {
 		b, err := crypto.NewBlinder(bidxKey)
 		if err != nil {
-			slog.Error("invalid VELOX_EMAIL_BIDX_KEY, magic-link requests will fail closed", "error", err)
+			slog.Error("invalid VELOX_EMAIL_BIDX_KEY — bounce-report and suppression lookups will fail closed", "error", err)
 		} else {
 			customerStore.SetBlinder(b)
 			// Wire bounce reporting now that we have the blinder.
