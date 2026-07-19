@@ -4,7 +4,8 @@
 --
 -- Same lock concern as the up direction: re-adding the FK without NOT VALID
 -- validates every existing row under AccessExclusiveLock (~6.7s on audit_log
--- at the medium scale per docs/migration-safety-findings.md). Use the same
+-- at the medium scale, measured by the cmd/velox-migrate-safety harness;
+-- findings register in the private velox-ops repo). Use the same
 -- NOT VALID + VALIDATE two-step so rollbacks don't freeze writes either.
 
 ALTER TABLE api_keys DROP CONSTRAINT api_keys_tenant_id_fkey;

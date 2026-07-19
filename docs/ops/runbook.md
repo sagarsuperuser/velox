@@ -149,17 +149,18 @@ LIMIT 10;
 
 **Diagnose**:
 ```sql
-SELECT we.event_type, wo.status, count(*), max(wo.attempts) AS max_attempts
-FROM webhook_outbox wo
-JOIN webhook_endpoints we ON we.id = wo.endpoint_id
-WHERE wo.status IN ('pending', 'failed')
-GROUP BY we.event_type, wo.status;
-
--- Per-endpoint failure rate
-SELECT endpoint_id, last_error, count(*)
+-- The outbox is the queue (one row per event, no endpoint column);
+-- per-endpoint attempts live in webhook_deliveries.
+SELECT event_type, status, count(*), max(attempts) AS max_attempts
 FROM webhook_outbox
-WHERE status = 'failed' AND last_error IS NOT NULL
-GROUP BY endpoint_id, last_error
+WHERE status IN ('pending', 'failed')
+GROUP BY event_type, status;
+
+-- Per-endpoint failure rate (delivery log, not the outbox)
+SELECT webhook_endpoint_id, error_message, count(*)
+FROM webhook_deliveries
+WHERE status = 'failed' AND error_message IS NOT NULL
+GROUP BY webhook_endpoint_id, error_message
 ORDER BY count(*) DESC
 LIMIT 20;
 ```
@@ -251,8 +252,8 @@ FROM test_clocks WHERE status = 'advancing';
 -- Check catchup progress: subscriptions on this clock
 SELECT s.id, s.next_billing_at, count(i.id) AS invoices_generated
 FROM subscriptions s
-LEFT JOIN invoices i ON i.subscription_id = s.id AND i.created_at > tc.updated_at
 JOIN test_clocks tc ON tc.id = s.test_clock_id
+LEFT JOIN invoices i ON i.subscription_id = s.id AND i.created_at > tc.updated_at
 WHERE tc.id = '<clock_id>'
 GROUP BY s.id, s.next_billing_at, tc.updated_at;
 ```
@@ -260,8 +261,11 @@ GROUP BY s.id, s.next_billing_at, tc.updated_at;
 **Fix**:
 1. If progress is happening (invoices being generated), wait — large
    jumps take time.
-2. If `internal_failure`, the operator needs to delete the clock and
-   start over (per ADR-011 Test Clocks design).
+2. If `internal_failure`, retry the advance: the dashboard's
+   `Retry advance` button (or `POST /v1/test-clocks/<clock_id>/retry-advance`)
+   flips the clock back to `advancing` and resumes catchup from where it
+   stopped (ADR-018). Delete only as a last resort — since ADR-086 clock
+   deletion is a complete teardown of the clock's simulated data.
 
 ### 7. RLS leakage suspected
 
@@ -316,8 +320,8 @@ SET state = 'resolved', resolution = 'manually_resolved',
     resolved_at = now(), next_action_at = NULL
 WHERE id = '<run_id>';
 
-INSERT INTO invoice_dunning_events (run_id, invoice_id, event_type, state, reason)
-VALUES ('<run_id>', '<invoice_id>', 'resolved', 'resolved', 'manually_resolved');
+INSERT INTO invoice_dunning_events (tenant_id, run_id, invoice_id, event_type, state, reason)
+VALUES ('<tenant_id>', '<run_id>', '<invoice_id>', 'resolved', 'resolved', 'manually_resolved');
 ```
 
 Use only when dashboard "Resolve" action is unavailable. Audit log

@@ -5714,7 +5714,7 @@ func (e *Engine) computeAndPersistInvoiceTax(ctx context.Context, tenantID, invo
 // ctx carries effective-now via clock.WithEffectiveNow on
 // clock-pinned invoices; without binding, falls back to wall-clock.
 // Catchup's ListPendingTaxRetryForClock intentionally ignores
-// `tax_next_retry_at` (see invoice/postgres.go:1406-1411), so the
+// `tax_next_retry_at` (see its doc comment in invoice/postgres.go), so the
 // stamp's domain doesn't load-bear for clock-pinned scheduling — but
 // keeping it in the simulation domain matches the rest of the row's
 // timestamps for dashboard consistency (ADR-030).

@@ -118,7 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Listen for mode flips from other tabs. Either path lands here:
   // BroadcastChannel for evergreen browsers, storage event for the
   // localStorage-write fallback. We update the React state but
-  // don't re-call /v1/dashboard/mode — the server-side flip
+  // don't re-call POST /v1/auth/mode — the server-side flip
   // already happened in the originating tab.
   useEffect(() => {
     const apply = (livemode: boolean) => {

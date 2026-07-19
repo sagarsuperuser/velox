@@ -341,8 +341,10 @@ func TestPriceChange_FireThenPublishThenClose(t *testing.T) {
 	}
 }
 
-// TestPriceChange_PreviewMatchesCloseAcrossPublish CI-locks the
-// preview.go:197 parity claim that was false pre-ADR-070: previewMeter
+// TestPriceChange_PreviewMatchesCloseAcrossPublish CI-locks the parity
+// claim in preview.go's doc comment ("the cycle scan calls the same
+// path, so a multi-dim tenant's preview matches what its actual invoice
+// will be") that was false pre-ADR-070: previewMeter
 // priced the meter-pinned version while the close priced latest-by-key,
 // so preview != invoice after any publish.
 func TestPriceChange_PreviewMatchesCloseAcrossPublish(t *testing.T) {

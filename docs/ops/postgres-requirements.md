@@ -128,7 +128,7 @@ production):
 | `invoices`, `invoice_line_items` | Per cycle + per addon line. | **Never prune** — financial. |
 | `credit_notes`, `credit_note_line_items` | Per refund/adjustment. | **Never prune** — financial. |
 | `subscriptions`, `subscription_items` | Per subscription. Slow growth. | Never prune. |
-| `customers`, `billing_profiles` | Per customer. Slow. | Honour GDPR-delete only via tenant-scoped flow (not automated yet). |
+| `customers`, `customer_billing_profiles` | Per customer. Slow. | Honour GDPR-delete only via tenant-scoped flow (not automated yet). |
 
 **Storage estimation**: at ~10k subscriptions doing ~100 events/day
 each, expect ~30M `usage_events` rows/month, ~10GB/year on disk after

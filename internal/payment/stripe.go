@@ -33,7 +33,7 @@ type DunningStarter interface {
 // DunningResolver closes an active dunning run when a card payment settles —
 // symmetric with the engine's DunningResolver for background settles (credits /
 // threshold / auto-charge, #317). Optional; nil = skip (the dunning sweep's
-// paid-pre-check floor still resolves the run on the next tick). Wire via
+// paid-pre-check floor still resolves the run when it next comes due). Wire via
 // SetDunningResolver. ResolveByInvoice no-ops when there is no active run, so it
 // is safe to call on every card success.
 type DunningResolver interface {
@@ -605,7 +605,7 @@ func (s *Stripe) chargeInvoice(ctx context.Context, tenantID string, inv domain.
 		if !pe.Unknown && s.dunning != nil {
 			failureAt := simulatedFailureAt(inv)
 			if derr := startDunningWithRetry(ctx, s.dunning, tenantID, inv.ID, inv.CustomerID, failureAt); derr != nil {
-				slog.Error("inline StartDunning after known-failed charge — dunning will NOT auto-retry; operator must start manually from invoice attention banner",
+				slog.Error("inline StartDunning after known-failed charge failed — no action needed: the payment-failed webhook or the dunning backfill sweep will start the run automatically",
 					"invoice_id", inv.ID, "customer_id", inv.CustomerID, "error", derr)
 			}
 		}

@@ -79,8 +79,9 @@ Make the **state value** (`'resolved'`, `SubscriptionActive`, …) — not your 
    email, outbound webhook). Is each idempotent under replay, and either in-tx or
    outbox-enqueued?
 3. **Every CALLER and CALLEE.** Does a `*Tx` variant skip a validation or effect
-   the non-Tx path runs? *(`UpsertPolicyTx` skips the retry-schedule-length check
-   `UpsertPolicy` enforces.)* Does the guard extend into functions the changed
+   the non-Tx path runs? *(the pre-#333 `UpsertPolicyTx`, which skipped the
+   retry-schedule-length check `UpsertPolicy` enforced — both writers now share
+   the `normalizeAndValidatePolicy` chokepoint.)* Does the guard extend into functions the changed
    one *calls*? *(the exhaustRun miss.)*
 4. **Every precondition-check-vs-external-call GAP.** Between the check and the
    irreversible action, can a concurrent settle/redelivery invalidate it?
@@ -251,8 +252,10 @@ production cutover); and the 2026-07-10 design-quality review
 the `domain.TaxFacts` embed (class-A/B adjacent: the tax-fact field-drop class
 is now a compile error), typed effect outcomes (`domain.NotifyOutcome` — a
 skipped effect is never a silent nil), and fail-loud parity on the cancel
-builder. Proposed playbook **class J (rendered/asserted truth)** and the
-containment trip-wire live in that review pending adoption here.
+builder. A proposed **rendered/asserted-truth class** and the
+containment trip-wire live in that review, still pending adoption here (the
+review called it "class J", but that letter has since been taken by the adopted
+class J, contracted-instant stamping — see §1).
 
 ## 6a. Census posture (as of 2026-07-02)
 

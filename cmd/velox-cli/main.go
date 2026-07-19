@@ -3,8 +3,8 @@
 // no direct DB coupling — so the CLI is a faithful proxy for "what
 // could a customer/integrator do via the API right now?".
 //
-// Auth: a platform API key from the VELOX_API_KEY env var or the
-// --api-key flag. The CLI never writes the key to disk.
+// Auth: a secret API key (vlx_secret_…) from the VELOX_API_KEY env var
+// or the --api-key flag. The CLI never writes the key to disk.
 package main
 
 import (
@@ -16,8 +16,9 @@ import (
 
 func main() {
 	if err := cmd.NewRootCmd().Execute(); err != nil {
-		// cobra already prints the error + usage; we just want the
-		// exit code to reflect it so shell pipelines fail visibly.
+		// cobra is silenced (SilenceErrors/SilenceUsage in NewRootCmd),
+		// so this Fprintln is the sole error output; exit non-zero so
+		// shell pipelines fail visibly.
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

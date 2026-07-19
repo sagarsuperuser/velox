@@ -137,12 +137,12 @@ in step 4 will fail and trigger the dunning flow.
 
 ## Step 3 — Subscribe the customer to a flat plan
 
-Pick the bootstrap-seeded `Starter` plan (or instantiate a recipe — see the
-recipes test below):
+Bootstrap seeds no plans — create one first on the dashboard's Pricing
+page or instantiate a recipe (see the recipes test below), then pick it:
 
 ```bash
 PLAN_ID=$(curl -s http://localhost:8080/v1/plans -b /tmp/velox-cookies.txt \
-  | jq -r '.data[] | select(.code=="starter").id')
+  | jq -r '.data[0].id')
 
 curl -s -X POST http://localhost:8080/v1/subscriptions \
   -b /tmp/velox-cookies.txt \
@@ -224,10 +224,14 @@ curl -s "http://localhost:8080/v1/dunning/runs?customer_id=<vlx_cus_...>" \
   -b /tmp/velox-cookies.txt | jq
 ```
 
-**Expected:** the default dunning policy schedules retries (Day 1, Day 3, Day 7,
-Day 14, then `final_action=cancel`). The first retry should already be
-scheduled. Each retry is a fresh PaymentIntent; check the Stripe dashboard's
-Payments page to confirm the PI ID changes per attempt.
+**Expected:** a dunning run appears **only if a dunning policy is configured
+and set default** — bootstrap deliberately seeds none (ADR-036 amendment), so
+on a fresh tenant the failed payment skips enrollment with a
+"dunning not configured" WARN and the runs list stays empty. Create a policy
+first (dashboard → Dunning policies, or `POST /v1/dunning/policies` +
+`set-default`); retries then follow that policy's grace period and
+`retry_schedule`. Each retry is a fresh PaymentIntent; check the Stripe
+dashboard's Payments page to confirm the PI ID changes per attempt.
 
 To recover the customer, swap the card via step 2b with `4242`, then
 either wait for the next scheduled dunning retry or, once the payment
@@ -248,14 +252,21 @@ curl -s -X POST http://localhost:8080/v1/credit-notes \
   -d '{
     "invoice_id": "<vlx_inv_...>",
     "reason": "duplicate",
-    "amount_cents": 2900
+    "lines": [
+      {"description": "Refund - full invoice amount", "quantity": 1, "unit_amount_cents": 2900}
+    ],
+    "refund_amount_cents": 2900,
+    "auto_issue": true
   }'
 ```
 
-**Expected:** credit note created with `status=issued`. Velox calls
-`refunds.Create` against Stripe, the refund lands on the same charge, and a
-`charge.refunded` webhook flows back. The invoice's `amount_refunded_cents`
-should equal `2900` post-refund.
+**Expected:** credit note created with `status=issued`. Because
+`refund_amount_cents` is set, Velox calls `refunds.Create` against Stripe,
+the refund lands on the same charge, and a `charge.refunded` webhook flows
+back — the credit note's `refund_status` flips to `succeeded` and
+`stripe_refund_id` is populated. (Leaving all three allocation fields zero
+on a paid invoice defaults to `credit_amount = total` — a customer-balance
+credit with **no** Stripe refund.)
 
 ---
 
@@ -267,8 +278,8 @@ curl -s -X DELETE http://localhost:8080/v1/settings/stripe/test \
 ```
 
 **Expected:** 204. The credentials row is deleted; the encrypted blobs are
-purged. Subsequent payment attempts return a `stripe_credentials_missing`
-error envelope rather than panicking.
+purged. Subsequent payment attempts fail with a
+`"stripe not configured for this mode"` error rather than panicking.
 
 ---
 
@@ -285,7 +296,9 @@ A passing run reports:
 
 Anything that doesn't match the **Expected** sections above is a bug. File it
 under the Velox repo with the request ID Velox returns in the error envelope
-(see `docs/ops/runbook.md#error-envelope` for the shape).
+(`{"error": {"type", "code", "message", "request_id"}}` — defined in
+`internal/api/respond/respond.go`; also echoed in the `Velox-Request-Id`
+response header).
 
 ---
 

@@ -20,9 +20,9 @@
 -- `CREATE INDEX … USING GIN (properties)`. It has been hoisted to its own
 -- migration (0062) using `CREATE INDEX CONCURRENTLY` to avoid the 53.5s
 -- AccessExclusiveLock on `usage_events` measured by the populated-DB
--- safety harness — see docs/migration-safety-findings.md ("Already fixed"
--- section). The retrofit is safe for already-deployed instances because
--- 0062 uses `IF NOT EXISTS`.
+-- safety harness (cmd/velox-migrate-safety + scripts/migration-safety-test.sh;
+-- findings register lives in the private velox-ops repo). The retrofit is
+-- safe for already-deployed instances because 0062 uses `IF NOT EXISTS`.
 --
 -- Backward compatibility:
 --   - meters.aggregation column is left in place but becomes advisory; the
@@ -32,8 +32,9 @@
 --     when no rows exist (pre-launch), and a rewrite when rows exist. We
 --     are pre-launch / local-only, so this is effectively free. The
 --     production-safe rework into ADD COLUMN + backfill + rename is
---     DEFERRED until after Phase 3 cutover (needs backfill machinery; see
---     docs/migration-safety-findings.md "0054 — column rewrite — DEFERRED").
+--     DEFERRED until after Phase 3 cutover (needs backfill machinery;
+--     tracked in the migration-safety findings register in the private
+--     velox-ops repo, "0054 — column rewrite — DEFERRED").
 
 ALTER TABLE usage_events
     ALTER COLUMN quantity TYPE NUMERIC(38, 12) USING quantity::numeric;

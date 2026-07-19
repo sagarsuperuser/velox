@@ -42,7 +42,7 @@ Known gaps, documented openly:
 - No built-in mechanism to rotate `VELOX_ENCRYPTION_KEY` or `VELOX_EMAIL_BIDX_KEY` (envelope encryption rebuild planned)
 - No MFA on dashboard login (no MFA in v1; SSO direction is embedded OIDC/SAML per ADR-014 — Velox will not depend on a SaaS auth vendor)
 - No SAST in CI (Semgrep / CodeQL planned)
-- No image signing (cosign / Sigstore planned)
+- Dashboard image not signed — CI keyless-signs the server image with cosign (Sigstore), but the `-dashboard` image is published unsigned
 - No threat model document (STRIDE / LINDDUN planned)
 - No external penetration test on record yet
 

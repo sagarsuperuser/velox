@@ -2,9 +2,9 @@
 //
 // Strategy: open a single connection, set app.bypass_rls=on so RLS is off,
 // and use multi-row INSERT batches (faster than one row per statement, and
-// portable; we don't use COPY because we want every row to take its
-// DEFAULT-generated id from the column default rather than supplying ids
-// from the client).
+// portable). Every row carries a deterministic client-supplied id (e.g.
+// 'vlx_ten_safe%010d') so re-runs are reproducible and the ON CONFLICT
+// DO NOTHING inserts stay idempotent.
 package main
 
 import (

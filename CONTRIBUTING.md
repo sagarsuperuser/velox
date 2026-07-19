@@ -36,7 +36,7 @@ internal/{domain}/
 ```
 
 **Rules:**
-- Zero imports between peer domain packages (customer doesn't import invoice)
+- No concrete `Service`/`Store` coupling between peer domain packages — cross-domain imports are limited to shared value types, cross-cutting infra, and the billing coordinator's narrow interfaces, enforced by the allowlist in `internal/arch/boundaries_test.go`
 - Every handler uses `respond.JSON()` / `respond.FromError()` for responses
 - Every store method runs inside an RLS-scoped transaction
 - Tests use `testutil.SetupTestDB()` for integration tests

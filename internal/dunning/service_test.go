@@ -122,7 +122,8 @@ func (m *memStore) CreateRun(_ context.Context, tenantID string, run domain.Invo
 	run.ID = fmt.Sprintf("drun_%d", len(m.runs)+1)
 	run.TenantID = tenantID
 	// Honor caller-provided CreatedAt to match PostgresStore.CreateRun
-	// (postgres.go:114). Dunning Service stamps CreatedAt in the
+	// (postgres.go — it likewise falls back to now only when CreatedAt is
+	// zero). Dunning Service stamps CreatedAt in the
 	// effective-now domain so engine-triggered runs on a clock-pinned
 	// invoice carry simulated time, not wall-clock.
 	if run.CreatedAt.IsZero() {

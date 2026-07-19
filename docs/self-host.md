@@ -84,8 +84,11 @@ Compose ships Postgres 16 with default settings — sufficient for eval.
 For your own VM:
 
 - Version: 16.x
-- Extensions: none required (Velox uses standard `gen_random_bytes`,
-  `LATERAL`, RLS — all built-in).
+- Extensions: `pgcrypto` (provides `gen_random_bytes`) and `citext`.
+  Migrations run `CREATE EXTENSION IF NOT EXISTS`, so the migrating role
+  needs the `CREATE EXTENSION` permission — on locked-down managed
+  Postgres, pre-create them per
+  [`docs/ops/postgres-requirements.md`](ops/postgres-requirements.md).
 - **A least-privilege runtime role (required for tenant isolation).**
   Velox enforces multi-tenant isolation with Row-Level Security. Request
   traffic runs on the connection in `APP_DATABASE_URL` — a role like

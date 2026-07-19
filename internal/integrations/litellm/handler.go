@@ -97,8 +97,10 @@ type SpendRowError struct {
 //  1. Decode body; normalize single | batch to []StandardLoggingPayload
 //  2. For each payload: MapPayload → 0/1/2 ExternalIngest events
 //  3. Resolve external_customer_id + meter_key per event
-//  4. Call usage.Service.Ingest per event (idempotent via
-//     (tenant, customer, meter, idempotency_key) UNIQUE)
+//  4. Call usage.Service.Ingest per event (idempotent via the
+//     usage_events UNIQUE (tenant_id, livemode, idempotency_key) —
+//     tenant-wide, NOT per customer/meter, which is why the mapper
+//     suffixes the key per token type)
 //  5. Tally accepted / skipped / errors; return 200 with envelope
 //
 // The handler NEVER returns 5xx once past decode: per-row persist
@@ -189,7 +191,7 @@ func (h *Handler) persist(ctx context.Context, tenantID string, ing ExternalInge
 
 	if _, err := h.ingester.Ingest(ctx, tenantID, input); err != nil {
 		// Idempotency replay is silent success: the usage store returns
-		// ErrDuplicateKey on the (tenant, idempotency_key) UNIQUE — a
+		// ErrDuplicateKey on the (tenant_id, livemode, idempotency_key) UNIQUE — a
 		// LiteLLM network-retry redelivering an already-ingested batch is
 		// the happy path, not a failure. Pre-fix this matched only
 		// ErrAlreadyExists (which the store never returns here), so every

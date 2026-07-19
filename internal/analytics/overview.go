@@ -251,7 +251,7 @@ func currentMRR(ctx context.Context, tx *sql.Tx, currency string) (int64, error)
 // Scoped to the tenant's default currency like every other MRR sum.
 //
 // The two LATERALs replace four correlated subqueries per item; both walk
-// idx_sic_item_changed (0131).
+// idx_sic_item (0131).
 func mrrAtPointInTime(ctx context.Context, tx *sql.Tx, t any, currency string) (int64, error) {
 	var v int64
 	err := tx.QueryRowContext(ctx, `

@@ -52,7 +52,7 @@ messages + CHANGELOG.md, not here.
 | [013](013-invoice-attention-collection-state.md) | 2026-05-01 | Accepted | Invoice Attention — Honest Collection-State Surface |
 | [014](014-sso-direction-embedded-oidc-saml.md) | 2026-05-02 | Accepted | SSO Direction — Embedded OIDC/SAML, No SaaS Auth Vendor |
 | [015](015-test-clock-async-catchup.md) | 2026-05-04 | Accepted | Test-clock advance runs catchup asynchronously |
-| [016](016-test-clock-soft-delete.md) | 2026-05-04 | Accepted | Test clocks are soft-deleted with cascade-cancel of pinned subs |
+| [016](016-test-clock-soft-delete.md) | 2026-05-04 | Superseded by 086 | Test clocks were soft-deleted with cascade-cancel of pinned subs; now a hard DELETE with FK-cascade teardown |
 | [017](017-tax-retry-and-auto-finalize.md) | 2026-05-04 | Accepted | Background tax-retry reconciler + auto-finalize on success |
 | [018](018-test-clock-retry-and-failure-reason.md) | 2026-05-04 | Accepted | Test-clock retry advance + persisted failure reason |
 | [019](019-stripe-connect-flushes-stuck-tax.md) | 2026-05-04 | Accepted | Stripe re-connect flushes stuck tax invoices |

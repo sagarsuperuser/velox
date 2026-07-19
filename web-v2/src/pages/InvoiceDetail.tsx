@@ -1332,7 +1332,7 @@ export default function InvoiceDetailPage() {
         open={showVoidConfirm}
         onOpenChange={setShowVoidConfirm}
         title="Void Invoice"
-        description="Voiding annuls the invoice — it'll be treated as if it was never owed. Any applied credits are returned, any in-flight charge is cancelled. Use this when the invoice was created in error. For 'we tried to collect and failed', use Mark Uncollectible instead. This action cannot be undone."
+        description="Voiding annuls the invoice — it'll be treated as if it was never owed. Any applied credits are returned and any open charge attempt is cancelled. If a charge is actively processing, voiding is blocked — wait for it to settle or cancel it first. Use this when the invoice was created in error. For 'we tried to collect and failed', use Mark Uncollectible instead. This action cannot be undone."
         confirmWord="VOID"
         confirmLabel="Void Invoice"
         onConfirm={() => voidMutation.mutate()}

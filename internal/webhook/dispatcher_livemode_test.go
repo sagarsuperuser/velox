@@ -35,7 +35,8 @@ func (s *livemodeCapturingStore) CreateEventWithDeliveries(ctx context.Context, 
 // versa) and writes would land in the wrong RLS partition. The ctx handed in
 // deliberately carries NO livemode (the dispatcher's default), so a pass proves
 // the value came from row.Livemode, not the caller. Asserts both modes; without
-// the `WithLivemode(ctx, row.Livemode)` line in handle (dispatcher.go:119) ctx
+// the `ctx = postgres.WithLivemode(ctx, row.Livemode)` line at the top of
+// handle's body (dispatcher.go), ctx
 // would carry the default (false) regardless of the row.
 func TestDispatcher_Handle_PropagatesRowLivemodeIntoCtx(t *testing.T) {
 	for _, mode := range []bool{true, false} {

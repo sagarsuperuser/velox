@@ -254,6 +254,16 @@ Per `feedback_pre_launch_scoping`:
 
 ## Amendment 2026-06-01: failed-login counter degrades, it never silently disables (velox-ops #21)
 
+> **SUPERSEDED by ADR-094 (2026-07-17; note added 2026-07-19).** The always-on
+> failed-login counter this amendment describes was removed together with the
+> lockout it fed: `user.FallbackFailureCounter`, `SetFailureCounter`, and
+> `RecordFailedAttempt` no longer exist in the codebase, and `users.locked_until`
+> was dropped (migration 0154). **v1 has no failed-login counter, lockout, or
+> per-account throttle** — the per-IP `/v1/auth` rate limiter is the brute-force
+> floor; the replacement design (non-weaponizable throttle + MFA +
+> breached-password check) is deferred as one unit in ADR-094. The amendment
+> below is historical.
+
 **Context.** The "Login rate-limit + lockout" section above described the failed-login counter as Redis-backed. The implementation wired that counter **only when `REDIS_URL` was set** and the service no-op'd otherwise (`RecordFailedAttempt` returned early when no counter was configured). Consequence: in any deployment without Redis — and during a Redis outage in deployments that had it — the 5-strikes lockout never fired and dashboard login was unthrottled against online password guessing. The original design treated the login counter like the general HTTP rate limiter, which is fail-open in non-prod by design. That conflation is wrong: a request-volume limiter is an availability guard; a failed-login throttle is an **authentication control**, and OWASP ASVS requires auth controls to degrade rather than disappear.
 
 **Decision.** The failed-login counter is now **always-on**, via `user.FallbackFailureCounter`:

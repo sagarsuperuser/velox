@@ -139,8 +139,9 @@ export default function CustomersPage() {
   const clocks = clocksData?.data ?? []
 
   // Debounced server-side search: matches name / email / external ID
-  // across the FULL dataset (the backend decrypts and matches the
-  // encrypted PII columns) — not just the visible page.
+  // (the backend decrypts and matches the encrypted PII columns) — not
+  // just the visible page, though the backend caps the scan at its
+  // first 5000 rows in sort order.
   const debouncedSearch = useDebouncedValue(search.trim(), 300)
 
   // Server-side paginated fetch

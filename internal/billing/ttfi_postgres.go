@@ -49,8 +49,10 @@ func (r *PostgresTTFIReader) FirstInvoiceFinalizedAt(ctx context.Context, tenant
 	// COALESCE-style NULL handling: an empty result set returns a SQL NULL
 	// scanned into sql.NullTime. The where clause matches the finalize row as the
 	// TWO writers actually emit it — invoice.Service.Finalize (the operator +
-	// tax-retry chain) and billing.Engine.auditInvoiceFinalized (born-finalized
-	// engine invoices). The handler used to write its own copy; that was removed
+	// tax-retry chain) and billing.Engine.emitFinalizeAuditTx, which builds the
+	// row via finalizeAuditEntry (born-finalized engine invoices; ADR-090
+	// replaced the old auditInvoiceFinalized writer).
+	// The handler used to write its own copy; that was removed
 	// as a duplicate, so any comment pointing at invoice/handler.go for this row
 	// is pointing at a writer that no longer exists.
 	//
@@ -58,7 +60,9 @@ func (r *PostgresTTFIReader) FirstInvoiceFinalizedAt(ctx context.Context, tenant
 	// audit.Query (PR2 of the audit e2e arc): the RLS policy's column-free
 	// bypass OR-arm blocks planner-derived index quals, so RLS-only quals
 	// made this MIN() a scan across ALL tenants' audit rows; with them it
-	// descends idx_audit_log_resource. Values mirror the GUCs BeginTx set
+	// can descend the 0151 filter indexes (idx_audit_log_action leads with
+	// exactly these tenant_id/livemode/action quals; 0151 dropped the old
+	// idx_audit_log_resource). Values mirror the GUCs BeginTx set
 	// from this same ctx.
 	var t sql.NullTime
 	err = tx.QueryRowContext(ctx, `

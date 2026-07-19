@@ -1013,7 +1013,7 @@ func (h *Handler) addItem(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
-				"item add succeeded but proration generation failed — item is on the subscription; retry or contact support to reconcile")
+				"item add succeeded but the prorated charge could not be created — the item is on the subscription and no automatic retry will run (re-sending this request is rejected as a duplicate); issue the prorated amount manually via a one-off invoice, or contact support")
 			return
 		}
 		_ = prorationResult
@@ -1224,7 +1224,7 @@ func (h *Handler) updateItem(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
-				"item change succeeded but proration generation failed — item is on the new state; retry or contact support to reconcile")
+				"item change succeeded but the prorated adjustment could not be created — the item is on the new state and no automatic retry will run (re-sending this request is rejected as a no-op change); issue the prorated charge or credit manually, or contact support")
 			return
 		}
 		if prorationResult != nil {
@@ -1425,7 +1425,7 @@ func (h *Handler) removeItem(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			respond.Error(w, r, http.StatusInternalServerError, "api_error", "proration_failed",
-				"item remove succeeded but proration credit failed — item is removed; retry or contact support to reconcile")
+				"item remove succeeded but the prorated credit could not be created — the item is removed and no automatic retry will run (re-sending this request returns not-found); grant the credit manually, or contact support")
 			return
 		}
 		_ = prorationResult

@@ -7,8 +7,6 @@
 -- (see migration 0029); this table is the audit / history surface above
 -- them. Per-customer detail is recorded in audit_log via subscription.plan_changed
 -- entries, with the matching plan_migration_id in metadata.
---
--- See Week 6 deliverable in docs/90-day-plan.md.
 
 CREATE TABLE plan_migrations (
     id                  TEXT PRIMARY KEY DEFAULT 'vlx_pmig_' || encode(gen_random_bytes(12), 'hex'),

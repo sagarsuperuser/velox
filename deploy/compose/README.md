@@ -119,7 +119,7 @@ A repeat call answers `409 already_bootstrapped` — one-shot by design.
 SECRET=vlx_secret_test_...
 curl -fsS http://localhost/v1/customers \
   -H "Authorization: Bearer ${SECRET}"
-# {"data":[],"has_more":false}
+# {"data":[],"total":0}
 ```
 
 You're live.
