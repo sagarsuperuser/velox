@@ -148,9 +148,9 @@ const (
 	// email_bounced: a complaint is a person opting out, not a dead
 	// mailbox, and it is the more severe (provider-irreversible) state.
 	EventCustomerEmailComplained = "customer.email_complained"
-	EventDunningStarted                     = "dunning.started"
-	EventDunningEscalated                   = "dunning.escalated"
-	EventDunningResolved                    = "dunning.resolved"
+	EventDunningStarted          = "dunning.started"
+	EventDunningEscalated        = "dunning.escalated"
+	EventDunningResolved         = "dunning.resolved"
 	// Credit balance-VALUE crossing events (ADR-078). Computed on
 	// SUM(amount_cents) before/after inside each ledger-writing tx and
 	// enqueued on the same tx (transactional outbox) — well-ordered per
