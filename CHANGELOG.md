@@ -13,6 +13,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ### Fixed
 
+- **`auto_charge_pending` is retired on every terminal invoice transition (2026-07-20, FLOW B4 residual).** Only the auto-charge success path cleared the flag; an offline-paid, operator-collected, voided, or uncollectible invoice kept answering `auto_charge_pending: true` in the API — operationally inert (every charge predicate gates on finalized+pending) but a lie about work that no longer exists. The clear now lives at the store choke points (`markPaidReportingTransition`, where every MarkPaid variant converges; the void/uncollectible status flipper; `UpdatePayment` on success), so all settle variants inherit it. A failed payment deliberately keeps the flag — the invoice is still on the charge track.
+
+### Fixed
+
 - **Unmatched-dimension usage is now visible to operators, not just server logs (2026-07-20).** On a matrix-priced meter (the AI tokens shape), events whose dimension values match no pricing rule bill nothing — correct, but the only evidence was a cycle-close log WARN, and the customer-usage view computed the unbilled bucket then dropped it into a warnings string no UI rendered. A mislabeled model string (`c35_sonnet` vs `claude-3.5-sonnet` — the walkthrough hit this in minutes) would leak revenue invisibly. The unclaimed bucket is now a first-class row on the operator's customer-usage card — amber "unmatched usage — not billed", quantity shown, never folded into the top-N tail — carried as `unmatched: true` in `GET /v1/customers/{id}/usage`, excluded from totals (they mirror the invoice), and filtered from the public cost-dashboard projection (pricing-config gaps are operator information). Ingest deliberately stays permissive: events are retained, so adding the missing rule before period close still bills them.
 
 ### Added

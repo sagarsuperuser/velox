@@ -639,9 +639,18 @@ func (s *PostgresStore) updateStatusInTx(ctx context.Context, tx *sql.Tx, id str
 	}
 
 	var inv domain.Invoice
+	// Terminal statuses also retire the auto-charge work flag: every
+	// charge-path predicate already excludes non-finalized invoices, so
+	// this is a truth fix, not a behavior change — a voided or
+	// uncollectible invoice must not read auto_charge_pending=true
+	// (there is nothing pending). Finalize (draft→finalized) leaves the
+	// flag alone. Settle clears it at the markPaidReportingTransition
+	// choke point the same way.
 	err := tx.QueryRowContext(ctx, `
 		UPDATE invoices SET status = $1, voided_at = $2,
-			uncollectible_at = COALESCE($3, uncollectible_at), updated_at = $4
+			uncollectible_at = COALESCE($3, uncollectible_at), updated_at = $4,
+			auto_charge_pending = CASE WHEN $1 IN ('voided', 'uncollectible')
+				THEN FALSE ELSE auto_charge_pending END
 		WHERE id = $5 AND status = ANY($6)
 		RETURNING `+invCols,
 		status, postgres.NullableTime(voidedAt), postgres.NullableTime(uncollectibleAt), now, id,
@@ -774,7 +783,9 @@ func (s *PostgresStore) UpdatePayment(ctx context.Context, tenantID, id string, 
 	var inv domain.Invoice
 	err = tx.QueryRowContext(ctx, `
 		UPDATE invoices SET payment_status = $1, stripe_payment_intent_id = $2,
-			last_payment_error = $3, paid_at = $4, updated_at = $5
+			last_payment_error = $3, paid_at = $4, updated_at = $5,
+			auto_charge_pending = CASE WHEN $1 = 'succeeded'
+				THEN FALSE ELSE auto_charge_pending END
 		WHERE id = $6
 		RETURNING `+invCols,
 		paymentStatus, postgres.NullableString(stripePaymentIntentID),
@@ -1054,6 +1065,7 @@ func (s *PostgresStore) markPaidReportingTransition(ctx context.Context, tenantI
 			paid_at = $2,
 			amount_paid_cents = amount_due_cents,
 			amount_due_cents = 0,
+			auto_charge_pending = FALSE,
 			updated_at = $3
 		WHERE id = $4
 		RETURNING `+invCols,
