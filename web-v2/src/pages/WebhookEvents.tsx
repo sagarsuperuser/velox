@@ -76,7 +76,12 @@ export default function WebhookEventsPage() {
     // is the only thing we need to do — no Authorization header.
     const es = new EventSource('/v1/webhook_events/stream', { withCredentials: true })
     eventSourceRef.current = es
-    setStatus('connecting')
+    // No setStatus here: the state INITIALIZES to 'connecting', and the
+    // open/error listeners below own every later transition. Mount paths
+    // (incl. StrictMode double-invoke) can't observe anything else; the
+    // one exception is dev Fast Refresh, which re-runs this effect with
+    // state preserved — the pill may briefly keep its old label until
+    // the new socket's 'open' fires. Dev-only and self-correcting.
 
     es.addEventListener('open', () => setStatus('live'))
 

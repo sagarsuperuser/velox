@@ -106,9 +106,12 @@ const PAYMENT_TERM_PRESETS = [
 // Render a small thumbnail of the logo URL so operators can verify the
 // link resolves before saving — catches typos, broken CDN paths, and
 // auth-gated URLs that won't render on invoice PDFs.
+// Mounted with key={url} by the caller: a URL change REMOUNTS the
+// preview, so status naturally restarts at 'loading' — no reset effect
+// (the old effect set state synchronously post-render, briefly showing
+// the previous URL's loaded/error state against the new URL).
 function LogoPreview({ url }: { url: string }) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
-  useEffect(() => { setStatus('loading') }, [url])
   if (!url || !/^https?:\/\//i.test(url)) return null
   return (
     <div className="mt-2 flex items-center gap-2">
@@ -394,7 +397,7 @@ export default function SettingsPage() {
                     {formErrors.logo_url
                       ? <p className="text-xs text-destructive mt-1">{formErrors.logo_url.message}</p>
                       : form.logo_url && /^https?:\/\//i.test(form.logo_url)
-                        ? <LogoPreview url={form.logo_url} />
+                        ? <LogoPreview key={form.logo_url} url={form.logo_url} />
                         : <p className="text-xs text-muted-foreground mt-1">Public HTTPS URL — e.g. Cloudinary, S3 public object, or your CDN. Rendered at the top of invoice PDFs.</p>}
                   </div>
                   <div className="md:col-span-2">
