@@ -358,6 +358,34 @@ func (s *PostgresStore) CreateAudited(
 	return inv, nil
 }
 
+// ActionRequiredObsolete reports whether an action-required email for this
+// invoice is moot. Settled (payment succeeded, voided, uncollectible) or
+// ABSENT (test-clock teardown hard-deletes invoices; the email must not
+// deliver a dead link asking for payment) both count as obsolete.
+func (s *PostgresStore) ActionRequiredObsolete(ctx context.Context, tenantID, invoiceNumber string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+	var status, paymentStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, payment_status FROM invoices WHERE invoice_number = $1`,
+		invoiceNumber,
+	).Scan(&status, &paymentStatus)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	settled := paymentStatus == string(domain.PaymentSucceeded) ||
+		status == string(domain.InvoicePaid) ||
+		status == string(domain.InvoiceVoided) ||
+		status == string(domain.InvoiceUncollectible)
+	return settled, nil
+}
+
 func (s *PostgresStore) Get(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {

@@ -9,6 +9,12 @@ import (
 )
 
 type Store interface {
+	// ActionRequiredObsolete reports whether an action-required email
+	// referencing this invoice is moot: the invoice is settled (paid /
+	// voided / uncollectible) or no longer exists (test-clock teardown).
+	// Consumed by the email dispatcher's staleness gate via the
+	// composition root — email never imports invoice.
+	ActionRequiredObsolete(ctx context.Context, tenantID, invoiceNumber string) (bool, error)
 	Create(ctx context.Context, tenantID string, inv domain.Invoice) (domain.Invoice, error)
 	CreateWithLineItems(ctx context.Context, tenantID string, inv domain.Invoice, items []domain.InvoiceLineItem) (domain.Invoice, error)
 	// CreateAudited / CreateWithLineItemsAudited / AddLineItemAtomicAudited run

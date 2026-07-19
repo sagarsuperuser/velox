@@ -56,7 +56,7 @@ func TestFormatAmount(t *testing.T) {
 // of during a live send. The full HTML isn't byte-matched — we check the
 // key substrings industry-standard verifiers look for.
 func TestRenderInvoiceHTML(t *testing.T) {
-	subject, content, ctaURL, ctaLabel := renderInvoiceHTML("Acme Corp", "INV-42", "USD 199.00", "https://app.velox.dev/invoice/vlx_pinv_abc")
+	subject, content, ctaURL, ctaLabel := renderInvoiceHTML("Acme Corp", "INV-42", "USD 199.00", "https://app.velox.dev/invoice/vlx_pinv_abc", false)
 	if subject != "Invoice INV-42 — USD 199.00" {
 		t.Errorf("subject = %q", subject)
 	}
@@ -90,7 +90,7 @@ func TestRenderInvoiceHTML(t *testing.T) {
 	// No raw "<script" even if a hostile customer name got in — html-escape
 	// happens inside renderInvoiceHTML because we wrap interpolations in
 	// html.EscapeString before concatenation.
-	hostile, _, _, _ := renderInvoiceHTML("<script>alert(1)</script>", "INV-42", "USD 0.01", "")
+	hostile, _, _, _ := renderInvoiceHTML("<script>alert(1)</script>", "INV-42", "USD 0.01", "", false)
 	if strings.Contains(hostile, "<script>") {
 		t.Errorf("renderInvoiceHTML should escape customer name, got %q", hostile)
 	}
@@ -171,5 +171,35 @@ func TestHostedInvoiceURL(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestInvoiceEmail_ZeroDueCopy locks the 2026-07-19 FLOW E copy finding:
+// a settled invoice (amount_due==0 — the plumbed fact, paid or fully
+// credit-covered) must not title itself "— USD 0.00" with a "View & pay"
+// CTA. Both the HTML and plaintext twins adapt on the same fact.
+func TestInvoiceEmail_ZeroDueCopy(t *testing.T) {
+	subject, html, _, ctaLabel := renderInvoiceHTML("C", "NIM-7", "USD 0.00", "https://h/x", true)
+	if subject != "Invoice NIM-7 — no payment due" {
+		t.Errorf("zero-due subject: got %q", subject)
+	}
+	if !strings.Contains(html, "no payment is needed") {
+		t.Error("zero-due HTML must say no payment is needed")
+	}
+	if ctaLabel != "View invoice" {
+		t.Errorf("zero-due CTA: got %q, want 'View invoice' (never 'View & pay')", ctaLabel)
+	}
+
+	subject, _, _, ctaLabel = renderInvoiceHTML("C", "NIM-7", "USD 11.00", "https://h/x", false)
+	if subject != "Invoice NIM-7 — USD 11.00" {
+		t.Errorf("due subject changed: got %q", subject)
+	}
+	if ctaLabel != "View & pay invoice" {
+		t.Errorf("due CTA changed: got %q", ctaLabel)
+	}
+
+	text := invoiceTextBody("C", "NIM-7", "USD 0.00", "usd", "https://h/x", true)
+	if !strings.Contains(text, "no payment is needed") || strings.Contains(text, "View or pay") {
+		t.Errorf("zero-due text twin must match the HTML's promise: %q", text)
 	}
 }
