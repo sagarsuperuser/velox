@@ -157,6 +157,16 @@ type CustomerUsageRule struct {
 	// domain.DisplayUnitAmountDecimalFor). Rendered with the decimal-aware rate
 	// formatter so a sub-cent rate never collapses to $0.00.
 	UnitAmountDecimal *string `json:"unit_amount_decimal,omitempty"`
+	// Unmatched marks the bucket of events that matched NO pricing rule
+	// on a meter with no default binding — usage the engine bills
+	// NOTHING for (same resolution order as the cycle). Surfaced as a
+	// first-class row so a mislabeled dimension value (the most likely
+	// integration error on a matrix-priced meter) is visible to the
+	// operator instead of leaking revenue behind a server-log WARN.
+	// Excluded from the meter's totals (they mirror the invoice) and
+	// filtered out of the public cost-dashboard projection —
+	// pricing-config problems are operator information.
+	Unmatched bool `json:"unmatched,omitempty"`
 }
 
 // CustomerUsageTotal is one currency's roll-up across all meters. We
@@ -408,7 +418,19 @@ func (s *CustomerUsageService) rateMeter(ctx context.Context, tenantID, customer
 			ratingRuleID = meter.RatingRuleVersionID
 		}
 		if ratingRuleID == "" {
-			warnings = append(warnings, fmt.Sprintf("meter %q has events with no rating rule binding — skipped from totals", meter.Key))
+			// The unclaimed bucket: events matching no pricing rule on a
+			// meter with no default binding. The engine bills nothing for
+			// these (loud WARN at cycle close) — emit a first-class
+			// unmatched row so the operator SEES the unbilled volume where
+			// they investigate usage, instead of a dropped warning string.
+			// Deliberately outside totals: totals mirror the invoice.
+			if !agg.Quantity.IsZero() {
+				out.Rules = append(out.Rules, CustomerUsageRule{
+					Unmatched: true,
+					Quantity:  agg.Quantity,
+				})
+				warnings = append(warnings, fmt.Sprintf("meter %q has usage matching no pricing rule — not billed (see the unmatched row)", meter.Key))
+			}
 			continue
 		}
 
