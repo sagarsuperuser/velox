@@ -67,8 +67,8 @@ function formatActorName(entry: AuditEntry): string {
   }
   if (entry.actor_type === 'user') {
     // Dashboard session operators (#225 actor identity). actor_name is the
-    // join-resolved display name or email; fall back to a generic label so
-    // pre-join rows never render the raw enum "user".
+    // join-resolved email (users has no display_name column); fall back to a
+    // generic label so pre-join rows never render the raw enum "user".
     return entry.actor_name || 'Operator'
   }
   if (entry.actor_type === 'customer') {
