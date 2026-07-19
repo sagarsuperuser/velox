@@ -708,7 +708,7 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B3: Idempotency
 
-> **Automated coverage: 11 / 11.** `[x]` items are locked by the named test (run `go test -race -short=false ./internal/billing/ ./internal/subscription/`); `[ ]` items are pending. Idempotency/atomicity/concurrency can't be hand-run reliably, so these are verified by automated tests, not manual passes.
+> **Automated coverage: 11 / 11.** `[x]` items are locked by the named test (run `go test -race -short=false ./internal/billing/ ./internal/subscription/`); `[ ]` items are pending. Idempotency/atomicity/concurrency can't be hand-run reliably, so these are verified by automated tests, not manual passes. *(battery re-run at HEAD 2026-07-20: both packages green under -race — billing 35s, subscription 15s.)*
 
 - [x] Run billing twice in same period → no duplicate invoice. Logs `invoice already exists for billing period (idempotent skip)`. *(automated: `TestBilling_SamePeriodTwice_IdempotentSkip`; concurrent twin `TestConcurrentBilling_ExactlyOneInvoice`)*
 - [x] **Multi-add proration in same period (ADR-030 cross-flow audit)**: pick a clock-pinned active sub. AddItem with plan A — succeeds, proration invoice DEMO-NNNN created. AddItem with plan B at the same simulated instant — also succeeds, distinct proration invoice DEMO-NNNN+1 created with the same `billing_period_start/end` as the first proration invoice but different `source_subscription_item_id`. `idx_invoices_billing_idempotency` correctly exempts both (predicate `WHERE source_plan_changed_at IS NULL`); `idx_invoices_proration_dedup` correctly distinguishes them by item id. *(automated: `TestProrationInvoiceIndexes`)*
@@ -724,10 +724,10 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B4: Auto-charge retry
 
-- [ ] **A card-less proration invoice gets ONE setup-link email from the sweep (ADR-087)** — customer with no payment method, active sub; increase item quantity mid-period (proration invoice created, `auto_charge_pending=true`, no email yet). Across two sweep ticks: Mailpit shows exactly ONE "payment method needed" email, and `invoices.no_pm_notified_at` is stamped. Attach a card → next tick charges it. A finalize-time-emailed invoice gets NO second email from the sweep.
+- [x] **A card-less proration invoice gets ONE setup-link email from the sweep (ADR-087)** — customer with no payment method, active sub; increase item quantity mid-period (proration invoice created, `auto_charge_pending=true`, no email yet). Across two sweep ticks: Mailpit shows exactly ONE "payment method needed" email, and `invoices.no_pm_notified_at` is stamped. Attach a card → next tick charges it. A finalize-time-emailed invoice gets NO second email from the sweep. *(manual 2026-07-20 on wall-clock ticks: qty 1→2 on a settled in_advance prebill → proration NIM-000141 sat unemailed until the next tick sent exactly ONE email + stamped no_pm_notified_at; across 2+ further ticks the count never moved and the finalize-notified sibling got no second email; real Stripe Checkout card attach → the following tick auto-charged it (succeeded, acp=false).)*
 
-- [ ] Decline-on-charge card → invoice has `auto_charge_pending=true`, `payment_status=pending`.
-- [ ] Update card → next scheduler tick → `payment_status=succeeded`, `auto_charge_pending=false`.
+- [x] Decline-on-charge card → invoice has `auto_charge_pending=true`, `payment_status=failed`, and a dunning run opens (`reason=payment_failed`). *(manual 2026-07-20 with Stripe test card 4000…0341 attached via real Checkout + webhook: activation prebill declined → payment_status=**failed** (the pre-dunning-arc "pending" claim was stale), acp stayed true, dunning run created with the policy's next_action_at.)*
+- [x] Update card → recovery. **Post-decline retries are DUNNING-owned (ADR-064), not sweep-owned**: the 5-minute sweep never re-charges a `failed` invoice — the dunning run retries on its policy schedule (observed next_action_at = +3d), and the immediate paths are operator **Collect Payment** or the customer's hosted page. *(manual 2026-07-20: attached 4242 via Checkout, promoted to default, watched 2+ sweep ticks correctly NOT retry; operator collect → paid on the new card AND the dunning run auto-resolved `payment_recovered` (#328 resolve-on-settle). The old "next scheduler tick → succeeded" claim predated the dunning arc. Cosmetic residual: `auto_charge_pending` stays true on paid invoices — inert, every charge path keys on unpaid status.)*
 
 ## FLOW B5: Idempotency-Key header
 
