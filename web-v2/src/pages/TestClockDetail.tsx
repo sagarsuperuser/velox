@@ -462,11 +462,14 @@ function AdvanceClockDialog({
   const [timePart, setTimePart] = useState(defaultTime)
   const [submitting, setSubmitting] = useState(false)
 
-  // +1mo is a CALENDAR month (setMonth), not a fixed 31 days — a 31-day
-  // jump overshoots the monthly billing boundary the preset exists to
-  // hit (Jun 15 + 31d = Jul 16, one day past the Jul 15 cycle close).
-  // Month-end overflow (Jan 31 → Mar 3) intentionally matches the
-  // engine's own month arithmetic (Go AddDate, no clamping).
+  // +1mo is a CALENDAR month, not a fixed 31 days — a 31-day jump
+  // overshoots the monthly billing boundary the preset exists to hit
+  // (Jun 15 + 31d = Jul 16, one day past the Jul 15 cycle close).
+  // Month-end CLAMPS (Jan 31 → Feb 28), matching the engine's
+  // advanceAnchored arithmetic (ADR-055: anchor day clamps to the
+  // target month's last day). The raw setMonth overflow this preset
+  // used to ship (Jan 31 → Mar 3) matched the PRE-ADR-055 engine and
+  // overshot every month-end boundary after it (2026-07-19 truth audit).
   const presets: { label: string; advance: (d: Date) => Date }[] = [
     { label: '+1h', advance: d => new Date(d.getTime() + 60 * 60 * 1000) },
     { label: '+1d', advance: d => new Date(d.getTime() + 24 * 60 * 60 * 1000) },
@@ -474,7 +477,11 @@ function AdvanceClockDialog({
       label: '+1mo',
       advance: d => {
         const n = new Date(d)
+        const day = n.getDate()
+        n.setDate(1)
         n.setMonth(n.getMonth() + 1)
+        const lastDay = new Date(n.getFullYear(), n.getMonth() + 1, 0).getDate()
+        n.setDate(Math.min(day, lastDay))
         return n
       },
     },

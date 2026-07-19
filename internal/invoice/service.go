@@ -737,9 +737,31 @@ func (s *Service) Finalize(ctx context.Context, tenantID, id string) (domain.Inv
 	// a failed calculation manually.
 	switch inv.TaxStatus {
 	case domain.InvoiceTaxPending:
-		return domain.Invoice{}, errs.InvalidState("tax calculation pending — retry in progress, finalize blocked")
+		// The block message mirrors the reconciler's REAL policy
+		// (domain.TaxRetryableErrorCodes / MaxTaxRetryAttempts) — the old
+		// blanket "retry in progress" claimed retries for non-retryable
+		// codes and for exhausted invoices, neither of which the
+		// reconciler ever touches (2026-07-19 truth audit).
+		code := inv.TaxErrorCode
+		if code == "" {
+			code = "unknown"
+		}
+		switch {
+		case domain.TaxErrorCodeRetryable(code) && inv.TaxRetryCount < domain.MaxTaxRetryAttempts:
+			return domain.Invoice{}, errs.InvalidState("tax calculation pending — automatic retry in progress, finalize blocked")
+		case domain.TaxErrorCodeRetryable(code):
+			return domain.Invoice{}, errs.InvalidState("tax calculation pending — automatic retries exhausted; retry tax manually, finalize blocked")
+		default:
+			return domain.Invoice{}, errs.InvalidState("tax calculation pending — operator action required (" + code + "), finalize blocked")
+		}
 	case domain.InvoiceTaxFailed:
-		return domain.Invoice{}, errs.InvalidState("tax calculation failed after retries — operator intervention required")
+		// Unreachable at HEAD: no writer sets tax_status='failed' — the
+		// engine parks every failure at 'pending' (engine.go). The arm
+		// stays because the CHECK constraint admits the value and an
+		// exhaustion→failed flip is a registered open design question;
+		// the message no longer narrates a retries-then-failed story
+		// that cannot have happened.
+		return domain.Invoice{}, errs.InvalidState("tax calculation failed — operator intervention required")
 	}
 	// Anchor issue + due dates to the finalize moment for operator-composed
 	// (manual) invoices, mirroring Stripe's finalized_at: a manual draft is

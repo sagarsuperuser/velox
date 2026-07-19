@@ -648,6 +648,13 @@ func (s *Sender) SendMemberInvite(ctx context.Context, tenantID, to, inviterEmai
 	if acceptURL == "" {
 		return fmt.Errorf("accept_url required: refusing to send member-invite email with no link")
 	}
+	// The invite service WARNs "falls back to generic" when the tenant-name
+	// lookup fails and hands us "" — this guard IS that fallback (2026-07-19
+	// truth audit: the claim predated the mechanism; a "" interpolation
+	// produced 'invited to  on Velox' in a real customer inbox).
+	if strings.TrimSpace(tenantName) == "" {
+		tenantName = "your team"
+	}
 	subject := fmt.Sprintf("You've been invited to %s on Velox", tenantName)
 	body := fmt.Sprintf(`Hi,
 
