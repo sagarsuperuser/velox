@@ -301,6 +301,7 @@ jobs:
             REF_TAG="${GITHUB_SHA}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ref_tag=${REF_TAG}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<TAGS"
             echo "${REPO}:${REF_TAG}"
@@ -339,7 +340,10 @@ jobs:
       - name: Scan image for vulnerabilities (Trivy)
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          # The tag THIS run pushed (version tag on releases, sha on main).
+          # github.sha here scanned a tag release runs never push — the
+          # published versioned image sailed through unscanned/unsigned.
+          image-ref: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.ref_tag }}
           format: table
           exit-code: '1'
           severity: CRITICAL,HIGH
@@ -348,7 +352,7 @@ jobs:
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          image: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.ref_tag }}
           artifact-name: velox-sbom.spdx.json
           format: spdx-json
           output-file: velox-sbom.spdx.json
@@ -362,6 +366,6 @@ jobs:
 
       - name: Sign image (Cosign)
         uses: sigstore/cosign-installer@v3
-      - run: cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.sha }}
+      - run: cosign sign --yes ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.ref_tag }}
         env:
           COSIGN_EXPERIMENTAL: "1"
