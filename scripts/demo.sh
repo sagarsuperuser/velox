@@ -57,16 +57,14 @@ green "✓ API is up at $BASE"
 step "2. Install Anthropic-style pricing (one call)"
 # One recipe = the tokens meter + a per-{model, token_type} price matrix
 # (input / output / cache_read, sub-cent decimal rates) + a monthly plan.
-# Rerun-friendly: an already-instantiated recipe (409) reuses its plan.
+# Rerun-friendly: apply is idempotent (ADR-085) — a re-run returns the
+# already-installed instance with 2xx, never a 409.
 INST_RAW=$(curl -sS -X POST "$BASE/v1/recipes/anthropic_style/instantiate" \
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d '{}' -w '\n%{http_code}')
 INST_STATUS=$(echo "$INST_RAW" | tail -1)
 INST=$(echo "$INST_RAW" | sed '$d')
 if [ "${INST_STATUS:0:1}" = "2" ]; then
   PLAN_ID=$(echo "$INST" | jq -r '.created_objects.plan_ids[0]')
-elif [ "$INST_STATUS" = "409" ]; then
-  # Already installed on this tenant — look the plan up by its code.
-  PLAN_ID=$(req GET "/v1/plans" | jq -r '.data[] | select(.code == "ai_api_pro") | .id' | head -1)
 else
   echo "✗ recipe instantiate → HTTP $INST_STATUS"; echo "$INST" | jq . 2>/dev/null || echo "$INST"; exit 1
 fi

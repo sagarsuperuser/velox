@@ -13,7 +13,10 @@ usage metering, invoice generation, Stripe payments, dunning, and credits.
 attention. Stable public-API contract — codes are never
 repurposed; deprecations keep the code reserved and add a
 successor. See `Attention.code` for the open, provider-specific
-sub-code.
+sub-code. `payment_anomaly` (ADR-068) reports money that does
+not reconcile — double charge, captured-vs-booked amount
+mismatch, or a payment on a voided invoice — and is surfaced
+even on paid/voided invoices.
 
  */
 export type AttentionReason = typeof AttentionReason[keyof typeof AttentionReason];
@@ -24,6 +27,7 @@ export const AttentionReason = {
   tax_location_required: 'tax_location_required',
   payment_failed: 'payment_failed',
   payment_unconfirmed: 'payment_unconfirmed',
+  payment_anomaly: 'payment_anomaly',
   payment_processing: 'payment_processing',
   payment_scheduled: 'payment_scheduled',
   awaiting_payment: 'awaiting_payment',

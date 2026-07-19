@@ -94,9 +94,9 @@ type EmailNotifier interface {
 	// failureReason is the latest decline reason (from the retrier's
 	// error message) — surfaced inline so customers can act
 	// (insufficient_funds → top up; lost_card → swap card). Empty
-	// reason renders without the diagnostic block. The template
-	// branches on attemptNumber == maxAttempts for "Last attempt"
-	// urgency tone.
+	// reason renders without the diagnostic block. No final-attempt
+	// tone exists: the exhausting attempt sends the escalation email
+	// instead of a warning (see the warning-enqueue gate in processRun).
 	SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error
 	SendDunningEscalation(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber, action, publicToken string) error
 }
@@ -615,30 +615,10 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 			CreatedAt:    now,
 		})
 
-		// Send dunning warning email asynchronously.
-		//
-		// Skip when THIS attempt has just used the last retry —
-		// `exhaustRun` (called below at the post-attempt check, line
-		// ~432) will fire the terminal escalation email instead. A
-		// "we'll retry on [no more retries scheduled]" warning is
-		// confusing and stacks two back-to-back emails on the customer.
-		// Customer experience after fix: N-1 warnings during retries
-		// 1..N-1, then ONE escalation on retry N. Catchup-mode
-		// experience is the same, just compressed in real time.
-		willExhaustThisAttempt := run.AttemptCount >= policy.MaxRetryAttempts
-		if !willExhaustThisAttempt && s.emailNotifier != nil && s.customerEmail != nil {
-			// Synchronous enqueue (DB insert via the email outbox).
-			// Pre-fix this ran in a goroutine bound to the parent ctx,
-			// which under test-clock catchup gets canceled the instant
-			// RunCatchup returns (testclock/catchup.go:139's
-			// `defer cancel()`). Goroutines spawned at the tail of
-			// the catchup pass — the escalation in particular — lost
-			// the race and never enqueued, even though the dunning
-			// state was correctly transitioned. Synchronous enqueue
-			// is fast (single INSERT); the SMTP send remains async
-			// via the email outbox dispatcher worker.
-			s.enqueueDunningWarning(ctx, tenantID, run, policy, retryErr.Error())
-		}
+		// The dunning warning email is enqueued further down, AFTER the
+		// next-retry reschedule — see the comment there. Enqueuing it
+		// here rendered "We'll try again on <date>" from a NextActionAt
+		// still holding the JUST-FAILED attempt's scheduled instant.
 	} else {
 		slog.Info("dunning resolved — payment succeeded",
 			"run_id", run.ID,
@@ -704,7 +684,32 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 		// Concurrently resolved during the failed-charge window (a non-charge settle
 		// such as an operator resolve or credit-cover sweep) — don't reschedule or
 		// exhaust a resolved run, and don't clobber the resolve back to active.
+		// No warning email either — "we'll try again" to a customer who just paid.
 		return nil
+	}
+
+	// Dunning warning email for a non-final failed retry. Positioned AFTER
+	// the reschedule above so run.NextActionAt carries the ACTUAL next-retry
+	// instant — pre-fix the email was enqueued before the reschedule, so
+	// "We'll try again on <date>" rendered the JUST-FAILED attempt's
+	// scheduled time (after scheduler downtime, a date in the past).
+	//
+	// Skipped when this attempt exhausted the budget — exhaustRun below
+	// fires the terminal escalation email instead. A "we'll retry on [no
+	// more retries scheduled]" warning is confusing and stacks two back-to-
+	// back emails on the customer. Customer experience: N-1 warnings during
+	// retries 1..N-1, then ONE escalation on retry N. Catchup-mode
+	// experience is the same, just compressed in real time.
+	//
+	// Synchronous enqueue (DB insert via the email outbox). Pre-fix this
+	// ran in a goroutine bound to the parent ctx, which under test-clock
+	// catchup gets canceled the instant RunCatchup returns
+	// (testclock/catchup.go's `defer cancel()`) — goroutines spawned at
+	// the tail of the catchup pass lost the race and never enqueued, even
+	// though the dunning state was correctly transitioned. The SMTP send
+	// remains async via the email outbox dispatcher worker.
+	if run.AttemptCount < policy.MaxRetryAttempts && s.emailNotifier != nil && s.customerEmail != nil {
+		s.enqueueDunningWarning(ctx, tenantID, run, policy, retryErr.Error())
 	}
 
 	// Check if exhausted after this attempt. Pass the simulated instant
@@ -762,6 +767,14 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 	// they'd never be re-attempted.
 	actionFailed := false
 
+	// emailAction is what the escalation email renders. It starts as the
+	// policy's final action and is cleared to "" (neutral copy) when the
+	// action did not apply to THIS invoice — a one-off invoice has no
+	// subscription to cancel or pause, and an unwired mover can't act.
+	// The debtor must never read "your subscription has been canceled"
+	// when nothing was canceled.
+	emailAction := string(policy.FinalAction)
+
 	switch policy.FinalAction {
 	case domain.DunningActionManualReview:
 		// State stays at escalated; resolution stays retries_exhausted.
@@ -776,7 +789,20 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		// which silently skipped invoice generation for the affected
 		// periods — non-Stripe and destructive.
 		if s.subPauser != nil && s.invoiceGet != nil {
-			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
+			inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID)
+			switch {
+			case err != nil:
+				// Can't tell whether a subscription exists — a failed
+				// action, so the run stays requeryable and re-attempts
+				// instead of escalating (and emailing "paused") on a
+				// DB blip.
+				actionFailed = true
+				slog.Warn("failed to load invoice for dunning pause action",
+					"invoice_id", run.InvoiceID, "error", err)
+			case inv.SubscriptionID == "":
+				// One-off invoice — nothing to pause; neutral email copy.
+				emailAction = ""
+			default:
 				if err := s.subPauser.PauseCollection(ctx, tenantID, inv.SubscriptionID); err != nil {
 					actionFailed = true
 					slog.Warn("failed to pause collection after dunning exhausted",
@@ -786,6 +812,8 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID)
 				}
 			}
+		} else {
+			emailAction = "" // no pauser wired — nothing was paused
 		}
 
 	case domain.DunningActionCancelSubscription:
@@ -793,7 +821,20 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		// supported by 3 of 4 reference platforms (Stripe, Lago,
 		// Recurly) per the ADR-036 amendment research.
 		if s.subCanceler != nil && s.invoiceGet != nil {
-			if inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID); err == nil && inv.SubscriptionID != "" {
+			inv, err := s.invoiceGet.Get(ctx, tenantID, run.InvoiceID)
+			switch {
+			case err != nil:
+				// Can't tell whether a subscription exists — a failed
+				// action, so the run stays requeryable and re-attempts
+				// instead of escalating (and emailing "canceled") on a
+				// DB blip.
+				actionFailed = true
+				slog.Warn("failed to load invoice for dunning cancel action",
+					"invoice_id", run.InvoiceID, "error", err)
+			case inv.SubscriptionID == "":
+				// One-off invoice — nothing to cancel; neutral email copy.
+				emailAction = ""
+			default:
 				if err := s.subCanceler.Cancel(ctx, tenantID, inv.SubscriptionID); err != nil {
 					actionFailed = true
 					slog.Warn("failed to cancel subscription after dunning exhausted",
@@ -803,6 +844,8 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 						"invoice_id", run.InvoiceID, "subscription_id", inv.SubscriptionID)
 				}
 			}
+		} else {
+			emailAction = "" // no canceler wired — nothing was canceled
 		}
 
 	case domain.DunningActionMarkUncollectible:
@@ -819,6 +862,8 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 				slog.Info("invoice marked uncollectible by dunning",
 					"invoice_id", run.InvoiceID)
 			}
+		} else {
+			emailAction = "" // no mover wired — the invoice was NOT closed
 		}
 
 	default:
@@ -886,9 +931,11 @@ func (s *Service) exhaustRun(ctx context.Context, tenantID string, run domain.In
 		"final_action", policy.FinalAction,
 	)
 
-	// Synchronous enqueue — see comment on enqueueDunningWarning.
+	// Synchronous enqueue — see comment on enqueueDunningWarning. Renders
+	// emailAction (the action that actually applied to this invoice), not
+	// policy.FinalAction — see the note above the switch.
 	if s.emailNotifier != nil && s.customerEmail != nil {
-		s.enqueueDunningEscalation(ctx, tenantID, run, policy)
+		s.enqueueDunningEscalation(ctx, tenantID, run, emailAction)
 	}
 
 	s.fireEvent(ctx, tenantID, domain.EventDunningEscalated, map[string]any{
@@ -1219,7 +1266,13 @@ func (s *Service) enqueueDunningWarning(ctx context.Context, tenantID string, ru
 
 // enqueueDunningEscalation is the escalation-email counterpart to
 // enqueueDunningWarning. Same synchronous-enqueue rationale.
-func (s *Service) enqueueDunningEscalation(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, policy domain.DunningPolicy) {
+//
+// action is the final action that ACTUALLY applied to this invoice — ""
+// (rendered as neutral copy) when the policy's action was skipped, e.g. a
+// cancel_subscription policy exhausting on a one-off invoice with no
+// subscription. Callers must not pass policy.FinalAction blindly: the
+// email asserts an outcome, so it renders outcomes, not intentions.
+func (s *Service) enqueueDunningEscalation(ctx context.Context, tenantID string, run domain.InvoiceDunningRun, action string) {
 	email, name, cc, err := s.customerEmail.GetCustomerEmail(ctx, tenantID, run.CustomerID)
 	if err != nil || email == "" {
 		slog.Warn("skip dunning escalation email — cannot resolve customer email",
@@ -1234,7 +1287,7 @@ func (s *Service) enqueueDunningEscalation(ctx context.Context, tenantID string,
 			publicToken = inv.PublicToken
 		}
 	}
-	if err := s.emailNotifier.SendDunningEscalation(ctx, tenantID, email, cc, name, invoiceNumber, string(policy.FinalAction), publicToken); err != nil {
+	if err := s.emailNotifier.SendDunningEscalation(ctx, tenantID, email, cc, name, invoiceNumber, action, publicToken); err != nil {
 		slog.Error("failed to enqueue dunning escalation email",
 			"run_id", run.ID, "email", email, "error", err)
 	}

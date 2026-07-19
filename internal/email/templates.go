@@ -171,23 +171,14 @@ func renderReceiptHTML(customerName, invoiceNumber, amount, hostedURL string) (s
 }
 
 func renderDunningWarningHTML(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {
-	// Final-attempt branch: switch tone + subject so the customer
-	// understands this is the last automatic charge before a service-
-	// impacting action. Prevents the silent-spiral where every retry
-	// uses the same template and the customer never realises time is
-	// running out.
-	finalAttempt := maxAttempts > 0 && attemptNumber >= maxAttempts
-	if finalAttempt {
-		subject = "Last attempt — pay invoice " + invoiceNumber + " to keep service active"
-	} else {
-		subject = "Action required — payment retry for invoice " + invoiceNumber
-	}
+	// No final-attempt variant: the dunning service deliberately skips
+	// the warning on the attempt that exhausts the retry budget (N-1
+	// warnings during retries 1..N-1, then ONE escalation email — see
+	// willExhaustThisAttempt in internal/dunning/service.go), so every
+	// warning rendered here has a real next retry ahead of it.
+	subject = "Action required — payment retry for invoice " + invoiceNumber
 	var b strings.Builder
-	if finalAttempt {
-		b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#b91c1c;">Last attempt — please update your payment</h1>`)
-	} else {
-		b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">We weren't able to process your payment</h1>`)
-	}
+	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">We weren't able to process your payment</h1>`)
 	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(customerName) + `,</p>`)
 	b.WriteString(`<p style="margin:0 0 12px;color:#4b5563;">Attempt <strong style="color:#111827;">` + escape(itoa(attemptNumber)) + ` of ` + escape(itoa(maxAttempts)) + `</strong> to charge invoice <strong style="color:#111827;">` + escape(invoiceNumber) + `</strong> was declined.</p>`)
 	// Surface the decline reason inline so customers can act
@@ -198,11 +189,7 @@ func renderDunningWarningHTML(customerName, invoiceNumber string, attemptNumber,
 		b.WriteString(`Reason: ` + escape(failureReason))
 		b.WriteString(`</div>`)
 	}
-	if finalAttempt {
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This was the final automatic retry. If we can't collect this invoice, your subscription may be paused or canceled. Please pay the invoice or update your payment method now.</p>`)
-	} else {
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">We'll try again on <strong style="color:#111827;">` + escape(nextRetryDate) + `</strong>. To avoid further retries, please pay the invoice or update your payment method.</p>`)
-	}
+	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">We'll try again on <strong style="color:#111827;">` + escape(nextRetryDate) + `</strong>. To avoid further retries, please pay the invoice or update your payment method.</p>`)
 	if hostedURL != "" {
 		ctaURL = hostedURL
 		ctaLabel = "Pay invoice"
@@ -219,26 +206,13 @@ func renderDunningEscalationHTML(customerName, invoiceNumber, action, hostedURL 
 
 	// The final action is an INTERNAL enum — rendering it raw showed the
 	// debtor "Action taken: mark_uncollectible" (P13). Map to customer
-	// copy, and only promise "settle via the link" when the invoice is
-	// actually still payable there: a mark_uncollectible invoice has no
-	// Pay button (locked P6 scoping) — its email points at support
-	// instead of a dead end.
-	stillPayable := true
-	switch action {
-	case "mark_uncollectible":
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">This invoice has been closed for online payment. Please contact support to arrange payment and restore service.</p>`)
-		stillPayable = false
-	case "cancel_subscription":
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription has been canceled. The outstanding balance remains due — you can settle it using the link below.</p>`)
-	case "pause":
-		// Resumption is a manual operator step (nothing auto-resumes a
-		// dunning pause on payment — dunning sets no ResumesAt and the
-		// settle path only resolves the run), so the copy must not
-		// promise that paying alone restores service.
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Your subscription is paused until the balance is settled. Pay the invoice below — once your payment is confirmed, we will restore your service.</p>`)
-	default: // manual_review and any future action: neutral, still payable.
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">To resume service, please settle the invoice using the link below or reach out to support.</p>`)
-	}
+	// copy via dunningEscalationCopy (shared with the plaintext part),
+	// and only promise "settle via the link" when the invoice is actually
+	// still payable there: a mark_uncollectible invoice has no Pay button
+	// (locked P6 scoping) — its email points at support instead of a
+	// dead end.
+	sentence, stillPayable := dunningEscalationCopy(action)
+	b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">` + escape(sentence) + `</p>`)
 	if hostedURL != "" {
 		ctaURL = hostedURL
 		ctaLabel = "Pay invoice"
@@ -247,6 +221,37 @@ func renderDunningEscalationHTML(customerName, invoiceNumber, action, hostedURL 
 		}
 	}
 	return subject, b.String(), ctaURL, ctaLabel
+}
+
+// dunningEscalationCopy maps the INTERNAL final-action enum to the
+// customer-facing sentence used by BOTH multipart/alternative parts of
+// the escalation email. Single source on purpose — the P13 raw-enum leak
+// was fixed in the HTML part only, and the plaintext twin kept showing
+// text-only clients "Action taken: mark_uncollectible" for another two
+// months. stillPayable=false when the hosted invoice page has no Pay
+// button for this action (a mark_uncollectible invoice locks online
+// payment), so callers offer the link as "View invoice", never a dead
+// "Pay invoice".
+func dunningEscalationCopy(action string) (sentence string, stillPayable bool) {
+	switch action {
+	case "mark_uncollectible":
+		// The invoice is closed for online payment but the subscription
+		// stays active (dunning/service.go) — no "restore service" claim.
+		return "This invoice has been closed for online payment. Please contact support to arrange payment.", false
+	case "cancel_subscription":
+		return "Your subscription has been canceled. The outstanding balance remains due — you can settle it using the link below.", true
+	case "pause":
+		// Pause = collection pause only (keep_as_draft): service
+		// continues, automatic charging stops — so no "service is
+		// paused" / "resume service" claims.
+		return "Automatic payment collection on your account has been paused. The balance remains due — please pay the invoice below or update your payment method.", true
+	default:
+		// manual_review, "" (the policy's action didn't apply to this
+		// invoice — e.g. a one-off invoice with no subscription to
+		// cancel), and any future action: neutral — no state change is
+		// asserted.
+		return "The invoice remains due. Please settle it using the link below or reach out to support.", true
+	}
 }
 
 func renderPaymentFailedHTML(customerName, invoiceNumber, reason, hostedURL string) (subject, contentHTML, ctaURL, ctaLabel string) {

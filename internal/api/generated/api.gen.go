@@ -71,6 +71,7 @@ func (e AttentionAction) Valid() bool {
 const (
 	AwaitingPayment      AttentionReason = "awaiting_payment"
 	NoPaymentMethod      AttentionReason = "no_payment_method"
+	PaymentAnomaly       AttentionReason = "payment_anomaly"
 	PaymentFailed        AttentionReason = "payment_failed"
 	PaymentProcessing    AttentionReason = "payment_processing"
 	PaymentScheduled     AttentionReason = "payment_scheduled"
@@ -85,6 +86,8 @@ func (e AttentionReason) Valid() bool {
 	case AwaitingPayment:
 		return true
 	case NoPaymentMethod:
+		return true
+	case PaymentAnomaly:
 		return true
 	case PaymentFailed:
 		return true
@@ -725,7 +728,10 @@ type Attention struct {
 	// attention. Stable public-API contract — codes are never
 	// repurposed; deprecations keep the code reserved and add a
 	// successor. See `Attention.code` for the open, provider-specific
-	// sub-code.
+	// sub-code. `payment_anomaly` (ADR-068) reports money that does
+	// not reconcile — double charge, captured-vs-booked amount
+	// mismatch, or a payment on a voided invoice — and is surfaced
+	// even on paid/voided invoices.
 	Reason AttentionReason `json:"reason"`
 
 	// Severity Urgency of an Attention surface. Operators sort/filter on this
@@ -760,7 +766,10 @@ type AttentionActionItem struct {
 // attention. Stable public-API contract — codes are never
 // repurposed; deprecations keep the code reserved and add a
 // successor. See `Attention.code` for the open, provider-specific
-// sub-code.
+// sub-code. `payment_anomaly` (ADR-068) reports money that does
+// not reconcile — double charge, captured-vs-booked amount
+// mismatch, or a payment on a voided invoice — and is surfaced
+// even on paid/voided invoices.
 type AttentionReason string
 
 // AttentionSeverity Urgency of an Attention surface. Operators sort/filter on this
@@ -1754,7 +1763,7 @@ type ServerInterface interface {
 	// Per-customer margin report (operator only)
 	// (GET /v1/customers/{id}/margin)
 	GetV1CustomersIdMargin(w http.ResponseWriter, r *http.Request, id string, params GetV1CustomersIdMarginParams)
-	// Rotate the public cost-dashboard token (ADR-031)
+	// Rotate the public cost-dashboard token (ADR-032)
 	// (POST /v1/customers/{id}/rotate-cost-dashboard-token)
 	PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string)
 	// List invoices
@@ -1814,7 +1823,7 @@ type ServerInterface interface {
 	// Delete a provider cost rate
 	// (DELETE /v1/provider-costs/{id})
 	DeleteV1ProviderCostsId(w http.ResponseWriter, r *http.Request, id string)
-	// Public cost-dashboard projection (ADR-031)
+	// Public cost-dashboard projection (ADR-032)
 	// (GET /v1/public/cost-dashboard/{token})
 	GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request, token string)
 	// List rating rules
@@ -1847,6 +1856,9 @@ type ServerInterface interface {
 	// Advance the clock to a new frozen_time
 	// (POST /v1/test-clocks/{id}/advance)
 	PostV1TestClocksIdAdvance(w http.ResponseWriter, r *http.Request, id string)
+	// Retry catchup on a clock parked in internal_failure
+	// (POST /v1/test-clocks/{id}/retry-advance)
+	PostV1TestClocksIdRetryAdvance(w http.ResponseWriter, r *http.Request, id string)
 	// List subscriptions pinned to this clock
 	// (GET /v1/test-clocks/{id}/subscriptions)
 	GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request, id string)
@@ -1994,7 +2006,7 @@ func (_ Unimplemented) GetV1CustomersIdMargin(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Rotate the public cost-dashboard token (ADR-031)
+// Rotate the public cost-dashboard token (ADR-032)
 // (POST /v1/customers/{id}/rotate-cost-dashboard-token)
 func (_ Unimplemented) PostV1CustomersIdRotateCostDashboardToken(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -2114,7 +2126,7 @@ func (_ Unimplemented) DeleteV1ProviderCostsId(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Public cost-dashboard projection (ADR-031)
+// Public cost-dashboard projection (ADR-032)
 // (GET /v1/public/cost-dashboard/{token})
 func (_ Unimplemented) GetV1PublicCostDashboardToken(w http.ResponseWriter, r *http.Request, token string) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -2177,6 +2189,12 @@ func (_ Unimplemented) GetV1TestClocksId(w http.ResponseWriter, r *http.Request,
 // Advance the clock to a new frozen_time
 // (POST /v1/test-clocks/{id}/advance)
 func (_ Unimplemented) PostV1TestClocksIdAdvance(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Retry catchup on a clock parked in internal_failure
+// (POST /v1/test-clocks/{id}/retry-advance)
+func (_ Unimplemented) PostV1TestClocksIdRetryAdvance(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3745,6 +3763,37 @@ func (siw *ServerInterfaceWrapper) PostV1TestClocksIdAdvance(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
+// PostV1TestClocksIdRetryAdvance operation middleware
+func (siw *ServerInterfaceWrapper) PostV1TestClocksIdRetryAdvance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostV1TestClocksIdRetryAdvance(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetV1TestClocksIdSubscriptions operation middleware
 func (siw *ServerInterfaceWrapper) GetV1TestClocksIdSubscriptions(w http.ResponseWriter, r *http.Request) {
 
@@ -4297,6 +4346,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/test-clocks/{id}/advance", wrapper.PostV1TestClocksIdAdvance)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/test-clocks/{id}/retry-advance", wrapper.PostV1TestClocksIdRetryAdvance)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/test-clocks/{id}/subscriptions", wrapper.GetV1TestClocksIdSubscriptions)

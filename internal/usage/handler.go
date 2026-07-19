@@ -382,14 +382,24 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve-stage failures (missing fields, unknown customer/meter,
+	// malformed timestamp — the common 422 class) are collected for EVERY
+	// failing index, same as the ingest stage below: a bare first-error
+	// made 500-event batches undebuggable, and the spec promises one
+	// errors[] naming every failing index for the batch 422.
 	var inputs []IngestInput
+	var resolveErrs []string
 	for i, evt := range events {
 		input, err := h.resolve(r.Context(), tenantID, evt)
 		if err != nil {
-			respond.Validation(w, r, fmt.Sprintf("event[%d]: %s (nothing was ingested)", i, err.Error()))
-			return
+			resolveErrs = append(resolveErrs, fmt.Sprintf("event[%d]: %s", i, err.Error()))
+			continue
 		}
 		inputs = append(inputs, input)
+	}
+	if len(resolveErrs) > 0 {
+		respondBatchRejected(w, r, resolveErrs, len(events))
+		return
 	}
 
 	inserted, deduped, ingestErrs := h.svc.BatchIngest(r.Context(), tenantID, inputs)
@@ -399,19 +409,7 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		for i, e := range ingestErrs {
 			errStrings[i] = e.Error()
 		}
-		// Every failing index in one response (a bare first-error made
-		// 500-event batches undebuggable), and an explicit marker that
-		// the batch wrote nothing.
-		respond.JSON(w, r, http.StatusUnprocessableEntity, map[string]any{
-			"error": map[string]any{
-				"type":    "invalid_request_error",
-				"code":    "batch_rejected",
-				"message": "batch rejected — nothing was ingested; fix the listed events and retry the whole batch",
-			},
-			"errors":   errStrings,
-			"ingested": 0,
-			"total":    len(events),
-		})
+		respondBatchRejected(w, r, errStrings, len(events))
 		return
 	}
 
@@ -419,6 +417,26 @@ func (h *Handler) batchIngest(w http.ResponseWriter, r *http.Request) {
 		"ingested":     inserted,
 		"deduplicated": deduped,
 		"total":        len(events),
+	})
+}
+
+// respondBatchRejected writes the batch 422 the spec documents: every
+// failing index in one errors[] array ("event[i]: reason") plus an
+// explicit ingested:0 marker that the all-or-nothing batch wrote nothing.
+// Shared by the resolve and ingest validation stages so both produce the
+// same shape — pre-fix the resolve stage returned a bare first-error 422
+// with no errors[], the exact undebuggable-batch failure the ingest
+// stage's accumulation exists to prevent.
+func respondBatchRejected(w http.ResponseWriter, r *http.Request, errStrings []string, total int) {
+	respond.JSON(w, r, http.StatusUnprocessableEntity, map[string]any{
+		"error": map[string]any{
+			"type":    "invalid_request_error",
+			"code":    "batch_rejected",
+			"message": "batch rejected — nothing was ingested; fix the listed events and retry the whole batch",
+		},
+		"errors":   errStrings,
+		"ingested": 0,
+		"total":    total,
 	})
 }
 

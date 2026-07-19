@@ -15,16 +15,17 @@ import (
 )
 
 // TestActivate_StoreUpdate_GuardsAgainstConcurrentCancel is the real-Postgres proof
-// of the Activate lost-update fix. Service.Activate reads a draft (store.Get), checks
-// status==draft, then persists status='active' via store.Update in a SEPARATE step.
-// store.Update's UPDATE carries `AND status = 'draft'` so a draft→canceled cancel that
-// commits in that TOCTOU window is NOT clobbered back to active — which would resurrect
-// a terminated subscription into a live billing state with fresh period bounds and fire
-// subscription.activated on it. Every sibling transition already carries this guard via
-// transitionInTx; Update (Activate's bespoke multi-column writer) was the odd one out.
+// of the Activate lost-update guard. Service.Activate reads a draft (store.Get),
+// checks status==draft, then persists the transition via ActivateDraftWithBill in a
+// SEPARATE step. That writer's UPDATE carries `AND status = 'draft'` so a
+// draft→canceled cancel that commits in the TOCTOU window is NOT clobbered back to
+// active — which would resurrect a terminated subscription into a live billing state
+// with fresh period bounds and fire subscription.activated on it. (The guard
+// originally lived in the store's Update method; when Update lost its last caller
+// and was deleted, this test retargeted to the live writer.)
 //
-// Only a real DB proves it: the in-memory test fake replaces the whole struct on Update
-// and cannot model the WHERE predicate, so a unit test would pass with or without the
+// Only a real DB proves it: the in-memory test fake replaces the whole struct and
+// cannot model the WHERE predicate, so a unit test would pass with or without the
 // guard.
 func TestActivate_StoreUpdate_GuardsAgainstConcurrentCancel(t *testing.T) {
 	db := testutil.SetupTestDB(t)

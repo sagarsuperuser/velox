@@ -166,7 +166,8 @@ if [ "$FILE_TYPE" = "custom" ]; then
     --single-transaction \
     --verbose \
     "$BACKUP_FILE" \
-    2>&1 | while IFS= read -r line; do log "  pg_restore: $line"; done
+    2>&1 | while IFS= read -r line; do log "  pg_restore: $line"; done \
+    || die "pg_restore failed — the single-transaction restore was rolled back." 2
 
 elif [ "$FILE_TYPE" = "sql" ]; then
   log "Restoring using psql (SQL format)..."
@@ -175,10 +176,12 @@ elif [ "$FILE_TYPE" = "sql" ]; then
     --single-transaction \
     --set ON_ERROR_STOP=on \
     -f "$BACKUP_FILE" \
-    2>&1 | while IFS= read -r line; do log "  psql: $line"; done
+    2>&1 | while IFS= read -r line; do log "  psql: $line"; done \
+    || die "psql restore failed — the single-transaction restore was rolled back." 2
 
 else
-  die "Unrecognized backup file format. Expected pg_dump custom format or plain SQL." 2
+  # Input problem, not a failed restore — exit 1 per the header's taxonomy.
+  die "Unrecognized backup file format. Expected pg_dump custom format or plain SQL." 1
 fi
 
 END_TIME=$(date +%s)
@@ -212,7 +215,7 @@ POST_COUNTS=$(psql "$DATABASE_URL" -t -A -c "
 log "Post-restore total rows: ${POST_COUNTS}"
 
 # Check critical Velox tables exist.
-CRITICAL_TABLES="tenants customers subscriptions invoices credit_ledger_entries"
+CRITICAL_TABLES="tenants customers subscriptions invoices customer_credit_ledger"
 MISSING_TABLES=""
 
 for table in $CRITICAL_TABLES; do

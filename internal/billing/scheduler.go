@@ -520,12 +520,16 @@ func (s *Scheduler) runDunningForMode(ctx context.Context, live bool, tenantIDs 
 	for _, tid := range tenantIDs {
 		processed, dErrs := s.dunning.ProcessDueRuns(ctx, tid, 20)
 		if len(dErrs) > 0 {
+			// One "failed" increment per error (a per-run failure or the
+			// list query itself) — the series the runbook's
+			// {outcome="failed"} dunning-machinery alert watches.
 			for _, e := range dErrs {
 				slog.Error("dunning error", "mode", mode, "tenant_id", tid, "error", e)
+				mw.RecordDunningRun("failed")
 			}
 		}
 		for i := 0; i < processed; i++ {
-			mw.RecordDunningRun()
+			mw.RecordDunningRun("succeeded")
 		}
 		if processed > 0 {
 			slog.Info("dunning runs processed", "mode", mode, "tenant_id", tid, "processed", processed)

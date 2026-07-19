@@ -56,6 +56,7 @@ import type {
   PostV1AuthMode200,
   PostV1AuthModeBody,
   PostV1AuthPasswordResetConfirmBody,
+  PostV1AuthPasswordResetRequest200,
   PostV1AuthPasswordResetRequestBody,
   PostV1BillingRun200,
   PostV1CreditNotesBody,
@@ -74,6 +75,7 @@ import type {
   PostV1TestClocksBody,
   PostV1TestClocksIdAdvance200,
   PostV1TestClocksIdAdvanceBody,
+  PostV1TestClocksIdRetryAdvance200,
   PostV1UsageEventsBatch201,
   PostV1UsageEventsBatchBodyItem,
   PostV1UsageEventsBody,
@@ -375,7 +377,7 @@ sole credential for `GET /v1/public/cost-dashboard/{token}`
 and is shown ONCE — Velox never returns it again after this
 response. Audit log records the rotation without the token.
 
- * @summary Rotate the public cost-dashboard token (ADR-031)
+ * @summary Rotate the public cost-dashboard token (ADR-032)
  */
 export const getPostV1CustomersIdRotateCostDashboardTokenUrl = (id: string,) => {
 
@@ -431,7 +433,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PostV1CustomersIdRotateCostDashboardTokenMutationError = void
 
     /**
- * @summary Rotate the public cost-dashboard token (ADR-031)
+ * @summary Rotate the public cost-dashboard token (ADR-032)
  */
 export const usePostV1CustomersIdRotateCostDashboardToken = <TError = void,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1CustomersIdRotateCostDashboardToken>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
@@ -455,7 +457,7 @@ prefix or unknown token → 401 (anti-enumeration). No active
 sub → 200 with `billing_period.source = "no_subscription"`
 and empty arrays.
 
- * @summary Public cost-dashboard projection (ADR-031)
+ * @summary Public cost-dashboard projection (ADR-032)
  */
 export const getGetV1PublicCostDashboardTokenUrl = (token: string,) => {
 
@@ -534,7 +536,7 @@ export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<type
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
- * @summary Public cost-dashboard projection (ADR-031)
+ * @summary Public cost-dashboard projection (ADR-032)
  */
 
 export function useGetV1PublicCostDashboardToken<TData = Awaited<ReturnType<typeof getV1PublicCostDashboardToken>>, TError = void>(
@@ -2465,10 +2467,14 @@ export function useGetV1Invoices<TData = Awaited<ReturnType<typeof getV1Invoices
 
 
 /**
- * Answers "what is my next bill going to look like?" using the same
-line-set the cycle scan would emit if billing fired right now —
-so dashboard projected-bill matches the eventual finalized
-invoice. Composes across customer / subscription / pricing;
+ * Answers "what is my next bill going to look like?" as a
+full-period ESTIMATE. Usage lines are rated through the same
+per-meter aggregation path as the cycle scan, but the estimate
+deliberately does NOT replicate usage-cap scaling or mid-period
+segment proration (ADR-045) — for capped or mid-period-changed
+subscriptions the response carries `warnings[]` naming the
+divergence and the finalized invoice can differ (lower, for
+capped usage). Composes across customer / subscription / pricing;
 registered as a sibling of `/v1/invoices` (chi picks the more
 specific pattern, otherwise `/{id}` would capture
 `create_preview` as an invoice ID). See
@@ -3290,10 +3296,14 @@ export const usePostV1AuthMode = <TError = Error,
     }
 
 /**
- * Always returns 204 regardless of whether the email exists, to
-avoid account enumeration. If a user matches, a single-use 1-hour
-token is generated and the reset link is delivered out-of-band
-(SMTP delivery deferred — currently logged to stdout).
+ * Always returns the same 200 body regardless of whether the email
+exists, to avoid account enumeration. If a user matches, a
+single-use 1-hour token is generated and the reset link is
+emailed via SMTP (requires `SMTP_HOST` and `DASHBOARD_BASE_URL`;
+there is no stdout fallback). `email_delivery` reports whether
+this deployment can deliver reset emails at all — deployment
+posture, computed independently of any match, so it leaks no
+account existence.
 
  * @summary Request a password reset link
  */
@@ -3305,9 +3315,9 @@ export const getPostV1AuthPasswordResetRequestUrl = () => {
   return `/v1/auth/password-reset/request`
 }
 
-export const postV1AuthPasswordResetRequest = async (postV1AuthPasswordResetRequestBody: PostV1AuthPasswordResetRequestBody, options?: RequestInit): Promise<void> => {
+export const postV1AuthPasswordResetRequest = async (postV1AuthPasswordResetRequestBody: PostV1AuthPasswordResetRequestBody, options?: RequestInit): Promise<PostV1AuthPasswordResetRequest200> => {
 
-  return orvalClient<void>(getPostV1AuthPasswordResetRequestUrl(),
+  return orvalClient<PostV1AuthPasswordResetRequest200>(getPostV1AuthPasswordResetRequestUrl(),
   {
     ...options,
     method: 'POST',
@@ -5231,11 +5241,14 @@ export function useGetV1TestClocksIdSubscriptions<TData = Awaited<ReturnType<typ
 
 
 /**
- * Moves the clock forward and synchronously runs billing catchup
-for every subscription pinned to this clock. While catchup runs,
-the clock is in `advancing` state and concurrent advances 409.
-Catchup failures flip the clock to `internal_failure` — operator
-must inspect and delete to unstick.
+ * Moves the clock forward and runs billing catchup asynchronously
+for every subscription pinned to this clock. The 200 returns as
+soon as the clock is marked `advancing` — a background worker
+drains the catchup; poll `GET /v1/test-clocks/{id}` until status
+leaves `advancing`. Concurrent advances 409 while catchup runs.
+Catchup failures park the clock in `internal_failure` — resume
+it with `POST /v1/test-clocks/{id}/retry-advance` (deletion is
+not required). ADR-018.
 
  * @summary Advance the clock to a new frozen_time
  */
@@ -5306,4 +5319,83 @@ export const usePostV1TestClocksIdAdvance = <TError = void,
         TContext
       > => {
       return useMutation(getPostV1TestClocksIdAdvanceMutationOptions(options), queryClient);
+    }
+
+/**
+ * Resumes a clock parked in `internal_failure` after a prior
+catchup error. Catchup is idempotent (only subscriptions with
+`next_billing_at <= frozen_time` are processed), so resuming
+from where the previous attempt stopped is safe; `frozen_time`
+keeps the value stamped by the original advance. Asynchronous
+like advance: the 200 returns the clock back in `advancing`;
+poll `GET /v1/test-clocks/{id}` until status leaves `advancing`.
+ADR-018.
+
+ * @summary Retry catchup on a clock parked in internal_failure
+ */
+export const getPostV1TestClocksIdRetryAdvanceUrl = (id: string,) => {
+
+
+
+
+  return `/v1/test-clocks/${id}/retry-advance`
+}
+
+export const postV1TestClocksIdRetryAdvance = async (id: string, options?: RequestInit): Promise<PostV1TestClocksIdRetryAdvance200> => {
+
+  return orvalClient<PostV1TestClocksIdRetryAdvance200>(getPostV1TestClocksIdRetryAdvanceUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getPostV1TestClocksIdRetryAdvanceMutationOptions = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+): UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postV1TestClocksIdRetryAdvance'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postV1TestClocksIdRetryAdvance(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostV1TestClocksIdRetryAdvanceMutationResult = NonNullable<Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>>
+
+    export type PostV1TestClocksIdRetryAdvanceMutationError = void
+
+    /**
+ * @summary Retry catchup on a clock parked in internal_failure
+ */
+export const usePostV1TestClocksIdRetryAdvance = <TError = void,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof orvalClient>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postV1TestClocksIdRetryAdvance>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getPostV1TestClocksIdRetryAdvanceMutationOptions(options), queryClient);
     }
