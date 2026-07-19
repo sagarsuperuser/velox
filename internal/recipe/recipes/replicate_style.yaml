@@ -8,7 +8,11 @@ summary: |
 description: |
   Sets up everything you need to bill customers for GPU compute time:
 
-    • A usage meter that counts GPU-seconds
+    • A usage meter that counts GPU-seconds. Each event you send must
+      carry the seconds consumed since that job's previous report (a
+      per-interval delta), not a cumulative running total — the meter
+      sums deltas, and cumulative totals would under-bill whenever two
+      jobs share a GPU class
     • A per-second price for each GPU type — H100, A100 (80GB), A40, T4,
       and CPU
     • A monthly plan your customers subscribe to

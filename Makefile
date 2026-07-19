@@ -127,10 +127,13 @@ gen-go:
 	go run -tags tools github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen \
 		--config api/cfg.yaml api/openapi.yaml
 
-# Generate TypeScript types (openapi-typescript) and typed
-# react-query hooks (orval) into web-v2/src/lib/{api.gen.ts,
-# queries.gen.ts}. Also refreshes web-v2/public/openapi.yaml so the
-# /docs/api Scalar viewer serves the canonical spec.
+# Generate TypeScript types (openapi-typescript) into
+# web-v2/src/lib/api.gen.ts and typed react-query hooks (orval) into
+# web-v2/src/lib/gen/queries.gen.ts. Also refreshes
+# web-v2/public/openapi.yaml — the SPA's predev/prebuild hook and the
+# codegen pipeline (plus its CI drift check) read that copy of the
+# canonical spec. (No embedded spec viewer exists — the /docs site was
+# cut 2026-04-29.)
 gen-ts:
 	cd web-v2 && npm run gen
 

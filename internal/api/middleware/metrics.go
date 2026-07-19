@@ -102,11 +102,12 @@ var (
 		[]string{"status"},
 	)
 
-	dunningRunsProcessed = promauto.NewCounter(
+	dunningRunsProcessed = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "velox_dunning_runs_processed_total",
-			Help: "Total dunning runs processed.",
+			Help: "Total dunning runs processed by outcome.",
 		},
+		[]string{"outcome"},
 	)
 
 	creditOperations = promauto.NewCounterVec(
@@ -225,9 +226,11 @@ func RecordWebhookDelivery(status string) {
 	webhookDeliveries.WithLabelValues(status).Inc()
 }
 
-// RecordDunningRun increments the dunning runs processed counter.
-func RecordDunningRun() {
-	dunningRunsProcessed.Inc()
+// RecordDunningRun records a processed dunning run outcome ("succeeded" or
+// "failed"). The outcome split backs the runbook's dunning-machinery alert
+// on {outcome="failed"} — without it, failed runs had zero metric visibility.
+func RecordDunningRun(outcome string) {
+	dunningRunsProcessed.WithLabelValues(outcome).Inc()
 }
 
 // RecordCreditOperation records a credit operation by type ("grant", "usage", "expiry", "adjustment").

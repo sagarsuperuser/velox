@@ -10,8 +10,9 @@
 FROM node:22-alpine AS build
 
 # Mirror the repo layout (/repo/web-v2 + /repo/api): the SPA's prebuild
-# hook copies ../api/openapi.yaml into public/ so /docs deep-links and the
-# embedded spec viewer ship with the dashboard.
+# hook copies ../api/openapi.yaml into public/ — the build fails without
+# the spec, and codegen (npm run gen) reads the same canonical file.
+# (No embedded spec viewer — the /docs site was cut 2026-04-29.)
 WORKDIR /repo/web-v2
 COPY web-v2/package.json web-v2/package-lock.json ./
 # --legacy-peer-deps matches CI's frontend job: the lockfile carries a

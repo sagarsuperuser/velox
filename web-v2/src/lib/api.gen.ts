@@ -136,7 +136,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rotate the public cost-dashboard token (ADR-031)
+         * Rotate the public cost-dashboard token (ADR-032)
          * @description Mints a fresh `vlx_pcd_…` token and writes it to the customer
          *     row. The previous token is invalidated immediately (read-only
          *     public surface; no grace window). The plaintext token is the
@@ -192,7 +192,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Public cost-dashboard projection (ADR-031)
+         * Public cost-dashboard projection (ADR-032)
          * @description Unauthenticated. The `vlx_pcd_…` token in the URL is the sole
          *     credential — partners embed via iframe / fetch from their own
          *     app without an API key. Sanitized projection: customer_id,
@@ -1271,10 +1271,14 @@ export interface paths {
         put?: never;
         /**
          * Preview the next invoice for a customer (Stripe-equivalent)
-         * @description Answers "what is my next bill going to look like?" using the same
-         *     line-set the cycle scan would emit if billing fired right now —
-         *     so dashboard projected-bill matches the eventual finalized
-         *     invoice. Composes across customer / subscription / pricing;
+         * @description Answers "what is my next bill going to look like?" as a
+         *     full-period ESTIMATE. Usage lines are rated through the same
+         *     per-meter aggregation path as the cycle scan, but the estimate
+         *     deliberately does NOT replicate usage-cap scaling or mid-period
+         *     segment proration (ADR-045) — for capped or mid-period-changed
+         *     subscriptions the response carries `warnings[]` naming the
+         *     divergence and the finalized invoice can differ (lower, for
+         *     capped usage). Composes across customer / subscription / pricing;
          *     registered as a sibling of `/v1/invoices` (chi picks the more
          *     specific pattern, otherwise `/{id}` would capture
          *     `create_preview` as an invoice ID). See
@@ -1710,7 +1714,11 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description Account locked after too many failed attempts (15-min cooldown) */
+                /**
+                 * @description Rate limited — the shared per-IP request limit on `/v1/auth`
+                 *     was exceeded. There is no per-account lockout or login
+                 *     throttle in v1 (ADR-094).
+                 */
                 429: {
                     headers: {
                         [name: string]: unknown;
@@ -1837,10 +1845,14 @@ export interface paths {
         put?: never;
         /**
          * Request a password reset link
-         * @description Always returns 204 regardless of whether the email exists, to
-         *     avoid account enumeration. If a user matches, a single-use 1-hour
-         *     token is generated and the reset link is delivered out-of-band
-         *     (SMTP delivery deferred — currently logged to stdout).
+         * @description Always returns the same 200 body regardless of whether the email
+         *     exists, to avoid account enumeration. If a user matches, a
+         *     single-use 1-hour token is generated and the reset link is
+         *     emailed via SMTP (requires `SMTP_HOST` and `DASHBOARD_BASE_URL`;
+         *     there is no stdout fallback). `email_delivery` reports whether
+         *     this deployment can deliver reset emails at all — deployment
+         *     posture, computed independently of any match, so it leaks no
+         *     account existence.
          */
         post: {
             parameters: {
@@ -1858,12 +1870,23 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Request accepted (regardless of email existence) */
-                204: {
+                /** @description Request accepted (identical body regardless of email existence) */
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            message: string;
+                            /**
+                             * @description Whether this deployment can deliver reset emails
+                             *     (SMTP configured AND `DASHBOARD_BASE_URL` set).
+                             *     Deployment posture, never account state.
+                             * @enum {string}
+                             */
+                            email_delivery: "ok" | "not_configured";
+                        };
+                    };
                 };
             };
         };
@@ -2897,11 +2920,14 @@ export interface paths {
         put?: never;
         /**
          * Advance the clock to a new frozen_time
-         * @description Moves the clock forward and synchronously runs billing catchup
-         *     for every subscription pinned to this clock. While catchup runs,
-         *     the clock is in `advancing` state and concurrent advances 409.
-         *     Catchup failures flip the clock to `internal_failure` — operator
-         *     must inspect and delete to unstick.
+         * @description Moves the clock forward and runs billing catchup asynchronously
+         *     for every subscription pinned to this clock. The 200 returns as
+         *     soon as the clock is marked `advancing` — a background worker
+         *     drains the catchup; poll `GET /v1/test-clocks/{id}` until status
+         *     leaves `advancing`. Concurrent advances 409 while catchup runs.
+         *     Catchup failures park the clock in `internal_failure` — resume
+         *     it with `POST /v1/test-clocks/{id}/retry-advance` (deletion is
+         *     not required). ADR-018.
          */
         post: {
             parameters: {
@@ -2921,7 +2947,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Clock advanced */
+                /** @description Advance accepted — clock returned in `advancing` state */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -2939,6 +2965,68 @@ export interface paths {
                 };
                 /** @description New frozen_time is not strictly after the current */
                 422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/test-clocks/{id}/retry-advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry catchup on a clock parked in internal_failure
+         * @description Resumes a clock parked in `internal_failure` after a prior
+         *     catchup error. Catchup is idempotent (only subscriptions with
+         *     `next_billing_at <= frozen_time` are processed), so resuming
+         *     from where the previous attempt stopped is safe; `frozen_time`
+         *     keeps the value stamped by the original advance. Asynchronous
+         *     like advance: the 200 returns the clock back in `advancing`;
+         *     poll `GET /v1/test-clocks/{id}` until status leaves `advancing`.
+         *     ADR-018.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Retry accepted — clock returned in `advancing` state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": Record<string, never>;
+                    };
+                };
+                /** @description Clock not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Clock is not in `internal_failure` state */
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -3123,10 +3211,13 @@ export interface components {
          *     attention. Stable public-API contract — codes are never
          *     repurposed; deprecations keep the code reserved and add a
          *     successor. See `Attention.code` for the open, provider-specific
-         *     sub-code.
+         *     sub-code. `payment_anomaly` (ADR-068) reports money that does
+         *     not reconcile — double charge, captured-vs-booked amount
+         *     mismatch, or a payment on a voided invoice — and is surfaced
+         *     even on paid/voided invoices.
          * @enum {string}
          */
-        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "payment_processing" | "payment_scheduled" | "awaiting_payment" | "no_payment_method";
+        AttentionReason: "tax_calculation_failed" | "tax_location_required" | "payment_failed" | "payment_unconfirmed" | "payment_anomaly" | "payment_processing" | "payment_scheduled" | "awaiting_payment" | "no_payment_method";
         /**
          * @description Operator's recommended next step. Closed enum because every
          *     code maps to a concrete server endpoint or frontend route,

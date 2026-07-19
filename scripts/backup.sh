@@ -95,13 +95,18 @@ log "Destination: ${BACKUP_FILE}"
 
 START_TIME=$(date +%s)
 
+# Guarded so a pg_dump failure exits with the documented code 2 — the bare
+# pipeline under `set -eo pipefail` would propagate pg_dump's own status (1),
+# which the header reserves for configuration errors. The || suppresses the
+# ERR trap, so clean up the partial file explicitly.
 pg_dump \
   --dbname="$DATABASE_URL" \
   --format=custom \
   --compress=6 \
   --verbose \
   --file="$BACKUP_FILE" \
-  2>&1 | while IFS= read -r line; do log "  pg_dump: $line"; done
+  2>&1 | while IFS= read -r line; do log "  pg_dump: $line"; done \
+  || { cleanup_on_failure; die "pg_dump failed." 2; }
 
 if [ ! -f "$BACKUP_FILE" ]; then
   die "pg_dump completed but backup file not found." 2

@@ -453,8 +453,10 @@ func (s *Sender) SendPaymentReceipt(ctx context.Context, tenantID, to string, cc
 
 // SendDunningWarning notifies a customer about a failed retry. Body
 // includes the latest decline reason (so the customer can act —
-// insufficient_funds → top up; lost_card → swap card) and escalates
-// tone on the final attempt ("Last attempt before service impact").
+// insufficient_funds → top up; lost_card → swap card). There is no
+// final-attempt tone: the dunning service skips the warning on the
+// exhausting attempt (N-1 warnings, then ONE escalation email — see
+// willExhaustThisAttempt in internal/dunning/service.go).
 // CTA is a "Pay invoice" button on the hosted invoice page (Stripe
 // Checkout there handles both PM update and pay).
 func (s *Sender) SendDunningWarning(ctx context.Context, tenantID, to string, cc []string, customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, publicToken string) error {
@@ -692,18 +694,15 @@ func receiptTextBody(customerName, invoiceNumber, amount, hostedURL string) stri
 }
 
 func dunningWarningTextBody(customerName, invoiceNumber string, attemptNumber, maxAttempts int, nextRetryDate, failureReason, hostedURL string) string {
-	finalAttempt := maxAttempts > 0 && attemptNumber >= maxAttempts
+	// No final-attempt branch — mirrors renderDunningWarningHTML: the
+	// dunning service never sends a warning on the exhausting attempt.
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hi %s,\n\n", customerName)
 	fmt.Fprintf(&b, "Attempt %d of %d to charge invoice %s was declined.\n", attemptNumber, maxAttempts, invoiceNumber)
 	if strings.TrimSpace(failureReason) != "" {
 		fmt.Fprintf(&b, "Reason: %s\n", failureReason)
 	}
-	if finalAttempt {
-		fmt.Fprintf(&b, "\nThis was the final automatic retry. If we can't collect this invoice, your subscription may be paused or canceled. Please pay the invoice or update your payment method now.\n\n")
-	} else {
-		fmt.Fprintf(&b, "\nWe'll try again on %s.\n\n", nextRetryDate)
-	}
+	fmt.Fprintf(&b, "\nWe'll try again on %s.\n\n", nextRetryDate)
 	if hostedURL != "" {
 		fmt.Fprintf(&b, "Pay invoice: %s\n", hostedURL)
 	}
@@ -711,10 +710,20 @@ func dunningWarningTextBody(customerName, invoiceNumber string, attemptNumber, m
 }
 
 func dunningEscalationTextBody(customerName, invoiceNumber, action, hostedURL string) string {
+	// Same customer copy as the HTML alternative (dunningEscalationCopy).
+	// Pre-fix this text part still rendered the raw internal enum —
+	// "Action taken: mark_uncollectible", the exact P13 symptom, shown to
+	// every text-only client — and offered a "Resolve invoice" link even
+	// for invoices the hosted page refuses payment on.
+	sentence, stillPayable := dunningEscalationCopy(action)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Hi %s,\n\nAll retry attempts for invoice %s have failed.\n\nAction taken: %s\n\n", customerName, invoiceNumber, action)
+	fmt.Fprintf(&b, "Hi %s,\n\nAll payment attempts for invoice %s were unsuccessful.\n\n%s\n\n", customerName, invoiceNumber, sentence)
 	if hostedURL != "" {
-		fmt.Fprintf(&b, "Resolve invoice: %s\n", hostedURL)
+		if stillPayable {
+			fmt.Fprintf(&b, "Pay invoice: %s\n", hostedURL)
+		} else {
+			fmt.Fprintf(&b, "View invoice: %s\n", hostedURL)
+		}
 	}
 	return b.String()
 }

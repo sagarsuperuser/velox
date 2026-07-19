@@ -287,7 +287,7 @@ func validateEventNames(events []string) error {
 		}
 		if !domain.KnownWebhookEventTypes[e] {
 			return errs.Invalid("events", fmt.Sprintf(
-				"unknown event type %q — Velox never emits it, so this subscription would receive silence; see the event catalog (GET /docs/api or docs/webhooks.md)", e))
+				"unknown event type %q — Velox never emits it, so this subscription would receive silence; see the event catalog in docs/webhooks.md", e))
 		}
 	}
 	return nil

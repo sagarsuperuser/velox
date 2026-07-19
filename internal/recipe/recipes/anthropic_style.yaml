@@ -12,8 +12,10 @@ description: |
     • Per-token prices for every current Claude model (Opus, Sonnet, and
       Haiku 4.5) and the older Claude 3.x models, matching Anthropic's
       public pricing page
-    • Separate rates for input, output, and cached tokens — cache reads and
-      writes are cheaper, exactly as Anthropic prices them
+    • Separate rates for input, output, and cached tokens — cache reads are
+      steeply discounted (0.1x input) while cache writes carry a premium
+      (1.25x for 5-minute, 2x for 1-hour caching), exactly as Anthropic
+      prices them
     • A monthly plan your customers subscribe to
     • Automatic payment retries and a notifications endpoint you can point
       at your own systems

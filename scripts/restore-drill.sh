@@ -2,8 +2,10 @@
 # Velox Backup + Restore Drill
 #
 # Exercises the full backup → restore → validate loop against an ephemeral
-# Postgres container. Run periodically to verify the RPO/RTO claims in
-# docs/ops/backup-recovery.md actually hold for the current backup pipeline.
+# Postgres container. Run periodically (docs/ops/backup-considerations.md
+# suggests quarterly) to verify the current backup pipeline actually
+# restores; the timing log lets you track backup/restore duration against
+# whatever RTO your deployment has committed to.
 #
 # What it does:
 #   1. Captures source row counts for a list of critical tables.
@@ -32,7 +34,7 @@
 #                          ~/.velox/drill.log). Auto-created.
 #   CRITICAL_TABLES        Space-separated list of tables to count-match
 #                          (default: tenants customers subscriptions
-#                          invoices credit_ledger_entries).
+#                          invoices customer_credit_ledger).
 #
 # Exit codes:
 #   0  Drill passed.
@@ -53,7 +55,7 @@ DRILL_PG_IMAGE="${DRILL_PG_IMAGE:-postgres:16-alpine}"
 DRILL_PG_PORT="${DRILL_PG_PORT:-15432}"
 DRILL_CONTAINER_NAME="${DRILL_CONTAINER_NAME:-velox-drill-$$}"
 DRILL_LOG="${DRILL_LOG:-$HOME/.velox/drill.log}"
-CRITICAL_TABLES="${CRITICAL_TABLES:-tenants customers subscriptions invoices credit_ledger_entries}"
+CRITICAL_TABLES="${CRITICAL_TABLES:-tenants customers subscriptions invoices customer_credit_ledger}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -115,6 +117,12 @@ SOURCE_COUNTS_FILE="$BACKUP_WORKDIR/source_counts.txt"
 log "Capturing source row counts (${CRITICAL_TABLES})..."
 for table in $CRITICAL_TABLES; do
   count=$(psql "$SOURCE_DATABASE_URL" -t -A -c "SELECT count(*) FROM \"$table\"" 2>/dev/null || echo "MISSING")
+  # A table missing in the SOURCE is a hard error: source "MISSING" would
+  # compare equal to a restored-side "MISSING" and vacuously pass step 5's
+  # divergence check — the drill would green-light without validating it.
+  if [ "$count" = "MISSING" ]; then
+    die "Critical table '$table' not found in the source database — check CRITICAL_TABLES." 1
+  fi
   echo "$table $count" >> "$SOURCE_COUNTS_FILE"
   log "  source.$table = $count"
 done
@@ -135,7 +143,7 @@ DATABASE_URL="$SOURCE_DATABASE_URL" \
   BACKUP_S3_BUCKET="" \
   BACKUP_RETENTION_DAYS=99999 \
   "$SCRIPT_DIR/backup.sh" \
-  2>&1 | while IFS= read -r line; do log "  backup: $line"; done
+  2>&1 | while IFS= read -r line; do log "  backup: $line"; done || die "backup.sh exited non-zero." 2
 
 BACKUP_FILE="$BACKUP_WORKDIR/latest.dump"
 [ -f "$BACKUP_FILE" ] || die "backup.sh completed but no latest.dump produced." 2
@@ -227,7 +235,7 @@ log "  Result:       $RESULT"
 log "  Backup:       ${BACKUP_DURATION}s"
 log "  Restore:      ${RESTORE_DURATION}s"
 log "  Total:        ${TOTAL_DURATION}s"
-log "  RTO target:   3600s (1 hour) — see docs/ops/backup-recovery.md"
+log "  RTO:          no fixed target — compare Total against your own RTO commitment (docs/ops/backup-considerations.md)"
 log "  Tables:       $CRITICAL_TABLES"
 log "  History:      $DRILL_LOG"
 log "========================================"

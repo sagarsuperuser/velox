@@ -1,8 +1,10 @@
 // Copies api/openapi.yaml (the single source of truth at the repo root)
 // into web-v2/public/openapi.yaml so:
 //
-// 1. The Scalar viewer at /docs/api can serve the spec from a stable
-//    same-origin URL (`/openapi.yaml`).
+// 1. The built SPA ships the spec at a stable same-origin URL
+//    (`/openapi.yaml`) for anyone who wants to fetch it. (The embedded
+//    Scalar viewer that used to render it at /docs/api was cut
+//    2026-04-29 — no in-app viewer exists today.)
 // 2. Local TS codegen (openapi-typescript + orval) reads the same file
 //    every other consumer reads.
 //

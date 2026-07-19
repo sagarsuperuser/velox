@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Velox billing engine — operator-grade observability. Imports against any Prometheus datasource scraping /metrics. Panels grouped by concern: HTTP, Billing engine, Payments, Dunning, Outboxes, Stripe.",
+  "description": "Velox billing engine — operator-grade observability. Imports against any Prometheus datasource scraping /metrics. Panels grouped by concern: HTTP, Billing engine, Payments, Dunning, Outboxes, System.",
   "editable": true,
   "graphTooltip": 1,
   "panels": [
@@ -25,14 +25,14 @@
     },
     {
       "datasource": "Prometheus",
-      "title": "Request rate by route + status",
+      "title": "Request rate by path + status",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "id": 1,
       "targets": [
         {
-          "expr": "sum by (route, status) (rate(velox_http_requests_total[5m]))",
-          "legendFormat": "{{route}} {{status}}",
+          "expr": "sum by (path, status) (rate(velox_http_requests_total[5m]))",
+          "legendFormat": "{{path}} {{status}}",
           "refId": "A"
         }
       ]
@@ -45,8 +45,8 @@
       "id": 2,
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, route) (rate(velox_http_request_duration_seconds_bucket[5m])))",
-          "legendFormat": "p50 {{route}}",
+          "expr": "histogram_quantile(0.50, sum by (le, path) (rate(velox_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{path}}",
           "refId": "A"
         },
         {
@@ -171,8 +171,8 @@
       "id": 8,
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(velox_payment_charges_total[5m])) * 60",
-          "legendFormat": "{{outcome}}/min",
+          "expr": "sum by (result) (rate(velox_payment_charges_total[5m])) * 60",
+          "legendFormat": "{{result}}/min",
           "refId": "A"
         }
       ]
@@ -185,22 +185,22 @@
       "id": 9,
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(velox_auto_charge_retries_total[5m])) * 60",
-          "legendFormat": "{{outcome}}/min",
+          "expr": "sum by (result) (rate(velox_auto_charge_retries_total[5m])) * 60",
+          "legendFormat": "{{result}}/min",
           "refId": "A"
         }
       ]
     },
     {
       "datasource": "Prometheus",
-      "title": "Stripe circuit breaker (1 = open, 0 = closed)",
+      "title": "Stripe circuit breaker (0 = closed, 1 = half-open, 2 = open)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
       "id": 10,
       "targets": [
         {
           "expr": "velox_stripe_breaker_state",
-          "legendFormat": "{{tenant}}",
+          "legendFormat": "state",
           "refId": "A"
         }
       ]
@@ -213,8 +213,8 @@
       "id": 11,
       "targets": [
         {
-          "expr": "sum by (provider, outcome) (rate(velox_tax_outcome_total[5m])) * 60",
-          "legendFormat": "{{provider}}/{{outcome}}",
+          "expr": "sum by (outcome, reason) (rate(velox_tax_outcome_total[5m])) * 60",
+          "legendFormat": "{{outcome}}/{{reason}}",
           "refId": "A"
         }
       ]
@@ -242,7 +242,7 @@
     },
     {
       "datasource": "Prometheus",
-      "title": "Active dunning runs (DB query, recording rule recommended)",
+      "title": "Active dunning runs",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
       "id": 13,
@@ -253,7 +253,7 @@
           "refId": "A"
         }
       ],
-      "description": "This gauge isn't exposed yet — see runbook.md for SQL alternative. Add as a metric if dunning operations grow."
+      "description": "Scrape-time gauge (RegisterQueueDepthGauges, shipped 2026-07-06): counts invoice_dunning_runs WHERE state='active'. A value of -1 means the count query itself failed."
     },
     {
       "collapsed": false,
@@ -270,15 +270,15 @@
       "id": 14,
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(velox_webhook_deliveries_total[5m])) * 60",
-          "legendFormat": "{{outcome}}/min",
+          "expr": "sum by (status) (rate(velox_webhook_deliveries_total[5m])) * 60",
+          "legendFormat": "{{status}}/min",
           "refId": "A"
         }
       ]
     },
     {
       "datasource": "Prometheus",
-      "title": "Outbox queue depth (recording rule needed)",
+      "title": "Outbox queue depth",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 59 },
       "id": 15,
@@ -294,7 +294,7 @@
           "refId": "B"
         }
       ],
-      "description": "These gauges aren't exposed yet. Either add metrics in OutboxStore.PendingCount or query Postgres via postgres_exporter."
+      "description": "Scrape-time gauges (RegisterQueueDepthGauges, shipped 2026-07-06): pending email/webhook outbox rows. A value of -1 means the count query itself failed. The runbook alerts at > 1000."
     },
     {
       "collapsed": false,
@@ -351,8 +351,8 @@
       "id": 18,
       "targets": [
         {
-          "expr": "sum by (operation) (rate(velox_credit_operations_total[5m])) * 60",
-          "legendFormat": "{{operation}}/min",
+          "expr": "sum by (type) (rate(velox_credit_operations_total[5m])) * 60",
+          "legendFormat": "{{type}}/min",
           "refId": "A"
         }
       ]
