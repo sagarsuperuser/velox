@@ -1237,6 +1237,10 @@ export interface CustomerUsageRule {
   // formatRate so sub-cent rates never collapse to $0.00. Absent on the
   // FE-synthesized "__other__" catch-all bucket.
   unit_amount_decimal?: string
+  // True on the bucket of events that matched NO pricing rule (meter has no
+  // default binding): billed nothing by the engine. Rendered as a warning row
+  // — usually a mislabeled dimension value on a matrix-priced meter.
+  unmatched?: boolean
 }
 
 export interface RecipeCreatesSummary {

@@ -604,12 +604,17 @@ const RULE_TOP_N = 9
 
 function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
   const [expanded, setExpanded] = useState(false)
-  const hasMultipleRules = meter.rules.length > 1
+  const hasUnmatched = meter.rules.some(r => r.unmatched)
+  const hasMultipleRules = meter.rules.length > 1 || hasUnmatched
   const totalQty = useMemo(() => Number(meter.total_quantity), [meter.total_quantity])
 
   const visibleRules = useMemo<CustomerUsageRule[]>(() => {
-    const sorted = [...meter.rules].sort((a, b) => b.amount_cents - a.amount_cents)
-    if (sorted.length <= RULE_TOP_N + 1) return sorted
+    // Unmatched rows never fold into the "(N more)" bucket and always
+    // render last — a not-billed warning must not hide in the long tail.
+    const matched = meter.rules.filter(r => !r.unmatched)
+    const unmatched = meter.rules.filter(r => r.unmatched)
+    const sorted = [...matched].sort((a, b) => b.amount_cents - a.amount_cents)
+    if (sorted.length <= RULE_TOP_N + 1) return [...sorted, ...unmatched]
     const top = sorted.slice(0, RULE_TOP_N)
     const tail = sorted.slice(RULE_TOP_N)
     const otherCents = tail.reduce((sum, r) => sum + r.amount_cents, 0)
@@ -623,6 +628,7 @@ function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
         quantity: String(otherQty),
         amount_cents: otherCents,
       },
+      ...unmatched,
     ]
   }, [meter.rules])
 
@@ -648,10 +654,17 @@ function MeterRow({ meter }: { meter: CustomerUsageMeter }) {
             <span className="w-3.5" />
           )}
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-foreground truncate">{meter.meter_name}</p>
+            <p className="text-sm font-medium text-foreground truncate">
+              {meter.meter_name}
+              {hasUnmatched && (
+                <span className="ml-2 inline-flex items-center text-[10px] font-medium text-amber-500 border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                  unmatched usage — not billed
+                </span>
+              )}
+            </p>
             <p className="text-xs text-muted-foreground font-mono">
               {totalQty.toLocaleString(undefined, { maximumFractionDigits: 6 })} {meter.unit}
-              {hasMultipleRules && <span className="ml-2">· {meter.rules.length} rules</span>}
+              {hasMultipleRules && <span className="ml-2">· {meter.rules.filter(r => !r.unmatched).length} rules</span>}
             </p>
           </div>
           <p className="text-sm font-semibold text-foreground tabular-nums shrink-0">
@@ -705,6 +718,24 @@ function RuleRow({
   const isOther = rule.rating_rule_version_id === '__other__'
   const hasDimensions =
     !isOther && rule.dimension_match && Object.keys(rule.dimension_match).length > 0
+
+  if (rule.unmatched) {
+    // Events that matched no pricing rule: billed nothing. This row is a
+    // warning, not a spend line — no rate, no share bar, amber treatment.
+    return (
+      <div className="px-5 py-3 border-b border-border last:border-b-0 space-y-1">
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="text-xs font-medium text-amber-500">
+            No pricing rule matched — check event dimension values
+          </span>
+          <span className="text-xs font-semibold text-amber-500 shrink-0">not billed</span>
+        </div>
+        <div className="text-[10px] text-muted-foreground font-mono">
+          {qty.toLocaleString(undefined, { maximumFractionDigits: 4 })} {unit}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="px-5 py-3 border-b border-border last:border-b-0 space-y-1.5">

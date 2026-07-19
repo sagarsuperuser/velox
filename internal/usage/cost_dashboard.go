@@ -206,6 +206,12 @@ func (a *CostDashboardAssembler) GetByToken(ctx context.Context, token string) (
 	for _, m := range res.Meters {
 		rules := make([]CostDashboardRule, 0, len(m.Rules))
 		for _, ru := range m.Rules {
+			if ru.Unmatched {
+				// Unmatched-usage rows are operator information (a
+				// pricing-config gap, ADR-044 matrix); the customer-facing
+				// projection shows only billed usage.
+				continue
+			}
 			rules = append(rules, CostDashboardRule{
 				RuleKey:           ru.RuleKey,
 				DimensionMatch:    ru.DimensionMatch,
