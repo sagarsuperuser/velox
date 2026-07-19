@@ -174,7 +174,12 @@ func TestAuditRouteRegistry_ExemptionsStaySmall(t *testing.T) {
 		// deleted, so exempt("bootstrap") no longer compiles. POST /v1/bootstrap
 		// is explicit: it mints a LIVE secret key and the owner account, and emits
 		// its provisioning rows on its own tx.
-		reasonWebhookOwned: 1, // inbound Stripe webhook
+		// Inbound provider webhooks: Stripe payments + Postmark email
+		// delivery reports (ADR-098). Both machine-driven with no
+		// operator to attribute; their effects live in provider-truth
+		// state + outbox events, with the accepted losses recorded on
+		// each registry entry.
+		reasonWebhookOwned: 2,
 	}
 	for reason, n := range want {
 		if got := len(byReason[reason]); got != n {

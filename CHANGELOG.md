@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Email delivery truth: Postmark delivery/bounce/complaint webhooks now ingest (2026-07-19, ADR-098).** `dispatched` only ever meant "the relay accepted the handoff" — with Postmark (which 250-accepts then decides asynchronously) a delivered invoice email and a silently-rejected one looked identical, and the RCPT-time bounce classifier never fired at all. Outbound emails now carry an `X-PM-Metadata-vlx-outbox-id` header that Postmark echoes back to `POST /v1/webhooks/postmark` (Basic-Auth gated via `POSTMARK_WEBHOOK_USER`/`PASS`; tenant + livemode resolve from the stamped outbox row, never the blind POST). A new severity-monotonic `email_outbox.delivery_state` (migration 0156: unknown → delivered → bounced → complained) layers the provider verdict over the send row on the invoice timeline and the customer Sent-emails badge; hard bounces reuse the existing suppression path, spam complaints get the `email_status='complained'` writer 0050 always anticipated (plus a per-cause `customer.email_complained` webhook event), and soft bounces deliberately write nothing — no major ESP suppresses on them. The same pass fixed the timeline rendering a `skipped` (deliberately-not-sent) email as "succeeded".
+
 ### Changed
 
 - **The subscription Activity timeline now leads with simulated time on clock-pinned subs (2026-07-18, ADR-030 amendment).** The same event carried two dates on one page: Properties said "Created: Jun 1, 2027" (simulated) while the Activity row's prominent timestamp said "Jul 18, 2026" — the wall-clock instant the operator clicked. Narrative surfaces now lead with the **simulated** instant (matching every other date on the page), and wall-clock demotes to a muted "Recorded ⟨wall⟩ · by ⟨actor⟩" provenance line. The verbose per-row "Effect on test clock vlx_tclk_… at …" sentence — raw clock ID and all — is gone from visible copy; the chip tooltip keeps the full dual-stamp provenance. The Audit Log page deliberately stays wall-primary: it's a forensic surface. Storage is unchanged (audit rows remain wall-clock always).

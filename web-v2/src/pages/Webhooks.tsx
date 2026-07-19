@@ -407,6 +407,7 @@ const EVENT_GROUPS: { label: string; events: { type: string; description: string
     label: 'Customer',
     events: [
       { type: 'customer.email_bounced', description: 'A customer email bounced and was suppressed' },
+      { type: 'customer.email_complained', description: 'A customer marked an email as spam and was suppressed' },
     ],
   },
   {

@@ -552,6 +552,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// detail page (Stripe shape — docs.stripe.com/invoicing/send-email
 	// lists email log on the customer page, 30-day window).
 	customerH.SetSentEmailsLister(&customerSentEmailsAdapter{store: emailOutboxStore})
+	// Postmark Delivery/Bounce/SpamComplaint ingestion (ADR-098). One
+	// platform-level route (a single Postmark account serves all
+	// tenants — unlike Stripe BYOS there is no per-tenant secret);
+	// tenant + livemode resolve from the stamped outbox row. Suppressor
+	// attaches inside the blinder branch below.
+	postmarkWebhookUser := strings.TrimSpace(os.Getenv("POSTMARK_WEBHOOK_USER"))
+	postmarkWebhookPass := strings.TrimSpace(os.Getenv("POSTMARK_WEBHOOK_PASS"))
+	postmarkH := email.NewPostmarkHandler(emailOutboxStore, postmarkWebhookUser, postmarkWebhookPass)
+	if postmarkWebhookUser == "" || postmarkWebhookPass == "" {
+		slog.Warn("POSTMARK_WEBHOOK_USER/POSTMARK_WEBHOOK_PASS not set — /v1/webhooks/postmark rejects all posts (401); delivery/bounce webhooks will not ingest")
+	}
 	// One OutboxSender wired everywhere. The seven typed interface vars
 	// below are the per-domain views that satisfy each consumer's narrow
 	// surface; concretely they're all the same OutboxSender instance.
@@ -1003,12 +1014,17 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 			slog.Error("invalid VELOX_EMAIL_BIDX_KEY — bounce-report and suppression lookups will fail closed", "error", err)
 		} else {
 			customerStore.SetBlinder(b)
-			// Wire bounce reporting now that we have the blinder.
-			emailSender.SetBounceReporter(&bounceReporterAdapter{
+			// Wire bounce reporting now that we have the blinder. The
+			// same adapter serves both the SMTP sync path (ReportBounce,
+			// fire-and-forget) and the Postmark webhook's async path
+			// (SuppressBounced/SuppressComplained, error-returning).
+			bounceReporter := &bounceReporterAdapter{
 				blinder: b,
 				store:   customerStore,
 				svc:     customerSvc,
-			})
+			}
+			emailSender.SetBounceReporter(bounceReporter)
+			postmarkH.SetSuppressor(bounceReporter)
 			// Wire the recipient-suppression gate on both code paths
 			// (direct Sender + OutboxSender). Closes the bounce →
 			// suppression loop: once email_status='bounced' is recorded,
@@ -1362,6 +1378,10 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Mount("/v1/webhooks", webhookH.Routes())
+		// Postmark email webhooks — no API key auth (Basic-Auth gated;
+		// Postmark signs nothing). Static route wins over the Mount
+		// wildcard above.
+		r.Post("/v1/webhooks/postmark", postmarkH.HandleWebhook)
 	})
 
 	// Public payment update — no auth (validated by token). Same tight

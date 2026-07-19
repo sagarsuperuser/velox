@@ -102,5 +102,9 @@ customer_email_contacts table (per-contact names/routing/deliverability
 persistent suppression / auto-removal (trigger: repeated hard-bounces
 on a CC alias in WARN logs); per-email-type routing; email-sent webhook
 events + the credit_note.* lifecycle family (design whole when a DP
-automation asks); hosted CN page; auto-email at finalize (separate
-register item); BCC / Reply-To / operator self-copy.
+automation asks) — **partially un-cut by ADR-098 (2026-07-19)**: inbound
+provider delivery/bounce/complaint ingestion now exists (Postmark), with
+per-cause customer.email_bounced/email_complained outbound events;
+outbound email-*sent* lifecycle events remain cut; hosted CN page;
+auto-email at finalize (separate register item); BCC / Reply-To /
+operator self-copy.

@@ -27,6 +27,11 @@ type OutboxRow struct {
 	LastError     string
 	CreatedAt     time.Time
 	DispatchedAt  *time.Time
+	// DeliveryState is the provider-confirmed outcome (ADR-098),
+	// orthogonal to Status. Populated by the read paths that surface it
+	// (ListByInvoice/ListByCustomer/GetByID); the dispatcher's claim
+	// path leaves it zero — dispatch never reads it.
+	DeliveryState string
 }
 
 // outbox row statuses.
@@ -34,6 +39,21 @@ const (
 	OutboxPending    = "pending"
 	OutboxDispatched = "dispatched"
 	OutboxFailed     = "failed"
+)
+
+// Delivery states (ADR-098) — what the provider learned about a send
+// AFTER the SMTP handoff, reported via its webhooks. Orthogonal to the
+// status lifecycle above ('dispatched' = relay accepted the handoff;
+// 'delivered' = the RECIPIENT's mail server accepted the message — every
+// major ESP models both, never one column). Severity-monotonic:
+// unknown < delivered < bounced < complained; a webhook write only ever
+// promotes, so at-least-once redelivery and Delivery-vs-Bounce
+// reordering converge to the most-severe truth without a dedup table.
+const (
+	DeliveryUnknown    = "unknown"
+	DeliveryDelivered  = "delivered"
+	DeliveryBounced    = "bounced"
+	DeliveryComplained = "complained"
 )
 
 // MaxOutboxAttempts is the DLQ threshold. After this many failed attempts a
@@ -411,6 +431,82 @@ func (s *OutboxStore) markCAS(ctx context.Context, rowID, query string, args ...
 	}
 }
 
+// GetByID fetches one outbox row by id under a BYPASS-RLS read: the
+// caller is the provider-webhook handler, which arrives with NO tenant
+// context — the row IS the tenant resolution (same pattern as the
+// blind-index lookup). The id is unguessable (96 random bits), so
+// presenting a live one is itself the capability that binds the event to
+// exactly that row's tenant. Returns sql.ErrNoRows when absent.
+func (s *OutboxStore) GetByID(ctx context.Context, outboxID string) (OutboxRow, error) {
+	var r OutboxRow
+	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
+	if err != nil {
+		return r, err
+	}
+	defer postgres.Rollback(tx)
+
+	var payload []byte
+	var dispatchedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, livemode, email_type, payload, status, attempts,
+		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at,
+		       delivery_state
+		FROM email_outbox
+		WHERE id = $1
+	`, outboxID).Scan(&r.ID, &r.TenantID, &r.Livemode, &r.EmailType, &payload, &r.Status,
+		&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt,
+		&r.DeliveryState); err != nil {
+		return OutboxRow{}, err
+	}
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &r.Payload)
+	}
+	if dispatchedAt.Valid {
+		t := dispatchedAt.Time
+		r.DispatchedAt = &t
+	}
+	return r, nil
+}
+
+// MarkDeliveryState records a provider-confirmed outcome on the row,
+// SEVERITY-MONOTONIC: the write lands only when the new state outranks
+// the current one (unknown < delivered < bounced < complained), so a
+// redelivered webhook is a harmless no-op and a late Delivery can never
+// downgrade a Bounce. Returns whether a row was updated — false is
+// benign (already at-or-above). A state outside the known set ranks -1
+// and never writes: an unrecognized value fails closed, not loud-crash,
+// because the caller already 200-acks deterministically-unprocessable
+// events. Runs under the row's own tenant tx (RLS) — the caller resolved
+// tenantID from the row via GetByID.
+func (s *OutboxStore) MarkDeliveryState(ctx context.Context, tenantID, outboxID, state string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
+	if err != nil {
+		return false, err
+	}
+	defer postgres.Rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE email_outbox
+		SET delivery_state = $2
+		WHERE id = $1
+		  AND (CASE $2 WHEN 'delivered' THEN 1 WHEN 'bounced' THEN 2
+		               WHEN 'complained' THEN 3 ELSE -1 END)
+		    > (CASE delivery_state WHEN 'unknown' THEN 0 WHEN 'delivered' THEN 1
+		            WHEN 'bounced' THEN 2 WHEN 'complained' THEN 3 ELSE 99 END)
+	`, outboxID, state)
+	if err != nil {
+		return false, fmt.Errorf("email outbox: mark delivery state: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // TryDispatcherLock tries to acquire the cluster-wide advisory lock that
 // gates the email dispatcher tick. Returns (lock, true, nil) on success;
 // caller defers lock.Release. Returns (nil, false, nil) if another replica
@@ -457,7 +553,8 @@ func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, tenant_id, livemode, email_type, payload, status, attempts,
-		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at
+		       next_attempt_at, COALESCE(last_error,''), created_at, dispatched_at,
+		       delivery_state
 		FROM email_outbox
 		WHERE email_type IN ('invoice', 'payment_receipt', 'payment_failed',
 		                     'payment_setup_request', 'dunning_warning',
@@ -476,7 +573,8 @@ func (s *OutboxStore) ListByInvoice(ctx context.Context, tenantID, invoiceNumber
 		var payload []byte
 		var dispatchedAt sql.NullTime
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Livemode, &r.EmailType, &payload, &r.Status,
-			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt); err != nil {
+			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt,
+			&r.DeliveryState); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(payload, &r.Payload); err != nil {
@@ -512,7 +610,7 @@ func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID s
 	rows, err := tx.QueryContext(ctx, `
 		SELECT eo.id, eo.tenant_id, eo.livemode, eo.email_type, eo.payload, eo.status,
 		       eo.attempts, eo.next_attempt_at, COALESCE(eo.last_error,''),
-		       eo.created_at, eo.dispatched_at
+		       eo.created_at, eo.dispatched_at, eo.delivery_state
 		FROM email_outbox eo
 		JOIN invoices i
 		  ON i.tenant_id = eo.tenant_id
@@ -535,7 +633,8 @@ func (s *OutboxStore) ListByCustomer(ctx context.Context, tenantID, customerID s
 		var payload []byte
 		var dispatchedAt sql.NullTime
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Livemode, &r.EmailType, &payload, &r.Status,
-			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt); err != nil {
+			&r.Attempts, &r.NextAttemptAt, &r.LastError, &r.CreatedAt, &dispatchedAt,
+			&r.DeliveryState); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(payload, &r.Payload); err != nil {

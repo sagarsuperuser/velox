@@ -138,8 +138,26 @@ func (m *memoryStore) MarkEmailBounced(_ context.Context, tenantID, customerID, 
 	if !ok || c.TenantID != tenantID {
 		return errs.ErrNotFound
 	}
+	if c.EmailStatus == domain.EmailStatusComplained {
+		// Mirror the store's monotonic guard: a bounce never
+		// downgrades a complaint (benign no-op).
+		return nil
+	}
 	now := time.Now().UTC()
 	c.EmailStatus = domain.EmailStatusBounced
+	c.EmailLastBouncedAt = &now
+	c.EmailBounceReason = reason
+	m.customers[customerID] = c
+	return nil
+}
+
+func (m *memoryStore) MarkEmailComplained(_ context.Context, tenantID, customerID, reason string) error {
+	c, ok := m.customers[customerID]
+	if !ok || c.TenantID != tenantID {
+		return errs.ErrNotFound
+	}
+	now := time.Now().UTC()
+	c.EmailStatus = domain.EmailStatusComplained
 	c.EmailLastBouncedAt = &now
 	c.EmailBounceReason = reason
 	m.customers[customerID] = c

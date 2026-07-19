@@ -142,6 +142,12 @@ const (
 	EventSubscriptionTrialExtended          = "subscription.trial_extended"
 	EventSubscriptionThresholdCrossed       = "subscription.threshold_crossed"
 	EventCustomerEmailBounced               = "customer.email_bounced"
+	// EventCustomerEmailComplained fires when the email provider's
+	// SpamComplaint webhook reports the recipient marked a message as
+	// spam (ADR-098). Per-cause, deliberately not folded into
+	// email_bounced: a complaint is a person opting out, not a dead
+	// mailbox, and it is the more severe (provider-irreversible) state.
+	EventCustomerEmailComplained = "customer.email_complained"
 	EventDunningStarted                     = "dunning.started"
 	EventDunningEscalated                   = "dunning.escalated"
 	EventDunningResolved                    = "dunning.resolved"
@@ -213,6 +219,7 @@ var KnownWebhookEventTypes = map[string]bool{
 	EventSubscriptionTrialExtended:          true,
 	EventSubscriptionThresholdCrossed:       true,
 	EventCustomerEmailBounced:               true,
+	EventCustomerEmailComplained:            true,
 	EventDunningStarted:                     true,
 	EventDunningEscalated:                   true,
 	EventDunningResolved:                    true,

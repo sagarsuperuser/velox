@@ -824,6 +824,7 @@ func (s *Sender) sendRich(ctx context.Context, msg richMessage) error {
 	}
 	fmt.Fprintf(&body, "Subject: %s\r\n", encodeHeader(msg.Subject))
 	body.WriteString("MIME-Version: 1.0\r\n")
+	body.WriteString(correlationHeader(ctx))
 
 	altBoundary := "velox-alt-" + nonce()
 	mixedBoundary := "velox-mix-" + nonce()
@@ -1038,6 +1039,7 @@ func (s *Sender) sendPlain(ctx context.Context, tenantID, to, fromName, subject,
 	fmt.Fprintf(&msg, "To: %s\r\n", to)
 	fmt.Fprintf(&msg, "Subject: %s\r\n", encodeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString(correlationHeader(ctx))
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	msg.WriteString(body)
 

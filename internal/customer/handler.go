@@ -37,10 +37,14 @@ type Handler struct {
 // page "Sent emails" section. Fields stay flat (no nested payload) so
 // the SPA can render directly.
 type SentEmailRow struct {
-	ID            string  `json:"id"`
-	EmailType     string  `json:"email_type"`
-	Recipient     string  `json:"recipient"`
-	Status        string  `json:"status"`
+	ID        string `json:"id"`
+	EmailType string `json:"email_type"`
+	Recipient string `json:"recipient"`
+	Status    string `json:"status"`
+	// DeliveryState is the provider-confirmed outcome (ADR-098):
+	// unknown / delivered / bounced / complained. Layered over Status
+	// in the UI — 'dispatched' alone only means the relay took it.
+	DeliveryState string  `json:"delivery_state"`
 	InvoiceNumber string  `json:"invoice_number,omitempty"`
 	LastError     string  `json:"last_error,omitempty"`
 	CreatedAt     string  `json:"created_at"`
@@ -59,13 +63,16 @@ type SentEmailsLister interface {
 // Mirrors the customer-relevant fields of email.OutboxRow; the router
 // adapter translates one to the other.
 type SentEmailOutboxRow struct {
-	ID           string
-	EmailType    string
-	Recipient    string // resolved from payload->>'to'
-	Status       string
-	LastError    string
-	CreatedAt    time.Time
-	DispatchedAt *time.Time
+	ID        string
+	EmailType string
+	Recipient string // resolved from payload->>'to'
+	Status    string
+	// DeliveryState is the provider-confirmed outcome layered over
+	// Status (ADR-098): unknown / delivered / bounced / complained.
+	DeliveryState string
+	LastError     string
+	CreatedAt     time.Time
+	DispatchedAt  *time.Time
 	// InvoiceNumber is resolved from payload — non-empty for all
 	// invoice-scoped email types (which is everything the lister
 	// returns today, since ListByCustomer joins on invoice_number).
@@ -387,6 +394,7 @@ func (h *Handler) listSentEmails(w http.ResponseWriter, r *http.Request) {
 			EmailType:     row.EmailType,
 			Recipient:     row.Recipient,
 			Status:        row.Status,
+			DeliveryState: row.DeliveryState,
 			InvoiceNumber: row.InvoiceNumber,
 			LastError:     row.LastError,
 			CreatedAt:     row.CreatedAt.Format(time.RFC3339),

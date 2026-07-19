@@ -139,8 +139,23 @@ function subMeta(sub: Subscription): string {
   return ''
 }
 
-function sentEmailStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
+// The badge shows the provider-confirmed outcome when one exists
+// (delivered / bounced / marked as spam), else the send-lifecycle
+// status — 'dispatched' alone only means our relay accepted the
+// handoff, which is a weaker claim than 'delivered'.
+function sentEmailDisplayStatus(em: { status: string; delivery_state?: string }): string {
+  if (em.delivery_state && em.delivery_state !== 'unknown') {
+    return em.delivery_state === 'complained' ? 'marked as spam' : em.delivery_state
+  }
+  if (em.status === 'skipped') return 'not sent — settled first'
+  return em.status
+}
+
+function sentEmailStatusVariant(display: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (display) {
+    case 'delivered': return 'default'
+    case 'bounced': return 'destructive'
+    case 'marked as spam': return 'destructive'
     case 'dispatched': return 'default'
     case 'failed': return 'destructive'
     case 'pending': return 'secondary'
@@ -1085,7 +1100,7 @@ export default function CustomerDetailPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Badge variant={sentEmailStatusVariant(em.status)}>{em.status}</Badge>
+                      <Badge variant={sentEmailStatusVariant(sentEmailDisplayStatus(em))}>{sentEmailDisplayStatus(em)}</Badge>
                       <span className="text-xs text-muted-foreground whitespace-nowrap">
                         {formatDateTime(em.dispatched_at ?? em.created_at)}
                       </span>
