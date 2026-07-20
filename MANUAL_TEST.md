@@ -771,9 +771,9 @@ whole cents — only the RATE gains precision.
 
 ## FLOW B8: Usage caps
 
-- [ ] `usage_cap_units=5000`, `overage_action=block`, ingest 8000 → billed 5000.
-- [ ] Switch to `overage_action=charge`, ingest 8000 → billed 8000.
-- [ ] **Fractional cap-scaled quantity keeps its exact decimal on the line**: when a multi-meter cap scales a meter to a fractional quantity (e.g. 1.5 units), the usage line's `quantity_decimal` is the exact `1.5` (`GET /v1/invoices/{id}` and the PDF show `1.5`, not truncated `1`); `amount_cents` is unchanged.
+- [x] `usage_cap_units=5000`, `overage_action=block`, ingest 8000 → billed 5000. *(manual 2026-07-20: clock-pinned sub, 8000 ingested at simulated time, cycle close billed qty 5000 → 10000¢ @2¢/unit.)*
+- [x] A sub created with `overage_action=charge`, ingest 8000 → billed 8000. *(manual 2026-07-20: 16000¢ @2¢. Cap + overage action are CREATE-time settings — no update endpoint, the sub page shows them read-only — so the contrast is a second sub, not an in-place switch.)*
+- [x] **Fractional cap-scaled quantity keeps its exact decimal on the line**: when a multi-meter cap scales a meter to a fractional quantity (e.g. 1.5 units), the usage line's `quantity_decimal` is the exact `1.5` (`GET /v1/invoices/{id}` and the PDF show `1.5`, not truncated `1`); `amount_cents` is unchanged. *(manual 2026-07-20: cap 6 over meters 2+6 → factor 0.75 → lines 1.5 and 4.5 exact on API, dashboard Qty column, AND the rendered PDF; amounts 3¢ (1.5×2¢) and 4¢ (4.5×1¢ = 4.5¢, banker's — the ADR-045 sub-cent path observed live).)*
 
 ## FLOW B9: Customer price overrides
 
