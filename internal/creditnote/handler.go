@@ -171,6 +171,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	cns, err := h.svc.List(r.Context(), ListFilter{
 		TenantID:     tenantID,
 		InvoiceID:    r.URL.Query().Get("invoice_id"),
+		CustomerID:   r.URL.Query().Get("customer_id"),
 		Status:       r.URL.Query().Get("status"),
 		RefundStatus: r.URL.Query().Get("refund_status"),
 		Limit:        page.Limit,
