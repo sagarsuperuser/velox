@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -35,11 +36,22 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 
 			key, err := svc.ValidateKey(r.Context(), rawKey)
 			if err != nil {
-				// Generic message — never reveal whether a key
-				// exists, is expired, is revoked, or whether the
-				// lookup failed at the DB layer. Prevents both
-				// key-enumeration attacks and DB-error leakage.
-				// Full reason logged with request-ID. ADR-026.
+				if !errors.Is(err, ErrInvalidKey) {
+					// The store never reached a verdict (DB outage, timeout).
+					// A 401 here would tell integrators their key went bad
+					// mid-outage and start a pointless rotation; a fleet-wide
+					// 503 reveals nothing about any individual key, so the
+					// ADR-026 anti-enumeration stance holds (#560).
+					slog.ErrorContext(r.Context(), "api key validation unavailable",
+						"error", err)
+					respond.Error(w, r, http.StatusServiceUnavailable, "api_error",
+						"authentication_unavailable",
+						"authentication is temporarily unavailable — retry shortly")
+					return
+				}
+				// Generic message — never reveal whether a key exists, is
+				// expired, or is revoked. Prevents key enumeration. Full
+				// reason logged with request-ID. ADR-026.
 				slog.WarnContext(r.Context(), "api key validation failed",
 					"error", err)
 				respond.Unauthorized(w, r, "invalid or expired API key")

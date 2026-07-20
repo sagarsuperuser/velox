@@ -181,3 +181,26 @@ Pre-launch, none have evidence to justify the cost.
   ("Keys for idempotent requests…"). Brittle — Stripe SDK messages
   drift across versions, and we'd be inventing patterns rather than
   using the type system. Rejected.
+
+## Amendment (2026-07-20, #560): infra failures at the auth boundary are 503, not 401
+
+The original stance ("never reveal … whether the lookup failed at the DB
+layer") conflated two different secrets. Whether a *key* exists / is expired
+/ is revoked is key-shaped information — revealing it enables enumeration,
+so those verdicts stay behind the generic 401. Whether the *database is
+reachable* is server-health information: it is fleet-wide (every caller
+gets the same answer while the DB is down), already observable through
+latency and every other endpoint, and reveals nothing about any individual
+credential. Observed live 2026-07-20: with postgres down, every Bearer
+request returned `401 invalid or expired API key`, which tells integrators
+to rotate credentials during an outage — a lie about the key.
+
+`auth.ValidateKey` now returns the sentinel `auth.ErrInvalidKey` for every
+definitive rejection (format, unknown prefix, hash mismatch, expiry);
+anything else means the verdict never happened. All three auth middlewares
+(auth.Middleware, session.Middleware, session.MiddlewareOrAPIKey — including
+its cookie branch, which previously degraded an outage to "missing
+credentials" via fall-through) map non-verdict errors to
+`503 api_error/authentication_unavailable` with no upstream detail in the
+body. The sanitization boundary is unchanged: DB internals still never
+reach a response.

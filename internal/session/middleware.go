@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -26,6 +27,15 @@ func Middleware(svc *Service) func(http.Handler) http.Handler {
 			}
 			sess, err := svc.Resolve(r.Context(), c.Value)
 			if err != nil {
+				if !errors.Is(err, ErrNotFound) {
+					// Store failure, not a session verdict — surface as
+					// retryable 5xx rather than a credential lie (#560).
+					slog.ErrorContext(r.Context(), "session resolve unavailable", "error", err)
+					respond.Error(w, r, http.StatusServiceUnavailable, "api_error",
+						"authentication_unavailable",
+						"authentication is temporarily unavailable — retry shortly")
+					return
+				}
 				respond.Unauthorized(w, r, "invalid or expired session")
 				return
 			}
@@ -44,8 +54,19 @@ func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handle
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
-				if sess, err := sessSvc.Resolve(r.Context(), c.Value); err == nil {
+				sess, rerr := sessSvc.Resolve(r.Context(), c.Value)
+				if rerr == nil {
 					next.ServeHTTP(w, r.WithContext(applyToCtx(r.Context(), sess)))
+					return
+				}
+				if !errors.Is(rerr, ErrNotFound) {
+					// Store failure — no verdict on the cookie. Don't
+					// degrade to "missing credentials"; surface the
+					// outage as retryable (#560).
+					slog.ErrorContext(r.Context(), "session resolve unavailable", "error", rerr)
+					respond.Error(w, r, http.StatusServiceUnavailable, "api_error",
+						"authentication_unavailable",
+						"authentication is temporarily unavailable — retry shortly")
 					return
 				}
 				// Cookie present but invalid — fall through to API-key
@@ -60,8 +81,16 @@ func MiddlewareOrAPIKey(sessSvc *Service, keySvc *auth.Service) func(http.Handle
 			}
 			key, err := keySvc.ValidateKey(r.Context(), rawKey)
 			if err != nil {
-				// Generic — never reveal whether key exists/expired/
-				// revoked or whether a DB lookup failed. ADR-026.
+				if !errors.Is(err, auth.ErrInvalidKey) {
+					// Infra failure, not a credential verdict (#560).
+					slog.ErrorContext(r.Context(), "api key validation unavailable", "error", err)
+					respond.Error(w, r, http.StatusServiceUnavailable, "api_error",
+						"authentication_unavailable",
+						"authentication is temporarily unavailable — retry shortly")
+					return
+				}
+				// Generic — never reveal whether the key exists, is
+				// expired, or is revoked. ADR-026.
 				slog.WarnContext(r.Context(), "api key validation failed",
 					"error", err)
 				respond.Unauthorized(w, r, "invalid or expired API key")

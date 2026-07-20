@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -127,6 +128,16 @@ func (s *Service) CreateKey(ctx context.Context, tenantID string, input CreateKe
 	return CreateKeyResult{Key: key, RawKey: rawKey}, nil
 }
 
+// ErrInvalidKey marks a DEFINITIVE credential rejection — bad format, no
+// matching key, hash mismatch, or expiry. Middlewares map it (and only it)
+// to the generic 401. Any other ValidateKey error means the verdict never
+// happened (store/DB failure) and must surface as a retryable 5xx: during a
+// DB outage a 401 tells every integrator their key went bad and to start
+// rotating credentials, which is a lie about the key (#560). A fleet-wide
+// 503 reveals nothing about any individual key, so ADR-026's
+// anti-enumeration stance is preserved.
+var ErrInvalidKey = errors.New("invalid api key")
+
 // ValidateKey looks up a key by prefix, verifies hash, checks expiry.
 //
 // Accepts three prefix forms, in priority order:
@@ -164,36 +175,41 @@ func (s *Service) ValidateKey(ctx context.Context, rawKey string) (domain.APIKey
 		break
 	}
 	if fullPrefix == "" {
-		return domain.APIKey{}, fmt.Errorf("invalid key format")
+		return domain.APIKey{}, fmt.Errorf("invalid key format: %w", ErrInvalidKey)
 	}
 	_ = keyType // retained for future use (permission routing pre-lookup)
 
 	secretPart := strings.TrimPrefix(rawKey, fullPrefix)
 	if len(secretPart) < keyPrefixLen {
-		return domain.APIKey{}, fmt.Errorf("invalid key format")
+		return domain.APIKey{}, fmt.Errorf("invalid key format: %w", ErrInvalidKey)
 	}
 
 	dbPrefix := fullPrefix + secretPart[:keyPrefixLen]
 
 	key, err := s.store.GetByPrefix(ctx, dbPrefix)
 	if err != nil {
-		return domain.APIKey{}, fmt.Errorf("invalid api key")
+		if errors.Is(err, errs.ErrNotFound) {
+			return domain.APIKey{}, ErrInvalidKey
+		}
+		// The lookup never reached a verdict — this is an infrastructure
+		// failure, not a credential one. Callers surface it as 5xx.
+		return domain.APIKey{}, fmt.Errorf("api key lookup: %w", err)
 	}
 
 	// Verify hash using the stored salt
 	salt, err := hex.DecodeString(key.KeySalt)
 	if err != nil {
-		return domain.APIKey{}, fmt.Errorf("invalid api key")
+		return domain.APIKey{}, fmt.Errorf("undecodable key salt: %w", ErrInvalidKey)
 	}
 	hash := sha256.Sum256(append(salt, []byte(rawKey)...))
 	hashHex := hex.EncodeToString(hash[:])
 	if subtle.ConstantTimeCompare([]byte(hashHex), []byte(key.KeyHash)) != 1 {
-		return domain.APIKey{}, fmt.Errorf("invalid api key")
+		return domain.APIKey{}, ErrInvalidKey
 	}
 
 	// Check expiration
 	if key.ExpiresAt != nil && time.Now().UTC().After(*key.ExpiresAt) {
-		return domain.APIKey{}, fmt.Errorf("api key expired")
+		return domain.APIKey{}, fmt.Errorf("api key expired: %w", ErrInvalidKey)
 	}
 
 	// Touch last used (async, fire and forget)
