@@ -8,6 +8,7 @@ import { api, formatCents, formatDate, formatDateTime, getTenantTimezone, type S
 import { formatCivilDate, formatCivilPeriod, startOfDayInTZ } from '@/lib/dates'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { Combobox, type ComboboxOption } from '@/components/Combobox'
 import { TestClockBanner } from '@/components/TestClockBanner'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
@@ -34,10 +35,6 @@ import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select'
-
 import { Loader2, Plus, HelpCircle, History } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
@@ -1408,12 +1405,20 @@ export default function SubscriptionDetailPage() {
 }
 
 // planOptionLabel is the single source of truth for how a plan reads in a
-// picker — used for BOTH the dropdown option AND the Base UI `items` prop
-// that drives <SelectValue>. Base UI's Select renders the raw value in the
-// trigger unless `items` maps value→label, so any picker showing plan IDs
-// instead of names is missing this wiring.
+// picker. The code disambiguates same-named plans (two "Pro Monthly"s are
+// indistinguishable without it) and the billing timing is the one fact that
+// predicts whether a swap is even allowed, so both earn a place in the row.
 function planOptionLabel(p: Plan): string {
-  return `${p.name} — ${formatCents(p.base_amount_cents)}/${p.billing_interval}`
+  const timing = p.base_bill_timing === 'in_advance' ? 'billed in advance' : 'billed in arrears'
+  return `${p.name} (${p.code}) — ${formatCents(p.base_amount_cents)}/${p.billing_interval} · ${timing}`
+}
+
+// planComboboxOptions sorts by display name (code as tiebreak, so duplicate
+// names order stably) and carries the code as a search keyword.
+function planComboboxOptions(plans: Plan[]): ComboboxOption[] {
+  return [...plans]
+    .sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code))
+    .map(p => ({ value: p.id, label: planOptionLabel(p), keywords: [p.code, p.name] }))
 }
 
 // AddItemDialog picks a plan + quantity and POSTs to /subscriptions/:id/items.
@@ -1434,7 +1439,16 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
   // replay the original response, not add a second item's worth of charges.
   const [idemKey] = useState(() => crypto.randomUUID())
 
-  const availablePlans = plans.filter(p => p.status === 'active' && !existingPlanIDs.includes(p.id))
+  // Same-interval only: the backend's mixed-interval guard rejects adding a
+  // yearly item to a monthly sub (and vice versa), so those options are
+  // noise that can only end in an error toast. Timing may mix (hybrid
+  // advance-base + arrears-usage subs are supported).
+  const currentInterval = plans.find(p => subscription.items.some(i => i.plan_id === p.id))?.billing_interval
+  const candidatePlans = plans.filter(p => p.status === 'active' && !existingPlanIDs.includes(p.id))
+  const availablePlans = currentInterval
+    ? candidatePlans.filter(p => p.billing_interval === currentInterval)
+    : candidatePlans
+  const hiddenCount = candidatePlans.length - availablePlans.length
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1467,26 +1481,20 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div className="space-y-2">
             <Label>Plan</Label>
-            <Select
-              items={availablePlans.map(p => ({ value: p.id, label: planOptionLabel(p) }))}
+            <Combobox
               value={selectedPlan}
-              onValueChange={(v) => setSelectedPlan(v ?? '')}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a plan..." />
-              </SelectTrigger>
-              <SelectContent>
-                {availablePlans.length === 0 ? (
-                  <div className="px-2 py-2 text-sm text-muted-foreground">
-                    No plans available — all active plans are already on this subscription.
-                  </div>
-                ) : availablePlans.map(p => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {planOptionLabel(p)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onChange={setSelectedPlan}
+              options={planComboboxOptions(availablePlans)}
+              placeholder="Select a plan..."
+              emptyMessage="No plans available — all matching active plans are already on this subscription."
+              triggerClassName="w-full"
+            />
+            {hiddenCount > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {hiddenCount} plan{hiddenCount === 1 ? '' : 's'} on a different billing interval
+                {hiddenCount === 1 ? ' is' : ' are'} not shown — a subscription bills on one interval.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -1535,11 +1543,18 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
 
   // Candidates: active plans that aren't the current item's plan and that
   // aren't already attached to another item on this subscription (the backend
-  // rejects the duplicate with 409).
-  const availablePlans = plans.filter(
+  // rejects the duplicate with 409). Bill-timing must match the current plan
+  // — the backend 422s advance↔arrears swaps (Zuora-shape rejection; the
+  // operator path is cancel + recreate) — so cross-timing options are noise.
+  // Cross-INTERVAL swaps (monthly ↔ yearly) stay: those are supported.
+  const currentPlan = plans.find(p => p.id === item.plan_id)
+  const candidatePlans = plans.filter(
     p => p.status === 'active' && p.id !== item.plan_id && !existingPlanIDs.includes(p.id),
   )
-  const currentPlan = plans.find(p => p.id === item.plan_id)
+  const availablePlans = currentPlan
+    ? candidatePlans.filter(p => p.base_bill_timing === currentPlan.base_bill_timing)
+    : candidatePlans
+  const hiddenCount = candidatePlans.length - availablePlans.length
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1574,24 +1589,22 @@ function ChangeItemPlanDialog({ subscriptionID, item, plans, existingPlanIDs, on
 
           <div className="space-y-2">
             <Label>New Plan</Label>
-            <Select
-              items={availablePlans.map(p => ({ value: p.id, label: planOptionLabel(p) }))}
+            <Combobox
               value={selectedPlan}
-              onValueChange={(v) => setSelectedPlan(v ?? '')}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a plan..." />
-              </SelectTrigger>
-              <SelectContent>
-                {availablePlans.length === 0 ? (
-                  <div className="px-2 py-2 text-sm text-muted-foreground">No other plans available</div>
-                ) : availablePlans.map(p => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {planOptionLabel(p)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onChange={setSelectedPlan}
+              options={planComboboxOptions(availablePlans)}
+              placeholder="Select a plan..."
+              emptyMessage="No other plans available"
+              triggerClassName="w-full"
+            />
+            {hiddenCount > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {hiddenCount} plan{hiddenCount === 1 ? '' : 's'} with a different billing timing
+                {hiddenCount === 1 ? ' is' : ' are'} not shown — a plan swap keeps its billing timing.
+                To move to {currentPlan?.base_bill_timing === 'in_advance' ? 'arrears' : 'advance'} billing,
+                cancel and create a new subscription.
+              </p>
+            )}
           </div>
 
           <label className="flex items-start gap-2 text-sm cursor-pointer">
