@@ -14,6 +14,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { MarginCard } from '@/components/MarginCard'
 import { Layout } from '@/components/Layout'
 import { SendSetupLinkDialog } from '@/components/SendSetupLinkDialog'
+import { PriceOverridesCard } from '@/components/PriceOverridesCard'
 import { CostDashboard } from '@/components/CostDashboard'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { TestClockBanner } from '@/components/TestClockBanner'
@@ -962,6 +963,14 @@ export default function CustomerDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Price overrides — negotiated per-customer prices (ADR-070). The
+          card is the deal's only operator-visible home: without it an
+          override exists purely as unexplained math on the usage card
+          and the invoice. */}
+      <div className="mt-6">
+        <PriceOverridesCard customerId={id!} />
+      </div>
 
       <SendSetupLinkDialog
         open={setupLinkDialogOpen}
