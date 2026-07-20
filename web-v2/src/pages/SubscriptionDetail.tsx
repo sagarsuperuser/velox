@@ -1443,7 +1443,7 @@ function AddItemDialog({ subscription, plans, existingPlanIDs, onClose, onAdded 
   // yearly item to a monthly sub (and vice versa), so those options are
   // noise that can only end in an error toast. Timing may mix (hybrid
   // advance-base + arrears-usage subs are supported).
-  const currentInterval = plans.find(p => subscription.items.some(i => i.plan_id === p.id))?.billing_interval
+  const currentInterval = plans.find(p => (subscription.items ?? []).some(i => i.plan_id === p.id))?.billing_interval
   const candidatePlans = plans.filter(p => p.status === 'active' && !existingPlanIDs.includes(p.id))
   const availablePlans = currentInterval
     ? candidatePlans.filter(p => p.billing_interval === currentInterval)
