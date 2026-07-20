@@ -423,6 +423,11 @@ func (s *PostgresStore) List(ctx context.Context, filter ListFilter) ([]domain.C
 		args = append(args, filter.InvoiceID)
 		idx++
 	}
+	if filter.CustomerID != "" {
+		clauses = append(clauses, fmt.Sprintf("customer_id = $%d", idx))
+		args = append(args, filter.CustomerID)
+		idx++
+	}
 	if filter.Status != "" {
 		clauses = append(clauses, fmt.Sprintf("status = $%d", idx))
 		args = append(args, filter.Status)
