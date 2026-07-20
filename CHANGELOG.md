@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Price overrides now have a dashboard home (2026-07-20, found by the FLOW B9 walkthrough).** Negotiated per-customer prices were API-only — a deal existed in the dashboard purely as unexplained math on the usage card and the invoice, and `price-overrides` was the last API surface with no UI. The customer page now carries a "Price overrides" card: each deal shown next to the current list price (the contrast tracks the latest published version automatically), a create dialog with a searchable rule picker (options show their list price), flat/graduated/package modes with a tier editor, and end-override confirmation. Create and end both state the ADR-070 rule in bold: changes take effect from the customer's next billing period — the period in progress keeps the price it started with.
+
 ### Changed
 
 - **The subscription plan pickers are now searchable, sorted, and honest about compatibility (2026-07-20, FLOW B7 walkthrough).** Change-Plan and Add-Item picked from an unsorted dropdown that showed duplicate display names with nothing to tell them apart and happily offered plans the server would reject after submit. Both dialogs now use the searchable combobox (same primitive as the customer picker), sorted by name, each row carrying the plan code and its billing timing ("billed in advance/arrears"). Change-Plan pre-filters cross-bill-timing plans and Add-Item pre-filters cross-interval plans — each with a visible "N plans not shown" note explaining why, instead of an error toast after the fact. The invoice actions overflow button also gained its missing accessible name.

@@ -188,6 +188,18 @@ export const api = {
   createRatingRule: (data: { rule_key: string; name: string; mode: string; currency: string; flat_amount_cents?: string; graduated_tiers?: { up_to: number; unit_amount_cents: string }[]; package_size?: number; package_amount_cents?: number }) =>
     apiRequest<RatingRule>('POST', '/rating-rules', data),
 
+  // Price overrides (ADR-070): negotiated per-customer prices, keyed by
+  // rule_key so they survive version publishes. Create is an upsert — a
+  // second override on the same (customer, rule) replaces the first from
+  // the customer's next billing period. All rate changes (create, replace,
+  // delete) take effect at the next period open, never mid-period.
+  listPriceOverrides: (customerId?: string) =>
+    apiRequest<{ data: PriceOverride[] }>('GET', `/price-overrides${customerId ? `?customer_id=${customerId}` : ''}`),
+  createPriceOverride: (data: { customer_id: string; rating_rule_version_id: string; mode: string; flat_amount_cents?: string; graduated_tiers?: { up_to: number; unit_amount_cents: string }[]; package_size?: number; package_amount_cents?: number; reason?: string }) =>
+    apiRequest<PriceOverride>('POST', '/price-overrides', data),
+  deletePriceOverride: (id: string) =>
+    apiRequest<void>('DELETE', `/price-overrides/${id}`),
+
   // Invoices
   listInvoices: (params?: string) =>
     apiRequest<{ data: Invoice[]; total: number }>('GET', `/invoices${params ? '?' + params : ''}`),
@@ -1115,6 +1127,24 @@ export interface Plan {
   created_at: string
 }
 
+// A negotiated per-customer price (ADR-070). rule_key is the identity —
+// the deal follows the rule across version publishes; rating_rule_version_id
+// only records which version the operator was looking at (provenance).
+export interface PriceOverride {
+  id: string
+  rule_key: string
+  customer_id: string
+  rating_rule_version_id: string
+  mode: string
+  flat_amount_cents: string
+  graduated_tiers?: { up_to: number; unit_amount_cents: string }[]
+  package_size: number
+  package_amount_cents: number
+  reason?: string
+  active: boolean
+  created_at: string
+}
+
 export interface RatingRule {
   id: string
   rule_key: string
@@ -1815,6 +1845,28 @@ export function formatTaxRate(rate: number): string {
 // of the rate survives; we keep a minimum of 2 fractional digits and never
 // round a nonzero rate down to "$0.00". Invoice line amounts and totals stay
 // whole cents (formatCents).
+// dollarsToRateCents converts an operator-entered dollar amount into decimal
+// cents as a string, preserving sub-cent precision (e.g. "0.000003" dollars →
+// "0.0003" cents). Per-unit rates can be fractions of a cent, so we must not
+// round to whole cents. We shift the decimal point two places right via string
+// math rather than multiplying by 100 in floating point, which would introduce
+// artifacts like 0.000003 * 100 = 0.00030000000000000003.
+export function dollarsToRateCents(input: string): string {
+  const raw = (input || '0').trim()
+  const m = /^(-?)(\d*)(?:\.(\d*))?$/.exec(raw)
+  if (!m) return '0'
+  const sign = m[1]
+  let intPart = m[2] || '0'
+  let frac = m[3] || ''
+  // Shift two places right: borrow up to two digits from the fraction.
+  intPart += frac.slice(0, 2).padEnd(2, '0')
+  frac = frac.slice(2)
+  intPart = intPart.replace(/^0+(?=\d)/, '')
+  let out = frac ? `${intPart}.${frac}` : intPart
+  out = out.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')
+  return out === '0' || out === '' ? '0' : `${sign}${out}`
+}
+
 export function formatRate(cents: string | number, currency?: string): string {
   const symbol = getCurrencySymbol(currency)
   let s = (typeof cents === 'number' ? String(cents) : cents).trim()
