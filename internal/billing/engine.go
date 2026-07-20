@@ -1480,6 +1480,16 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		onFailure = tax.OnFailureBlock
 	}
 
+	// Providers must never see a negative line (Stripe Tax 400s it; manual
+	// clamps it and corrupts the per-line split). The retry family reaches
+	// here with STORED lines, which for an ADR-048 split proration invoice
+	// include the negative credit line — collapse restores the same net-line
+	// shape the create path sent (#556). No-op when no line is negative.
+	reqLines, lineGroups, err := collapseTaxRequestLines(lineItems, ts.DefaultProductTaxCode)
+	if err != nil {
+		return TaxApplication{}, err
+	}
+
 	req := tax.Request{
 		Currency: currency,
 		CustomerAddress: tax.Address{
@@ -1498,15 +1508,7 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 		DiscountCents:        discount,
 		DefaultTaxCode:       ts.DefaultProductTaxCode,
 		OnFailure:            onFailure,
-		LineItems:            make([]tax.RequestLine, len(lineItems)),
-	}
-	for i, li := range lineItems {
-		req.LineItems[i] = tax.RequestLine{
-			Ref:         fmt.Sprintf("line_%d", i),
-			AmountCents: li.AmountCents,
-			Quantity:    li.Quantity,
-			TaxCode:     li.TaxCode,
-		}
+		LineItems:            reqLines,
 	}
 
 	res, err := provider.Calculate(ctx, req)
@@ -1567,15 +1569,22 @@ func (e *Engine) ApplyTaxToLineItems(ctx context.Context, tenantID, customerID, 
 	app.TaxReverseCharge = res.ReverseCharge
 	app.TaxExemptReason = res.ExemptReason
 
-	// Apply per-line results. Index-aligned with lineItems because the
-	// Request was built in the same order; Result.Lines[i] corresponds to
-	// lineItems[i].
+	// Apply per-line results. expandTaxResultLines returns one entry per
+	// original line item (collapsed groups re-partitioned by the ADR-048
+	// split rule); with no negative lines it is the provider's positional
+	// result unchanged. An empty Ref marks a line the provider never
+	// produced — leave that line item untouched, as the positional loop
+	// always has.
+	expanded := expandTaxResultLines(res.Lines, lineGroups, lineItems)
 	var netSubtotalSum int64
 	for i := range lineItems {
-		if i >= len(res.Lines) {
+		if i >= len(expanded) {
 			break
 		}
-		rl := res.Lines[i]
+		rl := expanded[i]
+		if rl.Ref == "" {
+			continue
+		}
 		net := rl.NetAmountCents
 		if net == 0 {
 			net = lineItems[i].AmountCents
