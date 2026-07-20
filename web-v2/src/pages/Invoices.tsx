@@ -585,7 +585,10 @@ export default function InvoicesPage() {
 // AttentionDot is the list-row signal that an invoice needs operator
 // attention. Severity-tinted disc, title attribute carries the typed
 // reason + message — hover surfaces the diagnosis without leaving the
-// list. Renders nothing when invoice.attention is absent.
+// list. The accessible name stays SHORT: the full remediation paragraph
+// in aria-label made every row's accessible name a ~400-char read
+// (screen readers announce it per row; the full diagnosis lives on the
+// invoice page banner). Renders nothing when invoice.attention is absent.
 function AttentionDot({ attention }: { attention: Invoice['attention'] }) {
   if (!attention) return null
   const color =
@@ -594,12 +597,11 @@ function AttentionDot({ attention }: { attention: Invoice['attention'] }) {
       : attention.severity === 'warning'
         ? 'bg-amber-500'
         : 'bg-blue-500'
-  const title = `${attention.reason} — ${attention.message}`
   return (
     <span
       className={cn('inline-block w-1.5 h-1.5 rounded-full shrink-0', color)}
-      title={title}
-      aria-label={title}
+      title={`${attention.reason} — ${attention.message}`}
+      aria-label={`Needs attention: ${attention.reason.replace(/_/g, ' ')}`}
     />
   )
 }
