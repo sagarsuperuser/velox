@@ -11,6 +11,10 @@ frozen; breaking changes land on MINOR until `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The subscription plan pickers are now searchable, sorted, and honest about compatibility (2026-07-20, FLOW B7 walkthrough).** Change-Plan and Add-Item picked from an unsorted dropdown that showed duplicate display names with nothing to tell them apart and happily offered plans the server would reject after submit. Both dialogs now use the searchable combobox (same primitive as the customer picker), sorted by name, each row carrying the plan code and its billing timing ("billed in advance/arrears"). Change-Plan pre-filters cross-bill-timing plans and Add-Item pre-filters cross-interval plans — each with a visible "N plans not shown" note explaining why, instead of an error toast after the fact. The invoice actions overflow button also gained its missing accessible name.
+
 ### Fixed
 
 - **`auto_charge_pending` is retired on every terminal invoice transition (2026-07-20, FLOW B4 residual).** Only the auto-charge success path cleared the flag; an offline-paid, operator-collected, voided, or uncollectible invoice kept answering `auto_charge_pending: true` in the API — operationally inert (every charge predicate gates on finalized+pending) but a lie about work that no longer exists. The clear now lives at the store choke points (`markPaidReportingTransition`, where every MarkPaid variant converges; the void/uncollectible status flipper; `UpdatePayment` on success), so all settle variants inherit it. A failed payment deliberately keeps the flag — the invoice is still on the charge track.

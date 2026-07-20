@@ -617,7 +617,7 @@ export default function InvoiceDetailPage() {
               The menu always renders (even on draft where most rows
               are hidden) so the trigger position stays stable. */}
           <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={acting} />}>
+            <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={acting} aria-label="More invoice actions" />}>
               <MoreHorizontal size={16} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
