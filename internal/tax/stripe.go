@@ -460,15 +460,24 @@ func (p *StripeTaxProvider) mapResult(calc *stripe.TaxCalculation, req Request) 
 				// jurisdiction) needs no legend at all. Treated as an opaque
 				// string — Stripe may add new reasons over time.
 				lines[idx].TaxabilityReason = string(bd.TaxabilityReason)
-			} else if docRate > 0 && sli.AmountTax != 0 {
-				// Per-line breakdown absent (see docRate note above): seed this
-				// taxed line from the single document-level rate so Stripe's
-				// verbatim percentage_decimal + jurisdiction are preserved
-				// instead of the rounded effectiveRate / empty jurisdiction.
-				lines[idx].TaxRate = docRate
-				if docJuris != "" {
-					lines[idx].Jurisdiction = docJuris
+			} else {
+				if docRate > 0 && sli.AmountTax != 0 {
+					// Per-line breakdown absent (see docRate note above): seed this
+					// taxed line from the single document-level rate so Stripe's
+					// verbatim percentage_decimal + jurisdiction are preserved
+					// instead of the rounded effectiveRate / empty jurisdiction.
+					lines[idx].TaxRate = docRate
+					if docJuris != "" {
+						lines[idx].Jurisdiction = docJuris
+					}
 				}
+				// The reason copies INDEPENDENT of the taxed-line gate above:
+				// zero-tax reasons (not_collecting, zero-rated) carry rate 0 and
+				// amount_tax 0 by definition, so gating them on docRate>0 &&
+				// AmountTax!=0 meant the one class the field exists to
+				// disambiguate never round-tripped (found live: a GB customer on
+				// an unregistered account returned doc-level not_collecting but
+				// the line's tax_reason stayed empty — FLOW B10 leg 10).
 				if docReason != "" {
 					lines[idx].TaxabilityReason = docReason
 				}

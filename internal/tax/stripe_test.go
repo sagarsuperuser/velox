@@ -224,3 +224,51 @@ func TestMapResult_PerLineBreakdownWins(t *testing.T) {
 		t.Errorf("line TaxRate = %v, want 7.25 (per-line breakdown must win over document-level 6.0)", l.TaxRate)
 	}
 }
+
+// TestMapResult_NotCollecting_DocLevelReasonReachesZeroTaxLine is the FLOW
+// B10 leg-10 regression, found against LIVE Stripe: an account with no
+// registration in the customer's jurisdiction returns taxability_reason
+// "not_collecting" ONLY in the document-level tax_breakdown (per-line
+// breakdown null, amount_tax 0, rate 0). The old fallback gated the reason
+// copy on docRate>0 && AmountTax!=0 — the one class the field exists to
+// disambiguate (zero-tax outcomes) never round-tripped onto the line.
+func TestMapResult_NotCollecting_DocLevelReasonReachesZeroTaxLine(t *testing.T) {
+	req := Request{
+		LineItems: []RequestLine{{Ref: "line_0", AmountCents: 10000, Quantity: 1}},
+	}
+	calc := &stripe.TaxCalculation{
+		ID:                 "taxcalc_gb_nc",
+		TaxAmountExclusive: 0,
+		TaxBreakdown: []*stripe.TaxCalculationTaxBreakdown{{
+			Amount:           0,
+			TaxableAmount:    10000,
+			TaxabilityReason: stripe.TaxCalculationTaxBreakdownTaxabilityReason("not_collecting"),
+			TaxRateDetails: &stripe.TaxCalculationTaxBreakdownTaxRateDetails{
+				Country:           "GB",
+				TaxType:           stripe.TaxCalculationTaxBreakdownTaxRateDetailsTaxType("vat"),
+				PercentageDecimal: "0.0",
+			},
+		}},
+		LineItems: &stripe.TaxCalculationLineItemList{
+			Data: []*stripe.TaxCalculationLineItem{{
+				Reference:    "line_0",
+				Amount:       10000,
+				AmountTax:    0,
+				TaxBreakdown: nil, // live Stripe shape: per-line breakdown absent
+			}},
+		},
+	}
+
+	p := &StripeTaxProvider{}
+	res, err := p.mapResult(calc, req)
+	if err != nil {
+		t.Fatalf("mapResult: unexpected error: %v", err)
+	}
+	if got := res.Lines[0].TaxabilityReason; got != "not_collecting" {
+		t.Errorf("line TaxabilityReason = %q, want %q (doc-level zero-tax reason must reach the line)", got, "not_collecting")
+	}
+	if res.Lines[0].TaxRate != 0 || res.Lines[0].TaxAmountCents != 0 {
+		t.Errorf("zero-tax line must stay rate 0 / tax 0, got rate=%v tax=%d",
+			res.Lines[0].TaxRate, res.Lines[0].TaxAmountCents)
+	}
+}
