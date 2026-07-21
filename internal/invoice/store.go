@@ -68,7 +68,6 @@ type Store interface {
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 
-
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 	// SetNoPMNotifiedAt stamps the send-once marker for the no-PM setup-link
 	// email (checked by the auto-charge sweep; stamped by whichever sender
