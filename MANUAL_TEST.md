@@ -804,11 +804,11 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 ## FLOW B11: Tax-ID validation
 
-- [ ] `in_gst` + `27AAEPM1234C1Z5` → accepted. Legacy `gstin` → normalized to `in_gst` on write.
-- [ ] `eu_vat` + `DE123456789`, `au_abn` + `51824753556` → accepted.
-- [ ] Unknown Stripe code (`za_vat`, `br_cnpj`) → accepted as-is.
-- [ ] Malformed `in_gst` / `eu_vat` / `au_abn` → 422 with format-specific message.
-- [ ] Empty `tax_id` → always accepted.
+- [x] `in_gst` + `27AAEPM1234C1Z5` → accepted. Legacy `gstin` → normalized to `in_gst` on write. *(manual 2026-07-20: response echoes `tax_id_type=in_gst` for both spellings.)*
+- [x] `eu_vat` + `DE123456789`, `au_abn` + `51824753556` → accepted. *(manual 2026-07-20.)*
+- [x] Unknown Stripe code (`za_vat`, `br_cnpj`) → accepted as-is. *(manual 2026-07-20: both stored verbatim, `br_cnpj` punctuation preserved.)*
+- [x] Malformed (wrong SHAPE) `in_gst` / `eu_vat` / `au_abn` → 422 with format-specific message. Validation is deliberately format-only: a shape-valid ABN with a bad checksum (`11111111111`) is accepted — checksum/VIES upgrades are deferred in-code with named triggers (paying customer under a live registration). *(manual 2026-07-20: verbatim "invalid GSTIN format: expected 15-char code like 27AAEPM1234C1Z5", "invalid EU VAT format: expected 2-letter country prefix + alphanumerics", "invalid ABN format: expected 11 digits".)*
+- [x] Empty `tax_id` → always accepted. *(manual 2026-07-20.)*
 
 ## FLOW B12: Subscription activity timeline
 
