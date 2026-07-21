@@ -390,8 +390,12 @@ coherence; the lanes make the boundary visible instead.
   Wall-clock is demoted to a muted provenance subline:
   `Recorded <wall> · by <actor>`. The raw test-clock ID leaves the
   visible copy (operator jargon; the page header already links the
-  clock) and lives on in the chip tooltip with full dual-stamp
-  provenance.
+  clock). *(The per-row chip this clause originally kept — with the
+  dual-stamp tooltip — was removed 2026-07-21 by ADR-099's
+  once-per-scope rule: the page banner is the sole simulation flag on
+  a detail page, and the row's own two timestamps carry the
+  provenance. The sim-primary / wall-subline rendering rule of this
+  amendment is unchanged and reaffirmed by ADR-099.)*
 - **Forensic surfaces** (the Audit Log page): wall-primary, unchanged —
   that page answers "what happened when in the real world", and the
   clock ID is legitimate forensic detail there.
