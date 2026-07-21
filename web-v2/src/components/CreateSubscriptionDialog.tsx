@@ -130,8 +130,10 @@ export function CreateSubscriptionDialog({
       // subscription with no card on file will try to auto-charge a
       // card that isn't there. Non-blocking — the sub IS created (we
       // never gate creation on a card, matching every reference
-      // platform). Only when it started; a trial/scheduled sub isn't
-      // charging yet.
+      // platform). Gated on start_now: a scheduled sub isn't billing
+      // yet. A started trial still gets the nudge — the card is due
+      // before trial end, and the customer/subscription pages warn on
+      // trialing subs for the same reason.
       if (vars.start_now) {
         void api.listCustomerPaymentMethods(created.customer_id)
           .then(res => {
