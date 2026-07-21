@@ -327,15 +327,22 @@ type paymentSetupLinkContext struct {
 // internally with optional invoice context.
 func renderPaymentSetupLinkHTML(ctx paymentSetupLinkContext) (subject, contentHTML, ctaURL, ctaLabel string) {
 	hasInvoice := ctx.InvoiceNumber != ""
+	// Invoice context means the NO-PAYMENT-METHOD path (finalize-time or
+	// operator resend) — never a decline. Real declines are emailed by the
+	// dunning templates and link to the hosted invoice, not here. The
+	// previous copy ("We couldn't process payment… update your card")
+	// asserted a decline to customers who were never charged and had no
+	// card to update — born-false for 100% of this template's audience
+	// (2026-07-22 payment-surfacing audit, P1-2).
 	if hasInvoice {
-		subject = "Action required — update payment for invoice " + ctx.InvoiceNumber
+		subject = "Set up payment for invoice " + ctx.InvoiceNumber
 	} else {
 		subject = "Add a payment method"
 	}
 	var b strings.Builder
 	heading := "Add a payment method"
 	if hasInvoice {
-		heading = "Update your payment method"
+		heading = "Set up your payment method"
 	}
 	b.WriteString(`<h1 style="margin:0 0 12px;font-size:20px;color:#111827;">` + escape(heading) + `</h1>`)
 	b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Hi ` + escape(ctx.CustomerName) + `,</p>`)
@@ -346,18 +353,14 @@ func renderPaymentSetupLinkHTML(ctx paymentSetupLinkContext) (subject, contentHT
 		// the template shouldn't try to autocompose.
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">` + escape(ctx.OperatorNote) + `</p>`)
 	case hasInvoice:
-		b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">We couldn't process payment for invoice <strong style="color:#111827;">` + escape(ctx.InvoiceNumber) + `</strong> (<strong style="color:#111827;">` + escape(ctx.AmountDueLabel) + `</strong>).</p>`)
-		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Use the secure link below to add or replace your payment method.</p>`)
+		b.WriteString(`<p style="margin:0 0 8px;color:#4b5563;">Invoice <strong style="color:#111827;">` + escape(ctx.InvoiceNumber) + `</strong> (<strong style="color:#111827;">` + escape(ctx.AmountDueLabel) + `</strong>) is ready.</p>`)
+		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Add a payment method with the secure link below and we'll collect it automatically — your card details go directly to our payment processor and never touch our servers.</p>`)
 	default:
 		b.WriteString(`<p style="margin:0 0 16px;color:#4b5563;">Please add a payment method on file so we can process your billing. Use the secure link below — your card details go directly to our payment processor and never touch our servers.</p>`)
 	}
 	b.WriteString(`<p style="margin:0 0 16px;color:#6b7280;font-size:13px;">The link expires in 24 hours and can only be used once.</p>`)
 	ctaURL = ctx.SetupURL
-	if hasInvoice {
-		ctaLabel = "Update payment method"
-	} else {
-		ctaLabel = "Add payment method"
-	}
+	ctaLabel = "Add payment method"
 	return subject, b.String(), ctaURL, ctaLabel
 }
 

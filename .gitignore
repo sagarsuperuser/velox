@@ -13,3 +13,4 @@ MANUAL_TEST_BUGS.md
 
 # Local agent worktrees + settings (Claude Code)
 .claude/
+.playwright-mcp/

@@ -709,7 +709,18 @@ func (s *Service) processRun(ctx context.Context, tenantID string, run domain.In
 	// though the dunning state was correctly transitioned. The SMTP send
 	// remains async via the email outbox dispatcher worker.
 	if run.AttemptCount < policy.MaxRetryAttempts && s.emailNotifier != nil && s.customerEmail != nil {
-		s.enqueueDunningWarning(ctx, tenantID, run, policy, retryErr.Error())
+		// The failure reason renders INSIDE the customer email. A no-PM
+		// retry failure is internal phrasing ("no payment method for
+		// customer") — map it to empty so the warning renders without the
+		// diagnostic callout instead of leaking system-perspective copy
+		// into a customer inbox (2026-07-22 payment-surfacing audit,
+		// P2-3). Real decline reasons (insufficient_funds, lost_card)
+		// pass through — the customer can act on those.
+		reason := retryErr.Error()
+		if errors.Is(retryErr, domain.ErrNoPaymentMethodOnRetry) {
+			reason = ""
+		}
+		s.enqueueDunningWarning(ctx, tenantID, run, policy, reason)
 	}
 
 	// Check if exhausted after this attempt. Pass the simulated instant

@@ -15,6 +15,7 @@ import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { effectiveNow } from '@/lib/effectiveNow'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant } from '@/lib/status'
+import { subscriptionWillAutoCharge, hasUsableCard } from '@/lib/paymentReadiness'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -35,7 +36,7 @@ import { TypedConfirmDialog } from '@/components/TypedConfirmDialog'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { Loader2, Plus, HelpCircle, History } from 'lucide-react'
+import { Loader2, Plus, HelpCircle, History, AlertTriangle } from 'lucide-react'
 import { CopyButton } from '@/components/CopyButton'
 import { DetailBreadcrumb } from '@/components/DetailBreadcrumb'
 import { DetailSkeleton } from '@/components/ui/DetailSkeleton'
@@ -89,6 +90,18 @@ export default function SubscriptionDetailPage() {
     queryFn: () => api.getCustomer(sub!.customer_id),
     enabled: !!sub?.customer_id,
   })
+
+  // Shift-left no-card warning (2026-07-22 audit, P1-5): fetch the
+  // customer's payment methods only when this subscription actually
+  // auto-charges — a paused/terminal sub won't, so no query and no
+  // warning. One existing call, no new endpoint.
+  const subAutoCharges = !!sub && subscriptionWillAutoCharge(sub)
+  const { data: subCustomerPMs } = useQuery({
+    queryKey: ['customer-payment-methods', sub?.customer_id],
+    queryFn: () => api.listCustomerPaymentMethods(sub!.customer_id),
+    enabled: !!sub?.customer_id && subAutoCharges,
+  })
+  const subNeedsCard = subAutoCharges && !!subCustomerPMs && !hasUsableCard(subCustomerPMs.data ?? [])
 
   const { data: plansData } = useQuery({
     queryKey: ['plans'],
@@ -390,6 +403,30 @@ export default function SubscriptionDetailPage() {
           banner is the explainer. */}
       {sub.test_clock_id && (
         <TestClockBanner testClockId={sub.test_clock_id} />
+      )}
+
+      {/* No card on file — this subscription bills automatically. Fires
+          before the first invoice (the reactive no-payment-method invoice
+          banner takes over after finalize). */}
+      {subNeedsCard && (
+        <div className="mb-6 rounded-md border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle size={16} className="text-amber-500 mt-0.5 shrink-0" />
+              <div className="text-sm text-amber-900 dark:text-amber-300">
+                <span className="font-medium">No card on file</span>
+                <p className="text-xs text-amber-800/90 dark:text-amber-400/90 mt-0.5">
+                  This subscription bills automatically, but the customer has no payment method saved. Add one before the next renewal so the charge goes through.
+                </p>
+              </div>
+            </div>
+            {sub.customer_id && (
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => navigate(`/customers/${sub.customer_id}`)}>
+                Add payment method
+              </Button>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Scheduled cancellation banner. Surfaces both modes (at_period_end

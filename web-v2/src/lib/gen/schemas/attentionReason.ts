@@ -16,7 +16,9 @@ successor. See `Attention.code` for the open, provider-specific
 sub-code. `payment_anomaly` (ADR-068) reports money that does
 not reconcile — double charge, captured-vs-booked amount
 mismatch, or a payment on a voided invoice — and is surfaced
-even on paid/voided invoices.
+even on paid/voided invoices. `dunning_exhausted` reports a
+no-payment-method invoice whose automatic recovery has ended
+without collecting (2026-07-22).
 
  */
 export type AttentionReason = typeof AttentionReason[keyof typeof AttentionReason];
@@ -32,4 +34,5 @@ export const AttentionReason = {
   payment_scheduled: 'payment_scheduled',
   awaiting_payment: 'awaiting_payment',
   no_payment_method: 'no_payment_method',
+  dunning_exhausted: 'dunning_exhausted',
 } as const;

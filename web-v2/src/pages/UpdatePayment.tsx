@@ -125,7 +125,7 @@ export default function UpdatePaymentPage() {
             </h1>
           )}
           <p className="text-sm text-muted-foreground mt-1">
-            {data?.branding?.company_name ? 'Secure payment update' : 'Update your payment method'}
+            {data?.branding?.company_name ? 'Secure payment setup' : 'Add a payment method'}
           </p>
         </div>
 
@@ -152,9 +152,9 @@ export default function UpdatePaymentPage() {
                   <div className="flex items-start gap-3">
                     <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
                     <div>
-                      <p className="text-sm font-medium text-amber-800 dark:text-amber-400">Payment method update required</p>
+                      <p className="text-sm font-medium text-amber-800 dark:text-amber-400">Payment method needed</p>
                       <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
-                        We were unable to process your payment. Please update your card to avoid service interruption.
+                        Add a payment method to pay this invoice — it takes a minute, and future invoices will be collected automatically.
                       </p>
                     </div>
                   </div>
@@ -189,7 +189,7 @@ export default function UpdatePaymentPage() {
                     ) : (
                       <>
                         <CreditCard size={16} className="mr-2" />
-                        Update Payment Method
+                        Add payment method
                         <ExternalLink size={14} className="ml-2 opacity-50" />
                       </>
                     )}

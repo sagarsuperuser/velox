@@ -43,7 +43,7 @@ const (
 //	finalization_failed         — non-tax finalization error
 //	payment_action_required     — 3DS / SCA pending
 //	payment_method_required     — no PM on file
-//	dunning_exhausted           — Chargebee parity, post-dunning
+//	dunning_exhausted           — shipped 2026-07-22 (payment-surfacing audit)
 //	dispute_lost                — Lago parity
 type AttentionReason string
 
@@ -109,15 +109,31 @@ const (
 	AttentionReasonAwaitingPayment AttentionReason = "awaiting_payment"
 
 	// AttentionReasonNoPaymentMethod: invoice is finalized and unpaid,
-	// and the customer has no PaymentSetup ready. The engine's auto-
-	// charge path silently skips when no PM is attached — there is NO
-	// retry, NO sweep that will eventually pick this up. The operator
-	// is the only mechanism that moves this invoice forward (add a PM
-	// and Charge now, or send the invoice link for self-pay). Surfaces
-	// distinct from awaiting_payment because the action is concrete:
-	// "Add payment method", not "Wait and see". Mirrors Stripe's
-	// `customer.invoice.requires_payment_method` flow.
+	// and the customer has no PaymentSetup ready. The invoice IS queued
+	// (auto_charge_pending) — the sweep re-resolves the payment setup
+	// every tick and collects the moment a card attaches (charge-on-
+	// attach), and dunning enrollment ages it out. What automation
+	// CANNOT do is conjure the card: a card-less retry counts an
+	// attempt and reminds, it never collects — so the operator (or the
+	// customer, via the emailed setup link) is still the mover that
+	// unblocks it. Surfaces distinct from awaiting_payment because the
+	// action is concrete: "Add payment method", not "Wait and see".
+	// Mirrors Stripe's `customer.invoice.requires_payment_method` flow.
+	// (Pre-2026-07-22 this comment claimed "NO retry, NO sweep" — born
+	// false: the sweep + dunning enrollment already existed.)
 	AttentionReasonNoPaymentMethod AttentionReason = "no_payment_method"
+
+	// AttentionReasonDunningExhausted: invoice is finalized and unpaid,
+	// the customer STILL has no payment method, and its dunning run has
+	// escalated — automatic recovery ended without collecting, and the
+	// policy's final action fired (default: collection paused on the
+	// subscription). Distinct from no_payment_method because the
+	// reassuring "recovery is running" framing is no longer true: the
+	// operator must know the engine has escalated. Charge-on-attach
+	// still works (the pending-charge sweep has no pause filter), so
+	// attaching a card still collects this invoice. Chargebee/Stripe
+	// parity: the end-of-dunning terminal is an explicit, visible state.
+	AttentionReasonDunningExhausted AttentionReason = "dunning_exhausted"
 )
 
 // AttentionAction names the operator's recommended next step. Closed
@@ -309,6 +325,15 @@ type AttentionContext struct {
 	// + "Retry now" so the operator gets agency without waiting.
 	StripeConnected bool
 
+	// DunningEscalated is true when the invoice's dunning run has reached
+	// state='escalated' — automatic recovery exhausted its retries and the
+	// policy's final action fired. Consumed only by the no_payment_method
+	// classifier branch (the invoice service fetches the run lazily under
+	// the same finalized-unpaid-no-PM guard as CustomerHasEmail, so list
+	// reads don't pay a dunning lookup per row). Zero-value (false) keeps
+	// the pre-escalation banner — safe for callers without the signal.
+	DunningEscalated bool
+
 	// Now is wall-clock now, used only to age the in-flight payment banner
 	// (processing → Info under the expected-settle window, Warning past it).
 	// Staleness is a REAL-WORLD duration (the provider settles in wall-clock),
@@ -395,7 +420,7 @@ func ClassifyInvoiceAttention(inv Invoice, atc AttentionContext) *Attention {
 	// the operator "engine will retry on its next tick" when the
 	// retry will skip again until a PM is attached.
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && !atc.HasPaymentMethod:
-		return classifyNoPaymentMethod(inv, atc.CustomerHasEmail)
+		return classifyNoPaymentMethod(inv, atc)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending && inv.AutoChargePending:
 		return classifyPaymentScheduled(inv)
 	case inv.Status == InvoiceFinalized && inv.PaymentStatus == PaymentPending:
@@ -729,19 +754,19 @@ func classifyAwaitingPayment(inv Invoice) *Attention {
 	}
 }
 
-// classifyNoPaymentMethod surfaces the "engine has nothing to do here"
-// state: invoice finalized, customer has no PaymentSetup ready. The
-// engine's auto-charge path silently skips when no PM is attached;
-// without operator action, this invoice will sit forever until it
-// becomes overdue. Distinct from awaiting_payment because the action
-// is concrete: add a PM (then Charge now), or send the invoice link
-// for self-pay.
+// classifyNoPaymentMethod surfaces the finalized-unpaid invoice whose
+// customer has no PaymentSetup ready. The invoice IS queued
+// (auto_charge_pending) and dunning ages it out — but automation cannot
+// conjure the card, so the operator/customer is the mover. Splits three
+// ways: dunning already escalated (recovery over — say so), customer has
+// an email (link was sent — resend/share), no email (share directly).
 //
 // Severity = warning (operator action required, not financially
 // broken). Promoting to critical would make a perfectly normal "send-
 // invoice" collection mode look alarming.
-func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
+func classifyNoPaymentMethod(inv Invoice, atc AttentionContext) *Attention {
 	since := inv.UpdatedAt
+	hasEmail := atc.CustomerHasEmail
 	// Auto-collect framing: post-ADR-013 b18d2d3 the engine queues
 	// no-PM invoices via auto_charge_pending and the scheduler picks
 	// them up the moment a PaymentSetup flips to ready (Chargebee's
@@ -749,17 +774,58 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 	// — Collect Payment is the operator's *manual override* for
 	// immediate charge.
 	//
+	// The auto-charge reassurance is CLOCK-AWARE (2026-07-22 audit,
+	// P1-1): the wall-clock sweep excludes clock-pinned subs (ADR-028/029
+	// disjoint flows), so on a simulated invoice a card-attach collects
+	// only on the next test-clock advance — the flat "auto-charges once
+	// attached" promise was a lie on exactly the demo artifacts.
+	// classifyPaymentScheduled got this branch first; this one now
+	// matches. The sentence lives HERE, server-owned, so the client
+	// can't drift a duplicate copy of it (it used to hardcode one).
+	autoCharge := "Attaching a card auto-charges this invoice on the next billing tick — no operator action needed."
+	if inv.IsSimulated {
+		autoCharge = "Attaching a card auto-charges this invoice on the next test-clock advance."
+	}
+
+	// Dunning has escalated: automatic recovery ended without collecting
+	// and the policy's final action fired (default pauses the
+	// subscription's collection). The reassuring pre-escalation framing
+	// is no longer the whole story — say so (2026-07-22 audit, P1-4).
+	// Charge-on-attach still works (the pending-charge sweep has no
+	// pause filter), so the attach path stays the primary fix.
+	if atc.DunningEscalated {
+		msg := "Payment recovery has ended without collecting — the customer still has no payment method on file, and the recovery policy's final action has fired (check the subscription: collection may be paused or it may have been canceled). " + autoCharge
+		actions := []AttentionActionItem{
+			{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
+		}
+		if hasEmail {
+			actions = append([]AttentionActionItem{
+				{Code: AttentionActionSendReminder, Label: "Resend setup link"},
+			}, actions...)
+		}
+		return &Attention{
+			Severity: AttentionSeverityWarning,
+			Reason:   AttentionReasonDunningExhausted,
+			Code:     "payment.dunning_exhausted",
+			Message:  msg,
+			DocURL:   docBaseURL + "dunning-exhausted",
+			Actions:  actions,
+			Since:    &since,
+			DueBy:    inv.DueAt,
+		}
+	}
+
 	// The message splits on whether the customer has an email on file,
-	// because the engine's finalize-time setup-link email
-	// (NotifyNoPaymentMethod) skips when the customer has no
-	// address — the adapter treats a missing email as "a delivery gap,
-	// not a billing failure" and returns without sending. A single
-	// hardcoded "the customer has been emailed a setup link" then lied
-	// to the operator on exactly the invoices where it mattered most:
-	// no address means no send AND no resend (the resend path can't
-	// email either), so telling the operator to wait or resend strands
-	// the invoice. hasEmail comes from AttentionContext.CustomerHasEmail,
-	// populated by the invoice service from the customer record.
+	// because the finalize-time setup-link email (NotifyNoPaymentMethod)
+	// skips when the customer has no address — the adapter treats a
+	// missing email as "a delivery gap, not a billing failure" and
+	// returns without sending. A single hardcoded "the customer has been
+	// emailed a setup link" then lied to the operator on exactly the
+	// invoices where it mattered most: no address means no send AND no
+	// resend (the resend path can't email either), so telling the
+	// operator to wait or resend strands the invoice. hasEmail comes
+	// from AttentionContext.CustomerHasEmail, populated by the invoice
+	// service from the customer record.
 	//
 	// Card details are always a *customer* action (PCI: entered by the
 	// cardholder via Stripe's hosted flow). The operator's levers are
@@ -769,22 +835,22 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 	if !hasEmail {
 		// hasEmail is false in two cases: the customer confirmably has no
 		// address, OR the service couldn't determine it (read error / no
-		// reader). The copy is phrased to be honest in BOTH — it states the
-		// engine's *behavior* ("emails a link only when there's an address
-		// on file") rather than asserting this customer's email state or
-		// claiming a link was/wasn't sent, so a rare transient customer-read
-		// error can't make the banner assert a falsifiable fact. Either way
-		// the operator's path is the same and always works: open the
-		// customer page (see the real email, copy a secure link, or add an
-		// address). The "Resend setup link" action is dropped — with no
-		// confirmed recipient it can't reliably send, and the customer-page
-		// dialog offers both send-email and copy-link once the operator is
-		// there.
+		// reader). The copy is phrased to be honest in BOTH — it states
+		// behavior ("we email a link only when there's an address on
+		// file") rather than asserting this customer's email state or
+		// claiming a link was/wasn't sent, so a rare transient customer-
+		// read error can't make the banner assert a falsifiable fact.
+		// Either way the operator's path is the same and always works:
+		// open the customer page (see the real email, copy a secure link,
+		// or add an address). The "Resend setup link" action is dropped —
+		// with no confirmed recipient it can't reliably send, and the
+		// customer-page dialog offers both send-email and copy-link once
+		// the operator is there.
 		return &Attention{
 			Severity: AttentionSeverityWarning,
 			Reason:   AttentionReasonNoPaymentMethod,
 			Code:     "payment.no_payment_method",
-			Message:  "No payment method on file. The engine emails a setup link only when the customer has an email address on file — open the customer page to copy a secure setup link and share it with the customer directly, or add an email so the engine can send it. It auto-charges once a card is attached.",
+			Message:  "No payment method on file. We email a setup link only when the customer has an email address on file — open the customer page to copy a secure setup link and share it with the customer directly, or add an email so it can be sent. " + autoCharge,
 			DocURL:   docBaseURL + "no-payment-method",
 			Actions: []AttentionActionItem{
 				{Code: AttentionActionAddPaymentMethod, Label: "Open customer page"},
@@ -797,7 +863,7 @@ func classifyNoPaymentMethod(inv Invoice, hasEmail bool) *Attention {
 		Severity: AttentionSeverityWarning,
 		Reason:   AttentionReasonNoPaymentMethod,
 		Code:     "payment.no_payment_method",
-		Message:  "No payment method on file. The engine emails the customer a setup link when an invoice finalizes and auto-charges once a method is attached — the invoice timeline and Sent emails show whether it was delivered. Resend the link if they haven't acted, or open the customer page to copy it and share it directly.",
+		Message:  "No payment method on file. Velox emails the customer a setup link when an invoice finalizes — the invoice timeline and Sent emails show whether it was delivered. Resend the link if they haven't acted, or open the customer page to copy it and share it directly. " + autoCharge,
 		DocURL:   docBaseURL + "no-payment-method",
 		Actions: []AttentionActionItem{
 			{Code: AttentionActionSendReminder, Label: "Resend setup link"},

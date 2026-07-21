@@ -750,11 +750,13 @@ func paymentFailedTextBody(customerName, invoiceNumber, reason, hostedURL string
 }
 
 func paymentUpdateRequestTextBody(customerName, invoiceNumber, amount, updateURL string) string {
+	// No-PM path only (see renderPaymentSetupLinkHTML) — never claim a
+	// decline the customer didn't have.
 	return fmt.Sprintf(`Hi %s,
 
-We couldn't process payment for invoice %s (%s).
+Invoice %s (%s) is ready. Add a payment method using the secure link below and we'll collect it automatically.
 
-Update your payment method using the secure link below. It expires in 24 hours.
+The link expires in 24 hours and can only be used once.
 
 %s
 `, customerName, invoiceNumber, amount, updateURL)

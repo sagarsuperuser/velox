@@ -132,20 +132,11 @@ export function InvoiceAttention({
           </div>
         )}
 
-        {/* Auto-collect armed indicator: for the no_payment_method
-            state, the engine has queued for scheduler retry — after a
-            PM goes ready, the next RetryPendingCharges sweep charges
-            the invoice automatically without operator intervention
-            (attach itself kicks no charge; the sweep runs on the
-            billing interval, 1h in prod / 5m local). Surface this so
-            the operator knows the system is "watching" and the manual
-            Collect Payment click is an override, not a requirement. */}
-        {att.reason === 'no_payment_method' && (
-          <p className="text-xs text-muted-foreground flex items-center gap-1.5 pl-7">
-            <Info size={11} className="shrink-0" />
-            Engine will auto-charge once a payment method is attached.
-          </p>
-        )}
+        {/* The auto-collect ("attaching a card auto-charges…") reassurance
+            is SERVER-OWNED — it lives inside att.message, where it is
+            clock-aware (wall tick vs next test-clock advance). A second
+            hardcoded copy here drifted from that truth and repeated the
+            promise twice in one banner (2026-07-22 audit, P1-1/P2-1). */}
 
         {/* Tech code — useful for support tickets, demoted from the
             headline. Shown inline-mono next to the doc anchor so a
@@ -394,6 +385,7 @@ function humanReason(reason: string): string {
     payment_scheduled: 'Auto-charge scheduled',
     awaiting_payment: 'Awaiting first charge',
     no_payment_method: 'No payment method',
+    dunning_exhausted: 'Payment recovery ended',
   }
   return map[reason] ?? reason
 }
