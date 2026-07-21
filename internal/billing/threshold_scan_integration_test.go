@@ -412,6 +412,67 @@ func TestThresholdScan_ItemUsageCross(t *testing.T) {
 	}
 }
 
+// TestThresholdScan_ItemOnlyKeepsAnchor pins the coverage cell where the
+// 2026-07-21 FLOW B14 money bug lived: an ITEM-ONLY threshold (amount_gte
+// NULL) with reset_billing_cycle omitted (defaults false). scanSubRow only
+// builds the thresholds struct when amount_gte is set, so hydrateThresholds
+// allocated it for item-only subs — with a fabricated ResetBillingCycle=true
+// that both the engine (re-anchored the cycle on fire) and the API echo
+// consumed. Mutation seam: restore the hardcoded `true` in hydrateThresholds
+// and both assertions below fail.
+func TestThresholdScan_ItemOnlyKeepsAnchor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	f := newThresholdFixture(t, "Threshold Item Keep Anchor")
+	ctx, cancel := context.WithTimeout(postgres.WithLivemode(context.Background(), false), 60*time.Second)
+	defer cancel()
+
+	f.ingestUsage(t, ctx, 100, 10)
+
+	// reset_billing_cycle deliberately OMITTED — the documented default is
+	// false (Stripe keep-anchor), and item-only subs must honor it.
+	if _, err := f.subSvc.SetBillingThresholds(ctx, f.tenantID, f.subID, subscription.BillingThresholdsInput{
+		ItemThresholds: []subscription.ItemThresholdInput{
+			{SubscriptionItemID: f.itemID, UsageGTE: "500"},
+		},
+	}); err != nil {
+		t.Fatalf("set threshold: %v", err)
+	}
+
+	// The hydrated read must report the stored flag, not the column default.
+	stored, err := f.subStore.Get(ctx, f.tenantID, f.subID)
+	if err != nil {
+		t.Fatalf("reload sub: %v", err)
+	}
+	if stored.BillingThresholds == nil {
+		t.Fatal("BillingThresholds should hydrate for item-only thresholds")
+	}
+	if stored.BillingThresholds.ResetBillingCycle {
+		t.Error("item-only threshold hydrated ResetBillingCycle=true; stored value is false")
+	}
+
+	fired, errs := f.engine.ScanThresholds(ctx, 50)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	if fired != 1 {
+		t.Fatalf("fired count: got %d, want 1", fired)
+	}
+
+	updated, err := f.subStore.Get(ctx, f.tenantID, f.subID)
+	if err != nil {
+		t.Fatalf("reload sub: %v", err)
+	}
+	if updated.CurrentBillingPeriodStart == nil {
+		t.Fatal("period_start should be set")
+	}
+	if !updated.CurrentBillingPeriodStart.Equal(f.cycleStart) {
+		t.Errorf("item-only cap with default reset=false re-anchored the cycle: period_start %v, want %v",
+			*updated.CurrentBillingPeriodStart, f.cycleStart)
+	}
+}
+
 // TestThresholdScan_BelowThresholdNoFire is the silent-success case: usage
 // is non-zero but doesn't cross the cap, so the scan should observe but
 // emit nothing. Catches a regression where the threshold logic accidentally

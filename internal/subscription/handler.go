@@ -756,7 +756,7 @@ func (h *Handler) resumeCollection(w http.ResponseWriter, r *http.Request) {
 //
 //	{
 //	  "amount_gte": 50000,                    // optional, integer cents
-//	  "reset_billing_cycle": true,            // optional, defaults true
+//	  "reset_billing_cycle": true,            // optional, defaults FALSE (Stripe keep-anchor; see BillingThresholdsInput)
 //	  "item_thresholds": [                    // optional, always-array
 //	    {"subscription_item_id": "si_xxx", "usage_gte": "1000"}
 //	  ]
@@ -3091,6 +3091,12 @@ func describeSubscriptionAction(action string, meta map[string]any, planNames ma
 			}
 		}
 		return "Spending threshold crossed", d, "", "warning"
+	case "subscription.threshold_deferred":
+		// ADR-066 §4b loudness floor. Peak/last-style charges can't be split
+		// across an early invoice and the cycle close, so the fire waits.
+		return "Spending threshold reached — invoice deferred",
+			"This subscription's spend is priced on peak usage, which bills once at the end of the cycle. The invoice will be issued at cycle close.",
+			"", "info"
 	case "subscription.proration_failed":
 		d := ""
 		if e, ok := meta["error"].(string); ok && e != "" {

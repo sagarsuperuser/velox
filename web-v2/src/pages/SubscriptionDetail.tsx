@@ -954,7 +954,10 @@ export default function SubscriptionDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Invoice Preview */}
+      {/* Invoice Preview. Hidden on terminal subs — a canceled sub has no
+          next invoice, and the full-period estimate read as a real upcoming
+          charge (found in the FLOW B14 walk: canceled sub advertising $490). */}
+      {sub.status !== 'canceled' && sub.status !== 'archived' && (
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="text-sm">Next Invoice Preview</CardTitle>
@@ -997,6 +1000,7 @@ export default function SubscriptionDetailPage() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Related Invoices */}
       <Card className="mt-6">
@@ -1867,7 +1871,7 @@ function EditBillingThresholdsDialog({ subscription, items, planById, onClose, o
             <div className="space-y-1">
               <Label htmlFor="reset-cycle" className="font-normal">Reset billing cycle on fire</Label>
               <p className="text-xs text-muted-foreground">
-                When checked (default), the new cycle starts at fire time. When unchecked, the original cycle continues and a residual invoice fires at the natural cycle end.
+                When checked, a new billing cycle starts at fire time. When unchecked (default), the original cycle continues and the remaining usage bills at the natural cycle end.
               </p>
             </div>
           </div>
