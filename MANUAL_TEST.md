@@ -854,28 +854,27 @@ Manual provider applies one flat tenant rate to every customer regardless of cou
 
 ## FLOW B15: `in_advance` plan happy path (ADR-031)
 
-- [ ] **A tax-deferred day-1 DRAFT defers credit application too (ADR-088)** — with Stripe Tax erroring, a credit-holding customer's day-1 invoice parks as a tax-pending draft with credits UNAPPLIED; when tax retry finalizes it, the sweep applies credits before charging.
-- [ ] **Activating a DRAFT bills day-1 atomically (ADR-056 sibling)** — create a draft sub on an in_advance plan, then POST /{id}/activate → the sub flips active AND the `subscription_create` invoice exists with the first period (pre-fix the flip billed nothing: the first base fee was silently never invoiced). *(automated: `TestActivateAndCancel` subtests "activating a draft BILLS day-1 in the flip tx" + "bill failure rolls the activation back")*
-- [ ] **Credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee, subscribe to an in_advance plan. Day-1 invoice lands **Paid** with a Credits Applied line covering the total; balance drained; no Stripe charge. With a partial balance: Credits Applied for the balance, card charged exactly the remainder (card-less: remainder queues + setup email).
+- [x] **A tax-deferred day-1 DRAFT defers credit application too (ADR-088)** — with the tax provider erroring, a credit-holding customer's day-1 invoice parks as a tax-pending draft with credits UNAPPLIED; when tax retry finalizes it, the sweep applies credits before charging. *(CI-locked: `TestApplyCreditsAndCollect` subtest "draft invoice → credits not applied (waits for tax-retry + sweep)" + the sweep-side collect tests; ran green at HEAD 2026-07-21.)*
+- [x] **Activating a DRAFT bills day-1 atomically (ADR-056 sibling)** — create a draft sub on an in_advance plan, then POST /{id}/activate → the sub flips active AND the `subscription_create` invoice exists with the first period (pre-fix the flip billed nothing: the first base fee was silently never invoiced). *(automated: `TestActivateAndCancel` subtests "activating a draft BILLS day-1 in the flip tx" + "bill failure rolls the activation back" — ran green at HEAD 2026-07-21.)*
+- [x] **Credit balance pays the day-1 invoice (ADR-088)** — grant a customer credit ≥ the plan's base fee (`POST /v1/credits/grant`), subscribe to an in_advance plan. Day-1 invoice lands **Paid** with `credits_applied` covering the total; balance drained; no Stripe charge, no queue. With a partial balance: `credits_applied` for the balance, card charged exactly the remainder (card-less: remainder queues `auto_charge_pending=true` + setup email). *(walked 2026-07-21: full — 5,216¢ covered, paid, amount_due 0, balance 6,000→784 exact; partial — 2,000 applied, balance→0, amount_due 3,216 queued + "Action required" email. Charged-remainder variant CI-locked in `TestApplyCreditsAndCollect`.)*
 
 Verifies the day-1 invoice + the cycle-close invoice that bills the upcoming period's base.
 
-- [ ] Pricing → New Plan: select **Base fee billed = At start of period**. Create plan `pro-advance` $49/mo, no meters.
-- [ ] Plan Detail → Properties shows `Base fee billed: At start of period`.
-- [ ] Create customer with PM (`4242 4242 4242 4242`).
-- [ ] Create active subscription on `pro-advance` → **invoice generated immediately**:
+- [x] Pricing → New Plan: select **Base fee billed = At start of period** ("platform fee + usage"; helper reads "charged the base fee on day 1 of each period; usage settles at period end"). Create plan `pro-advance` $49/mo, no meters. *(walked 2026-07-21 in the dialog.)*
+- [x] Plan Detail → Properties shows `Base fee billed: At start of period`. *(walked 2026-07-21.)*
+- [x] Create customer with PM (`4242 4242 4242 4242`) — operator path: customer page → Payment methods → **Add payment method** → "Send email" → customer opens the Stripe-hosted setup link. *(walked 2026-07-21 live: email → Checkout → webhook attach, visa …4242 default.)*
+- [x] Create active subscription on `pro-advance` → **invoice generated immediately**:
   - `billing_reason = "subscription_create"`
-  - Period = today → period_end (e.g. first of next month)
-  - Single base-fee line, qty 1, $49 (or prorated if mid-month — UI says "prorated X/Y days")
+  - Period = today → period_end
+  - Single base-fee line, qty 1, $49 (or prorated if mid-period — "prorated X/Y days")
   - Total = $49 + tax
   - `payment_status=succeeded` if PM ready (auto-charged), else `auto_charge_pending=true` + Mailpit shows the no-PM email.
-- [ ] Invoice Detail row's "Covers" sub-line not surfaced (line period == invoice period on this day-1 invoice).
-- [ ] Advance clock (or wait) to period close → cycle invoice generated:
+  *(walked 2026-07-21: full-month sub → 5,390¢ auto-charged to paid; a second sub created one day into the period billed "prorated 30/31 days" = 4,742¢ base — both branches live.)*
+- [x] Invoice Detail row's "Covers" sub-line not surfaced (line period == invoice period on this day-1 invoice). *(walked 2026-07-21.)*
+- [x] Advance clock (or wait) to period close → cycle invoice generated:
   - `billing_reason = "subscription_cycle"`
-  - Invoice's `billing_period` = the just-elapsed period
-  - Single base-fee line, but the line's `billing_period_start/end` = **next period** (period_end → next_period_end)
-  - Invoice Detail shows the "Covers <next period range> (in advance)" sub-line under the base row
-  - Total = full base, no proration
+  - Single base-fee line, total = full base + tax, no proration; auto-charged
+  - On a **pure** in_advance plan (no meters) the invoice IS the next period's bill: invoice period == line period == the **upcoming** period, so NO "Covers" sub-line renders (nothing from the elapsed period to bill). The elapsed-period-invoice + "Covers next period" sub-line shape belongs to the HYBRID case — FLOW B16 — where in_arrears usage pins the invoice to the elapsed period and the in_advance base line's next-period range diverges. *(walked 2026-07-21: cycle invoice period = July, 5,390¢ paid; pre-walk wording claimed the elapsed period + sub-line here, which is B16's shape, not the pure plan's.)*
 
 ## FLOW B16: Hybrid `in_advance` base + `in_arrears` usage on one invoice
 
