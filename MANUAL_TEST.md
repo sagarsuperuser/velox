@@ -880,21 +880,23 @@ Verifies the day-1 invoice + the cycle-close invoice that bills the upcoming per
 
 The standard B2B SaaS shape: platform fee charged at period start, usage settles at period end. Run on top of B15.
 
-- [ ] Plan `pro-advance-metered`: `Base fee billed = At start of period`, $99/mo, with one meter `api_calls` flat $0.01.
-- [ ] Day 1: create sub → day-1 invoice carries ONLY the base fee ($99). Usage line absent (no events).
-- [ ] Ingest 1,000 events over the period.
-- [ ] Period close → cycle invoice:
-  - Base line: $99, `billing_period_start/end = next period`, sub-line "Covers <next period>" (date range only — no "(in advance)" parenthetical)
-  - Usage line: $10 (1,000 × $0.01), `billing_period_start/end = elapsed period` (matches invoice header — sub-line suppressed)
+- [x] Plan `pro-advance-metered`: `Base fee billed = At start of period`, $99/mo, with one flat-$0.01 meter. *(walked 2026-07-21.)*
+- [x] Day 1: create sub → day-1 invoice carries ONLY the base fee ($99 + per-line tax, auto-charged paid). Usage line absent (no events). *(walked 2026-07-21.)*
+- [x] Ingest 1,000 events over the period. *(walked 2026-07-21: 400+350+250.)*
+- [x] Period close → cycle invoice:
+  - **Invoice header period = the NEXT period** (the in_advance shift, `billOnePeriod` — deliberate and load-bearing: it is what lets the day-1 and first cycle invoices coexist under the `(sub, period_start, period_end)` UNIQUE index, and it keeps the header in sync with the sub's new `current_period_*`). The pre-walk wording claimed header = elapsed period; that was never the design.
+  - Base line: $99, `billing_period_start/end = next period` — **matches the header, so its sub-line is suppressed**.
+  - Usage line: $10 (1,000 × $0.01), `billing_period_start/end = elapsed period` — diverges from the header, so **it** carries the sub-line: "Covers Sep 1, 2030 – Sep 30, 2030" (date range only — no "(in advance)" parenthetical; civil inclusive-end rendering).
   - Single invoice carries both — no separate invoice for the upcoming base.
-- [ ] Tax applies to both lines; per-line `tax_amount_cents` populated.
-- [ ] Auto-charge fires once for the combined total.
+  *(walked 2026-07-21: header = October, lines exactly as above.)*
+- [x] Tax applies to both lines; per-line `tax_amount_cents` populated. *(walked 2026-07-21: 990¢ + 100¢.)*
+- [x] Auto-charge fires once for the combined total. *(walked 2026-07-21: one settle event, 11,990¢ paid.)*
 
 ## FLOW B16b: token usage billed on immediate cancel (ADR-044 cancel path)
 
-- [ ] Setup: sub on a pure-usage plan with the multi-dim `tokens` meter (per-`{model, token_type}` pricing rules, e.g. the claude-sonnet-4.5 recipe — meter has NO direct rating-rule binding). Ingest input + output token usage mid-period.
-- [ ] Cancel immediately → a final invoice IS emitted with `billing_reason=subscription_cancel`, one usage line per claimed rule (`… - canceled mid-period`), priced at the recipe's decimal rates.
-- [ ] Each usage line carries `quantity_decimal`; line amounts match what the same usage would bill at cycle close.
+- [x] Setup: sub on a pure-usage plan with the multi-dim `tokens` meter (per-`{model, token_type}` pricing rules — meter has NO direct rating-rule binding). Ingest input + output token usage mid-period. *(walked 2026-07-21 on the B13 matrix fixtures; binding verified empty.)*
+- [x] Cancel immediately → a final invoice IS emitted with `billing_reason=subscription_cancel`, one usage line per claimed rule (`… - canceled mid-period`), priced at the recipe's decimal rates. *(walked 2026-07-21: input 500,000 × $0.000003 = 150¢; output 100,000 × $0.000015 = 150¢.)*
+- [x] Each usage line carries `quantity_decimal`; line amounts match what the same usage would bill at cycle close. *(walked 2026-07-21: exactly half of B13's verified 1M→300¢.)*
 
 ## FLOW B17: `in_advance` cancel proration credit
 
