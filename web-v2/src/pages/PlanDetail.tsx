@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { api, formatCents, formatDate, formatDateTime, type Plan, type Meter, type RatingRule, type Customer } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { statusBadgeVariant } from '@/lib/status'
 
 import { Button } from '@/components/ui/button'
@@ -370,9 +371,12 @@ export default function PlanDetailPage() {
                     }}
                   >
                     <TableCell>
-                      <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-foreground hover:text-primary transition-colors">
-                        {sub.display_name}
-                      </Link>
+                      <span className="inline-flex items-center gap-2">
+                        <Link to={`/subscriptions/${sub.id}`} className="text-sm font-medium text-foreground hover:text-primary transition-colors">
+                          {sub.display_name}
+                        </Link>
+                        {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} />}
+                      </span>
                       <p className="text-xs text-muted-foreground font-mono">{sub.code}</p>
                     </TableCell>
                     <TableCell>

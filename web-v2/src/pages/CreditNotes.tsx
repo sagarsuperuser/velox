@@ -11,6 +11,7 @@ import type { CreditNote, Invoice, Customer } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
+import { SimulatedBadge } from '@/components/TestClockBadge'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
@@ -433,7 +434,10 @@ export default function CreditNotesPage() {
                     return (
                       <TableRow key={note.id} className={cn('border-l-[3px]', statusBorderColor(note.status))}>
                         <TableCell>
-                          <p className="text-sm font-medium text-foreground">{note.credit_note_number}</p>
+                          <span className="inline-flex items-center gap-2">
+                            <p className="text-sm font-medium text-foreground">{note.credit_note_number}</p>
+                            {note.is_simulated && <SimulatedBadge title="Dates on this credit note are simulated test-clock time, not wall-clock" />}
+                          </span>
                           <p className="text-xs text-muted-foreground mt-0.5">{channelLabel}</p>
                         </TableCell>
                         <TableCell className="text-sm">

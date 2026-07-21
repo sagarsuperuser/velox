@@ -8,6 +8,7 @@ import type { Customer, Meter, UsageEvent, UsageEventsAggregate } from '@/lib/ap
 import { downloadCSV } from '@/lib/csv'
 import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -406,7 +407,17 @@ export default function UsageEventsPage() {
                     const dims = ev.dimensions && Object.keys(ev.dimensions).length > 0 ? ev.dimensions : null
                     return (
                       <TableRow key={ev.id}>
-                        <TableCell className="text-sm text-foreground">{formatDateTime(ev.timestamp)}</TableCell>
+                        <TableCell className="text-sm text-foreground">
+                          <span className="inline-flex items-center gap-2">
+                            {formatDateTime(ev.timestamp)}
+                            {/* Events for clock-pinned customers are stamped at the
+                                clock's simulated instant, not wall-clock ingestion
+                                time (clock-design review 2026-07-21). */}
+                            {customerMap[ev.customer_id]?.test_clock_id && (
+                              <TestClockBadge testClockId={customerMap[ev.customer_id].test_clock_id!} />
+                            )}
+                          </span>
+                        </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {customerMap[ev.customer_id]?.display_name || ev.customer_id.slice(0, 8) + '...'}
                         </TableCell>

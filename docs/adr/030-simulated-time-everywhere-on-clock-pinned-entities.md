@@ -404,3 +404,20 @@ This inverted the ADR's core principle ("operators never need to know
 about wall-clock when working with test clocks"). The 2026-05-28
 amendment's "subline below the wall-clock primary stamp" rendering is
 superseded for narrative surfaces only; its storage rule is untouched.
+
+## Amendment 2026-07-21: the payment state-sync reconciler is wall-plane by design
+
+The 2026-07-21 clock-design review flagged that the `payment_unknown` /
+`payment_processing` reconciler (`listInflightPayments`) carries no
+`is_simulated` gate, unlike every sibling invoice sweep. That is ratified,
+not fixed: it is this ADR's Stripe exception applied consistently. Payment
+truth (PaymentIntent state) lives at Stripe on real time even for
+clock-pinned invoices — Stripe's own test clocks draw the same line — and
+the catchup worker deliberately has no payment-sync phase, so gating the
+wall sweep would strand an ambiguous simulated charge in
+`unknown`/`processing` with no resolver (a liveness sink). The settle path
+re-binds simulated time (`BindEffectiveNow`, `velox_anchor_at`), so a
+wall-tick recovery still stamps outcomes at the simulated instant; the one
+disjointness bruise — a failed settle enrolling dunning at the wall tick —
+is bounded, because the created run only ever ADVANCES during a clock
+Advance (the dunning sweep is gated).

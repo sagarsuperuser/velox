@@ -1557,6 +1557,9 @@ export interface CreditNote {
   issued_at?: string
   voided_at?: string
   created_at: string
+  // Domain timestamps (issued_at/created_at) are simulated test-clock
+  // time when true — same contract as Invoice.is_simulated.
+  is_simulated?: boolean
 }
 
 export interface AuditEntry {

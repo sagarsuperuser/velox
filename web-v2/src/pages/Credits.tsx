@@ -15,6 +15,7 @@ import { applyApiError } from '@/lib/formErrors'
 import { downloadCSV } from '@/lib/csv'
 import { Layout } from '@/components/Layout'
 import { useEffectiveNow } from '@/hooks/useClockFrozenMap'
+import { TestClockBadge } from '@/components/TestClockBadge'
 import { useSortable, type SortDir } from '@/hooks/useSortable'
 import { useUrlState } from '@/hooks/useUrlState'
 import { cn } from '@/lib/utils'
@@ -291,7 +292,17 @@ export default function CreditsPage() {
         {/* Transaction History */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-3">
-            <CardTitle className="text-sm">Transaction History</CardTitle>
+            <CardTitle className="text-sm">
+              <span className="inline-flex items-center gap-2">
+                Transaction History
+                {/* Ledger dates on a clock-pinned customer are simulated —
+                    one badge covers the card, same pattern as the detail
+                    pages (clock-design review 2026-07-21). */}
+                {selectedCustomer?.test_clock_id && (
+                  <TestClockBadge testClockId={selectedCustomer.test_clock_id} link />
+                )}
+              </span>
+            </CardTitle>
             <div className="flex items-center gap-2">
               <select
                 value={entryTypeFilter}

@@ -352,6 +352,16 @@ export default function PricingPage() {
 /* ─── Create Rule Dialog ─── */
 
 function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  // Publishing under the same rule_key reprices from each customer's next
+  // period on real time — but for test-clock customers the change lands in
+  // the current simulated period (catalog stamps are wall-clock, ADR-070
+  // caveat, observed live in the FLOW B9 walk). Surface that whenever the
+  // tenant has clocks so simulation results don't silently surprise.
+  const { data: clocksData } = useQuery({
+    queryKey: ['test-clocks'],
+    queryFn: () => api.listTestClocks(),
+  })
+  const hasClocks = (clocksData?.data ?? []).length > 0
   const [mode, setMode] = useState('flat')
   const [flatAmount, setFlatAmount] = useState('')
   const [tiers, setTiers] = useState([
@@ -510,6 +520,14 @@ function CreateRuleDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             <div className="px-3 py-2 rounded-md bg-destructive/10 border border-destructive/20">
               <p className="text-destructive text-sm">{tierError}</p>
             </div>
+          )}
+
+          {hasClocks && (
+            <p className="text-xs text-amber-700 dark:text-amber-500">
+              Re-using an existing rule key republishes its price: real-time customers get the new
+              rate from their next billing period, but test-clock customers get it in their current
+              simulated period.
+            </p>
           )}
 
           <DialogFooter>
