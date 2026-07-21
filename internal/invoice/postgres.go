@@ -1223,76 +1223,12 @@ func (s *PostgresStore) ApplyCreditNoteTx(ctx context.Context, tx *sql.Tx, tenan
 	return inv, nil
 }
 
-// ApplyCredits reduces amount_due and tracks the prepaid credits applied during billing.
-func (s *PostgresStore) ApplyCredits(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	now := clock.Now(ctx)
-	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `
-		UPDATE invoices SET
-			amount_due_cents = GREATEST(amount_due_cents - $1, 0),
-			credits_applied_cents = credits_applied_cents + $1,
-			updated_at = $2
-		WHERE id = $3
-		RETURNING `+invCols,
-		amountCents, now, id,
-	).Scan(s.scanInvDest(&inv)...)
-
-	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	// Any amount_due change invalidates an open checkout claim (its session
-	// was minted for the OLD amount): close it in the SAME tx so the next
-	// POST mints at the new amount and the post-commit helper can expire the
-	// stale-amount Stripe session (ADR-068; covers both partial credit and
-	// credit-to-zero — the latter also exits the payable state entirely).
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE checkout_sessions SET status = 'superseded', updated_at = now()
-		WHERE invoice_id = $1 AND status = 'open'
-	`, id); err != nil {
-		return domain.Invoice{}, fmt.Errorf("supersede checkout claims on credit apply: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
-	}
-	return inv, nil
-}
-
-func (s *PostgresStore) UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error) {
-	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	defer postgres.Rollback(tx)
-
-	now := clock.Now(ctx)
-	var inv domain.Invoice
-	err = tx.QueryRowContext(ctx, `
-		UPDATE invoices SET subtotal_cents = $1, total_amount_cents = $2, amount_due_cents = $3, updated_at = $4
-		WHERE id = $5
-		RETURNING `+invCols,
-		subtotal, total, amountDue, now, id,
-	).Scan(s.scanInvDest(&inv)...)
-
-	if err == sql.ErrNoRows {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.Invoice{}, err
-	}
-	return inv, nil
-}
+// ApplyCredits and UpdateTotals were DELETED (2026-07-21 derived-data
+// audit): both were caller-free interface remnants that blind-set derived
+// money columns (totals not recomputed from line items; credits bumped
+// without a ledger entry), bypassing every in-tx recompute guard the live
+// paths use. Re-adding an unguarded totals/credits writer re-opens the
+// drift class — write through AddLineItemAtomic / credit.ApplyToInvoiceAtomic.
 
 // nominalRateArg returns the driver value for the nullable
 // nominal_unit_amount_decimal column: the decimal (via its Valuer) when set,
@@ -1991,6 +1927,24 @@ func (s *PostgresStore) ReleaseAutoChargeClaim(ctx context.Context, tenantID, id
 //
 // Same lease/no-updated_at rules as ClaimAutoCharge (see there).
 func (s *PostgresStore) ClaimChargeForDunningRetry(ctx context.Context, tenantID, id string) (bool, error) {
+	return s.claimChargeLease(ctx, tenantID, id)
+}
+
+// ClaimChargeForManualCollect is the operator-collect twin on the SAME
+// lease (2026-07-21 snapshot-race audit): before this claim existed,
+// POST /invoices/{id}/collect charged its handler snapshot with no
+// mutual exclusion against the auto-charge sweep or a due dunning retry
+// — the one charge initiator outside the ring. Identical predicate to
+// the dunning claim: 'unknown' stays excluded (a possibly-succeeded
+// payment is the reconciler's, never blind re-charged).
+func (s *PostgresStore) ClaimChargeForManualCollect(ctx context.Context, tenantID, id string) (bool, error) {
+	return s.claimChargeLease(ctx, tenantID, id)
+}
+
+// claimChargeLease is the shared CAS both non-sweep charge claims ride:
+// finalized, pending/failed, owing, lease free. No updated_at write —
+// Stripe idempotency keys derive from it (see ClaimAutoCharge).
+func (s *PostgresStore) claimChargeLease(ctx context.Context, tenantID, id string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxTenant, tenantID)
 	if err != nil {
 		return false, err

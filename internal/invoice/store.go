@@ -67,9 +67,7 @@ type Store interface {
 	// engine charge.
 	MarkPaid(ctx context.Context, tenantID, id string, stripePaymentIntentID string, paidAt time.Time) (domain.Invoice, error)
 	ApplyCreditNote(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
-	ApplyCredits(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error)
 
-	UpdateTotals(ctx context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error)
 
 	SetAutoChargePending(ctx context.Context, tenantID, id string, pending bool) error
 	// SetNoPMNotifiedAt stamps the send-once marker for the no-PM setup-link
@@ -80,6 +78,9 @@ type Store interface {
 	// lease (HA hazard #1) — exactly one sweep leader enters the charge
 	// leg per invoice per 5m window.
 	ClaimAutoCharge(ctx context.Context, tenantID, id string) (bool, error)
+	// ClaimChargeForManualCollect: operator-collect twin on the same
+	// lease — see postgres.go (2026-07-21 snapshot-race audit).
+	ClaimChargeForManualCollect(ctx context.Context, tenantID, id string) (bool, error)
 	ReleaseAutoChargeClaim(ctx context.Context, tenantID, id string) error
 	ListAutoChargePending(ctx context.Context, limit int) ([]domain.Invoice, error)
 

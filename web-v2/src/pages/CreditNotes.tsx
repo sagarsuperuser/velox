@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
+import { invalidateMoneySurfaces } from '@/lib/invalidateMoney'
 import { api, downloadCreditNotePDF, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import type { CreditNote, Invoice, Customer } from '@/lib/api'
 import { applyApiError, showApiError } from '@/lib/formErrors'
@@ -186,7 +187,7 @@ export default function CreditNotesPage() {
   const issueMutation = useMutation({
     mutationFn: (id: string) => api.issueCreditNote(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
+      invalidateMoneySurfaces(queryClient)
       toast.success('Credit note issued')
     },
     onError: (err) => showApiError(err, 'Failed to issue'),
@@ -195,7 +196,7 @@ export default function CreditNotesPage() {
   const voidMutation = useMutation({
     mutationFn: (id: string) => api.voidCreditNote(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
+      invalidateMoneySurfaces(queryClient)
       toast.success('Credit note voided')
     },
     onError: (err) => showApiError(err, 'Failed to void'),
@@ -586,7 +587,7 @@ export default function CreditNotesPage() {
         customerMap={customerMap}
         onCreated={() => {
           setShowCreate(false)
-          queryClient.invalidateQueries({ queryKey: ['credit-notes'] })
+          invalidateMoneySurfaces(queryClient)
           toast.success('Credit note issued')
         }}
       />

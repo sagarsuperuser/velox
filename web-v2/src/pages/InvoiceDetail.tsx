@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
+import { invalidateMoneySurfaces } from '@/lib/invalidateMoney'
 import { api, downloadPDF, formatCents, formatRate, formatDate, formatDateTime, formatTaxRate, getCurrencySymbol, pollIntervalForInvoice, type TenantSettings, type DunningRun, type TimelineEvent, type Invoice as ApiInvoice, type CreditNote } from '@/lib/api'
 import { formatCivilPeriod } from '@/lib/dates'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
@@ -363,6 +364,9 @@ export default function InvoiceDetailPage() {
     if (invoice?.subscription_id) {
       queryClient.invalidateQueries({ queryKey: ['subscription-invoices', invoice.subscription_id] })
     }
+    // Credits issued from this page land on the customer's balance —
+    // refresh every balance-bearing family too (2026-07-21 audit).
+    invalidateMoneySurfaces(queryClient, { customerId: invoice?.customer_id, invoiceId: id })
   }
 
   const finalizeMutation = useMutation({

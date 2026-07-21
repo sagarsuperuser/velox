@@ -361,33 +361,6 @@ func (m *memStore) ApplyCreditNote(_ context.Context, tenantID, id string, amoun
 	return inv, nil
 }
 
-func (m *memStore) ApplyCredits(_ context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
-	inv, ok := m.invoices[id]
-	if !ok || inv.TenantID != tenantID {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	inv.AmountDueCents -= amountCents
-	if inv.AmountDueCents < 0 {
-		inv.AmountDueCents = 0
-	}
-	inv.CreditsAppliedCents += amountCents
-	m.invoices[id] = inv
-	return inv, nil
-}
-
-func (m *memStore) UpdateTotals(_ context.Context, tenantID, id string, subtotal, total, amountDue int64) (domain.Invoice, error) {
-	inv, ok := m.invoices[id]
-	if !ok || inv.TenantID != tenantID {
-		return domain.Invoice{}, errs.ErrNotFound
-	}
-	inv.SubtotalCents = subtotal
-	inv.TotalAmountCents = total
-	inv.AmountDueCents = amountDue
-	inv.UpdatedAt = time.Now().UTC()
-	m.invoices[id] = inv
-	return inv, nil
-}
-
 func (m *memStore) CreateLineItem(_ context.Context, tenantID string, item domain.InvoiceLineItem) (domain.InvoiceLineItem, error) {
 	item.ID = fmt.Sprintf("vlx_ili_%d", len(m.lineItems[item.InvoiceID])+1)
 	item.TenantID = tenantID
@@ -785,6 +758,17 @@ func (m *memStore) ClaimAutoCharge(_ context.Context, _, id string) (bool, error
 		return false, errs.ErrNotFound
 	}
 	return inv.AutoChargePending && inv.PaymentStatus == domain.PaymentPending &&
+		inv.Status == domain.InvoiceFinalized && inv.AmountDueCents > 0, nil
+}
+
+func (m *memStore) ClaimChargeForManualCollect(_ context.Context, _, id string) (bool, error) {
+	inv, ok := m.invoices[id]
+	if !ok {
+		return false, errs.ErrNotFound
+	}
+	// Mirrors claimChargeLease's predicate (sans the lease window, which
+	// memStore doesn't model): finalized, pending/failed, owing.
+	return (inv.PaymentStatus == domain.PaymentPending || inv.PaymentStatus == domain.PaymentFailed) &&
 		inv.Status == domain.InvoiceFinalized && inv.AmountDueCents > 0, nil
 }
 

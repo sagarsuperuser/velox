@@ -7,6 +7,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
+import { invalidateMoneySurfaces } from '@/lib/invalidateMoney'
 import { api, formatCents, formatDate, formatDateTime, getCurrencySymbol } from '@/lib/api'
 import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { endOfDayInTZ } from '@/lib/dates'
@@ -188,7 +189,7 @@ export default function CreditsPage() {
   const firstErr = balancesQuery.error ?? customersQuery.error
   const error = firstErr instanceof Error ? firstErr.message : (firstErr ? 'Failed to load credits' : null)
   const loadData = () => {
-    void queryClient.invalidateQueries({ queryKey: ['credits'] })
+    invalidateMoneySurfaces(queryClient)
   }
 
   // Per-customer ledger query — keyed by (customer, sort, dir) so

@@ -596,6 +596,25 @@ func (s *Service) SettleZeroDue(ctx context.Context, tenantID, id string) (domai
 	return s.store.MarkPaid(ctx, tenantID, id, "", s.clock.Now(ctx))
 }
 
+// ClaimChargeForManualCollect takes the per-invoice charge lease for the
+// operator's Collect Payment action — the same lease the auto-charge sweep
+// and dunning retry hold, so no two initiators charge one invoice
+// concurrently (2026-07-21 snapshot-race audit). false = another charge is
+// in flight (or the invoice left the chargeable state); the operator
+// retries after the lease window.
+func (s *Service) ClaimChargeForManualCollect(ctx context.Context, tenantID, id string) (bool, error) {
+	return s.store.ClaimChargeForManualCollect(ctx, tenantID, id)
+}
+
+// ReleaseChargeClaim frees the charge lease on provably-pre-Stripe skip
+// paths only (claim taken, then a gate failed BEFORE ChargeInvoice was
+// called). Never call it after a charge attempt — an ambiguous outcome
+// must wait out the lease precisely because the call may have reached
+// Stripe (see Store.ReleaseAutoChargeClaim).
+func (s *Service) ReleaseChargeClaim(ctx context.Context, tenantID, id string) error {
+	return s.store.ReleaseAutoChargeClaim(ctx, tenantID, id)
+}
+
 // SetNoPMNotifiedAt stamps the send-once no-PM email marker (see Store).
 func (s *Service) SetNoPMNotifiedAt(ctx context.Context, tenantID, id string, at time.Time) error {
 	return s.store.SetNoPMNotifiedAt(ctx, tenantID, id, at)

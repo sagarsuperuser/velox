@@ -4,6 +4,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz'
+import { invalidateMoneySurfaces } from '@/lib/invalidateMoney'
 import { api, formatCents, formatDate, formatDateTime, getTenantTimezone, type Subscription, type SubscriptionItem, type Plan, type ItemChangeResult } from '@/lib/api'
 import { formatCivilDate, formatCivilPeriod, startOfDayInTZ } from '@/lib/dates'
 import { showApiError } from '@/lib/formErrors'
@@ -161,6 +162,9 @@ export default function SubscriptionDetailPage() {
     }
     queryClient.invalidateQueries({ queryKey: ['subscriptions-for-test-clock-chip'] })
     queryClient.invalidateQueries({ queryKey: ['subscriptions-for-trial-badge'] })
+    // Plan/quantity changes can credit the customer's balance via
+    // proration — refresh the balance-bearing families (2026-07-21 audit).
+    invalidateMoneySurfaces(queryClient, { customerId: sub?.customer_id })
   }
 
   const activateMutation = useMutation({

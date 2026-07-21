@@ -16,6 +16,7 @@ import { effectiveNow, sinceMs, untilMs, type EffectiveNow } from '@/lib/effecti
 import { Layout } from '@/components/Layout'
 import { TestClockBadge } from '@/components/TestClockBadge'
 import { showApiError } from '@/lib/formErrors'
+import { invalidateMoneySurfaces } from '@/lib/invalidateMoney'
 import { cn } from '@/lib/utils'
 import { statusBadgeVariant, statusBorderColor } from '@/lib/status'
 import { InitialsAvatar } from '@/components/InitialsAvatar'
@@ -454,6 +455,11 @@ function RunsTab() {
           onResolved={() => {
             setResolveTarget(null)
             queryClient.invalidateQueries({ queryKey: ['dunning-runs'] })
+            queryClient.invalidateQueries({ queryKey: ['dunning-stats'] })
+            // Resolution settles/voids the invoice and can reverse
+            // applied credits — refresh every money-bearing family
+            // (2026-07-21 audit: stale lists invited double collection).
+            invalidateMoneySurfaces(queryClient)
             toast.success('Dunning run resolved')
           }}
         />

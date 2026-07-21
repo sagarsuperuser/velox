@@ -1016,6 +1016,14 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 		respond.Validation(w, r, "invoice is already paid")
 		return
 	}
+	if inv.PaymentStatus == domain.PaymentUnknown {
+		// A possibly-succeeded payment is the reconciler's to resolve —
+		// blind re-charging an ambiguous outcome is how double charges
+		// happen. The claim below also excludes 'unknown'; this gate
+		// exists to say WHY instead of a generic conflict.
+		respond.Validation(w, r, "a previous payment attempt is still being confirmed — retry after it resolves")
+		return
+	}
 	if inv.AmountDueCents <= 0 {
 		respond.Validation(w, r, "invoice has no amount due")
 		return
@@ -1026,9 +1034,49 @@ func (h *Handler) collectPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-invoice charge lease (2026-07-21 snapshot-race audit): manual
+	// collect was the one charge initiator outside the mutual-exclusion
+	// ring — a concurrent sweep/dunning charge, or a credit apply landing
+	// between the read above and the charge below, meant a double charge
+	// or an overcharge at the stale pre-credit amount. The claim's CAS
+	// re-asserts the chargeable predicate against committed truth.
+	claimed, err := h.svc.ClaimChargeForManualCollect(r.Context(), tenantID, id)
+	if err != nil {
+		respond.InternalError(w, r)
+		return
+	}
+	if !claimed {
+		respond.Validation(w, r, "a charge for this invoice is already in progress or it is no longer chargeable — refresh and retry in a few minutes")
+		return
+	}
+
 	ps, err := h.paymentSetups.GetPaymentSetup(r.Context(), tenantID, inv.CustomerID)
 	if err != nil || ps.SetupStatus != domain.PaymentSetupReady || ps.StripeCustomerID == "" {
+		// Provably pre-Stripe — free the lease so sweep/dunning aren't
+		// locked out for the window.
+		_ = h.svc.ReleaseChargeClaim(r.Context(), tenantID, id)
 		respond.Validation(w, r, "customer has no payment method set up")
+		return
+	}
+
+	// Post-credit truth (ADR-088, mirrors the sweep): drain the balance,
+	// then charge the RELOADED remainder — never the handler snapshot. An
+	// apply failure releases the lease and reports; charging pre-credit
+	// would consummate exactly the overcharge the sweep exists to avoid.
+	inv, err = h.svc.ApplyCreditBalance(r.Context(), tenantID, id)
+	if err != nil {
+		_ = h.svc.ReleaseChargeClaim(r.Context(), tenantID, id)
+		respond.FromError(w, r, err, "credit")
+		return
+	}
+	if inv.AmountDueCents <= 0 {
+		// Credits covered it — settle without a card charge.
+		settled, serr := h.svc.SettleZeroDue(r.Context(), tenantID, id)
+		if serr != nil {
+			respond.FromError(w, r, serr, "invoice")
+			return
+		}
+		respond.JSON(w, r, http.StatusOK, settled)
 		return
 	}
 
