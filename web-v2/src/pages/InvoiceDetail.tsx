@@ -10,7 +10,6 @@ import { api, downloadPDF, formatCents, formatRate, formatDate, formatDateTime, 
 import { formatCivilPeriod } from '@/lib/dates'
 import { InvoiceAttention } from '@/components/InvoiceAttention'
 import { TestClockBanner } from '@/components/TestClockBanner'
-import { SimulatedBadge } from '@/components/TestClockBadge'
 import { useGetInvoice } from '@/lib/gen/queries.gen'
 import type { Invoice } from '@/lib/gen/schemas/invoice'
 import type { InvoiceLineItem as LineItem } from '@/lib/gen/schemas/invoiceLineItem'
@@ -813,13 +812,8 @@ export default function InvoiceDetailPage() {
               domain-code and visually noisy. */}
           <div className="flex items-center gap-2 mt-5">
             <Badge variant={statusVariant(invoice.status)}>{humaniseInvoiceStatus(invoice.status)}</Badge>
-            {/* Invoice-level simulated marker: every domain date below
-                (Issued/Due/Period/Paid/Voided) is test-clock time, so one
-                badge here is clearer than tagging each date. Authoritative
-                is_simulated — covers manual one-off invoices too. */}
-            {invoice.is_simulated && (
-              <SimulatedBadge title="All dates on this invoice are simulated test-clock time, not wall-clock" />
-            )}
+            {/* Simulated disclosure lives in the page banner alone
+                (ADR-099: once per scope) — the header pill duplicated it. */}
             {/* Bare date — the badge already says "Paid"/"Voided", so
                 prefixing the date with the same word is redundant.
                 "Paid Paid May 2, 2026" → "Paid · May 2, 2026". */}

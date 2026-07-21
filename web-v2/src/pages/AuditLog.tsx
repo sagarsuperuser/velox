@@ -506,7 +506,7 @@ export default function AuditLogPage() {
                                   title={`Operator clicked at wall-clock ${formatDateTime(entry.created_at)}; the clock stood at simulated ${formatDateTime(sim.simEffectiveAt)}${sim.testClockID ? ` on test clock ${sim.testClockID}` : ''}`}
                                   className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300 ml-2"
                                 >
-                                  test clock
+                                  Simulated
                                   <span className="font-mono opacity-80">{formatDateTime(sim.simEffectiveAt)}</span>
                                 </span>
                               )}
