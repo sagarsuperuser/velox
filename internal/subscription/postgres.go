@@ -2326,12 +2326,11 @@ func scanSubRow(row rowScanner, sub *domain.Subscription) error {
 	}
 	// BillingThresholds is partially populated here from the columns on the
 	// row. ItemThresholds is filled in by hydrateThresholds because it lives
-	// in an aux table. We always allocate the struct when amount_gte is set
-	// or the row's reset_cycle has been explicitly toggled away from default,
-	// and let hydrateThresholds add the items if any exist. When the caller
-	// skips hydrateThresholds entirely (rare — see ListWithThresholds for the
-	// only such site), the struct is nil-or-amount-only, which is the same
-	// shape pre-hydrate.
+	// in an aux table. The struct is allocated here only when amount_gte is
+	// set; for item-only thresholds hydrateThresholds allocates it and
+	// re-reads the row's reset_cycle column itself (it is NOT derivable
+	// from struct-nilness — assuming the column default here is the bug
+	// fixed 2026-07-21).
 	if thresholdAmountGTE.Valid {
 		sub.BillingThresholds = &domain.BillingThresholds{
 			AmountGTE:         thresholdAmountGTE.Int64,
@@ -2393,8 +2392,20 @@ func hydrateThresholds(ctx context.Context, tx *sql.Tx, sub *domain.Subscription
 		return nil
 	}
 	if sub.BillingThresholds == nil {
+		// Item-only thresholds: scanSubRow allocates the struct only when
+		// amount_gte is set, so the row's real reset_cycle value was
+		// discarded — read it back rather than guess. Fabricating `true`
+		// here made every item-only threshold sub re-anchor its cycle on
+		// fire regardless of the stored flag (found live, FLOW B14
+		// 2026-07-21: engine + API both consumed the fabricated value).
+		var resetCycle bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT billing_threshold_reset_cycle FROM subscriptions WHERE id = $1
+		`, sub.ID).Scan(&resetCycle); err != nil {
+			return fmt.Errorf("read reset_cycle for item thresholds on %s: %w", sub.ID, err)
+		}
 		sub.BillingThresholds = &domain.BillingThresholds{
-			ResetBillingCycle: true, // default mirrors the column default
+			ResetBillingCycle: resetCycle,
 			ItemThresholds:    items,
 		}
 		return nil
