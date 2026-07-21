@@ -152,6 +152,9 @@ export const api = {
     apiRequest<Meter>('GET', `/meters/${id}`),
   createMeter: (data: { key: string; name: string; unit?: string; aggregation?: string; rating_rule_version_id?: string }) =>
     apiRequest<Meter>('POST', '/meters', data),
+  // "" clears the default binding; unmatched-dimension usage goes unbilled again.
+  updateMeter: (id: string, data: { rating_rule_version_id: string }) =>
+    apiRequest<Meter>('PATCH', `/meters/${id}`, data),
   listMeterPricingRules: (meterId: string) =>
     apiRequest<{ data: MeterPricingRule[] }>('GET', `/meters/${meterId}/pricing-rules`),
   createMeterPricingRule: (

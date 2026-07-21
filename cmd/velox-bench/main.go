@@ -28,7 +28,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,7 +64,10 @@ func main() {
 	defer func() { _ = pool.Close() }()
 
 	db := postgres.NewDB(pool, 30*time.Second)
-	ctx := context.Background()
+	// Bench rows are synthetic — stamp them test-mode. TxTenant refuses to
+	// open without an explicit livemode, so a bare context would fail every
+	// ingest.
+	ctx := postgres.WithLivemode(context.Background(), false)
 
 	tenantID, customerID, meterID := bootstrapFixtures(ctx, db)
 	store := usage.NewPostgresStore(db)
@@ -75,6 +78,10 @@ func main() {
 
 	var totalEvents int64
 	var totalErrors int64
+	// A benchmark that errors on every insert must say WHY, not just count —
+	// the 2026-07-21 re-run failed 100% (missing livemode ctx) and the old
+	// count-only summary gave nothing to debug with.
+	var firstErr atomic.Value
 	var wg sync.WaitGroup
 	latencyChan := make(chan []time.Duration, *workers)
 
@@ -98,6 +105,7 @@ func main() {
 				lat := time.Since(t0)
 				if err != nil {
 					atomic.AddInt64(&totalErrors, 1)
+					firstErr.CompareAndSwap(nil, err.Error())
 					continue
 				}
 				atomic.AddInt64(&totalEvents, 1)
@@ -115,12 +123,15 @@ func main() {
 	for s := range latencyChan {
 		all = append(all, s...)
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	slices.Sort(all)
 
 	throughput := float64(totalEvents) / elapsed.Seconds()
 	fmt.Printf("\n--- result ---\n")
 	fmt.Printf("elapsed:    %s\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("events:     %d (errors: %d)\n", totalEvents, totalErrors)
+	if e := firstErr.Load(); e != nil {
+		fmt.Printf("first err:  %s\n", e)
+	}
 	fmt.Printf("throughput: %.0f events/sec\n", throughput)
 	if len(all) > 0 {
 		fmt.Printf("p50:        %s\n", all[len(all)*50/100].Round(time.Microsecond))
@@ -179,18 +190,18 @@ func bootstrapFixtures(ctx context.Context, db *postgres.DB) (string, string, st
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO customers (id, tenant_id, external_id, display_name, email)
-		VALUES ($1, $2, 'bench-customer', 'Bench Customer', 'bench@velox.local')
-		ON CONFLICT (id) DO NOTHING
+		INSERT INTO customers (id, tenant_id, external_id, display_name, email, livemode)
+		VALUES ($1, $2, 'bench-customer', 'Bench Customer', 'bench@velox.local', false)
+		ON CONFLICT (id) DO UPDATE SET livemode = false
 	`, benchCustomer, benchTenant)
 	if err != nil {
 		log.Fatalf("upsert customer: %v", err)
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO meters (id, tenant_id, name, key, unit, aggregation)
-		VALUES ($1, $2, 'Bench Tokens', 'bench_tokens', 'tokens', $3)
-		ON CONFLICT (id) DO NOTHING
+		INSERT INTO meters (id, tenant_id, name, key, unit, aggregation, livemode)
+		VALUES ($1, $2, 'Bench Tokens', 'bench_tokens', 'tokens', $3, false)
+		ON CONFLICT (id) DO UPDATE SET livemode = false
 	`, benchMeter, benchTenant, string(domain.AggSum))
 	if err != nil {
 		log.Fatalf("upsert meter: %v", err)
