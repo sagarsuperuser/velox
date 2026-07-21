@@ -10,7 +10,6 @@ import { showApiError } from '@/lib/formErrors'
 import { Layout } from '@/components/Layout'
 import { Combobox, type ComboboxOption } from '@/components/Combobox'
 import { TestClockBanner } from '@/components/TestClockBanner'
-import { TestClockBadge } from '@/components/TestClockBadge'
 import { ExpiryBadge } from '@/components/ExpiryBadge'
 import { effectiveNow } from '@/lib/effectiveNow'
 import { cn } from '@/lib/utils'
@@ -309,7 +308,6 @@ export default function SubscriptionDetailPage() {
                 left; lifecycle state pills (active/paused/canceled) sit
                 on the right with the action buttons. Stripe / Linear /
                 Vercel all separate the two zones this way. */}
-            {sub.test_clock_id && <TestClockBadge testClockId={sub.test_clock_id} link />}
           </div>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-xs text-muted-foreground font-mono bg-muted px-2 py-0.5 rounded">{sub.id}</span>
@@ -1099,28 +1097,14 @@ export default function SubscriptionDetailPage() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <p className="text-sm text-foreground">{event.description}</p>
-                        {/* Chip semantics per ADR-030 2026-07-18
-                            amendment: this is a NARRATIVE surface, so
-                            the row's primary timestamp is the
-                            simulated instant (sim_effective_at) when
-                            the action landed on a clock-pinned
-                            entity — it lines up with every other date
-                            on this page (periods, invoices, stat
-                            cards). Wall-clock (audit_log.created_at)
-                            is provenance, demoted to the "Recorded …"
-                            subline; the raw clock ID stays out of the
-                            visible copy (chip tooltip carries the
-                            full dual-stamp provenance). The AuditLog
-                            page deliberately does the OPPOSITE
-                            (wall-primary) — it's a forensic surface. */}
-                        {event.is_simulated && (
-                          <span
-                            title={event.sim_effective_at ? `Simulated ${formatDateTime(event.sim_effective_at)} on test clock ${event.test_clock_id || ''}; operator action recorded at wall-clock ${formatDateTime(event.timestamp)}` : 'Action affected a clock-pinned entity'}
-                            className="inline-flex shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-800 dark:text-amber-300"
-                          >
-                            test clock
-                          </span>
-                        )}
+                        {/* Narrative surface (ADR-030 2026-07-18 amendment):
+                            primary timestamp is the simulated instant,
+                            wall-clock demotes to the "Recorded …" subline.
+                            No per-row simulated chip here — the page banner
+                            is the single disclosure for this scope (ADR-099);
+                            the row's own timestamps carry the information.
+                            The AuditLog page keeps per-row chips: it is a
+                            MIXED wall-primary forensic list. */}
                       </div>
                       <span className="text-xs text-muted-foreground ml-4 whitespace-nowrap">{formatDateTime(event.sim_effective_at || event.timestamp)}</span>
                     </div>
