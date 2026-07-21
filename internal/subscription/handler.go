@@ -2395,6 +2395,7 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 				)
 				detail.InvoiceID = existing.ID
 				detail.Type = "invoice"
+				detail.AmountCents = existing.TotalAmountCents
 				return detail, nil
 			}
 			return nil, fmt.Errorf("create proration invoice: %w", err)
@@ -2402,6 +2403,13 @@ func (h *Handler) handleItemProration(ctx context.Context, tenantID string, sub 
 
 		detail.InvoiceID = inv.ID
 		detail.Type = "invoice"
+		// GROSS, like the credit/adjustment branches: amount_cents is "the
+		// money amount of the outcome artifact" in every proration type. It
+		// previously carried the pre-tax net delta here, so the activity
+		// timeline read "Proration invoice $18.00" beside an invoice whose
+		// own page said $19.80 — two reference frames in one feed (adjudicated
+		// in the FLOW B12 walk; credits always showed the gross).
+		detail.AmountCents = inv.TotalAmountCents
 		// Enroll the freshly-created charge invoice into the auto-charge sweep so
 		// it actually collects (ADR — proration parity). Without this an upgrade /
 		// add / qty-increase invoice finalizes but is never charged, because

@@ -562,6 +562,23 @@ func TestUpdateItem_ProrationAppliesTax(t *testing.T) {
 	if inv.AmountDueCents != wantTotal {
 		t.Errorf("invoice amount_due = %d, want %d", inv.AmountDueCents, wantTotal)
 	}
+
+	// FLOW B12 adjudication: proration.amount_cents is GROSS in every type —
+	// for "invoice" it's the invoice total including tax, matching what the
+	// credit branch always reported (the gross credited). Pre-fix it carried
+	// the pre-tax net delta, so the activity timeline read "Proration invoice
+	// $18.00" beside an invoice whose own page said $19.80.
+	var resp ItemChangeResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Proration == nil || resp.Proration.Type != "invoice" {
+		t.Fatalf("proration: got %+v, want type=invoice", resp.Proration)
+	}
+	if resp.Proration.AmountCents != wantTotal {
+		t.Errorf("proration.amount_cents: got %d, want %d (the invoice TOTAL incl. tax, not the net delta)",
+			resp.Proration.AmountCents, wantTotal)
+	}
 }
 
 // TestUpdateItem_ProrationTaxErrorDefersToDraft covers the medium-severity

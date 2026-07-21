@@ -872,9 +872,14 @@ type ProrationDetail struct {
 	OldPlanID       string  `json:"old_plan_id"`
 	NewPlanID       string  `json:"new_plan_id"`
 	ProrationFactor float64 `json:"proration_factor"`
-	AmountCents     int64   `json:"amount_cents"`
-	Type            string  `json:"type"` // "invoice", "credit", or "adjustment" (unpaid-source amount_due reduction, ADR-050)
-	InvoiceID       string  `json:"invoice_id,omitempty"`
+	// AmountCents is the money amount of the proration OUTCOME artifact,
+	// gross in every type: the invoice's total including tax ("invoice"),
+	// the gross credited to the balance ("credit"), or the amount_due
+	// relieved on the unpaid source ("adjustment"). The pre-tax net delta
+	// is derivable from the invoice itself (subtotal_cents).
+	AmountCents int64  `json:"amount_cents"`
+	Type        string `json:"type"` // "invoice", "credit", or "adjustment" (unpaid-source amount_due reduction, ADR-050)
+	InvoiceID   string `json:"invoice_id,omitempty"`
 	// TaxProvider / TaxCalculationID are internal (not API surface) — they
 	// route the post-commit Stripe Tax transaction creation up to the atomic
 	// caller, which can only commit after its tx is durable. Empty for
