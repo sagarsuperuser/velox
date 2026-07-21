@@ -945,13 +945,13 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW B20: Segment-aware billing at cycle close (Lago / Orb shape)
 
-- [ ] **Mid-period plan swap (in_arrears, same interval):** sub on Plan A ($30/mo in_arrears), day 15 of March operator UpdateItem to Plan B ($60/mo in_arrears, immediate=true). At April 1 cycle close: invoice has **two base-fee lines** — `Plan A - base fee (qty 1, prorated 14/31 days)` ≈ $13.55 + `Plan B - base fee (qty 1, prorated 17/31 days)` ≈ $32.90. Total ≈ $46.45 (vs. pre-segment $60 or pre-defer $85).
-- [ ] **Mid-period plan swap, different meter sets:** Plan A has meter X only ($0.05/unit), Plan B has meter Y only ($0.10/unit). Swap day 15. Ingest 100 units of X in [Mar 1, Mar 15) and 50 units of Y in [Mar 15, Apr 1). Cycle close invoice has TWO usage lines: `Meter X (unit)` with `billing_period_start=Mar 1, billing_period_end=Mar 15`, $5.00; `Meter Y (unit)` with `billing_period_start=Mar 15, billing_period_end=Apr 1`, $5.00. Total usage $10.
-- [ ] **No mid-period changes (no-regress):** sub with no UpdateItem / AddItem / RemoveItem during the cycle → cycle-close invoice has exactly one base-fee line at the current plan, billing_period equals the full period.
-- [ ] **Scheduled plan-swap at boundary:** schedule UpdateItem with `immediate=false` from Plan A ($30) to Plan B ($60). At cycle close: invoice has **one** base-fee line at Plan A's $30 (not $60). New plan B takes effect for the next cycle.
-- [ ] **Mid-period item add:** sub with one item, AddItem on day 15. Cycle close: first item's full-period line + added item's segment line from day 15 to period_end. Added item's `billing_period_start` on the line equals add-time, NOT period_start.
-- [ ] **Mid-period item remove (in_arrears):** sub with one item-A + one item-B, RemoveItem on B day 15. Cycle close: item-A full-period line + item-B segment line from period_start to day 15. No credit grant emitted (in_arrears removed item was never prepaid).
-- [ ] **Immediate cancel after mid-period plan swap:** UpdateItem Plan A → Plan B day 10, Cancel day 20. `BillFinalOnImmediateCancel` invoice has TWO segment base lines: Plan A for [day 1, day 10) + Plan B for [day 10, day 20). Plus usage lines per (meter, segment).
+- [x] **Mid-period plan swap (in_arrears, same interval):** cycle close bills TWO base segments. *(walked 2026-07-21: A "prorated 14/31 days" 1,355¢ + B "prorated 17/31 days" 3,290¢ — line periods tile exactly at the swap instant; an arrears swap emits NO immediate proration invoice, the segments settle at close.)*
+- [x] **Mid-period plan swap, different meter sets:** TWO usage lines, each bounded to its plan's segment. *(walked 2026-07-21: Meter X 100×5¢=500¢ with line period [period open → swap instant]; Meter Y 50×10¢=500¢ with [swap instant → period end] — boundaries verbatim `2032-03-14T18:30` on all four lines.)*
+- [x] **No mid-period changes (no-regress):** exactly one full-period base line at the current plan. *(walked 2026-07-21: control sub — one line, 3,000¢.)*
+- [x] **Scheduled plan-swap at boundary (`immediate` omitted → pending):** close bills **one** base line at Plan A's price (3,000¢, not 6,000¢); Plan B takes effect next cycle. *(walked 2026-07-21.)*
+- [x] **Mid-period item add:** first item full-period line + added item's segment line from add-time to period end (line `billing_period_start` = add-time, NOT period start). *(walked 2026-07-21: 3,000¢ + "prorated 17/31 days" 3,290¢.)*
+- [x] **Mid-period item remove (in_arrears):** remaining item full-period + removed item's segment from period start to removal; NO credit grant (nothing was prepaid). *(walked 2026-07-21: 3,000¢ + "prorated 14/31 days" 2,710¢; ledger empty.)*
+- [x] **Immediate cancel after mid-period plan swap:** the final `subscription_cancel` invoice carries BOTH segment base lines. *(walked 2026-07-21: swap day 15, cancel day 20 → A "14/31" 1,355¢ + B "5/31" 968¢ = 2,323¢ net, formula-exact.)*
 
 ## FLOW B21: Immediate same-cadence cross-interval plan-swap (yearly ↔ monthly)
 
