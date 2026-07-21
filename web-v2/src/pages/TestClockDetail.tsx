@@ -384,6 +384,7 @@ export default function TestClockDetailPage() {
         <AdvanceClockDialog
           clock={clock}
           subs={subs}
+          customerCount={attachedCustomers.length}
           onClose={() => setShowAdvance(false)}
         />
       )}
@@ -432,10 +433,12 @@ type Sub = NonNullable<ReturnType<typeof api.listSubscriptionsOnClock> extends P
 function AdvanceClockDialog({
   clock,
   subs,
+  customerCount,
   onClose,
 }: {
   clock: TestClock
   subs: Sub[]
+  customerCount: number
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
@@ -553,7 +556,15 @@ function AdvanceClockDialog({
         <DialogHeader>
           <DialogTitle>Advance clock</DialogTitle>
           <DialogDescription>
-            Move the clock forward and run billing catchup for every subscription pinned to it.
+            {/* Blast radius up front: everyone on the clock moves together,
+                and the operator should know how many that is before
+                committing (clock-design review 2026-07-21). */}
+            Moves time forward for{' '}
+            <strong className="text-foreground">
+              {customerCount === 1 ? '1 customer' : `all ${customerCount} customers`}
+            </strong>{' '}
+            ({subs.length === 1 ? '1 subscription' : `${subs.length} subscriptions`}) pinned to this
+            clock, running billing catchup for each.
           </DialogDescription>
         </DialogHeader>
 
@@ -594,12 +605,18 @@ function AdvanceClockDialog({
             )}
           </div>
 
-          {overlongWarning && (
-            <div className="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs text-amber-900 dark:text-amber-200">
-              <strong>Heads up:</strong> jumping more than ~1 month closes many billing cycles in a single
-              run. Catchup may take a moment.
-            </div>
-          )}
+          {/* Fixed-height slot so the warning appearing/disappearing while
+              the operator types a target never shifts the footer buttons —
+              a moving Advance button ate a click during the FLOW B9 walk
+              (clock-design review 2026-07-21). */}
+          <div className="min-h-[3.25rem]">
+            {overlongWarning && (
+              <div className="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs text-amber-900 dark:text-amber-200">
+                <strong>Heads up:</strong> jumping more than ~1 month closes many billing cycles in a single
+                run. Catchup may take a moment.
+              </div>
+            )}
+          </div>
         </div>
 
         <DialogFooter>

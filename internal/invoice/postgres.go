@@ -2261,6 +2261,15 @@ func (s *PostgresStore) ListProcessingPayments(ctx context.Context, olderThan ti
 // sweep; the livemode filter prevents test-mode rows from being reconciled
 // under a live ctx (see #13). Status is a trusted internal enum (not user
 // input), interpolated into the predicate.
+//
+// DELIBERATELY NOT gated on is_simulated, unlike every sibling invoice sweep:
+// payment state-sync is the wall-clock plane by design (ADR-030's Stripe
+// exception — PaymentIntent truth lives at Stripe on real time, even for
+// clock-pinned invoices), and the catchup worker has no payment-sync phase,
+// so excluding simulated rows here would strand an ambiguous simulated charge
+// in unknown/processing forever. The settle path re-binds simulated time via
+// BindEffectiveNow + the velox_anchor_at PI anchor, so recovered outcomes
+// still stamp the simulated instant. See the ADR-030 wall-plane note.
 func (s *PostgresStore) listInflightPayments(ctx context.Context, status domain.InvoicePaymentStatus, olderThan time.Time, limit int) ([]domain.Invoice, error) {
 	tx, err := s.db.BeginTx(ctx, postgres.TxBypass, "")
 	if err != nil {

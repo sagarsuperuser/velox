@@ -55,7 +55,7 @@ function latestByKey(rules: RatingRule[]): Map<string, RatingRule> {
   return out
 }
 
-export function PriceOverridesCard({ customerId }: { customerId: string }) {
+export function PriceOverridesCard({ customerId, customerTestClockId }: { customerId: string; customerTestClockId?: string }) {
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<PriceOverride | null>(null)
@@ -134,6 +134,7 @@ export function PriceOverridesCard({ customerId }: { customerId: string }) {
       {creating && (
         <CreateOverrideDialog
           customerId={customerId}
+          clockPinned={!!customerTestClockId}
           rules={rulesData?.data ?? []}
           existing={overrides}
           onClose={() => setCreating(false)}
@@ -143,6 +144,7 @@ export function PriceOverridesCard({ customerId }: { customerId: string }) {
       {confirmDelete && (
         <DeleteOverrideDialog
           override={confirmDelete}
+          clockPinned={!!customerTestClockId}
           ruleName={listPrices.get(confirmDelete.rule_key)?.name || confirmDelete.rule_key}
           onClose={() => setConfirmDelete(null)}
           onDeleted={() => { setConfirmDelete(null); refresh() }}
@@ -152,8 +154,9 @@ export function PriceOverridesCard({ customerId }: { customerId: string }) {
   )
 }
 
-function CreateOverrideDialog({ customerId, rules, existing, onClose, onCreated }: {
+function CreateOverrideDialog({ customerId, clockPinned, rules, existing, onClose, onCreated }: {
   customerId: string
+  clockPinned: boolean
   rules: RatingRule[]
   existing: PriceOverride[]
   onClose: () => void
@@ -350,6 +353,12 @@ function CreateOverrideDialog({ customerId, rules, existing, onClose, onCreated 
           <p className="text-xs text-muted-foreground border-t border-border pt-3">
             <strong className="text-foreground">Takes effect from this customer's next billing period.</strong>{' '}
             The period already in progress keeps the price it started with.
+            {clockPinned && (
+              <span className="block mt-1 text-amber-700 dark:text-amber-500">
+                Test-clock customer: in simulations, price changes apply to the current simulated
+                period too — the next-period rule holds only on real time.
+              </span>
+            )}
           </p>
 
           <DialogFooter>
@@ -364,8 +373,9 @@ function CreateOverrideDialog({ customerId, rules, existing, onClose, onCreated 
   )
 }
 
-function DeleteOverrideDialog({ override, ruleName, onClose, onDeleted }: {
+function DeleteOverrideDialog({ override, clockPinned, ruleName, onClose, onDeleted }: {
   override: PriceOverride
+  clockPinned: boolean
   ruleName: string
   onClose: () => void
   onDeleted: () => void
@@ -395,6 +405,12 @@ function DeleteOverrideDialog({ override, ruleName, onClose, onDeleted }: {
         <p className="text-sm text-muted-foreground">
           <strong className="text-foreground">List price applies from the next billing period.</strong>{' '}
           The period already in progress still bills the negotiated price it started with.
+          {clockPinned && (
+            <span className="block mt-1 text-xs text-amber-700 dark:text-amber-500">
+              Test-clock customer: in simulations, ending a deal affects the current simulated
+              period too — the next-period rule holds only on real time.
+            </span>
+          )}
         </p>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
