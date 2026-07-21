@@ -198,6 +198,67 @@ func TestUpdateItem_Downgrade_LIFOAcrossFundingInvoices(t *testing.T) {
 	}
 }
 
+// TestUpdateItem_Downgrade_LIFOTiebreak_SameInstantFunding pins the tie case
+// found live (FLOW B17c walk, 2026-07-21): a clock catchup stamps every
+// invoice it generates with the SAME simulated instant (and a same-second
+// subscribe+upgrade does it on wall time), so LIFO-by-CreatedAt alone was a
+// coin flip resolved by the funding query's oldest-first order — the clawback
+// landed on the day-1 invoice, the exact opposite of LIFO. On equal
+// timestamps the subscription_update invoice IS the later price level.
+func TestUpdateItem_Downgrade_LIFOTiebreak_SameInstantFunding(t *testing.T) {
+	ctx := clock.WithEffectiveNow(context.Background(), proNow)
+	tenantID := "t1"
+
+	store := newMemStore()
+	subID, itemID := seedSubWithItemAt(t, store, tenantID, "cus_1", "plan_pro", proPeriodStart, proPeriodEnd)
+	svc := NewService(store, nil)
+
+	plans := &plansMock{plans: map[string]domain.Plan{
+		"plan_pro":   {ID: "plan_pro", Name: "Pro", BaseAmountCents: 6000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+		"plan_basic": {ID: "plan_basic", Name: "Basic", BaseAmountCents: 2000, Currency: "USD", BaseBillTiming: domain.BillInAdvance},
+	}}
+	// BOTH funding invoices born at the same instant; the query returns
+	// oldest-reason-first (create, then update) — the order a stable sort
+	// preserves on a timestamp tie.
+	baseInv := domain.Invoice{
+		ID: "base_inv", PaymentStatus: domain.PaymentSucceeded,
+		BillingReason: domain.BillingReasonSubscriptionCreate,
+		SubtotalCents: 2000, TaxFacts: domain.TaxFacts{TaxAmountCents: 200}, TotalAmountCents: 2200,
+		CreatedAt: proPeriodStart,
+	}
+	upInv := domain.Invoice{
+		ID: "up_inv", PaymentStatus: domain.PaymentSucceeded,
+		BillingReason: domain.BillingReasonSubscriptionUpdate,
+		SubtotalCents: 4000, TaxFacts: domain.TaxFacts{TaxAmountCents: 400}, TotalAmountCents: 4400,
+		CreatedAt: proPeriodStart, // SAME instant as the base invoice
+	}
+	invoices := &invoicesMock{
+		sourceInvoice:   baseInv,
+		fundingInvoices: []domain.Invoice{baseInv, upInv},
+	}
+	credits := &creditsMock{}
+	cn := &fakeCNIssuer{}
+
+	h := NewHandler(svc)
+	h.SetProrationDeps(plans, invoices, credits)
+	h.SetCreditNoteIssuer(cn)
+
+	body, _ := json.Marshal(UpdateItemInput{NewPlanID: "plan_basic", Immediate: true})
+	req := updateItemURL(context.WithValue(ctx, auth.TestTenantIDKey(), tenantID), subID, itemID, body)
+	rr := httptest.NewRecorder()
+	h.updateItem(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200. body=%s", rr.Code, rr.Body.String())
+	}
+	if len(cn.calls) != 1 {
+		t.Fatalf("CreateAndIssueAdjustment calls: got %d, want 1: %+v", len(cn.calls), cn.calls)
+	}
+	if cn.calls[0].invoiceID != "up_inv" {
+		t.Errorf("same-instant LIFO tiebreak must target the subscription_update invoice, got %q", cn.calls[0].invoiceID)
+	}
+}
+
 // TestUpdateItem_Downgrade_FallsBackToNetGrantWhenIssuerUnwired proves the
 // downgrade path still works (legacy net ledger grant, no tax reversal) when the
 // CN issuer isn't wired — narrow setups / tests. Production always wires it.

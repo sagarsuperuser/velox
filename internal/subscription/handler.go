@@ -1866,7 +1866,21 @@ func (h *Handler) resolveClawbackPieces(ctx context.Context, tenantID string, su
 	var remainder int64
 	if changeType == domain.ItemChangeTypePlan {
 		// LIFO — newest funding invoice first (undo the latest price level).
-		sort.SliceStable(caps, func(a, b int) bool { return caps[a].inv.CreatedAt.After(caps[b].inv.CreatedAt) })
+		// Equal timestamps are REAL, not theoretical: a clock catchup stamps
+		// every invoice it generates with the same simulated instant, and a
+		// same-second subscribe+upgrade does it on wall time. On a tie the
+		// subscription_update invoice IS the later price level (the funding
+		// query encodes the same tiebreak, ASC) — without this clause the
+		// stable sort kept the query's oldest-first order and the clawback
+		// landed on the day-1 invoice, the exact opposite of LIFO (found
+		// live, FLOW B17c walk 2026-07-21).
+		sort.SliceStable(caps, func(a, b int) bool {
+			if caps[a].inv.CreatedAt.Equal(caps[b].inv.CreatedAt) {
+				return caps[a].inv.BillingReason == domain.BillingReasonSubscriptionUpdate &&
+					caps[b].inv.BillingReason != domain.BillingReasonSubscriptionUpdate
+			}
+			return caps[a].inv.CreatedAt.After(caps[b].inv.CreatedAt)
+		})
 		for i := range caps {
 			netCaps[i] = caps[i].netCap
 		}
