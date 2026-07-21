@@ -61,6 +61,7 @@ export default function MeterDetailPage() {
   const queryClient = useQueryClient()
 
   const [createOpen, setCreateOpen] = useState(false)
+  const [defaultRuleOpen, setDefaultRuleOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<MeterPricingRule | null>(null)
 
   const { data: meter, isLoading: meterLoading, error: meterError, refetch } = useQuery({
@@ -234,9 +235,14 @@ export default function MeterDetailPage() {
                 <p className="text-sm text-muted-foreground mt-2">{ratingRule.name}</p>
               )}
             </div>
-            {ratingRule && (
-              <Badge variant="secondary">v{ratingRule.version}</Badge>
-            )}
+            <div className="flex items-center gap-2">
+              {ratingRule && (
+                <Badge variant="secondary">v{ratingRule.version}</Badge>
+              )}
+              <Button variant="outline" size="sm" onClick={() => setDefaultRuleOpen(true)}>
+                {meter.rating_rule_version_id ? 'Change' : 'Link rule'}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -435,6 +441,20 @@ export default function MeterDetailPage() {
         />
       )}
 
+      {defaultRuleOpen && (
+        <SetDefaultRuleDialog
+          meterId={meter.id}
+          currentRuleId={meter.rating_rule_version_id ?? ''}
+          ratingRules={ratingRules?.data ?? []}
+          onClose={() => setDefaultRuleOpen(false)}
+          onSaved={() => {
+            setDefaultRuleOpen(false)
+            queryClient.invalidateQueries({ queryKey: ['meter', id] })
+            queryClient.invalidateQueries({ queryKey: ['meter-rating-rule'] })
+          }}
+        />
+      )}
+
       {deleteTarget && (
         <TypedConfirmDialog
           open
@@ -453,6 +473,93 @@ export default function MeterDetailPage() {
         />
       )}
     </Layout>
+  )
+}
+
+function SetDefaultRuleDialog({
+  meterId,
+  currentRuleId,
+  ratingRules,
+  onClose,
+  onSaved,
+}: {
+  meterId: string
+  currentRuleId: string
+  ratingRules: RatingRule[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [ratingRuleId, setRatingRuleId] = useState<string>(currentRuleId)
+
+  const saveMutation = useMutation({
+    mutationFn: (ruleId: string) => api.updateMeter(meterId, { rating_rule_version_id: ruleId }),
+    onSuccess: (_, ruleId) => {
+      toast.success(ruleId ? 'Default pricing rule linked' : 'Default pricing rule unlinked')
+      onSaved()
+    },
+    onError: (err) => showApiError(err, 'Failed to update default pricing rule'),
+  })
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Default pricing rule</DialogTitle>
+          <DialogDescription>
+            Prices events that no dimension-matched rule claims. Takes effect at the
+            next invoice close; without it, unmatched usage is not billed.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div>
+          <Label className="text-xs uppercase tracking-wide text-muted-foreground">Rating rule</Label>
+          <Select
+            items={ratingRules.map(rr => ({ value: rr.id, label: `${rr.name} — ${rr.mode} · v${rr.version}` }))}
+            value={ratingRuleId}
+            onValueChange={(v) => setRatingRuleId(v ?? '')}
+          >
+            <SelectTrigger className="mt-2 w-full">
+              <SelectValue placeholder="Select rating rule…" />
+            </SelectTrigger>
+            <SelectContent>
+              {ratingRules.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-muted-foreground">No rating rules — create one first.</div>
+              ) : (
+                ratingRules.map(rr => (
+                  <SelectItem key={rr.id} value={rr.id}>
+                    <span className="text-sm">{rr.name}</span>
+                    <span className="text-xs text-muted-foreground ml-2">{rr.mode} · v{rr.version}</span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <DialogFooter className={currentRuleId ? 'sm:justify-between' : undefined}>
+          {currentRuleId && (
+            <Button
+              variant="ghost"
+              className="text-destructive hover:text-destructive"
+              onClick={() => saveMutation.mutate('')}
+              disabled={saveMutation.isPending}
+            >
+              Unlink rule
+            </Button>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button
+              onClick={() => saveMutation.mutate(ratingRuleId)}
+              disabled={!ratingRuleId || ratingRuleId === currentRuleId || saveMutation.isPending}
+            >
+              {saveMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : null}
+              Save
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
