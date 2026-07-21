@@ -70,6 +70,7 @@ func (e AttentionAction) Valid() bool {
 // Defines values for AttentionReason.
 const (
 	AwaitingPayment      AttentionReason = "awaiting_payment"
+	DunningExhausted     AttentionReason = "dunning_exhausted"
 	NoPaymentMethod      AttentionReason = "no_payment_method"
 	PaymentAnomaly       AttentionReason = "payment_anomaly"
 	PaymentFailed        AttentionReason = "payment_failed"
@@ -84,6 +85,8 @@ const (
 func (e AttentionReason) Valid() bool {
 	switch e {
 	case AwaitingPayment:
+		return true
+	case DunningExhausted:
 		return true
 	case NoPaymentMethod:
 		return true
@@ -731,7 +734,9 @@ type Attention struct {
 	// sub-code. `payment_anomaly` (ADR-068) reports money that does
 	// not reconcile — double charge, captured-vs-booked amount
 	// mismatch, or a payment on a voided invoice — and is surfaced
-	// even on paid/voided invoices.
+	// even on paid/voided invoices. `dunning_exhausted` reports a
+	// no-payment-method invoice whose automatic recovery has ended
+	// without collecting (2026-07-22).
 	Reason AttentionReason `json:"reason"`
 
 	// Severity Urgency of an Attention surface. Operators sort/filter on this
@@ -769,7 +774,9 @@ type AttentionActionItem struct {
 // sub-code. `payment_anomaly` (ADR-068) reports money that does
 // not reconcile — double charge, captured-vs-booked amount
 // mismatch, or a payment on a voided invoice — and is surfaced
-// even on paid/voided invoices.
+// even on paid/voided invoices. `dunning_exhausted` reports a
+// no-payment-method invoice whose automatic recovery has ended
+// without collecting (2026-07-22).
 type AttentionReason string
 
 // AttentionSeverity Urgency of an Attention surface. Operators sort/filter on this

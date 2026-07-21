@@ -7,6 +7,8 @@ import { Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { api, type Customer, type Plan, type Subscription } from '@/lib/api'
 import { applyApiError } from '@/lib/formErrors'
+import { hasUsableCard } from '@/lib/paymentReadiness'
+import { toast } from 'sonner'
 
 import { CustomerCombobox } from '@/components/CustomerCombobox'
 import { Button } from '@/components/ui/button'
@@ -122,8 +124,25 @@ export function CreateSubscriptionDialog({
       ...(data.usage_cap_units ? { usage_cap_units: parseInt(data.usage_cap_units) } : {}),
       ...(data.overage_action !== 'charge' ? { overage_action: data.overage_action } : {}),
     }),
-    onSuccess: (created) => {
+    onSuccess: (created, vars) => {
       onCreated(created)
+      // Shift-left note (2026-07-22 audit, P1-5): a just-started
+      // subscription with no card on file will try to auto-charge a
+      // card that isn't there. Non-blocking — the sub IS created (we
+      // never gate creation on a card, matching every reference
+      // platform). Only when it started; a trial/scheduled sub isn't
+      // charging yet.
+      if (vars.start_now) {
+        void api.listCustomerPaymentMethods(created.customer_id)
+          .then(res => {
+            if (!hasUsableCard(res.data ?? [])) {
+              toast.warning('No payment method on file', {
+                description: "This customer's first invoice can't be collected automatically. Add a card to turn on automatic billing.",
+              })
+            }
+          })
+          .catch(() => { /* best-effort nudge — never block on the check */ })
+      }
     },
     onError: (err) => {
       applyApiError(form, err, ['code', 'display_name', 'customer_id', 'items', 'billing_time', 'trial_days', 'usage_cap_units', 'overage_action'])

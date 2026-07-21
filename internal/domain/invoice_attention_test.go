@@ -634,3 +634,82 @@ func TestClassifyTaxAttention_RetryPolicyTruth(t *testing.T) {
 		}
 	})
 }
+
+// TestClassifyInvoiceAttention_NoPaymentMethod_Simulated pins the clock-aware
+// auto-charge reassurance (2026-07-22 payment-surfacing audit, P1-1): the
+// wall-clock pending-charge sweep excludes clock-pinned subs, so on a
+// simulated invoice the banner must promise collection on the next
+// test-clock advance — not "on the next tick", which never comes in real
+// time. classifyPaymentScheduled got this carve-out first;
+// no_payment_method must match. Mutation seam: drop the IsSimulated branch
+// in classifyNoPaymentMethod and both assertions fail.
+func TestClassifyInvoiceAttention_NoPaymentMethod_Simulated(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.IsSimulated = true
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{HasPaymentMethod: false, CustomerHasEmail: true})
+	if att == nil || att.Reason != AttentionReasonNoPaymentMethod {
+		t.Fatalf("expected no_payment_method, got %+v", att)
+	}
+	if !strings.Contains(att.Message, "next test-clock advance") {
+		t.Errorf("simulated no-PM banner must promise collection on the next clock advance, got %q", att.Message)
+	}
+	if strings.Contains(att.Message, "next billing tick") {
+		t.Errorf("simulated no-PM banner must not promise a wall-clock tick that excludes clock-pinned subs, got %q", att.Message)
+	}
+}
+
+// TestClassifyInvoiceAttention_DunningExhausted pins the escalated-run state
+// (2026-07-22 audit, P1-4): once the invoice's dunning run has escalated,
+// the banner must stop implying recovery is still running — it names the
+// exhaustion, keeps charge-on-attach as the fix, and keeps the resend
+// action only when an email exists. Mutation seam: drop the
+// atc.DunningEscalated branch and every assertion here fails.
+func TestClassifyInvoiceAttention_DunningExhausted(t *testing.T) {
+	inv := draft()
+	inv.Status = InvoiceFinalized
+	inv.PaymentStatus = PaymentPending
+	inv.UpdatedAt = time.Now()
+
+	att := ClassifyInvoiceAttention(inv, AttentionContext{
+		HasPaymentMethod: false, CustomerHasEmail: true, DunningEscalated: true,
+	})
+	if att == nil {
+		t.Fatal("expected attention")
+	}
+	if att.Reason != AttentionReasonDunningExhausted {
+		t.Fatalf("reason = %s, want %s", att.Reason, AttentionReasonDunningExhausted)
+	}
+	if att.Code != "payment.dunning_exhausted" {
+		t.Errorf("code = %s, want payment.dunning_exhausted", att.Code)
+	}
+	if !strings.Contains(att.Message, "ended without collecting") {
+		t.Errorf("escalated banner must state recovery ended, got %q", att.Message)
+	}
+	if !strings.Contains(att.Message, "Attaching a card") {
+		t.Errorf("escalated banner must keep charge-on-attach as the fix, got %q", att.Message)
+	}
+	codes := make(map[AttentionAction]bool)
+	for _, a := range att.Actions {
+		codes[a.Code] = true
+	}
+	if !codes[AttentionActionSendReminder] || !codes[AttentionActionAddPaymentMethod] {
+		t.Errorf("escalated (has-email) must offer resend + customer page, got %+v", att.Actions)
+	}
+
+	// No email: the resend action must drop, same rule as the base branch.
+	att = ClassifyInvoiceAttention(inv, AttentionContext{
+		HasPaymentMethod: false, CustomerHasEmail: false, DunningEscalated: true,
+	})
+	if att.Reason != AttentionReasonDunningExhausted {
+		t.Fatalf("no-email escalated reason = %s, want dunning_exhausted", att.Reason)
+	}
+	for _, a := range att.Actions {
+		if a.Code == AttentionActionSendReminder {
+			t.Errorf("no-email escalated must not offer a resend that cannot send, got %+v", att.Actions)
+		}
+	}
+}

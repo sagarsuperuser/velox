@@ -1,5 +1,7 @@
 package domain
 
+import "errors"
+
 // NotifyOutcome is the typed disposition of a customer-notification effect.
 // Effect interfaces return it INSTEAD of a bare nil so a policy skip (e.g.
 // "customer has no email — nothing to send") is observable by the caller
@@ -24,3 +26,11 @@ const (
 	// returns a typed 409 instead of a false success).
 	NotifySkippedNoEmail NotifyOutcome = "skipped_no_email"
 )
+
+// ErrNoPaymentMethodOnRetry is the typed failure a dunning charge-retry
+// returns when the customer still has no payment method — the retry
+// provably never reached the provider. Typed (2026-07-22 payment-
+// surfacing audit, P2-3) so the dunning warning email can render clean
+// customer copy instead of leaking the internal system-perspective
+// string ("no payment method for customer") into a customer inbox.
+var ErrNoPaymentMethodOnRetry = errors.New("no payment method for customer")

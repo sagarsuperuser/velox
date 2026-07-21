@@ -149,6 +149,7 @@ type Service struct {
 	paymentMethods PaymentMethodReader
 	stripeChecker  StripeChecker
 	customerReader CustomerReader
+	dunningReader  DunningRunReader
 	creditApplier  CreditApplier
 	settings       TenantSettingsReader
 	audit          AuditLogger
@@ -311,6 +312,22 @@ func (s *Service) SetTaxRetrier(r TaxRetrier) {
 // correct for healthy/transient cases).
 func (s *Service) SetPaymentMethodReader(r PaymentMethodReader) {
 	s.paymentMethods = r
+}
+
+// DunningRunReader is the narrow dunning lookup the attention classifier
+// uses to detect an ESCALATED run on a no-PM invoice (2026-07-22
+// payment-surfacing audit, P1-4): once automatic recovery has exhausted
+// and the policy's final action fired, the banner must stop implying
+// recovery is still running. Satisfied by *dunning.PostgresStore.
+// ErrNotFound (no run) is the common case and simply means "not
+// escalated".
+type DunningRunReader interface {
+	GetRunByInvoice(ctx context.Context, tenantID, invoiceID string) (domain.InvoiceDunningRun, error)
+}
+
+// SetDunningRunReader wires the dunning-run lookup (see DunningRunReader).
+func (s *Service) SetDunningRunReader(r DunningRunReader) {
+	s.dunningReader = r
 }
 
 // SetCustomerReader wires the customer lookup used to (a) stamp is_simulated
@@ -665,6 +682,18 @@ func (s *Service) attachAttention(ctx context.Context, inv domain.Invoice) domai
 		s.customerReader != nil && inv.CustomerID != "" {
 		if cust, err := s.customerReader.Get(ctx, inv.TenantID, inv.CustomerID); err == nil {
 			atc.CustomerHasEmail = cust.Email != ""
+		}
+	}
+	// Same lazy guard for the dunning-escalated signal (P1-4): only the
+	// finalized-unpaid-no-PM invoices that reach classifyNoPaymentMethod
+	// pay the run lookup, so list reads stay cheap. ErrNotFound / read
+	// errors leave the zero-value (false) — the banner shows the normal
+	// pre-escalation copy, which is the safe direction of drift.
+	if !atc.HasPaymentMethod && inv.Status == domain.InvoiceFinalized &&
+		inv.PaymentStatus == domain.PaymentPending &&
+		s.dunningReader != nil && inv.ID != "" {
+		if run, err := s.dunningReader.GetRunByInvoice(ctx, inv.TenantID, inv.ID); err == nil {
+			atc.DunningEscalated = run.State == domain.DunningEscalated
 		}
 	}
 	if s.stripeChecker != nil && inv.TenantID != "" {

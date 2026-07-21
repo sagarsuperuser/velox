@@ -759,6 +759,7 @@ export type AttentionReason =
   | 'payment_scheduled'
   | 'awaiting_payment'
   | 'no_payment_method'
+  | 'dunning_exhausted'
 
 export type AttentionAction =
   | 'edit_billing_profile'

@@ -338,7 +338,13 @@ export default function InvoiceDetailPage() {
     queryFn: () => api.listDunningRuns(`invoice_id=${id}`).then(r => r.data || []),
     enabled: !!id && !!showOperatorContext,
   })
-  const activeDunningRun = (dunningRunsData ?? []).find(r => r.state === 'active')
+  // Active run when one exists; otherwise the ESCALATED run — hiding the
+  // run the moment recovery gives up made the Diagnostic row vanish at
+  // exactly the point the operator most needs to see it (2026-07-22
+  // audit, P1-4). Resolved runs stay hidden: the invoice settled.
+  const activeDunningRun =
+    (dunningRunsData ?? []).find(r => r.state === 'active') ??
+    (dunningRunsData ?? []).find(r => r.state === 'escalated')
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -577,12 +583,11 @@ export default function InvoiceDetailPage() {
 
           {invoice.status === 'finalized' && invoice.payment_status !== 'succeeded' && invoice.payment_status !== 'processing' && invoice.amount_due_cents > 0 && (
             !hasPaymentMethod ? (
-              <Tooltip>
-                <TooltipTrigger render={<span className="inline-block cursor-not-allowed" />}>
-                  <Button size="sm" disabled className="pointer-events-none">Collect Payment</Button>
-                </TooltipTrigger>
-                <TooltipContent>Attach a payment method first.</TooltipContent>
-              </Tooltip>
+              // No card → no collect. A greyed-out primary next to the
+              // banner's active primary was competing noise; the banner
+              // owns the next step (2026-07-22 audit, P3-2 — Stripe hides
+              // the collect action when it cannot run).
+              null
             ) : (
               <Button size="sm" onClick={() => collectMutation.mutate()} disabled={acting}>
                 {collectMutation.isPending ? <><Loader2 size={14} className="animate-spin mr-1.5" />Collecting…</> : 'Collect Payment'}
@@ -763,7 +768,8 @@ export default function InvoiceDetailPage() {
         // overdue) opens the email dialog to send the hosted-invoice "pay"
         // link, where the operator confirms the recipient.
         onSendReminder={() =>
-          invoice?.attention?.reason === 'no_payment_method'
+          invoice?.attention?.reason === 'no_payment_method' ||
+          invoice?.attention?.reason === 'dunning_exhausted'
             ? resendSetupLinkMutation.mutate()
             : setShowEmailModal(true)
         }
@@ -1567,24 +1573,47 @@ function OperatorContextCard({
             </>
           )}
 
-          {dunningRun && (
-            <>
-              <dt className="text-xs text-muted-foreground">Dunning</dt>
-              <dd className="flex items-center gap-2">
-                <Badge variant="outline" className="border-amber-300 text-amber-700 dark:text-amber-400">
-                  {dunningRun.state}
-                </Badge>
-                <span className="text-xs text-muted-foreground">attempt {dunningRun.attempt_count}</span>
-              </dd>
+          {dunningRun && (() => {
+            // For a card-less invoice the scheduled dunning tick can't
+            // collect (it re-discovers no card, counts an attempt, sends a
+            // reminder) — so labelling it "Next retry: <date>" told the
+            // operator a charge would happen when it won't (2026-07-22
+            // audit, P1-3). Relabel to "Next reminder" and, once the run
+            // has escalated, drop the future-step line entirely. Real
+            // decline dunning (has-card) keeps "Next retry". attempt 0 is
+            // humanized to match the Dunning list's "No retries yet" (P2-2).
+            const cardless =
+              invoice.attention?.reason === 'no_payment_method' ||
+              invoice.attention?.reason === 'dunning_exhausted'
+            const escalated = dunningRun.state === 'escalated'
+            const attemptLabel =
+              dunningRun.attempt_count === 0
+                ? 'No retries yet'
+                : `${dunningRun.attempt_count} ${dunningRun.attempt_count === 1 ? 'retry' : 'retries'}`
+            return (
+              <>
+                <dt className="text-xs text-muted-foreground">Payment recovery</dt>
+                <dd className="flex items-center gap-2">
+                  <Badge variant="outline" className="border-amber-300 text-amber-700 dark:text-amber-400">
+                    {escalated ? 'ended' : dunningRun.state}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">{attemptLabel}</span>
+                </dd>
 
-              {dunningRun.next_action_at && (
-                <>
-                  <dt className="text-xs text-muted-foreground">Next retry</dt>
-                  <dd className="text-foreground">{formatDateTime(dunningRun.next_action_at)}</dd>
-                </>
-              )}
-            </>
-          )}
+                {dunningRun.next_action_at && !escalated && (
+                  <>
+                    <dt className="text-xs text-muted-foreground">{cardless ? 'Next reminder' : 'Next retry'}</dt>
+                    <dd className="text-foreground">
+                      {formatDateTime(dunningRun.next_action_at)}
+                      {cardless && (
+                        <span className="block text-xs text-muted-foreground">Won't charge until a card is attached.</span>
+                      )}
+                    </dd>
+                  </>
+                )}
+              </>
+            )
+          })()}
         </dl>
 
       </CardContent>

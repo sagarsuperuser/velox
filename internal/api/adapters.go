@@ -404,8 +404,10 @@ func (a *paymentRetrierAdapter) RetryPayment(ctx context.Context, tenantID, invo
 	ps, err := a.paymentSetups.GetPaymentSetup(ctx, tenantID, customerID)
 	if err != nil || ps.StripeCustomerID == "" || ps.StripePaymentMethodID == "" {
 		// Provably pre-Stripe: release the lease before reporting.
+		// Typed sentinel so the dunning warning email renders clean
+		// customer copy instead of this internal string (P2-3).
 		_ = a.invoiceStore.ReleaseAutoChargeClaim(ctx, tenantID, invoiceID)
-		return fmt.Errorf("no payment method for customer")
+		return domain.ErrNoPaymentMethodOnRetry
 	}
 
 	// 15s bound on the Stripe leg. Scheduler ticks run tens of retries

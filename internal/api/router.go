@@ -820,6 +820,9 @@ func NewServer(db *postgres.DB, clk clock.Clock) *Server {
 	// the engine's sub.TestClockID for cycle invoices). Without it, manual
 	// invoices never carry the simulated badge.
 	invoiceSvc.SetCustomerReader(customerStore)
+	// Dunning-escalated signal for the attention classifier (2026-07-22
+	// payment-surfacing audit P1-4) — narrow read, store-backed.
+	invoiceSvc.SetDunningRunReader(dunningStore)
 	invoiceSvc.SetCreditApplier(creditSvc)
 	// Tenant net-terms fallback: a manual invoice created without an explicit
 	// net_payment_term_days inherits the tenant's configured default (then 30),

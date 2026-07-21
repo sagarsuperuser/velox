@@ -45,7 +45,7 @@ interface Props {
 
 export function SendSetupLinkDialog({ open, onOpenChange, customerId, customerEmail, invoiceContext }: Props) {
   const [note, setNote] = useState(invoiceContext
-    ? `We couldn't process payment for invoice ${invoiceContext.invoiceNumber} (${invoiceContext.amountDueLabel}). Please add a payment method using the secure link below.`
+    ? `Invoice ${invoiceContext.invoiceNumber} (${invoiceContext.amountDueLabel}) is ready. Please add a payment method using the secure link below and we'll collect it automatically.`
     : '')
   const [loading, setLoading] = useState<'send' | 'copy' | null>(null)
   const [setupLinkUrl, setSetupLinkUrl] = useState('')
@@ -54,7 +54,7 @@ export function SendSetupLinkDialog({ open, onOpenChange, customerId, customerEm
     onOpenChange(false)
     setSetupLinkUrl('')
     setNote(invoiceContext
-      ? `We couldn't process payment for invoice ${invoiceContext.invoiceNumber} (${invoiceContext.amountDueLabel}). Please add a payment method using the secure link below.`
+      ? `Invoice ${invoiceContext.invoiceNumber} (${invoiceContext.amountDueLabel}) is ready. Please add a payment method using the secure link below and we'll collect it automatically.`
       : '')
   }
 

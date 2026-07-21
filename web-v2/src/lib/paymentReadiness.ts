@@ -1,0 +1,37 @@
+import type { Subscription, CustomerPaymentMethod } from '@/lib/api'
+
+// A customer "needs a payment method" when they have no card on file yet
+// have a subscription that will try to auto-charge one. Velox has no
+// collection_method concept — every active/trialing, non-paused
+// subscription is auto-charge by definition — so this is simply "a
+// subscription that will attempt a charge against a card that isn't there".
+//
+// For usage-based billing the amount is unknown until period close, so a
+// silent no-card subscription is a guaranteed future failed charge. This
+// derives the shift-left warning purely on the frontend from data the
+// customer/subscription pages already load — no backend signal needed
+// (2026-07-22 payment-surfacing audit, P1-5).
+//
+// It is disjoint from the REACTIVE no-payment-method invoice banner: this
+// fires on the customer/subscription surfaces BEFORE any invoice exists;
+// the banner fires on a finalized invoice. The two never co-render.
+
+export function subscriptionWillAutoCharge(sub: Pick<Subscription, 'status' | 'pause_collection'>): boolean {
+  if (sub.status !== 'active' && sub.status !== 'trialing') return false
+  // A paused-collection subscription won't attempt a charge — no warning.
+  if (sub.pause_collection) return false
+  return true
+}
+
+export function hasUsableCard(paymentMethods: Pick<CustomerPaymentMethod, 'is_default'>[]): boolean {
+  return paymentMethods.some(pm => pm.is_default)
+}
+
+// customerNeedsPaymentMethod: zero cards on file AND ≥1 auto-charging sub.
+export function customerNeedsPaymentMethod(
+  subscriptions: Pick<Subscription, 'status' | 'pause_collection'>[],
+  paymentMethods: Pick<CustomerPaymentMethod, 'is_default'>[],
+): boolean {
+  if (hasUsableCard(paymentMethods)) return false
+  return subscriptions.some(subscriptionWillAutoCharge)
+}
