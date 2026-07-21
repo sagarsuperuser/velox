@@ -1069,11 +1069,24 @@ func mergeUsageIntervals(ivs []usageInterval) []usageInterval {
 // a 30-day cycle bills at 14/30 of the segment's plan amount. Single-
 // segment items (no mid-period changes) collapse to "segment ==
 // period" math, matching the pre-segment-aware single-line path.
-func emitBaseSegmentLine(seg baseSegment, plan domain.Plan, periodStart time.Time, periodDays int, currency string, loc *time.Location, anchorDay int, lineItems *[]domain.InvoiceLineItem, subtotal *int64) {
+//
+// The denominator's anchor is derived from THE PERIOD BEING BILLED
+// (AnchorDayFor(periodStart)), never from the subscription's live
+// billing_anchor_day: a cross-interval swap rewrites the sub's anchor
+// before the truncated old period closes, and the mutated anchor
+// stretched the old period's denominator (found live, FLOW B21
+// 2026-07-21 — a calendar-monthly period closed at "15/46 days"
+// instead of 15/31, silently under-billing every anchor-changing
+// arrears swap). Residual ambiguity: a period whose start was
+// month-end-CLAMPED from a higher anchor reconstructs the clamped
+// day (a ≤3-day denominator error in that one rare combination) —
+// strictly narrower than the up-to-half-cycle error it replaces.
+func emitBaseSegmentLine(seg baseSegment, plan domain.Plan, periodStart time.Time, periodDays int, currency string, loc *time.Location, billingTime domain.SubscriptionBillingTime, lineItems *[]domain.InvoiceLineItem, subtotal *int64) {
 	segDays := roundDays(seg.end.Sub(seg.start))
 	if segDays <= 0 {
 		return
 	}
+	anchorDay := domain.AnchorDayFor(periodStart, billingTime, plan.BillingInterval, loc)
 	fullCycleDays := roundDays(advanceBillingPeriod(periodStart, plan.BillingInterval, loc, anchorDay).Sub(periodStart))
 	baseFee := plan.BaseAmountCents * seg.quantity
 	description := fmt.Sprintf("%s - base fee (qty %d)", plan.Name, seg.quantity)
@@ -2647,7 +2660,7 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			if segPlan.BaseBillTiming == domain.BillInAdvance {
 				continue
 			}
-			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingTime, &lineItems, &subtotal)
 		}
 	}
 
@@ -2679,7 +2692,7 @@ func (e *Engine) buildLineItems(ctx context.Context, sub domain.Subscription, no
 			if segPlan.BaseBillTiming == domain.BillInAdvance {
 				continue
 			}
-			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+			emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingTime, &lineItems, &subtotal)
 		}
 	}
 
@@ -3963,7 +3976,7 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 				if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
 					continue
 				}
-				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingTime, &lineItems, &subtotal)
 			}
 		}
 
@@ -3980,7 +3993,7 @@ func (e *Engine) buildCancelLineItems(ctx context.Context, sub domain.Subscripti
 				if !ok || segPlan.BaseAmountCents <= 0 || segPlan.BaseBillTiming == domain.BillInAdvance {
 					continue
 				}
-				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingAnchorDay, &lineItems, &subtotal)
+				emitBaseSegmentLine(seg, segPlan, periodStart, periodDays, invoiceCurrency, e.tenantLocation(ctx, sub.TenantID), sub.BillingTime, &lineItems, &subtotal)
 			}
 		}
 	}
