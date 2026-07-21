@@ -930,10 +930,10 @@ The standard B2B SaaS shape: platform fee charged at period start, usage settles
 
 ## FLOW B18: Meter Detail page
 
-- [ ] Default rule card renders the latest version of the linked rating rule (edit rule → version badge bumps).
-- [ ] Add dimension-matched rule: k=v rows, priority, rating-rule select → save → table refetches in priority order.
-- [ ] Dimension value coercion: `true/false` → bool, numeric strings → number, else string.
-- [ ] Per-row delete: typed `delete` confirm; already-finalized invoices unaffected.
+- [x] Default rule card renders the latest version of the linked rating rule (republish rule → version badge bumps). *(walked 2026-07-21: republished the linked rule_key → card followed v1 → v2, name and rate ($0.01 → $0.02/unit) updated with it.)*
+- [x] Add dimension-matched rule: k=v rows, priority, rating-rule select → save → table refetches. *(walked 2026-07-21 in the dialog: three k=v rows + priority 100 + versioned rule picker → row rendered with dimension chips + toast.)*
+- [x] Dimension value coercion: `true/false` → bool, numeric strings → number, else string. *(walked 2026-07-21, verified at the API: `{"cached": true (bool), "tier_level": 42 (number), "model": "gpt-4" (string)}`.)*
+- [x] Per-row delete: typed `delete` confirm (button disabled until typed); already-finalized invoices unaffected. *(walked 2026-07-21: row removed, store empty; the meter's paid invoices kept their exact totals.)*
 
 ## FLOW B19: Cancel-flow billing artifacts
 
