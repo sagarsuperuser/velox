@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagarsuperuser/velox/internal/credit"
 	"github.com/sagarsuperuser/velox/internal/domain"
 	"github.com/sagarsuperuser/velox/internal/invoice"
 	"github.com/sagarsuperuser/velox/internal/platform/postgres"
@@ -92,10 +93,32 @@ func TestChokePointCloses(t *testing.T) {
 		store := invoice.NewPostgresStore(db)
 		invID := seedFinalizedInvoice(t, db, store, ctx, tenantID)
 		claimID := seedOpenClaim(t, db, ctx, tenantID, invID)
-		// Partial credit: the open claim's minted amount is now stale — the
-		// next POST must remint at the new amount.
-		if _, err := store.ApplyCredits(ctx, tenantID, invID, 400); err != nil {
+
+		// Partial credit through the LIVE balance-credit writer
+		// (credit.ApplyToInvoiceAtomic): the open claim's minted amount is
+		// now stale — it must supersede in the same tx (ADR-068). Pre-fix
+		// (2026-07-21 derived-data audit) the supersede lived only on the
+		// CN-issue writer and the since-deleted invoice.ApplyCredits, so a
+		// customer paying the stale session after a credit overpaid.
+		inv, err := store.Get(ctx, tenantID, invID)
+		if err != nil {
+			t.Fatalf("get invoice: %v", err)
+		}
+		creditStore := credit.NewPostgresStore(db)
+		if _, err := creditStore.AppendEntry(ctx, tenantID, domain.CreditLedgerEntry{
+			CustomerID:  inv.CustomerID,
+			EntryType:   domain.CreditGrant,
+			AmountCents: 400,
+			Description: "choke-close test grant",
+		}); err != nil {
+			t.Fatalf("grant credit: %v", err)
+		}
+		applied, err := creditStore.ApplyToInvoiceAtomic(ctx, tenantID, inv.CustomerID, invID, inv.InvoiceNumber, inv.AmountDueCents, time.Now())
+		if err != nil {
 			t.Fatalf("apply credits: %v", err)
+		}
+		if applied != 400 {
+			t.Fatalf("applied = %d, want 400 (full balance)", applied)
 		}
 		if got := claimStatus(t, db, ctx, tenantID, claimID); got != "superseded" {
 			t.Fatalf("claim after partial credit = %q, want superseded", got)

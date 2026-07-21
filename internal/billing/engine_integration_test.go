@@ -136,10 +136,6 @@ func (a *invoiceStoreAdapter) CreateLineItem(ctx context.Context, tenantID strin
 	return a.store.CreateLineItem(ctx, tenantID, item)
 }
 
-func (a *invoiceStoreAdapter) ApplyCreditAmount(ctx context.Context, tenantID, id string, amountCents int64) (domain.Invoice, error) {
-	return a.store.ApplyCredits(ctx, tenantID, id, amountCents)
-}
-
 func (a *invoiceStoreAdapter) GetInvoice(ctx context.Context, tenantID, id string) (domain.Invoice, error) {
 	return a.store.Get(ctx, tenantID, id)
 }

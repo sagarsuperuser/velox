@@ -328,3 +328,64 @@ func TestClaimChargeForDunningRetry_StatusMatrix(t *testing.T) {
 		t.Fatal("sweep claim on 'unknown' must be refused")
 	}
 }
+
+// TestClaimChargeForManualCollect_SharedLeaseAndPredicate pins the
+// operator-collect claim added by the 2026-07-21 snapshot-race audit:
+// manual collect was the one charge initiator outside the lease ring —
+// it charged a handler snapshot with no mutual exclusion against the
+// sweep/dunning and no post-credit reload. The claim shares the
+// auto_charge_claimed_until lease, so holding it excludes every other
+// initiator; 'unknown' is rejected (reconciler-owned); release frees it.
+func TestClaimChargeForManualCollect_SharedLeaseAndPredicate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: skipped in -short mode")
+	}
+	db := testutil.SetupTestDB(t)
+	ctx := postgres.WithLivemode(context.Background(), false)
+	tenantID := testutil.CreateTestTenant(t, db, "Manual Collect Claim")
+	store := invoice.NewPostgresStore(db)
+
+	inv := seedClaimableInvoice(t, db, ctx, tenantID, "MCC-1")
+
+	// Sweep holds the lease → manual collect must lose.
+	claimed, err := store.ClaimAutoCharge(ctx, tenantID, inv.ID)
+	if err != nil || !claimed {
+		t.Fatalf("sweep claim: claimed=%v err=%v", claimed, err)
+	}
+	manual, err := store.ClaimChargeForManualCollect(ctx, tenantID, inv.ID)
+	if err != nil {
+		t.Fatalf("manual claim: %v", err)
+	}
+	if manual {
+		t.Fatal("manual collect must NOT claim while the sweep holds the lease")
+	}
+
+	// Released → manual collect wins; a second manual claim then loses.
+	if err := store.ReleaseAutoChargeClaim(ctx, tenantID, inv.ID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	manual, err = store.ClaimChargeForManualCollect(ctx, tenantID, inv.ID)
+	if err != nil || !manual {
+		t.Fatalf("manual claim after release: claimed=%v err=%v", manual, err)
+	}
+	second, err := store.ClaimChargeForManualCollect(ctx, tenantID, inv.ID)
+	if err != nil {
+		t.Fatalf("second manual claim: %v", err)
+	}
+	if second {
+		t.Fatal("second manual claim must lose while the first holds the lease")
+	}
+
+	// 'unknown' payment status is never claimable — the reconciler owns it.
+	unknownInv := seedClaimableInvoice(t, db, ctx, tenantID, "MCC-2")
+	if _, err := store.UpdatePayment(ctx, tenantID, unknownInv.ID, domain.PaymentUnknown, "pi_amb", "ambiguous outcome", nil); err != nil {
+		t.Fatalf("mark unknown: %v", err)
+	}
+	claimed, err = store.ClaimChargeForManualCollect(ctx, tenantID, unknownInv.ID)
+	if err != nil {
+		t.Fatalf("claim unknown: %v", err)
+	}
+	if claimed {
+		t.Fatal("an invoice with payment_status='unknown' must never be claimable for manual collect")
+	}
+}

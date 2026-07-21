@@ -537,9 +537,13 @@ func (s *PostgresStore) TransitionStatusTx(ctx context.Context, tx *sql.Tx, tena
 		voidedAt = &now
 	}
 
+	// issue_pending's job ("draft awaiting auto-issue") ends with any exit
+	// from draft, but nothing cleared it — every reader gates on
+	// status='draft' so behavior was unaffected, yet the API served
+	// issue_pending=true on issued CNs forever (FLOW B17 walk, 2026-07-21).
 	res, err := tx.ExecContext(ctx, `
 		UPDATE credit_notes SET status=$1, issued_at=COALESCE($2, issued_at),
-			voided_at=COALESCE($3, voided_at), updated_at=$4
+			voided_at=COALESCE($3, voided_at), issue_pending=false, updated_at=$4
 		WHERE id=$5 AND status=$6`,
 		to, postgres.NullableTime(issuedAt), postgres.NullableTime(voidedAt), now, id, from)
 	if err != nil {

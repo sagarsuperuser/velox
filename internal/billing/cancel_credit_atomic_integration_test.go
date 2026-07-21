@@ -323,4 +323,18 @@ func TestCancelCredit_PaidInAdvance_DraftAtomicAndReconcilerRecovers(t *testing.
 	if bal, _ := creditSvc.GetBalance(ctx, tenantID, cust.ID); bal.BalanceCents != wantCredit {
 		t.Errorf("balance after second sweep: got %d, want %d (no double-credit)", bal.BalanceCents, wantCredit)
 	}
+
+	// The issue must also retire the flag: an issued CN still carrying
+	// issue_pending=true reads as unfinished work on every API surface
+	// (FLOW B17 walk, 2026-07-21 — the CAS previously never cleared it).
+	issuedCN, err := creditNoteStore.Get(ctx, tenantID, ids[0])
+	if err != nil {
+		t.Fatalf("reload issued CN: %v", err)
+	}
+	if issuedCN.Status != domain.CreditNoteIssued {
+		t.Fatalf("CN status: got %s, want issued", issuedCN.Status)
+	}
+	if issuedCN.IssuePending {
+		t.Error("issue_pending must clear when the draft is issued")
+	}
 }

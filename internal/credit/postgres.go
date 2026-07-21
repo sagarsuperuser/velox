@@ -817,6 +817,22 @@ func (s *PostgresStore) ApplyToInvoiceAtomic(ctx context.Context, tenantID, cust
 		return 0, fmt.Errorf("update invoice amount_due: %w", err)
 	}
 
+	// Any amount_due change invalidates an open checkout claim — its Stripe
+	// session was minted for the OLD amount, and a customer paying it after
+	// this credit overpays (ADR-068). The CN-issue writer
+	// (invoice.ApplyCreditNoteTx) carries this same supersede; THIS writer
+	// lost it when the live credit path moved off the since-deleted
+	// invoice.ApplyCredits (found by the 2026-07-21 derived-data audit —
+	// the supersede + its test were stranded on the dead method). The
+	// settle-time sweep expires any superseded row whose Stripe session is
+	// still live.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE checkout_sessions SET status = 'superseded', updated_at = now()
+		WHERE invoice_id = $1 AND tenant_id = $2 AND status = 'open'
+	`, invoiceID, tenantID); err != nil {
+		return 0, fmt.Errorf("supersede checkout claims on credit apply: %w", err)
+	}
+
 	// ADR-078 balance-crossing events (advisory lock held above).
 	if err := s.emitBalanceCrossings(ctx, tx, tenantID, customerID, currentBalance, balanceAfter); err != nil {
 		return 0, err
